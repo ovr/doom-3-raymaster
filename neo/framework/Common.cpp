@@ -1487,6 +1487,12 @@ bool idCommonLocal::ProcessEvent( const sysEvent_t *event ) {
 		if ( event->evType == SE_KEY && event->evValue2 == 1 && ( event->evValue == K_ESCAPE || event->evValue == K_JOY9 ) ) {
 			if ( !game->Shell_IsActive() ) {
 
+				// skip the cinematic that is playing instead of pausing
+				if ( game->RequestSkipCinematic() ) {
+					console->Close();
+					return true;
+				}
+
 				// menus / etc
 				if ( MenuEvent( event ) ) {
 					return true;

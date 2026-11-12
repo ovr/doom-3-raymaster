@@ -145,6 +145,11 @@ public:
 
 	virtual bool				IsInGame() const = 0;
 
+	// Requests skipping the cinematic that is currently playing. Called from the main
+	// thread; the skip itself happens on the next game frame. Returns false if no
+	// skippable cinematic is playing.
+	virtual bool				RequestSkipCinematic() = 0;
+
 	// Get the player entity number for a network peer.
 	virtual int					MapPeerToClient( int peer ) const = 0;
 

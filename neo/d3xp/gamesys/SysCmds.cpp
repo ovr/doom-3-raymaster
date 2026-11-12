@@ -2286,6 +2286,17 @@ void Cmd_TestId_f( const idCmdArgs &args ) {
 
 /*
 =================
+Cmd_SkipCinematic_f
+=================
+*/
+static void Cmd_SkipCinematic_f( const idCmdArgs &args ) {
+	if ( !gameLocal.RequestSkipCinematic() ) {
+		gameLocal.Printf( "No cinematic to skip.\n" );
+	}
+}
+
+/*
+=================
 idGameLocal::InitConsoleCommands
 
 Let the system know about all of our commands
@@ -2294,6 +2305,7 @@ so it can perform tab completion
 */
 void idGameLocal::InitConsoleCommands() {
 	cmdSystem->AddCommand( "game_memory",			idClass::DisplayInfo_f,		CMD_FL_GAME,				"displays game class info" );
+	cmdSystem->AddCommand( "skipCinematic",			Cmd_SkipCinematic_f,		CMD_FL_GAME,				"skips the cinematic that is currently playing" );
 	cmdSystem->AddCommand( "listClasses",			idClass::ListClasses_f,		CMD_FL_GAME,				"lists game classes" );
 	cmdSystem->AddCommand( "listThreads",			idThread::ListThreads_f,	CMD_FL_GAME|CMD_FL_CHEAT,	"lists script threads" );
 	cmdSystem->AddCommand( "listEntities",			Cmd_EntityList_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"lists game entities" );

@@ -285,6 +285,11 @@ public:
 	idEditEntities *		editEntities;			// in game editing
 
 	bool					inCinematic;			// game is playing cinematic (player controls frozen)
+	bool					skipCinematic;			// fast forwarding through the current cinematic
+	volatile bool			skipCinematicRequested;	// set from the main thread, consumed by RunFrame
+	bool					skipCinematicWasMuted;	// sound mute state to restore after skipping
+	int						cinematicSkipTime;		// game time limit for a cinematic skip
+	int						cinematicStopTime;		// keep skipping until this time after the camera is cleared
 
 	int						framenum;
 	int						time;					// in msec
@@ -362,12 +367,17 @@ public:
 	virtual void			ClientReadSnapshot( const idSnapShot & ss );
 	virtual void			ClientRunFrame( idUserCmdMgr & cmdMgr, bool lastPredictFrame, gameReturn_t & ret  );
 	void					BuildReturnValue( gameReturn_t & ret );
+	void					RunSingleFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret );
+	void					StartSkipCinematic();
+	void					ClearCinematicSkip();
 
 	virtual int				GetMPGameModes( const char *** gameModes, const char *** gameModesDisplay );
 
 	virtual void			GetClientStats( int clientNum, char *data, const int len );
 
 	virtual bool			IsInGame() const { return GameState() == GAMESTATE_ACTIVE; }
+
+	virtual bool			RequestSkipCinematic();
 
 	virtual int				MapPeerToClient( int peer ) const;
 	virtual int				GetLocalClientNum() const;

@@ -226,6 +226,8 @@ void idGameLocal::Clear() {
 	editEntities = NULL;
 	entityHash.Clear( 1024, MAX_GENTITIES );
 	inCinematic = false;
+	skipCinematicWasMuted = false;
+	ClearCinematicSkip();
 	framenum = 0;
 	previousTime = 0;
 	time = 0;
@@ -968,6 +970,7 @@ void idGameLocal::LoadMap( const char * mapName, int randseed ) {
 	spawnArgs.Clear();
 
 	inCinematic = false;
+	ClearCinematicSkip();
 
 	clip.Init();
 
@@ -2250,10 +2253,109 @@ idCVar g_recordTrace( "g_recordTrace", "0", CVAR_BOOL, "" );
 
 /*
 ================
+idGameLocal::ClearCinematicSkip
+================
+*/
+void idGameLocal::ClearCinematicSkip() {
+	skipCinematic = false;
+	skipCinematicRequested = false;
+	cinematicSkipTime = 0;
+	cinematicStopTime = 0;
+}
+
+/*
+================
+idGameLocal::RequestSkipCinematic
+
+Called from the main thread (ESC key, skipCinematic command). Only flags the request,
+the game thread starts the skip at the beginning of the next game frame.
+================
+*/
+bool idGameLocal::RequestSkipCinematic() {
+	if ( common->IsMultiplayer() || !inCinematic || skipCinematic ) {
+		return false;
+	}
+	skipCinematicRequested = true;
+	return true;
+}
+
+/*
+================
+idGameLocal::StartSkipCinematic
+================
+*/
+void idGameLocal::StartSkipCinematic() {
+	if ( camera != NULL ) {
+		if ( camera->spawnArgs.GetBool( "disconnect" ) ) {
+			// the cinematic ends the game, so just leave
+			camera->spawnArgs.SetBool( "disconnect", false );
+			cvarSystem->SetCVarFloat( "r_znear", 3.0f );
+			sessionCommand = "disconnect";
+			return;
+		}
+		if ( camera->spawnArgs.GetBool( "instantSkip" ) ) {
+			camera->Stop();
+			return;
+		}
+	}
+
+	skipCinematic = true;
+	cinematicSkipTime = time + SEC2MS( g_cinematicMaxSkipTime.GetFloat() );
+	cinematicStopTime = 0;
+
+	skipCinematicWasMuted = soundSystem->IsMuted();
+	soundSystem->SetMute( true );
+}
+
+/*
+================
 idGameLocal::RunFrame
+
+Runs a single game frame or, when a cinematic is being skipped, fast forwards
+the game until the cinematic has finished.
 ================
 */
 void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
+	if ( !skipCinematic && inCinematic && !common->IsMultiplayer() && !g_stopTime.GetBool() ) {
+		if ( skipCinematicRequested || g_skipCinematics.GetBool() ) {
+			StartSkipCinematic();
+		}
+	}
+	skipCinematicRequested = false;
+
+	if ( !skipCinematic ) {
+		RunSingleFrame( cmdMgr, ret );
+		return;
+	}
+
+	do {
+		RunSingleFrame( cmdMgr, ret );
+
+		// a target_sessionCommand forced a level change or similar
+		if ( ret.sessionCommand[0] != 0 ) {
+			break;
+		}
+
+		// make sure we don't loop forever if the cinematic never ends
+		if ( time > cinematicSkipTime ) {
+			Warning( "Exceeded maximum cinematic skip length.  Cinematic may be looping infinitely." );
+			break;
+		}
+	} while ( inCinematic || time < cinematicStopTime );
+
+	ClearCinematicSkip();
+	soundSystem->SetMute( skipCinematicWasMuted );
+
+	// don't let the session try to catch up on the real time spent skipping
+	ret.syncNextGameFrame = true;
+}
+
+/*
+================
+idGameLocal::RunSingleFrame
+================
+*/
+void idGameLocal::RunSingleFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 	idEntity *	ent;
 	int			num;
 	float		ms;
@@ -4210,6 +4312,9 @@ void idGameLocal::SetCamera( idCamera *cam ) {
 
 	} else {
 		inCinematic = false;
+
+		// when skipping, run one more frame so scripts waiting on the camera can continue
+		cinematicStopTime = time + 1;
 
 		// restore r_znear
 		cvarSystem->SetCVarFloat( "r_znear", 3.0f );
