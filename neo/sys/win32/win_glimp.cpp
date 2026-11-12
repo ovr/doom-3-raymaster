@@ -107,6 +107,21 @@ void GLimp_TestSwapBuffers( const idCmdArgs &args ) {
 	}
 }
 
+// last gamma ramp set by the renderer, re-applied after alt-tab
+static unsigned short	s_gameGamma[3][256];
+static bool				s_gameGammaValid = false;
+
+// display mode set with ChangeDisplaySettingsEx, re-applied after alt-tab
+static DEVMODE			s_cdsMode;
+static char				s_cdsDevice[CCHDEVICENAME];
+
+// last parms used to set up the window
+static glimpParms_t		s_lastParms;
+static bool				s_lastParmsValid = false;
+
+// true while the fullscreen window is deactivated (alt-tabbed away)
+static bool				s_fullscreenSuspended = false;
+
 /*
 ========================
 GLimp_GetOldGammaRamp
@@ -152,20 +167,24 @@ The renderer calls this when the user adjusts r_gamma or r_brightness
 ========================
 */
 void GLimp_SetGamma( unsigned short red[256], unsigned short green[256], unsigned short blue[256] ) {
-	unsigned short table[3][256];
-	int i;
-
 	if ( !win32.hDC ) {
 		return;
 	}
 
-	for ( i = 0; i < 256; i++ ) {
-		table[0][i] = red[i];
-		table[1][i] = green[i];
-		table[2][i] = blue[i];
+	for ( int i = 0; i < 256; i++ ) {
+		s_gameGamma[0][i] = red[i];
+		s_gameGamma[1][i] = green[i];
+		s_gameGamma[2][i] = blue[i];
+	}
+	s_gameGammaValid = true;
+
+	// while alt-tabbed away the desktop gamma stays in effect,
+	// the game ramp is applied again when the window is reactivated
+	if ( s_fullscreenSuspended ) {
+		return;
 	}
 
-	if ( !SetDeviceGammaRamp( win32.hDC, table ) ) {
+	if ( !SetDeviceGammaRamp( win32.hDC, s_gameGamma ) ) {
 		common->Printf( "WARNING: SetDeviceGammaRamp failed.\n" );
 	}
 }
@@ -684,6 +703,65 @@ static bool GetDisplayCoordinates( const int deviceNum, int & x, int & y, int & 
 
 /*
 ====================
+GetDesktopMode
+
+The desktop resolution of a monitor as set in the Windows display settings,
+not affected by a ChangeDisplaySettingsEx( CDS_FULLSCREEN ) we did.
+====================
+*/
+static bool GetDesktopMode( const int deviceNum, int & width, int & height ) {
+	idStr deviceName = GetDeviceName( deviceNum );
+	if ( deviceName.Length() == 0 ) {
+		return false;
+	}
+
+	DEVMODE	devmode = {};
+	devmode.dmSize = sizeof( devmode );
+	if ( !EnumDisplaySettings( deviceName.c_str(), ENUM_REGISTRY_SETTINGS, &devmode ) || devmode.dmPelsWidth == 0 ) {
+		if ( !EnumDisplaySettings( deviceName.c_str(), ENUM_CURRENT_SETTINGS, &devmode ) ) {
+			return false;
+		}
+	}
+
+	width = devmode.dmPelsWidth;
+	height = devmode.dmPelsHeight;
+	return true;
+}
+
+/*
+====================
+R_GetDesktopResolution
+====================
+*/
+bool R_GetDesktopResolution( const int displayNum, int & width, int & height ) {
+	return GetDesktopMode( displayNum, width, height );
+}
+
+/*
+====================
+GLW_ResolveBorderlessParms
+
+A borderless fullscreen window always covers the monitor at its desktop resolution.
+====================
+*/
+static void GLW_ResolveBorderlessParms( glimpParms_t & parms ) {
+	if ( parms.fullScreen <= 0 ) {
+		parms.borderless = false;
+		return;
+	}
+	if ( !parms.borderless ) {
+		return;
+	}
+	int width, height;
+	if ( GetDesktopMode( parms.fullScreen - 1, width, height ) ) {
+		parms.width = width;
+		parms.height = height;
+		parms.displayHz = 0;
+	}
+}
+
+/*
+====================
 DMDFO
 ====================
 */
@@ -965,7 +1043,9 @@ static bool GLW_CreateWindow( glimpParms_t parms ) {
 	int				stylebits;
 	int				exstyle;
 	if ( parms.fullScreen != 0 ) {
-		exstyle = WS_EX_TOPMOST;
+		// not WS_EX_TOPMOST, otherwise the window stays on top of
+		// everything after alt-tab
+		exstyle = WS_EX_APPWINDOW;
 		stylebits = WS_POPUP|WS_VISIBLE|WS_SYSMENU;
 	} else {
 		exstyle = 0;
@@ -1077,6 +1157,17 @@ static bool GLW_ChangeDislaySettingsIfNeeded( glimpParms_t parms ) {
 		return true;
 	}
 
+	// borderless fullscreen never changes the display mode, go back to the
+	// desktop mode if we changed it for exclusive fullscreen before
+	if ( parms.borderless ) {
+		if ( win32.cdsFullscreen != 0 ) {
+			common->Printf( "...restoring desktop display mode\n" );
+			ChangeDisplaySettingsEx( s_cdsDevice[0] ? s_cdsDevice : NULL, NULL, NULL, 0, NULL );
+			win32.cdsFullscreen = 0;
+		}
+		return true;
+	}
+
 	// if we are already in the right resolution, don't do a ChangeDisplaySettings
 	int x, y, width, height, displayHz;
 
@@ -1113,6 +1204,8 @@ static bool GLW_ChangeDislaySettingsIfNeeded( glimpParms_t parms ) {
 		NULL) ) == DISP_CHANGE_SUCCESSFUL ) {
 		common->Printf( "ok\n" );
 		win32.cdsFullscreen = parms.fullScreen;
+		s_cdsMode = dm;
+		idStr::Copynz( s_cdsDevice, deviceName != NULL ? deviceName : "", sizeof( s_cdsDevice ) );
 		return true;
 	}
 
@@ -1142,8 +1235,10 @@ bool GLimp_Init( glimpParms_t parms ) {
 
 	cmdSystem->AddCommand( "testSwapBuffers", GLimp_TestSwapBuffers, CMD_FL_SYSTEM, "Times swapbuffer options" );
 
-	common->Printf( "Initializing OpenGL subsystem with multisamples:%i stereo:%i fullscreen:%i\n", 
-		parms.multiSamples, parms.stereo, parms.fullScreen );
+	GLW_ResolveBorderlessParms( parms );
+
+	common->Printf( "Initializing OpenGL subsystem with multisamples:%i stereo:%i fullscreen:%i borderless:%i\n",
+		parms.multiSamples, parms.stereo, parms.fullScreen, parms.borderless );
 
 	// check our desktop attributes
 	hDC = GetDC( GetDesktopWindow() );
@@ -1196,6 +1291,10 @@ bool GLimp_Init( glimpParms_t parms ) {
 		return false;
 	}
 
+	s_lastParms = parms;
+	s_lastParmsValid = true;
+	s_fullscreenSuspended = false;
+
 	glConfig.isFullscreen = parms.fullScreen;
 	glConfig.isStereoPixelFormat = parms.stereo;
 	glConfig.nativeScreenWidth = parms.width;
@@ -1238,6 +1337,8 @@ Sets up the screen based on passed parms..
 ===================
 */
 bool GLimp_SetScreenParms( glimpParms_t parms ) {
+	GLW_ResolveBorderlessParms( parms );
+
 	// Optionally ChangeDisplaySettings to get a different fullscreen resolution.
 	if ( !GLW_ChangeDislaySettingsIfNeeded( parms ) ) {
 		return false;
@@ -1252,7 +1353,7 @@ bool GLimp_SetScreenParms( glimpParms_t parms ) {
 	int stylebits;
 
 	if ( parms.fullScreen ) {
-		exstyle = WS_EX_TOPMOST;
+		exstyle = WS_EX_APPWINDOW;
 		stylebits = WS_POPUP|WS_VISIBLE|WS_SYSMENU;
 	} else {
 		exstyle = 0;
@@ -1261,7 +1362,11 @@ bool GLimp_SetScreenParms( glimpParms_t parms ) {
 
 	SetWindowLong( win32.hWnd, GWL_STYLE, stylebits );
 	SetWindowLong( win32.hWnd, GWL_EXSTYLE, exstyle );
-	SetWindowPos( win32.hWnd, parms.fullScreen ? HWND_TOPMOST : HWND_NOTOPMOST, x, y, w, h, SWP_SHOWWINDOW );
+	SetWindowPos( win32.hWnd, HWND_NOTOPMOST, x, y, w, h, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+
+	s_lastParms = parms;
+	s_lastParmsValid = true;
+	s_fullscreenSuspended = false;
 
 	glConfig.isFullscreen = parms.fullScreen;
 	glConfig.pixelAspect = 1.0f;	// FIXME: some monitor modes may be distorted
@@ -1271,6 +1376,70 @@ bool GLimp_SetScreenParms( glimpParms_t parms ) {
 	glConfig.nativeScreenHeight = parms.height;
 
 	return true;
+}
+
+/*
+===================
+GLimp_WindowDeactivated
+
+Called from WM_ACTIVATE when the window loses focus (alt-tab, click on
+another window, etc). A fullscreen window gives the desktop back: the
+desktop gamma and display mode are restored and an exclusive fullscreen
+window is minimized.
+===================
+*/
+void GLimp_WindowDeactivated() {
+	if ( win32.hWnd == NULL || !s_lastParmsValid || s_lastParms.fullScreen == 0 || s_fullscreenSuspended ) {
+		return;
+	}
+	s_fullscreenSuspended = true;
+
+	GLimp_RestoreGamma();
+
+	if ( win32.cdsFullscreen ) {
+		ChangeDisplaySettingsEx( s_cdsDevice[0] ? s_cdsDevice : NULL, NULL, NULL, 0, NULL );
+	}
+
+	// a borderless window just goes behind the other windows,
+	// exclusive fullscreen gets out of the way
+	if ( !s_lastParms.borderless && win32.win_minimizeOnFocusLoss.GetBool() ) {
+		ShowWindow( win32.hWnd, SW_MINIMIZE );
+	}
+}
+
+/*
+===================
+GLimp_WindowActivated
+
+Called from WM_ACTIVATE when the window gets focus back.
+Undoes GLimp_WindowDeactivated.
+===================
+*/
+void GLimp_WindowActivated() {
+	if ( win32.hWnd == NULL || !s_fullscreenSuspended ) {
+		return;
+	}
+	s_fullscreenSuspended = false;
+
+	if ( win32.cdsFullscreen ) {
+		DEVMODE dm = s_cdsMode;
+		if ( ChangeDisplaySettingsEx( s_cdsDevice[0] ? s_cdsDevice : NULL, &dm, NULL, CDS_FULLSCREEN, NULL ) != DISP_CHANGE_SUCCESSFUL ) {
+			common->Printf( "^3GLimp_WindowActivated: failed to restore the display mode^0\n" );
+		}
+	}
+
+	if ( IsIconic( win32.hWnd ) ) {
+		ShowWindow( win32.hWnd, SW_RESTORE );
+	}
+
+	int x, y, w, h;
+	if ( GLW_GetWindowDimensions( s_lastParms, x, y, w, h ) ) {
+		SetWindowPos( win32.hWnd, HWND_TOP, x, y, w, h, SWP_SHOWWINDOW );
+	}
+
+	if ( s_gameGammaValid && win32.hDC ) {
+		SetDeviceGammaRamp( win32.hDC, s_gameGamma );
+	}
 }
 
 /*
@@ -1331,6 +1500,10 @@ void GLimp_Shutdown() {
 
 	// restore gamma
 	GLimp_RestoreGamma();
+
+	s_lastParmsValid = false;
+	s_gameGammaValid = false;
+	s_fullscreenSuspended = false;
 
 	// shutdown QGL subsystem
 	QGL_Shutdown();

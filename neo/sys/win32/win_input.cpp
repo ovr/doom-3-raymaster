@@ -393,9 +393,10 @@ void IN_Frame() {
 		if ( win32.movingWindow ) {
 			shouldGrab = false;
 		}
-		if ( !win32.activeApp ) {
-			shouldGrab = false;
-		}
+	}
+	// never hold the mouse when alt-tabbed away, even in fullscreen
+	if ( !win32.activeApp ) {
+		shouldGrab = false;
 	}
 
 	if ( shouldGrab != win32.mouseGrabbed ) {

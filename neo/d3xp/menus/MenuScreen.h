@@ -508,25 +508,35 @@ private:
 		optionData_t() {
 			fullscreen = -1;
 			vidmode = -1;
+			borderless = false;
+			width = 0;
+			height = 0;
 		}
-		optionData_t( int f, int v ) {
+		optionData_t( int f, int v, bool b, int w, int h ) {
 			fullscreen = f;
 			vidmode = v;
-		}
-		optionData_t( const optionData_t & other ) {
-			fullscreen = other.fullscreen;
-			vidmode = other.vidmode;
-		}
-		const optionData_t & operator=( const optionData_t & other ) {
-			fullscreen = other.fullscreen;
-			vidmode = other.vidmode;
-			return *this;
+			borderless = b;
+			width = w;
+			height = h;
 		}
 		bool operator==( const optionData_t & other ) const {
-			return ( fullscreen == other.fullscreen ) && ( ( vidmode == other.vidmode ) || ( fullscreen == 0 ) );
+			if ( fullscreen != other.fullscreen ) {
+				return false;
+			}
+			if ( fullscreen == 0 ) {
+				// windowed: the window size
+				return ( width == other.width ) && ( height == other.height );
+			}
+			if ( borderless != other.borderless ) {
+				return false;
+			}
+			return borderless || ( vidmode == other.vidmode );	// borderless always uses the desktop resolution
 		}
 		int fullscreen;
 		int vidmode;
+		bool borderless;
+		int width;		// window size when fullscreen == 0
+		int height;
 	};
 	idList<optionData_t>		optionData;
 
@@ -1173,8 +1183,10 @@ public:
 	*/
 	class idMenuDataSource_SystemSettings : public idMenuDataSource {
 	public:
+		// the order matches the order of the controls in the list
 		enum systemSettingFields_t {
-			SYSTEM_FIELD_FULLSCREEN,
+			SYSTEM_FIELD_WINDOWMODE,
+			SYSTEM_FIELD_RESOLUTION,
 			SYSTEM_FIELD_FRAMERATE,
 			SYSTEM_FIELD_VSYNC,
 			SYSTEM_FIELD_ANTIALIASING,
@@ -1205,6 +1217,10 @@ public:
 		bool						IsRestartRequired() const;
 
 	private:
+		void						LoadModeList();
+
+		int originalFullscreen;
+		bool originalBorderless;
 		int originalFramerate;
 		int originalAntialias;
 		int originalMotionBlur;

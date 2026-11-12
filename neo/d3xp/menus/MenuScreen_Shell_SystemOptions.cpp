@@ -36,6 +36,51 @@ extern idCVar r_motionBlur;
 extern idCVar r_swapInterval;
 extern idCVar s_volume_dB;
 extern idCVar r_lightScale;
+extern idCVar r_windowWidth;
+extern idCVar r_windowHeight;
+
+// changing the window mode does a vid_restart, so don't let a held key repeat it
+static const int WINDOW_MODE_REPEAT_TIME = 1000000;
+
+enum windowMode_t {
+	WINDOW_MODE_WINDOWED,		// window with borders
+	WINDOW_MODE_BORDERLESS,		// borderless window covering the monitor at desktop resolution
+	WINDOW_MODE_FULLSCREEN,		// exclusive fullscreen at r_vidMode
+	NUM_WINDOW_MODES
+};
+
+/*
+========================
+GetWindowMode
+========================
+*/
+static windowMode_t GetWindowMode() {
+	if ( r_fullscreen.GetInteger() == 0 ) {
+		return WINDOW_MODE_WINDOWED;
+	}
+	if ( r_fullscreen.GetInteger() < 0 || r_borderless.GetBool() ) {
+		return WINDOW_MODE_BORDERLESS;
+	}
+	return WINDOW_MODE_FULLSCREEN;
+}
+
+/*
+========================
+UpdateResolutionControl
+
+A borderless window always uses the desktop resolution, so the
+resolution control is shown disabled (dimmed, without arrows).
+========================
+*/
+static void UpdateResolutionControl( idMenuWidget_DynamicList * options ) {
+	if ( options == NULL || options->GetChildren().Num() <= idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::SYSTEM_FIELD_RESOLUTION ) {
+		return;
+	}
+	idMenuWidget_ControlButton * const control = dynamic_cast< idMenuWidget_ControlButton * >( &options->GetChildByIndex( idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::SYSTEM_FIELD_RESOLUTION ) );
+	if ( control != NULL ) {
+		control->SetDisabled( GetWindowMode() == WINDOW_MODE_BORDERLESS );
+	}
+}
 
 /*
 ========================
@@ -67,13 +112,23 @@ void idMenuScreen_Shell_SystemOptions::Initialize( idMenuHandler * data ) {
 	AddChild( options );
 	AddChild( btnBack );
 
+	// the controls are added in the order of systemSettingFields_t, there are more of
+	// them than visible slots, the list scrolls
 	idMenuWidget_ControlButton * control;
 	control = new (TAG_SWF) idMenuWidget_ControlButton();
 	control->SetOptionType( OPTION_SLIDER_TEXT );
-	control->SetLabel( "#str_02154" );
-	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_FULLSCREEN );
+	control->SetLabel( "Window Mode" );
+	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE );
+	control->SetupEvents( WINDOW_MODE_REPEAT_TIME, options->GetChildren().Num() );
+	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE );
+	options->AddChild( control );
+
+	control = new (TAG_SWF) idMenuWidget_ControlButton();
+	control->SetOptionType( OPTION_SLIDER_TEXT );
+	control->SetLabel( "#str_swf_resolution" );
+	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_RESOLUTION );
 	control->SetupEvents( DEFAULT_REPEAT_TIME, options->GetChildren().Num() );
-	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_FULLSCREEN );
+	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_RESOLUTION );
 	options->AddChild( control );
 
 	control = new (TAG_SWF) idMenuWidget_ControlButton();
@@ -194,7 +249,8 @@ idMenuScreen_Shell_SystemOptions::ShowScreen
 void idMenuScreen_Shell_SystemOptions::ShowScreen( const mainMenuTransition_t transitionType ) {
 	
 	systemData.LoadData();
-	
+	UpdateResolutionControl( options );
+
 	idMenuScreen::ShowScreen( transitionType );
 }
 
@@ -269,8 +325,20 @@ bool idMenuScreen_Shell_SystemOptions::HandleAction( idWidgetAction & action, co
 			return true;
 		}
 		case WIDGET_ACTION_ADJUST_FIELD:
-			if ( widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_FULLSCREEN ) {
-				menuData->SetNextScreen( SHELL_AREA_RESOLUTION, MENU_TRANSITION_SIMPLE );
+			if ( widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_RESOLUTION ) {
+				// a borderless window always uses the desktop resolution
+				if ( GetWindowMode() != WINDOW_MODE_BORDERLESS ) {
+					menuData->SetNextScreen( SHELL_AREA_RESOLUTION, MENU_TRANSITION_SIMPLE );
+				}
+				return true;
+			}
+			if ( widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE ) {
+				// the resolution row depends on the window mode, so update the whole list
+				systemData.AdjustField( idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE, parms[0].ToInteger() );
+				UpdateResolutionControl( options );
+				if ( options != NULL ) {
+					options->Update();
+				}
 				return true;
 			}
 			break;
@@ -280,23 +348,28 @@ bool idMenuScreen_Shell_SystemOptions::HandleAction( idWidgetAction & action, co
 				return true;
 			}
 
+			// parms[0] is the field, which is also the index of the control in the
+			// (scrolling) list, the focus index is the visible slot
 			int selectionIndex = options->GetFocusIndex();
 			if ( parms.Num() > 0 ) {
-				selectionIndex = parms[0].ToInteger();
+				selectionIndex = parms[0].ToInteger() - options->GetViewOffset();
 			}
 
-			if ( options && selectionIndex != options->GetFocusIndex() ) {
+			if ( selectionIndex >= 0 && selectionIndex < NUM_SYSTEM_OPTIONS_OPTIONS && selectionIndex != options->GetFocusIndex() ) {
 				options->SetViewIndex( options->GetViewOffset() + selectionIndex );
 				options->SetFocusIndex( selectionIndex );
 			}
 
 			switch ( parms[0].ToInteger() ) {
-				case idMenuDataSource_SystemSettings::SYSTEM_FIELD_FULLSCREEN: {
-					menuData->SetNextScreen( SHELL_AREA_RESOLUTION, MENU_TRANSITION_SIMPLE );
+				case idMenuDataSource_SystemSettings::SYSTEM_FIELD_RESOLUTION: {
+					if ( GetWindowMode() != WINDOW_MODE_BORDERLESS ) {
+						menuData->SetNextScreen( SHELL_AREA_RESOLUTION, MENU_TRANSITION_SIMPLE );
+					}
 					return true;
 				}
 				default: {
 					systemData.AdjustField( parms[0].ToInteger(), 1 );
+					UpdateResolutionControl( options );
 					options->Update();
 				}
 			}
@@ -310,8 +383,9 @@ bool idMenuScreen_Shell_SystemOptions::HandleAction( idWidgetAction & action, co
 			}
 
 			if ( parms.Num() == 4 ) {
-				int selectionIndex = parms[3].ToInteger();
-				if ( selectionIndex != options->GetFocusIndex() ) {
+				// parms[3] is the index of the control, convert it to the visible slot
+				int selectionIndex = parms[3].ToInteger() - options->GetViewOffset();
+				if ( selectionIndex >= 0 && selectionIndex < NUM_SYSTEM_OPTIONS_OPTIONS && selectionIndex != options->GetFocusIndex() ) {
 					options->SetViewIndex( options->GetViewOffset() + selectionIndex );
 					options->SetFocusIndex( selectionIndex );
 				}
@@ -347,7 +421,18 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadData
 	originalVsync = r_swapInterval.GetInteger();
 	originalBrightness = r_lightScale.GetFloat();
 	originalVolume = s_volume_dB.GetFloat();
+	originalFullscreen = r_fullscreen.GetInteger();
+	originalBorderless = r_borderless.GetBool();
 
+	LoadModeList();
+}
+
+/*
+========================
+idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadModeList
+========================
+*/
+void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadModeList() {
 	const int fullscreen = r_fullscreen.GetInteger();
 	if ( fullscreen > 0 ) {
 		R_GetModeListForDisplay( fullscreen - 1, modeList );
@@ -419,6 +504,30 @@ idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustField
 */
 void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustField( const int fieldIndex, const int adjustAmount ) {
 	switch ( fieldIndex ) {
+		case SYSTEM_FIELD_WINDOWMODE: {
+			int mode = ( GetWindowMode() + adjustAmount ) % NUM_WINDOW_MODES;
+			if ( mode < 0 ) {
+				mode += NUM_WINDOW_MODES;
+			}
+			// stay on the monitor we are on
+			const int monitor = Max( 1, r_fullscreen.GetInteger() );
+			switch ( mode ) {
+				case WINDOW_MODE_WINDOWED:
+					r_fullscreen.SetInteger( 0 );
+					break;
+				case WINDOW_MODE_BORDERLESS:
+					r_fullscreen.SetInteger( monitor );
+					r_borderless.SetBool( true );
+					break;
+				case WINDOW_MODE_FULLSCREEN:
+					r_fullscreen.SetInteger( monitor );
+					r_borderless.SetBool( false );
+					break;
+			}
+			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "vid_restart\n" );
+			LoadModeList();
+			break;
+		}
 		case SYSTEM_FIELD_FRAMERATE: {
 			static const int numValues = 2;
 			static const int values[numValues] = { 60, 120 };
@@ -475,13 +584,27 @@ idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::GetField
 */
 idSWFScriptVar idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::GetField( const int fieldIndex ) const {
 	switch ( fieldIndex ) {
-		case SYSTEM_FIELD_FULLSCREEN: {
+		case SYSTEM_FIELD_WINDOWMODE:
+			switch ( GetWindowMode() ) {
+				case WINDOW_MODE_WINDOWED:		return "Windowed";
+				case WINDOW_MODE_BORDERLESS:	return "Borderless";
+				default:						return "#str_02154";	// Fullscreen
+			}
+		case SYSTEM_FIELD_RESOLUTION: {
 			const int fullscreen = r_fullscreen.GetInteger();
 			const int vidmode = r_vidMode.GetInteger();
-			if ( fullscreen == 0 ) {
-				return "#str_swf_disabled";
+			const windowMode_t windowMode = GetWindowMode();
+			if ( windowMode == WINDOW_MODE_WINDOWED ) {
+				return va( "%4i x %4i", r_windowWidth.GetInteger(), r_windowHeight.GetInteger() );
 			}
-			if ( fullscreen < 0 || vidmode < 0 || vidmode >= modeList.Num() ) {
+			if ( windowMode == WINDOW_MODE_BORDERLESS ) {
+				int width, height;
+				if ( fullscreen > 0 && R_GetDesktopResolution( fullscreen - 1, width, height ) ) {
+					return va( "%4i x %4i", width, height );
+				}
+				return va( "%4i x %4i", glConfig.nativeScreenWidth, glConfig.nativeScreenHeight );
+			}
+			if ( vidmode < 0 || vidmode >= modeList.Num() ) {
 				return "???";
 			}
 			if ( modeList[vidmode].displayHz == 60 ) {
@@ -527,6 +650,12 @@ idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsDataChanged
 ========================
 */
 bool idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsDataChanged() const {
+	if ( originalFullscreen != r_fullscreen.GetInteger() ) {
+		return true;
+	}
+	if ( originalBorderless != r_borderless.GetBool() ) {
+		return true;
+	}
 	if ( originalFramerate != com_engineHz.GetInteger() ) {
 		return true;
 	}

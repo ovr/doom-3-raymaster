@@ -243,6 +243,16 @@ LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam ) {
 					}
 				}
 
+				// a fullscreen window gives the desktop back when it loses focus
+				// (restores the desktop display mode and gamma, minimizes itself)
+				if ( R_IsInitialized() ) {
+					if ( win32.activeApp ) {
+						GLimp_WindowActivated();
+					} else {
+						GLimp_WindowDeactivated();
+					}
+				}
+
 				// start playing the game sound world
 				soundSystem->SetMute( !win32.activeApp );
 

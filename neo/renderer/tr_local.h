@@ -830,6 +830,7 @@ extern idCVar r_skipIntelWorkarounds;		// skip work arounds for Intel driver bug
 extern idCVar r_vidMode;					// video mode number
 extern idCVar r_displayRefresh;				// optional display refresh rate option for vid mode
 extern idCVar r_fullscreen;					// 0 = windowed, 1 = full screen
+extern idCVar r_borderless;					// fullscreen as a borderless window at desktop resolution
 extern idCVar r_multiSamples;				// number of antialiasing samples
 
 extern idCVar r_znear;						// near Z clip plane
@@ -999,6 +1000,8 @@ struct vidMode_t {
 // displayNum is the 0 based value passed to EnumDisplayDevices(), you must add
 // 1 to this to get an r_fullScreen value.
 bool R_GetModeListForDisplay( const int displayNum, idList<vidMode_t> & modeList );
+// desktop resolution of a monitor (0 based), as used by the borderless fullscreen window
+bool R_GetDesktopResolution( const int displayNum, int & width, int & height );
 
 struct glimpParms_t {
 	int			x;				// ignored in fullscreen
@@ -1007,6 +1010,8 @@ struct glimpParms_t {
 	int			height;
 	int			fullScreen;		// 0 = windowed, otherwise 1 based monitor number to go full screen on
 								// -1 = borderless window for spanning multiple displays
+	bool		borderless;		// with fullScreen > 0: borderless window at the desktop resolution
+								// of that monitor instead of exclusive fullscreen (width/height ignored)
 	bool		stereo;
 	int			displayHz;
 	int			multiSamples;

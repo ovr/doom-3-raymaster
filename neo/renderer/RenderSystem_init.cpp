@@ -48,6 +48,7 @@ idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVA
 idCVar r_vidMode( "r_vidMode", "0", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "fullscreen video mode number" );
 idCVar r_displayRefresh( "r_displayRefresh", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_NOCHEAT, "optional display refresh rate option for vid mode", 0.0f, 240.0f );
 idCVar r_fullscreen( "r_fullscreen", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "0 = windowed, 1 = full screen on monitor 1, 2 = full screen on monitor 2, etc" );
+idCVar r_borderless( "r_borderless", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "with r_fullscreen > 0: 1 = borderless window at desktop resolution, 0 = exclusive fullscreen at r_vidMode" );
 idCVar r_customWidth( "r_customWidth", "1280", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "custom screen width. set r_vidMode to -1 to activate" );
 idCVar r_customHeight( "r_customHeight", "720", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "custom screen height. set r_vidMode to -1 to activate" );
 idCVar r_windowX( "r_windowX", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "Non-fullscreen parameter" );
@@ -645,6 +646,9 @@ r_fullScreen 1		fullscreen on monitor 1 at r_vidMode
 r_fullScreen 2		fullscreen on monitor 2 at r_vidMode
 ...
 
+r_borderless 1		with r_fullScreen > 0: borderless window at the monitor's desktop resolution
+r_borderless 0		with r_fullScreen > 0: exclusive fullscreen at r_vidMode
+
 r_vidMode -1		use r_customWidth / r_customHeight, even if they don't appear on the mode list
 r_vidMode 0			use first mode returned by EnumDisplaySettings()
 r_vidMode 1			use second mode returned by EnumDisplaySettings()
@@ -672,6 +676,7 @@ void R_SetNewMode( const bool fullInit ) {
 			parms.height = r_windowHeight.GetInteger();
 			// may still be -1 to force a borderless window
 			parms.fullScreen = r_fullscreen.GetInteger();
+			parms.borderless = false;
 			parms.displayHz = 0;		// ignored
 		} else {
 			// get the mode list for this monitor
@@ -689,6 +694,9 @@ void R_SetNewMode( const bool fullInit ) {
 			parms.x = 0;		// ignored
 			parms.y = 0;		// ignored
 			parms.fullScreen = r_fullscreen.GetInteger();
+			// borderless uses the desktop resolution of the monitor, the
+			// mode below is only a fallback
+			parms.borderless = r_borderless.GetBool();
 
 			// set the parameters we are trying
 			if ( r_vidMode.GetInteger() < 0 ) {

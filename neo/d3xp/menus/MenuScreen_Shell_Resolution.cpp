@@ -32,6 +32,11 @@ If you have questions concerning this license or the applicable additional terms
 
 const static int NUM_SETTING_OPTIONS = 7;
 
+extern idCVar r_windowX;
+extern idCVar r_windowY;
+extern idCVar r_windowWidth;
+extern idCVar r_windowHeight;
+
 enum settingMenuCmds_t {
 	SETTING_CMD_CONTROLS,
 	SETTING_CMD_GAMEPLAY,
@@ -116,7 +121,7 @@ void idMenuScreen_Shell_Resolution::Update() {
 	if ( BindSprite( root ) ) {
 		idSWFTextInstance * heading = GetSprite()->GetScriptObject()->GetNestedText( "info", "txtHeading" );
 		if ( heading != NULL ) {
-			heading->SetText( "#str_02154" );
+			heading->SetText( "#str_swf_resolution" );
 			heading->SetStrokeInfo( true, 0.75f, 1.75f );
 		}
 
@@ -143,40 +148,82 @@ void idMenuScreen_Shell_Resolution::ShowScreen( const mainMenuTransition_t trans
 
 	originalOption.fullscreen = r_fullscreen.GetInteger();
 	originalOption.vidmode = r_vidMode.GetInteger();
+	originalOption.borderless = r_borderless.GetBool();
+	originalOption.width = r_windowWidth.GetInteger();
+	originalOption.height = r_windowHeight.GetInteger();
+
+	optionData.Clear();
 
 	idList< idList< idStr, TAG_IDLIB_LIST_MENU >, TAG_IDLIB_LIST_MENU > menuOptions;
-	menuOptions.Alloc().Alloc() = "#str_swf_disabled";
-	optionData.Append( optionData_t( 0, 0 ) );
-
 	int viewIndex = 0;
-	idList< idList<vidMode_t> > displays;
-	for ( int displayNum = 0 ; ; displayNum++ ) {
-		idList<vidMode_t> & modeList = displays.Alloc();
-		if ( !R_GetModeListForDisplay( displayNum, modeList ) ) {
-			displays.RemoveIndex( displays.Num() - 1 );
-			break;
-		}
-	}
-	for ( int displayNum = 0 ; displayNum < displays.Num(); displayNum++ ) {
-		idList<vidMode_t> & modeList = displays[displayNum];
+
+	if ( originalOption.fullscreen == 0 ) {
+		// windowed: the window sizes that fit on the first monitor, from its mode list
+		idList<vidMode_t> modeList;
+		R_GetModeListForDisplay( 0, modeList );
+		int desktopWidth = 0, desktopHeight = 0;
+		R_GetDesktopResolution( 0, desktopWidth, desktopHeight );
+
 		for ( int i = 0; i < modeList.Num(); i++ ) {
-			const optionData_t thisOption( displayNum + 1, i );
+			const int width = modeList[i].width;
+			const int height = modeList[i].height;
+			if ( desktopWidth > 0 && ( width > desktopWidth || height > desktopHeight ) ) {
+				continue;
+			}
+			bool duplicate = false;	// the same size with another refresh rate
+			for ( int j = 0; j < optionData.Num(); j++ ) {
+				if ( optionData[j].width == width && optionData[j].height == height ) {
+					duplicate = true;
+					break;
+				}
+			}
+			if ( duplicate ) {
+				continue;
+			}
+			const optionData_t thisOption( 0, -1, false, width, height );
 			if ( originalOption == thisOption ) {
 				viewIndex = menuOptions.Num();
 			}
-			idStr str;
-			if ( displays.Num() > 1 ) {
-				str.Append( va( "%s %i: ", idLocalization::GetString( "#str_swf_monitor" ), displayNum+1 ) );
-			}
-			str.Append( va( "%4i x %4i", modeList[i].width, modeList[i].height ) );
-			if ( modeList[i].displayHz != 60 ) {
-				str.Append( va( " @ %dhz", modeList[i].displayHz ) );
-			}
-			menuOptions.Alloc().Alloc() = str;
+			menuOptions.Alloc().Alloc() = va( "%4i x %4i", width, height );
 			optionData.Append( thisOption );
 		}
+	} else {
+		// exclusive fullscreen: the display modes of all monitors
+		idList< idList<vidMode_t> > displays;
+		for ( int displayNum = 0 ; ; displayNum++ ) {
+			idList<vidMode_t> & modeList = displays.Alloc();
+			if ( !R_GetModeListForDisplay( displayNum, modeList ) ) {
+				displays.RemoveIndex( displays.Num() - 1 );
+				break;
+			}
+		}
+		for ( int displayNum = 0 ; displayNum < displays.Num(); displayNum++ ) {
+			idList<vidMode_t> & modeList = displays[displayNum];
+			for ( int i = 0; i < modeList.Num(); i++ ) {
+				const optionData_t thisOption( displayNum + 1, i, false, modeList[i].width, modeList[i].height );
+				if ( originalOption == thisOption ) {
+					viewIndex = menuOptions.Num();
+				}
+				idStr str;
+				if ( displays.Num() > 1 ) {
+					str.Append( va( "%s %i: ", idLocalization::GetString( "#str_swf_monitor" ), displayNum+1 ) );
+				}
+				str.Append( va( "%4i x %4i", modeList[i].width, modeList[i].height ) );
+				if ( modeList[i].displayHz != 60 ) {
+					str.Append( va( " @ %dhz", modeList[i].displayHz ) );
+				}
+				menuOptions.Alloc().Alloc() = str;
+				optionData.Append( thisOption );
+			}
+		}
 	}
-	
+
+	if ( menuOptions.Num() == 0 ) {
+		// nothing to choose from, keep the current setting
+		menuOptions.Alloc().Alloc() = "???";
+		optionData.Append( originalOption );
+	}
+
 	options->SetListData( menuOptions );
 	options->SetViewIndex( viewIndex );
 	const int topOfLastPage = menuOptions.Num() - NUM_SETTING_OPTIONS;
@@ -243,14 +290,25 @@ bool idMenuScreen_Shell_Resolution::HandleAction( idWidgetAction & action, const
 					// No change
 					menuData->SetNextScreen( SHELL_AREA_SYSTEM_OPTIONS, MENU_TRANSITION_SIMPLE );
 				} else if ( currentOption.fullscreen == 0 ) {
-					// Changing to windowed mode
-					r_fullscreen.SetInteger( 0 );
+					// Changing the window size, keep the window on the screen
+					int desktopWidth = 0, desktopHeight = 0;
+					if ( R_GetDesktopResolution( 0, desktopWidth, desktopHeight ) ) {
+						if ( r_windowX.GetInteger() + currentOption.width > desktopWidth ) {
+							r_windowX.SetInteger( Max( 0, ( desktopWidth - currentOption.width ) / 2 ) );
+						}
+						if ( r_windowY.GetInteger() + currentOption.height > desktopHeight ) {
+							r_windowY.SetInteger( Max( 0, ( desktopHeight - currentOption.height ) / 2 ) );
+						}
+					}
+					r_windowWidth.SetInteger( currentOption.width );
+					r_windowHeight.SetInteger( currentOption.height );
 					cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "vid_restart\n" );
 					menuData->SetNextScreen( SHELL_AREA_SYSTEM_OPTIONS, MENU_TRANSITION_SIMPLE );
 				} else {
-					// Changing to fullscreen mode
+					// Changing to exclusive fullscreen mode
 					r_fullscreen.SetInteger( currentOption.fullscreen );
 					r_vidMode.SetInteger( currentOption.vidmode );
+					r_borderless.SetBool( false );
 					cvarSystem->ClearModifiedFlags( CVAR_ARCHIVE );
 					cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "vid_restart\n" );
 
@@ -272,6 +330,7 @@ bool idMenuScreen_Shell_Resolution::HandleAction( idWidgetAction & action, const
 							} else {
 								r_fullscreen.SetInteger( optionData.fullscreen );
 								r_vidMode.SetInteger( optionData.vidmode );
+								r_borderless.SetBool( optionData.borderless );
 								cvarSystem->ClearModifiedFlags( CVAR_ARCHIVE );
 								cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "vid_restart\n" );
 							}

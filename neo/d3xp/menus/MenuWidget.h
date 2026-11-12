@@ -458,9 +458,9 @@ public:
 	void								SetDataSourceFieldIndex( const int dataSourceFieldIndex_ ) { dataSourceFieldIndex = dataSourceFieldIndex_; }
 	int									GetDataSourceFieldIndex() const { return dataSourceFieldIndex; }
 
-	idMenuWidget *						GetFocus() { return ( focusIndex >= 0 && focusIndex < children.Num() ) ? children[ focusIndex ] : NULL; }
+	virtual idMenuWidget *				GetFocus() { return ( focusIndex >= 0 && focusIndex < children.Num() ) ? children[ focusIndex ] : NULL; }
 	int									GetFocusIndex() const { return focusIndex; }
-	void								SetFocusIndex( const int index, bool skipSound = false );
+	virtual void						SetFocusIndex( const int index, bool skipSound = false );
 
 	//------------------------
 	// Hierarchy
@@ -954,11 +954,18 @@ public:
 
 	virtual void				Recalculate();
 	virtual void				SetListData( idList< idList< idStr, TAG_IDLIB_LIST_MENU >, TAG_IDLIB_LIST_MENU > & list );
+
+	// a control list with more controls than visible slots scrolls: the focus
+	// index is a visible slot, the focused control is viewOffset + focusIndex
+	virtual idMenuWidget *		GetFocus();
+	virtual void				SetFocusIndex( const int index, bool skipSound = false );
 	
 	void						SetControlList( bool val ) { controlList = val; }
 	void						SetIgnoreColor( bool val ) { ignoreColor = val; }
 
 protected:
+	void						UpdateControlList( idSWFScriptObject & root );
+
 	idList< idList< idStr, TAG_IDLIB_LIST_MENU >, TAG_IDLIB_LIST_MENU >	listItemInfo;
 	bool						controlList;
 	bool						ignoreColor;

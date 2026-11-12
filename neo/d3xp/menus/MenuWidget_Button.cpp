@@ -307,6 +307,10 @@ void idMenuWidget_ControlButton::Update() {
 		return;
 	}
 
+	// a disabled control is shown dimmed (always set, the item sprites are
+	// shared by the controls of a scrolling list)
+	GetSprite()->SetAlpha( disabled ? 0.4f : 1.0f );
+
 	idSWFScriptObject * const spriteObject = GetSprite()->GetScriptObject()->GetNestedObj( "type" );
 	if ( spriteObject == NULL ) {
 		return;

@@ -82,6 +82,10 @@ void	IN_ActivateMouse();
 
 void	IN_Frame();
 
+// fullscreen window focus handling (alt-tab)
+void	GLimp_WindowActivated();
+void	GLimp_WindowDeactivated();
+
 void	DisableTaskKeys( BOOL bDisable, BOOL bBeep, BOOL bTaskMgr );
 
 uint64 Sys_Microseconds();
@@ -133,6 +137,7 @@ typedef struct {
 	static idCVar	sys_cpustring;
 	static idCVar	in_mouse;
 	static idCVar	win_allowAltTab;
+	static idCVar	win_minimizeOnFocusLoss;
 	static idCVar	win_notaskkeys;
 	static idCVar	win_username;
 	static idCVar	win_outputEditString;
