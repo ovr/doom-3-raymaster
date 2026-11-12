@@ -24,12 +24,28 @@ http://store.steampowered.com/app/208200/
 Compiling on win32:
 -------------------
 
-A project file for Microsoft Visual Studio 2010 is provided in neo\doom3.sln
-We expect the solution file is compatible with the Express releases
+The build uses CMake (3.21 or newer) and Microsoft Visual Studio 2022
+(the free Build Tools are enough). Only 32-bit (Win32) builds are supported.
 
-You will need the Microsoft DirectX SDK installed as well.
-If it does not reside in "C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)"
-you will need to update the project files accordingly.
+You will need the Microsoft DirectX SDK (June 2010) installed as well.
+Its installer sets the DXSDK_DIR environment variable, which is picked up
+automatically. Alternatively copy the SDK to neo\dxsdk_June2010 or pass
+-DDXSDK_DIR=<path> when configuring.
+
+Configure and build from the repository root:
+
+	cmake --preset vs2022-win32
+	cmake --build --preset release      (or: debug, retail)
+
+The executable is placed in build\vs2022-win32\bin\<Configuration>\Doom3BFG.exe.
+build\vs2022-win32\Doom3BFG.sln can be opened in Visual Studio.
+
+For Ninja, run from an "x86 Native Tools Command Prompt for VS 2022":
+
+	cmake --preset ninja-x86
+	cmake --build --preset ninja-release
+
+Options: -DD3BFG_WARNINGS_AS_ERRORS=ON enables /WX for the engine code.
 
 
 Steam:

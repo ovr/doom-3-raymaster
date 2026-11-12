@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "vs2022-win32",
+      "displayName": "Visual Studio 2022 (Win32)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "Win32",
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "ninja-x86",
+      "displayName": "Ninja Multi-Config (x86, run from an x86 Native Tools prompt)",
+      "generator": "Ninja Multi-Config",
+      "architecture": { "value": "x86", "strategy": "external" },
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug",   "configurePreset": "vs2022-win32", "configuration": "Debug" },
+    { "name": "release", "configurePreset": "vs2022-win32", "configuration": "Release" },
+    { "name": "retail",  "configurePreset": "vs2022-win32", "configuration": "Retail" },
+    { "name": "ninja-debug",   "configurePreset": "ninja-x86", "configuration": "Debug" },
+    { "name": "ninja-release", "configurePreset": "ninja-x86", "configuration": "Release" },
+    { "name": "ninja-retail",  "configurePreset": "ninja-x86", "configuration": "Retail" }
+  ]
+}

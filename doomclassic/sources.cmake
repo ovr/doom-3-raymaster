@@ -1,0 +1,85 @@
+# Source lists (generated from the former doomclassic.vcxproj / timidity.vcxproj)
+
+set(DOOMCLASSIC_SOURCES
+	doom/am_map.cpp
+	doom/d_items.cpp
+	doom/d_main.cpp
+	doom/d_net.cpp
+	doom/doominterface.cpp
+	doom/doomlib.cpp
+	doom/dstrings.cpp
+	doom/f_finale.cpp
+	doom/f_wipe.cpp
+	doom/g_game.cpp
+	doom/globaldata.cpp
+	doom/hu_lib.cpp
+	doom/hu_stuff.cpp
+	doom/i_input.cpp
+	doom/i_net_win32.cpp
+	doom/i_sound_win32.cpp
+	doom/i_system.cpp
+	doom/i_video_ps3.cpp
+	doom/info.cpp
+	doom/m_argv.cpp
+	doom/m_bbox.cpp
+	doom/m_cheat.cpp
+	doom/m_fixed.cpp
+	doom/m_menu.cpp
+	doom/m_misc.cpp
+	doom/m_random.cpp
+	doom/mus2midi.cpp
+	doom/p_ceilng.cpp
+	doom/p_doors.cpp
+	doom/p_enemy.cpp
+	doom/p_floor.cpp
+	doom/p_inter.cpp
+	doom/p_lights.cpp
+	doom/p_map.cpp
+	doom/p_maputl.cpp
+	doom/p_mobj.cpp
+	doom/p_plats.cpp
+	doom/p_pspr.cpp
+	doom/p_saveg.cpp
+	doom/p_setup.cpp
+	doom/p_sight.cpp
+	doom/p_spec.cpp
+	doom/p_switch.cpp
+	doom/p_telept.cpp
+	doom/p_tick.cpp
+	doom/p_user.cpp
+	doom/r_bsp.cpp
+	doom/r_data.cpp
+	doom/r_draw.cpp
+	doom/r_main.cpp
+	doom/r_plane.cpp
+	doom/r_segs.cpp
+	doom/r_sky.cpp
+	doom/r_things.cpp
+	doom/s_sound.cpp
+	doom/sounds.cpp
+	doom/st_lib.cpp
+	doom/st_stuff.cpp
+	doom/tables.cpp
+	doom/v_video.cpp
+	doom/w_wad.cpp
+	doom/wi_stuff.cpp
+	doom/z_zone.cpp
+)
+
+
+set(TIMIDITY_SOURCES
+	timidity/common.cpp
+	timidity/controls.cpp
+	timidity/filter.cpp
+	timidity/instrum.cpp
+	timidity/mix.cpp
+	timidity/output.cpp
+	timidity/playmidi.cpp
+	timidity/readmidi.cpp
+	timidity/resample.cpp
+	timidity/sdl_a.cpp
+	timidity/sdl_c.cpp
+	timidity/tables.cpp
+	timidity/timidity.cpp
+)
+
