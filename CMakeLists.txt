@@ -43,42 +43,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 option(D3BFG_WARNINGS_AS_ERRORS "Treat compiler warnings as errors (/WX) in engine code" OFF)
-option(D3BFG_REQUIRE_DXSDK "Fail configuration if the DirectX SDK (June 2010) is not found" ON)
-
-# ---------------------------------------------------------------------------
-# DirectX SDK (June 2010)
-# ---------------------------------------------------------------------------
-if(NOT DXSDK_DIR)
-	if(DEFINED ENV{DXSDK_DIR})
-		file(TO_CMAKE_PATH "$ENV{DXSDK_DIR}" _dxsdk_default)
-	else()
-		set(_dxsdk_default "${CMAKE_SOURCE_DIR}/neo/dxsdk_June2010")
-	endif()
-	set(DXSDK_DIR "${_dxsdk_default}" CACHE PATH "Path to the Microsoft DirectX SDK (June 2010)")
-endif()
-file(TO_CMAKE_PATH "${DXSDK_DIR}" DXSDK_DIR)
-
-if(EXISTS "${DXSDK_DIR}/Include/xaudio2.h" AND EXISTS "${DXSDK_DIR}/Lib/x86/DxErr.lib")
-	set(D3BFG_HAVE_DXSDK TRUE)
-	message(STATUS "DirectX SDK: ${DXSDK_DIR}")
-	add_library(dxsdk INTERFACE)
-	# BEFORE: the legacy XAudio2 2.7 headers must win over the Windows SDK ones.
-	target_include_directories(dxsdk BEFORE INTERFACE "${DXSDK_DIR}/Include")
-	target_link_directories(dxsdk INTERFACE "${DXSDK_DIR}/Lib/x86")
-else()
-	set(D3BFG_HAVE_DXSDK FALSE)
-	set(_dxsdk_msg
-		"Microsoft DirectX SDK (June 2010) not found at '${DXSDK_DIR}'.\n"
-		"Install it from https://www.microsoft.com/en-us/download/details.aspx?id=6812 "
-		"(sets the DXSDK_DIR environment variable), copy it to neo/dxsdk_June2010, "
-		"or pass -DDXSDK_DIR=<path>.")
-	if(D3BFG_REQUIRE_DXSDK)
-		message(FATAL_ERROR ${_dxsdk_msg})
-	else()
-		message(WARNING ${_dxsdk_msg} "\nDoom3BFG and doomclassic targets are disabled.")
-	endif()
-endif()
-
 # ---------------------------------------------------------------------------
 # Common compile settings
 # ---------------------------------------------------------------------------
@@ -126,7 +90,5 @@ function(d3bfg_neo_common tgt)
 	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}")
 endfunction()
 
-if(D3BFG_HAVE_DXSDK)
-	add_subdirectory(doomclassic)
-endif()
+add_subdirectory(doomclassic)
 add_subdirectory(neo)

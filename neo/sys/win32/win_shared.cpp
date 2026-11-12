@@ -41,13 +41,18 @@ If you have questions concerning this license or the applicable additional terms
 #undef StrCmpN
 #undef StrCmpNI
 #undef StrCmpI
-#include <atlbase.h>
 
 #include <comdef.h>
 #include <comutil.h>
 #include <Wbemidl.h>
 
 #pragma comment (lib, "wbemuuid.lib")
+
+// COM smart pointers from the compiler support library (comdef.h), so ATL is not required
+typedef _com_ptr_t< _com_IIID< IWbemLocator, &__uuidof( IWbemLocator ) > >					wbemLocatorPtr_t;
+typedef _com_ptr_t< _com_IIID< IWbemServices, &__uuidof( IWbemServices ) > >				wbemServicesPtr_t;
+typedef _com_ptr_t< _com_IIID< IEnumWbemClassObject, &__uuidof( IEnumWbemClassObject ) > >	wbemEnumClassObjectPtr_t;
+typedef _com_ptr_t< _com_IIID< IWbemClassObject, &__uuidof( IWbemClassObject ) > >			wbemClassObjectPtr_t;
 
 #pragma warning(disable:4740)	// warning C4740: flow in or out of inline asm code suppresses global optimization
 
@@ -139,14 +144,14 @@ returns in megabytes
 int Sys_GetVideoRam() {
 	unsigned int retSize = 64;
 
-	CComPtr<IWbemLocator> spLoc = NULL;
+	wbemLocatorPtr_t spLoc;
 	HRESULT hr = CoCreateInstance( CLSID_WbemLocator, 0, CLSCTX_SERVER, IID_IWbemLocator, ( LPVOID * ) &spLoc );
 	if ( hr != S_OK || spLoc == NULL ) {
 		return retSize;
 	}
 
-	CComBSTR bstrNamespace( _T( "\\\\.\\root\\CIMV2" ) );
-	CComPtr<IWbemServices> spServices;
+	_bstr_t bstrNamespace( L"\\\\.\\root\\CIMV2" );
+	wbemServicesPtr_t spServices;
 
 	// Connect to CIM
 	hr = spLoc->ConnectServer( bstrNamespace, NULL, NULL, 0, NULL, 0, 0, &spServices );
@@ -161,20 +166,20 @@ int Sys_GetVideoRam() {
 	}
 
 	// Get the vid controller
-	CComPtr<IEnumWbemClassObject> spEnumInst = NULL;
-	hr = spServices->CreateInstanceEnum( CComBSTR( "Win32_VideoController" ), WBEM_FLAG_SHALLOW, NULL, &spEnumInst ); 
+	wbemEnumClassObjectPtr_t spEnumInst;
+	hr = spServices->CreateInstanceEnum( _bstr_t( L"Win32_VideoController" ), WBEM_FLAG_SHALLOW, NULL, &spEnumInst );
 	if ( hr != WBEM_S_NO_ERROR || spEnumInst == NULL ) {
 		return retSize;
 	}
 
 	ULONG uNumOfInstances = 0;
-	CComPtr<IWbemClassObject> spInstance = NULL;
+	wbemClassObjectPtr_t spInstance;
 	hr = spEnumInst->Next( 10000, 1, &spInstance, &uNumOfInstances );
 
 	if ( hr == S_OK && spInstance ) {
 		// Get properties from the object
-		CComVariant varSize;
-		hr = spInstance->Get( CComBSTR( _T( "AdapterRAM" ) ), 0, &varSize, 0, 0 );
+		_variant_t varSize;
+		hr = spInstance->Get( L"AdapterRAM", 0, &varSize, 0, 0 );
 		if ( hr == S_OK ) {
 			retSize = varSize.intVal / ( 1024 * 1024 );
 			if ( retSize == 0 ) {

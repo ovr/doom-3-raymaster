@@ -44,57 +44,51 @@ target_compile_definitions(Game-d3xp PRIVATE
 	$<$<CONFIG:Retail>:ID_RETAIL>
 )
 target_precompile_headers(Game-d3xp PRIVATE "${D3BFG_PCH}")
-if(D3BFG_HAVE_DXSDK)
-	target_link_libraries(Game-d3xp PRIVATE dxsdk)
-endif()
 
 set_target_properties(idLib external Game-d3xp PROPERTIES FOLDER "neo")
 
 # ---------------------------------------------------------------------------
 # Doom3BFG executable
 # ---------------------------------------------------------------------------
-if(D3BFG_HAVE_DXSDK)
-	add_executable(Doom3BFG WIN32
-		${DOOMEXE_SOURCES}
-		sys/win32/rc/doom.rc
-		sys/win32/rc/doom3bfg.manifest
-	)
-	d3bfg_neo_common(Doom3BFG)
-	d3bfg_configure_target(Doom3BFG WARNING_LEVEL 4 WITH_INLINES WERROR)
-	target_compile_definitions(Doom3BFG PRIVATE
-		__DOOM__ _MBCS
-		$<$<CONFIG:Retail>:ID_RETAIL>
-	)
-	target_precompile_headers(Doom3BFG PRIVATE "${D3BFG_PCH}")
-	set_source_files_properties(
-		renderer/jobs/ShadowShared.cpp
-		renderer/jobs/prelightshadowvolume/PreLightShadowVolume.cpp
-		renderer/jobs/staticshadowvolume/StaticShadowVolume.cpp
-		renderer/jobs/dynamicshadowvolume/DynamicShadowVolume.cpp
-		TARGET_DIRECTORY Doom3BFG
-		PROPERTIES SKIP_PRECOMPILE_HEADERS ON
-	)
+add_executable(Doom3BFG WIN32
+	${DOOMEXE_SOURCES}
+	sys/win32/rc/doom.rc
+	sys/win32/rc/doom3bfg.manifest
+)
+d3bfg_neo_common(Doom3BFG)
+d3bfg_configure_target(Doom3BFG WARNING_LEVEL 4 WITH_INLINES WERROR)
+target_compile_definitions(Doom3BFG PRIVATE
+	__DOOM__ _MBCS
+	$<$<CONFIG:Retail>:ID_RETAIL>
+)
+target_precompile_headers(Doom3BFG PRIVATE "${D3BFG_PCH}")
+set_source_files_properties(
+	renderer/jobs/ShadowShared.cpp
+	renderer/jobs/prelightshadowvolume/PreLightShadowVolume.cpp
+	renderer/jobs/staticshadowvolume/StaticShadowVolume.cpp
+	renderer/jobs/dynamicshadowvolume/DynamicShadowVolume.cpp
+	TARGET_DIRECTORY Doom3BFG
+	PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+)
 
-	target_link_libraries(Doom3BFG PRIVATE
-		idLib
-		Game-d3xp
-		external
-		doomclassic
-		timidity
-		dxsdk
-		xinput dbghelp dinput8 dsound dxguid DxErr glu32 iphlpapi
-		odbc32 odbccp32 opengl32 winmm wsock32 x3daudio
-	)
-	target_link_options(Doom3BFG PRIVATE
-		/STACK:16777216,16777216
-		/LARGEADDRESSAWARE
-		/DEBUG
-		$<$<CONFIG:Debug>:/MAP>
-		$<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
-	)
-	set_target_properties(Doom3BFG PROPERTIES FOLDER "neo")
-	set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT Doom3BFG)
-endif()
+target_link_libraries(Doom3BFG PRIVATE
+	idLib
+	Game-d3xp
+	external
+	doomclassic
+	timidity
+	xaudio2 xinput dbghelp dinput8 dsound dxguid glu32 iphlpapi
+	odbc32 odbccp32 opengl32 winmm wsock32
+)
+target_link_options(Doom3BFG PRIVATE
+	/STACK:16777216,16777216
+	/LARGEADDRESSAWARE
+	/DEBUG
+	$<$<CONFIG:Debug>:/MAP>
+	$<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
+)
+set_target_properties(Doom3BFG PROPERTIES FOLDER "neo")
+set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT Doom3BFG)
 
 # ---------------------------------------------------------------------------
 # amplitude (standalone console tool)

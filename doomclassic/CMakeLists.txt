@@ -13,7 +13,6 @@ function(d3bfg_doomclassic_common tgt)
 		_UNICODE
 	)
 	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}")
-	target_link_libraries(${tgt} PRIVATE dxsdk)
 	d3bfg_configure_target(${tgt} WARNING_LEVEL 3)
 	set_target_properties(${tgt} PROPERTIES FOLDER "doomclassic")
 endfunction()

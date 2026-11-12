@@ -25,12 +25,9 @@ Compiling on win32:
 -------------------
 
 The build uses CMake (3.21 or newer) and Microsoft Visual Studio 2022
-(the free Build Tools are enough). Only 32-bit (Win32) builds are supported.
-
-You will need the Microsoft DirectX SDK (June 2010) installed as well.
-Its installer sets the DXSDK_DIR environment variable, which is picked up
-automatically. Alternatively copy the SDK to neo\dxsdk_June2010 or pass
--DDXSDK_DIR=<path> when configuring.
+(the free Build Tools are enough) with the Windows 10 (or newer) SDK.
+Only 32-bit (Win32) builds are supported. The legacy DirectX SDK is not
+needed: audio uses XAudio2 2.9, so the game requires Windows 10 or newer.
 
 Configure and build from the repository root:
 
