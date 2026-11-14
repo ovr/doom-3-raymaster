@@ -96,7 +96,8 @@ idCommonLocal	commonLocal;
 idCommon *		common = &commonLocal;
 
 
-idCVar com_skipIntroVideos( "com_skipIntroVideos", "0", CVAR_BOOL , "skips intro videos" );
+idCVar com_skipIntroVideos( "com_skipIntroVideos", "0", CVAR_BOOL , "skips the startup videos for this launch only (a game restart after a settings change sets it)" );
+idCVar com_skipStartupVideos( "com_skipStartupVideos", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "skip the videos at game startup, saved in the config (Settings > Game Options > Skip Intro Videos)" );
 
 // For doom classic
 struct Globals;
@@ -1072,7 +1073,9 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 		}
 
 		const int legalMinTime = 4000;
-		const bool showVideo = ( !com_skipIntroVideos.GetBool () && fileSystem->UsingResourceFiles() );
+		// the config, with com_skipStartupVideos, was executed before the renderer started
+		const bool skipVideo = com_skipIntroVideos.GetBool() || com_skipStartupVideos.GetBool();
+		const bool showVideo = !skipVideo && fileSystem->UsingResourceFiles();
 		if ( showVideo ) {
 			RenderBink( "video\\loadvideo.bik" );
 			RenderSplash();
