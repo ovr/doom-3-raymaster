@@ -1229,6 +1229,8 @@ void idCommonLocal::Shutdown() {
 	}
 	com_shuttingDown = true;
 
+	// stop the sampling profiler and print its report while the log is still open
+	Sys_ProfilerShutdown();
 
 	// Kill any pending saves...
 	printf( "session->GetSaveGameManager().CancelToTerminate();\n" );

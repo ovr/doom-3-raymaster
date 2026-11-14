@@ -537,3 +537,43 @@ private:			// collision map data
 
 // for debugging
 extern idCVar cm_debugCollision;
+
+/*
+===============================================================================
+
+	Collision statistics (cm_traceStats)
+
+	Every top level query is timed and the number of tested polygons is
+	recorded per collision model. A summary is printed once a second.
+
+===============================================================================
+*/
+
+enum cmStatKind_t {
+	CM_STAT_TRANSLATION,
+	CM_STAT_ROTATION,
+	CM_STAT_CONTENTS,
+	CM_STAT_CONTACTS,
+	CM_STAT_NUM_KINDS
+};
+
+extern idCVar	cm_traceStats;
+extern int		cm_statPolys;		// polygons tested (after the checkcount test)
+extern int		cm_statPolysDeep;	// polygons that passed all the cheap bounding tests
+
+class idCMTraceStatScope {
+public:
+					idCMTraceStatScope( cmStatKind_t kind, const cm_model_t * model, int handle, const idVec3 & start, const idTraceModel * trm );
+					~idCMTraceStatScope();
+
+private:
+	bool			active;
+	cmStatKind_t	kind;
+	const cm_model_t * model;
+	int				handle;
+	uint64			startTime;
+	int				startPolys;
+	int				startPolysDeep;
+	idVec3			start;
+	const idTraceModel * trm;
+};

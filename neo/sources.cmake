@@ -423,6 +423,7 @@ set(DOOMEXE_SOURCES
 	sys/win32/win_localuser.cpp
 	sys/win32/win_main.cpp
 	sys/win32/win_net.cpp
+	sys/win32/win_profiler.cpp
 	sys/win32/win_qgl.cpp
 	sys/win32/win_savegame.cpp
 	sys/win32/win_session_local.cpp

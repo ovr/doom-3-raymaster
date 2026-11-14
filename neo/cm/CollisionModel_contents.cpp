@@ -161,6 +161,7 @@ bool idCollisionModelManagerLocal::TestTrmInPolygon( cm_traceWork_t *tw, cm_poly
 		return false;
 	}
 	p->checkcount = idCollisionModelManagerLocal::checkCount;
+	cm_statPolys++;
 
 	// if this polygon does not have the right contents behind it
 	if ( !(p->contents & tw->contents) ) {
@@ -171,6 +172,7 @@ bool idCollisionModelManagerLocal::TestTrmInPolygon( cm_traceWork_t *tw, cm_poly
 	if ( !p->bounds.IntersectsBounds( tw->bounds ) ) {
 		return false;
 	}
+	cm_statPolysDeep++;
 
 	// bounds should cross polygon plane
 	switch( tw->bounds.PlaneSide( p->plane ) ) {
@@ -631,6 +633,8 @@ int idCollisionModelManagerLocal::Contents( const idVec3 &start,
 		common->Printf("idCollisionModelManagerLocal::Contents: invalid model\n");
 		return 0;
 	}
+
+	idCMTraceStatScope statScope( CM_STAT_CONTENTS, idCollisionModelManagerLocal::models[model], model, start, trm );
 
 	return ContentsTrm( &results, start, trm, trmAxis, contentMask, model, modelOrigin, modelAxis );
 }

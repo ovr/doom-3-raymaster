@@ -487,3 +487,198 @@ void idCollisionModelManagerLocal::DebugOutput( const idVec3 &origin ) {
 	Mem_Free( testend );
 	testend = NULL;
 }
+
+/*
+===============================================================================
+
+	Collision statistics (cm_traceStats)
+
+===============================================================================
+*/
+
+idCVar cm_traceStats( "cm_traceStats", "0", CVAR_GAME | CVAR_INTEGER, "print collision query statistics once a second: 1 = per model summary, 2 = also the slowest queries" );
+
+int cm_statPolys = 0;
+int cm_statPolysDeep = 0;
+
+static const char * cm_statKindNames[CM_STAT_NUM_KINDS] = { "trans", "rot", "contents", "contacts" };
+
+typedef struct {
+	int		calls;
+	uint64	usec;
+	int64	polys;
+	int64	polysDeep;
+	int		maxPolys;
+} cmStatEntry_t;
+
+typedef struct {
+	uint64			usec;
+	int				polys;
+	int				polysDeep;
+	cmStatKind_t	kind;
+	int				handle;
+	idVec3			start;
+	idBounds		trmBounds;
+	int				trmVerts;
+	int				trmEdges;
+	int				trmPolys;
+} cmStatWorst_t;
+
+static const int CM_STAT_MAX_WORST = 4;
+
+static cmStatEntry_t	cm_statEntries[MAX_SUBMODELS + 1][CM_STAT_NUM_KINDS];
+static const cm_model_t * cm_statModels[MAX_SUBMODELS + 1];
+static cmStatWorst_t	cm_statWorst[CM_STAT_MAX_WORST];
+static int				cm_statDepth = 0;
+static int				cm_statLastPrint = 0;
+
+/*
+================
+CM_PrintTraceStats
+================
+*/
+static void CM_PrintTraceStats() {
+	struct sortEntry_t {
+		int		handle;
+		int		kind;
+		uint64	usec;
+	};
+	static sortEntry_t sorted[( MAX_SUBMODELS + 1 ) * CM_STAT_NUM_KINDS];
+	int numSorted = 0;
+	uint64 totalUsec = 0;
+	int totalCalls = 0;
+
+	for ( int i = 0; i <= MAX_SUBMODELS; i++ ) {
+		for ( int k = 0; k < CM_STAT_NUM_KINDS; k++ ) {
+			const cmStatEntry_t & e = cm_statEntries[i][k];
+			if ( e.calls == 0 ) {
+				continue;
+			}
+			totalUsec += e.usec;
+			totalCalls += e.calls;
+			sorted[numSorted].handle = i;
+			sorted[numSorted].kind = k;
+			sorted[numSorted].usec = e.usec;
+			numSorted++;
+		}
+	}
+	if ( numSorted == 0 ) {
+		return;
+	}
+
+	// selection sort the few top entries
+	const int numTop = Min( numSorted, 10 );
+	for ( int i = 0; i < numTop; i++ ) {
+		int best = i;
+		for ( int j = i + 1; j < numSorted; j++ ) {
+			if ( sorted[j].usec > sorted[best].usec ) {
+				best = j;
+			}
+		}
+		const sortEntry_t tmp = sorted[i];
+		sorted[i] = sorted[best];
+		sorted[best] = tmp;
+	}
+
+	common->Printf( "cm: %d queries, %.2f ms in the last second\n", totalCalls, totalUsec * 0.001 );
+	for ( int i = 0; i < numTop; i++ ) {
+		const cmStatEntry_t & e = cm_statEntries[sorted[i].handle][sorted[i].kind];
+		const cm_model_t * m = cm_statModels[sorted[i].handle];
+		common->Printf( "cm:   %8.2f ms %6d x %-8s %7.0f polys %6.0f deep (max %6d)  model %d '%s' (%d polys, %d nodes)\n",
+						e.usec * 0.001, e.calls, cm_statKindNames[sorted[i].kind],
+						(double)e.polys / e.calls, (double)e.polysDeep / e.calls, e.maxPolys,
+						sorted[i].handle, m ? m->name.c_str() : "?", m ? m->numPolygons : 0, m ? m->numNodes : 0 );
+	}
+	if ( cm_traceStats.GetInteger() >= 2 ) {
+		for ( int i = 0; i < CM_STAT_MAX_WORST; i++ ) {
+			const cmStatWorst_t & w = cm_statWorst[i];
+			if ( w.usec == 0 ) {
+				continue;
+			}
+			const cm_model_t * m = cm_statModels[w.handle];
+			const idVec3 size = w.trmBounds[1] - w.trmBounds[0];
+			common->Printf( "cm:   slow %-8s %6.3f ms %6d polys %6d deep at (%s) trm %d/%d/%d size (%s)  model '%s'\n",
+							cm_statKindNames[w.kind], w.usec * 0.001, w.polys, w.polysDeep, w.start.ToString( 0 ),
+							w.trmVerts, w.trmEdges, w.trmPolys, size.ToString( 0 ), m ? m->name.c_str() : "?" );
+		}
+	}
+
+	memset( cm_statEntries, 0, sizeof( cm_statEntries ) );
+	memset( cm_statWorst, 0, sizeof( cm_statWorst ) );
+}
+
+/*
+================
+idCMTraceStatScope::idCMTraceStatScope
+================
+*/
+idCMTraceStatScope::idCMTraceStatScope( cmStatKind_t kind_, const cm_model_t * model_, int handle_, const idVec3 & start_, const idTraceModel * trm_ ) {
+	// only time the outermost query, the queries call each other
+	active = ( cm_statDepth++ == 0 ) && cm_traceStats.GetInteger() != 0 && handle_ >= 0 && handle_ <= MAX_SUBMODELS;
+	if ( !active ) {
+		return;
+	}
+	kind = kind_;
+	model = model_;
+	handle = handle_;
+	start = start_;
+	trm = trm_;
+	startPolys = cm_statPolys;
+	startPolysDeep = cm_statPolysDeep;
+	startTime = Sys_Microseconds();
+}
+
+/*
+================
+idCMTraceStatScope::~idCMTraceStatScope
+================
+*/
+idCMTraceStatScope::~idCMTraceStatScope() {
+	cm_statDepth--;
+	if ( !active ) {
+		return;
+	}
+	const uint64 usec = Sys_Microseconds() - startTime;
+	const int polys = cm_statPolys - startPolys;
+	const int polysDeep = cm_statPolysDeep - startPolysDeep;
+
+	cmStatEntry_t & e = cm_statEntries[handle][kind];
+	e.calls++;
+	e.usec += usec;
+	e.polys += polys;
+	e.polysDeep += polysDeep;
+	e.maxPolys = Max( e.maxPolys, polys );
+	cm_statModels[handle] = model;
+
+	// keep the slowest queries
+	int slot = 0;
+	for ( int i = 1; i < CM_STAT_MAX_WORST; i++ ) {
+		if ( cm_statWorst[i].usec < cm_statWorst[slot].usec ) {
+			slot = i;
+		}
+	}
+	if ( usec > cm_statWorst[slot].usec ) {
+		cmStatWorst_t & w = cm_statWorst[slot];
+		w.usec = usec;
+		w.polys = polys;
+		w.polysDeep = polysDeep;
+		w.kind = kind;
+		w.handle = handle;
+		w.start = start;
+		if ( trm != NULL ) {
+			w.trmBounds = trm->bounds;
+			w.trmVerts = trm->numVerts;
+			w.trmEdges = trm->numEdges;
+			w.trmPolys = trm->numPolys;
+		} else {
+			w.trmBounds.Zero();
+			w.trmVerts = w.trmEdges = w.trmPolys = 0;
+		}
+	}
+
+	const int now = Sys_Milliseconds();
+	if ( now - cm_statLastPrint >= 1000 ) {
+		cm_statLastPrint = now;
+		CM_PrintTraceStats();
+	}
+}

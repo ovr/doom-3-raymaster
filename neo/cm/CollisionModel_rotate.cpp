@@ -1067,6 +1067,7 @@ bool idCollisionModelManagerLocal::RotateTrmThroughPolygon( cm_traceWork_t *tw, 
 		return false;
 	}
 	p->checkcount = idCollisionModelManagerLocal::checkCount;
+	cm_statPolys++;
 
 	// if this polygon does not have the right contents behind it
 	if ( !(p->contents & tw->contents) ) {
@@ -1077,6 +1078,7 @@ bool idCollisionModelManagerLocal::RotateTrmThroughPolygon( cm_traceWork_t *tw, 
 	if ( !tw->bounds.IntersectsBounds( p->bounds ) ) {
 		return false;
 	}
+	cm_statPolysDeep++;
 
 	// back face culling
 	if ( tw->isConvex ) {
@@ -1620,6 +1622,9 @@ void idCollisionModelManagerLocal::Rotation( trace_t *results, const idVec3 &sta
 										cmHandle_t model, const idVec3 &modelOrigin, const idMat3 &modelAxis ) {
 	idVec3 tmp;
 	float maxa, stepa, a, lasta;
+
+	const bool validModel = model >= 0 && model <= MAX_SUBMODELS && model <= idCollisionModelManagerLocal::maxModels && idCollisionModelManagerLocal::models != NULL;
+	idCMTraceStatScope statScope( CM_STAT_ROTATION, validModel ? idCollisionModelManagerLocal::models[model] : NULL, model, start, trm );
 
 	assert( ((byte *)&start) < ((byte *)results) || ((byte *)&start) > (((byte *)results) + sizeof( trace_t )) );
 	assert( ((byte *)&trmAxis) < ((byte *)results) || ((byte *)&trmAxis) > (((byte *)results) + sizeof( trace_t )) );

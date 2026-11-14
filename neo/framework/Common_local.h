@@ -207,6 +207,8 @@ public:
 public:
 	void	Draw();			// called by gameThread
 
+	void	FlushThreadedPrints();	// prints messages queued by non-main threads, main thread only
+
 	int		GetGameThreadTotalTime() const { return gameThread.GetThreadTotalTime(); }
 	int		GetGameThreadGameTime() const { return gameThread.GetThreadGameTime(); }
 	int		GetGameThreadRenderTime() const { return gameThread.GetThreadRenderTime(); }

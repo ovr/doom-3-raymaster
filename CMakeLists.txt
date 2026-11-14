@@ -66,7 +66,8 @@ function(d3bfg_configure_target tgt)
 		/W${ARG_WARNING_LEVEL}
 		/Zi
 		$<$<CONFIG:Debug>:/Od /RTC1>
-		$<$<NOT:$<CONFIG:Debug>>:/O2 /Ob2 /Oi /GF /GS- /Gy>
+		# /Oy- keeps frame pointers so profilers (and sys_profile) can walk call stacks
+		$<$<NOT:$<CONFIG:Debug>>:/O2 /Ob2 /Oi /GF /GS- /Gy /Oy->
 	)
 	if(ARG_WITH_INLINES)
 		target_compile_definitions(${tgt} PRIVATE $<$<CONFIG:Debug>:_INLINEDEBUG>)
@@ -91,4 +92,5 @@ function(d3bfg_neo_common tgt)
 endfunction()
 
 add_subdirectory(doomclassic)
+enable_testing()
 add_subdirectory(neo)

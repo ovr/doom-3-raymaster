@@ -1042,6 +1042,10 @@ private:
 	void					Rest();
 	void					AddPushVelocity( const idVec6 &pushVelocity );
 	void					DebugDraw();
+
+public:
+							// reports the first body with an invalid (NaN / infinite) state, returns true if one was found
+	bool					CheckForInvalidState( const char *stage ) const;
 };
 
 #endif /* !__PHYSICS_AF_H__ */

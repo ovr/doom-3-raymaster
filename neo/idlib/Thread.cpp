@@ -187,6 +187,18 @@ idSysThread::ThreadProc
 int idSysThread::ThreadProc( idSysThread * thread ) {
 	int retVal = 0;
 
+	// The SSE control register (MXCSR) is per thread. idSIMD::InitProcessor only
+	// enables Flush-To-Zero / Denormals-Are-Zero on the main thread, so without this
+	// the game thread and the job threads run with denormals enabled, which makes
+	// settling physics (ragdolls, gibs, moveables) extremely slow.
+	const cpuid_t cpuid = idLib::sys->GetProcessorId();
+	if ( cpuid & CPUID_FTZ ) {
+		idLib::sys->FPU_SetFTZ( true );
+	}
+	if ( cpuid & CPUID_DAZ ) {
+		idLib::sys->FPU_SetDAZ( true );
+	}
+
 	try {
 		if ( thread->isWorker ) {
 			for( ; ; ) {

@@ -97,3 +97,21 @@ add_executable(amplitude ${AMPLITUDE_SOURCES})
 d3bfg_configure_target(amplitude WARNING_LEVEL 3)
 target_compile_definitions(amplitude PRIVATE WIN32 _CONSOLE UNICODE _UNICODE)
 set_target_properties(amplitude PROPERTIES FOLDER "tools")
+
+# ---------------------------------------------------------------------------
+# idlibTests: unit tests for the idLib math used by the physics code
+#   cmake --build --preset release --target idlibTests
+#   ctest --preset release            (or run bin/<config>/idlibTests.exe [filter])
+# ---------------------------------------------------------------------------
+add_executable(idlibTests
+	tests/idlib_tests.cpp
+	tests/idlib_test_stubs.cpp
+	tests/lcp_generic.cpp
+)
+d3bfg_neo_common(idlibTests)
+d3bfg_configure_target(idlibTests WARNING_LEVEL 3)
+target_compile_definitions(idlibTests PRIVATE _MBCS _CONSOLE)
+target_link_libraries(idlibTests PRIVATE idLib winmm dbghelp)
+target_link_options(idlibTests PRIVATE /LARGEADDRESSAWARE /DEBUG)
+set_target_properties(idlibTests PROPERTIES FOLDER "tests")
+add_test(NAME idlibTests COMMAND idlibTests)

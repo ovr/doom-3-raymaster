@@ -39,6 +39,75 @@ idCVar com_timestampPrints( "com_timestampPrints", "0", CVAR_SYSTEM, "print time
 idCVar com_printFilter( "com_printFilter", "", CVAR_SYSTEM, "only print lines that contain this, add multiple filters with a ; delimeter");
 #endif
 
+// Prints from threads other than the main thread (e.g. the game thread when
+// com_smp is enabled) can't touch the console or the log file directly, so they
+// are queued here and printed by the main thread in FlushThreadedPrints().
+static idSysMutex	threadedPrintMutex;
+static char			threadedPrintBuffer[64 * 1024];
+static int			threadedPrintLength;
+static bool			threadedPrintOverflow;
+
+/*
+==================
+QueueThreadedPrint
+==================
+*/
+static void QueueThreadedPrint( const char * msg ) {
+	const int len = idStr::Length( msg );
+	idScopedCriticalSection lock( threadedPrintMutex );
+	if ( threadedPrintLength + len >= (int)sizeof( threadedPrintBuffer ) ) {
+		threadedPrintOverflow = true;
+		return;
+	}
+	memcpy( threadedPrintBuffer + threadedPrintLength, msg, len );
+	threadedPrintLength += len;
+	threadedPrintBuffer[threadedPrintLength] = 0;
+}
+
+/*
+==================
+idCommonLocal::FlushThreadedPrints
+
+Prints the messages queued by other threads. Main thread only.
+==================
+*/
+void idCommonLocal::FlushThreadedPrints() {
+	if ( !idLib::IsMainThread() ) {
+		return;
+	}
+
+	static char pending[sizeof( threadedPrintBuffer )];
+	bool overflow;
+	{
+		idScopedCriticalSection lock( threadedPrintMutex );
+		if ( threadedPrintLength == 0 && !threadedPrintOverflow ) {
+			return;
+		}
+		memcpy( pending, threadedPrintBuffer, threadedPrintLength + 1 );
+		overflow = threadedPrintOverflow;
+		threadedPrintLength = 0;
+		threadedPrintBuffer[0] = 0;
+		threadedPrintOverflow = false;
+	}
+
+	// print line by line, VPrintf has a limited message size
+	char * line = pending;
+	while ( *line != 0 ) {
+		char * end = strchr( line, '\n' );
+		if ( end == NULL ) {
+			Printf( "%s\n", line );
+			break;
+		}
+		*end = 0;
+		Printf( "%s\n", line );
+		line = end + 1;
+	}
+
+	if ( overflow ) {
+		Printf( "WARNING: too many prints from other threads, some were dropped\n" );
+	}
+}
+
 /*
 ==================
 idCommonLocal::BeginRedirect
@@ -156,6 +225,7 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 #endif
 	if ( !idLib::IsMainThread() ) {
 		OutputDebugString( msg );
+		QueueThreadedPrint( msg );
 		return;
 	}
 

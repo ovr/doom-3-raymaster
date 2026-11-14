@@ -59,6 +59,9 @@ int idCollisionModelManagerLocal::Contacts( contactInfo_t *contacts, const int m
 	trace_t results;
 	idVec3 end;
 
+	const bool validModel = model >= 0 && model <= MAX_SUBMODELS && model <= idCollisionModelManagerLocal::maxModels && idCollisionModelManagerLocal::models != NULL;
+	idCMTraceStatScope statScope( CM_STAT_CONTACTS, validModel ? idCollisionModelManagerLocal::models[model] : NULL, model, start, trm );
+
 	// same as Translation but instead of storing the first collision we store all collisions as contacts
 	idCollisionModelManagerLocal::getContacts = true;
 	idCollisionModelManagerLocal::contacts = contacts;

@@ -84,6 +84,9 @@ be called directly in the foreground thread for comparison.
 ===============
 */
 int idGameThread::Run() {
+	// let the sampling profiler know which thread runs the game (cheap after the first call)
+	Sys_ProfilerRegisterThread();
+
 	commonLocal.frameTiming.startGameTime = Sys_Microseconds();
 
 	// debugging tool to test frame dropping behavior
@@ -645,6 +648,9 @@ void idCommonLocal::Frame() {
 		// This may block if the game is taking longer than the render back end
 		gameThread.WaitForThread();
 		const uint64 finishGameWaitTime = Sys_Microseconds();
+
+		// print what the game thread printed this frame
+		FlushThreadedPrints();
 
 		// Send local usermds to the server.
 		// This happens after the game frame has run so that prediction data is up to date.

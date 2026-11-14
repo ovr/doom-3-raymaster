@@ -121,6 +121,7 @@ extern idCVar	g_enablePortalSky;
 extern idCVar	ik_enable;
 extern idCVar	ik_debug;
 
+extern idCVar	af_checkInvalid;
 extern idCVar	af_useLinearTime;
 extern idCVar	af_useImpulseFriction;
 extern idCVar	af_useJointImpulseFriction;

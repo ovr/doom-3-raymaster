@@ -288,8 +288,13 @@ void idSessionLocal::OnSaveCompleted( idSaveLoadParms * parms ) {
 		GetSaveGameManager().ClearRetryInfo();
 	}
 
-	// Only turn off the indicator if we're not also going to save the profile settings
-	if ( master != NULL && master->GetProfile() != NULL && !master->GetProfile()->IsDirty() ) {
+	// Only keep the indicator if the profile settings are going to be saved next,
+	// the profile save turns it off when it completes. Without a loaded profile
+	// (e.g. the map was started with +map, bypassing the start screen) nothing
+	// else would ever turn it off, and the pausing dialog would hang the game.
+	const bool profileSaveFollows = parms->GetError() == SAVEGAME_E_NONE
+		&& master != NULL && master->GetProfile() != NULL && master->GetProfile()->IsDirty();
+	if ( !profileSaveFollows ) {
 		common->Dialog().ShowSaveIndicator( false );
 	}
 

@@ -490,6 +490,10 @@ const char *	Sys_GetCallStackCurStr( int depth );
 const char *	Sys_GetCallStackCurAddressStr( int depth );
 void			Sys_ShutdownSymbols();
 
+// sampling profiler (see win_profiler.cpp)
+void			Sys_ProfilerRegisterThread();	// called by the thread that should be sampled
+void			Sys_ProfilerShutdown();			// stops sampling and prints the report
+
 // DLL loading, the path should be a fully qualified OS path to the DLL file to be loaded
 int				Sys_DLL_Load( const char *dllName );
 void *			Sys_DLL_GetProcAddress( int dllHandle, const char *procName );

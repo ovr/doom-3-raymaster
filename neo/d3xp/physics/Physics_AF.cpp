@@ -6214,6 +6214,78 @@ const idBounds &idPhysics_AF::GetAbsBounds( int id ) const {
 
 /*
 ================
+AF_IsInvalidFloats
+================
+*/
+static bool AF_IsInvalidFloats( const float *p, int n ) {
+	for ( int i = 0; i < n; i++ ) {
+		// NaN fails every comparison, so this catches NaN and infinity
+		if ( !( p[i] > -1e30f && p[i] < 1e30f ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+================
+idPhysics_AF::CheckForInvalidState
+================
+*/
+bool idPhysics_AF::CheckForInvalidState( const char *stage ) const {
+	static int reportedEntities[MAX_GENTITIES];
+	static int reportCount = 0;
+
+	if ( !af_checkInvalid.GetBool() ) {
+		return false;
+	}
+	for ( int i = 0; i < bodies.Num(); i++ ) {
+		const idAFBody *b = bodies[i];
+		const bool badState = AF_IsInvalidFloats( b->current->worldOrigin.ToFloatPtr(), 3 ) ||
+							AF_IsInvalidFloats( b->current->worldAxis.ToFloatPtr(), 9 ) ||
+							AF_IsInvalidFloats( b->current->spatialVelocity.ToFloatPtr(), 6 ) ||
+							AF_IsInvalidFloats( b->current->externalForce.ToFloatPtr(), 6 );
+		const bool badMass = AF_IsInvalidFloats( &b->mass, 1 ) || AF_IsInvalidFloats( &b->invMass, 1 ) ||
+							AF_IsInvalidFloats( b->inertiaTensor.ToFloatPtr(), 9 ) ||
+							AF_IsInvalidFloats( b->inverseInertiaTensor.ToFloatPtr(), 9 ) ||
+							AF_IsInvalidFloats( b->centerOfMass.ToFloatPtr(), 3 );
+		if ( !badState && !badMass ) {
+			continue;
+		}
+		const int entityNum = self ? self->entityNumber : 0;
+		if ( reportedEntities[entityNum] != 0 || reportCount >= 64 ) {
+			return true;
+		}
+		reportedEntities[entityNum] = 1;
+		reportCount++;
+		gameLocal.Warning( "AF invalid state after '%s': entity '%s' body %d '%s' (%d bodies) at time %d, timeStep %f, atRest %d\n",
+						stage, self ? self->name.c_str() : "?", i, b->GetName().c_str(), bodies.Num(), gameLocal.time, current.lastTimeStep, current.atRest );
+		gameLocal.Printf( "  origin (%s) vel (%s) force (%s)\n",
+						b->current->worldOrigin.ToString( 2 ), b->current->spatialVelocity.ToString( 2 ), b->current->externalForce.ToString( 2 ) );
+		gameLocal.Printf( "  axis (%s)\n", b->current->worldAxis.ToString( 3 ) );
+		gameLocal.Printf( "  mass %g invMass %g centerOfMass (%s)\n", b->mass, b->invMass, b->centerOfMass.ToString( 3 ) );
+		gameLocal.Printf( "  inertia (%s)\n", b->inertiaTensor.ToString( 3 ) );
+		gameLocal.Printf( "  invInertia (%s)\n", b->inverseInertiaTensor.ToString( 3 ) );
+		const idTraceModel *trm = b->clipModel ? b->clipModel->GetTraceModel() : NULL;
+		if ( trm ) {
+			gameLocal.Printf( "  trm type %d verts %d edges %d polys %d bounds (%s)-(%s)\n", trm->type, trm->numVerts, trm->numEdges, trm->numPolys,
+							trm->bounds[0].ToString( 2 ), trm->bounds[1].ToString( 2 ) );
+		}
+		// also dump the other bodies so we can see if the whole figure is affected
+		for ( int j = 0; j < bodies.Num(); j++ ) {
+			if ( j == i ) {
+				continue;
+			}
+			gameLocal.Printf( "  body %d '%s' origin (%s) invMass %g\n", j, bodies[j]->GetName().c_str(),
+							bodies[j]->current->worldOrigin.ToString( 2 ), bodies[j]->invMass );
+		}
+		return true;
+	}
+	return false;
+}
+
+/*
+================
 idPhysics_AF::Evaluate
 ================
 */
@@ -6255,6 +6327,8 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 		return false;
 	}
 
+	CheckForInvalidState( "start" );
+
 	// move the af velocity into the frame of a pusher
 	AddPushVelocity( -current.pushVelocity );
 
@@ -6271,6 +6345,7 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// setup contact constraints
 	SetupContactConstraints();
+	CheckForInvalidState( "contacts" );
 
 #ifdef AF_TIMINGS
 	timer_collision.Stop();
@@ -6279,8 +6354,11 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 	// evaluate constraint equations
 	EvaluateConstraints( timeStep );
 
+	CheckForInvalidState( "constraints" );
+
 	// apply friction
 	ApplyFriction( timeStep, endTimeMSec );
+	CheckForInvalidState( "friction" );
 
 	// add frame constraints
 	AddFrameConstraints();
@@ -6301,6 +6379,7 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// calculate forces on bodies after applying primary constraints
 	PrimaryForces( timeStep );
+	CheckForInvalidState( "primary" );
 
 #ifdef AF_TIMINGS
 	timer_pc.Stop();
@@ -6309,6 +6388,7 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// calculate and apply auxiliary constraint forces
 	AuxiliaryForces( timeStep );
+	CheckForInvalidState( "auxiliary" );
 
 #ifdef AF_TIMINGS
 	timer_ac.Stop();
@@ -6342,6 +6422,7 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// swap the current and next state
 	SwapStates();
+	CheckForInvalidState( "evolve" );
 
 	// make sure all clip models are disabled in case they were enabled for self collision
 	if ( selfCollision && !af_skipSelfCollision.GetBool() ) {
@@ -6360,6 +6441,8 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 	} else {
 		ActivateContactEntities();
 	}
+
+	CheckForInvalidState( "collisions" );
 
 	// add gravitational force
 	AddGravity();

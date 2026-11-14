@@ -515,6 +515,7 @@ bool idCollisionModelManagerLocal::TranslateTrmThroughPolygon( cm_traceWork_t *t
 		return false;
 	}
 	p->checkcount = idCollisionModelManagerLocal::checkCount;
+	cm_statPolys++;
 
 	// if this polygon does not have the right contents behind it
 	if ( !(p->contents & tw->contents) ) {
@@ -542,6 +543,7 @@ bool idCollisionModelManagerLocal::TranslateTrmThroughPolygon( cm_traceWork_t *t
 	if ( idMath::Fabs(d) > tw->maxDistFromHeartPlane2 ) {
 		return false;
 	}
+	cm_statPolysDeep++;
 	fraction = tw->trace.fraction;
 
 	// fast point trace
@@ -742,6 +744,9 @@ void idCollisionModelManagerLocal::Translation( trace_t *results, const idVec3 &
 	cm_trmEdge_t *edge;
 	cm_trmVertex_t *vert;
 	ALIGN16( static cm_traceWork_t tw );
+
+	const bool validModel = model >= 0 && model <= MAX_SUBMODELS && model <= idCollisionModelManagerLocal::maxModels && idCollisionModelManagerLocal::models != NULL;
+	idCMTraceStatScope statScope( CM_STAT_TRANSLATION, validModel ? idCollisionModelManagerLocal::models[model] : NULL, model, start, trm );
 
 	assert( ((byte *)&start) < ((byte *)results) || ((byte *)&start) >= (((byte *)results) + sizeof( trace_t )) );
 	assert( ((byte *)&end) < ((byte *)results) || ((byte *)&end) >= (((byte *)results) + sizeof( trace_t )) );
