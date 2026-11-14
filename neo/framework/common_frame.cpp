@@ -411,16 +411,24 @@ void idCommonLocal::Frame() {
 
 		const bool pauseGame = ( !mapSpawned || ( !IsMultiplayer() && ( Dialog().IsDialogPausing() || session->IsSystemUIShowing() || ( game && game->Shell_IsActive() ) ) ) ) && !IsPlayingDoomClassic();
 
-		// save the screenshot and audio from the last draw if needed
+		// save the screenshot of the last game frame if needed (no audio: AVIOpen and AVIClose are stubs)
 		if ( aviCaptureMode ) {
-			idStr name = va("demos/%s/%s_%05i.tga", aviDemoShortName.c_str(), aviDemoShortName.c_str(), aviDemoFrameCount++ );
-			renderSystem->TakeScreenshot( com_aviDemoWidth.GetInteger(), com_aviDemoHeight.GetInteger(), name, com_aviDemoSamples.GetInteger(), NULL );
+			const idStr name = va( "demos/%s/%s_%05i.tga", aviDemoShortName.c_str(), aviDemoShortName.c_str(), aviDemoFrameCount++ );
 
 			// remove any printed lines at the top before taking the screenshot
 			console->ClearNotifyLines();
 
-			// this will call Draw, possibly multiple times if com_aviDemoSamples is > 1
-			renderSystem->TakeScreenshot( com_aviDemoWidth.GetInteger(), com_aviDemoHeight.GetInteger(), name, com_aviDemoSamples.GetInteger(), NULL );
+			// TakeScreenshot reads GL_FRONT after each of its UpdateScreen calls, but the swap only
+			// presents what the previous call rendered, so its first sample is one render late.
+			// Render this frame once, without the notify lines, so that the late sample shows the
+			// current game state rather than the previous frame. This one render replaces an extra
+			// TakeScreenshot to the same file that ran first and was overwritten (a leftover of
+			// Doom 3's frame duplication).
+			constexpr bool captureToImage = false;
+			UpdateScreen( captureToImage );
+
+			// this calls Draw com_aviDemoSamples times, with r_jitter when it is > 1
+			renderSystem->TakeScreenshot( com_aviDemoWidth.GetInteger(), com_aviDemoHeight.GetInteger(), name, com_aviDemoSamples.GetInteger(), nullptr );
 		}
 
 		//--------------------------------------------
