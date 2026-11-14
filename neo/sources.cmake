@@ -306,6 +306,7 @@ set(DOOMEXE_SOURCES
 	renderer/BinaryImage.cpp
 	renderer/BufferObject.cpp
 	renderer/Cinematic.cpp
+	renderer/FFmpegDecoder.cpp
 	renderer/Color/ColorSpace.cpp
 	renderer/DXT/DXTDecoder.cpp
 	renderer/DXT/DXTEncoder.cpp

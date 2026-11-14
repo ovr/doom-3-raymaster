@@ -29,6 +29,8 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 #include "../idlib/precompiled.h"
 
+#include <memory>
+
 #include "tr_local.h"
 
 // Vista OpenGL wrapper check
@@ -1041,8 +1043,9 @@ void R_TestVideo_f( const idCmdArgs &args ) {
 	tr.testVideo = idCinematic::Alloc();
 	tr.testVideo->InitFromFile( args.Argv( 1 ), true );
 
+	// starts it now; the backend asks for frames with Sys_Milliseconds
 	cinData_t	cin;
-	cin = tr.testVideo->ImageForTime( 0 );
+	cin = tr.testVideo->ImageForTime( Sys_Milliseconds() );
 	if ( cin.imageY == NULL ) {
 		delete tr.testVideo;
 		tr.testVideo = NULL;
@@ -1055,13 +1058,31 @@ void R_TestVideo_f( const idCmdArgs &args ) {
 	int	len = tr.testVideo->AnimationLength();
 	common->Printf( "%5.1f seconds of video\n", len * 0.001 );
 
-	tr.testVideoStartTime = tr.primaryRenderView.time[1];
-
 	// try to play the matching wav file
 	idStr	wavString = args.Argv( ( args.Argc() == 2 ) ? 1 : 2 );
 	wavString.StripFileExtension();
 	wavString = wavString + ".wav";
 	common->SW()->PlayShaderDirectly( wavString.c_str() );
+}
+
+/*
+=============
+R_ExportVideo_f
+
+Writes every frame of a cinematic to <file without extension>/frameNNNNN.tga in fs_savepath
+=============
+*/
+static void R_ExportVideo_f( const idCmdArgs &args ) {
+	if ( args.Argc() < 2 ) {
+		common->Printf( "USAGE: exportVideo <video/file.bik>\n" );
+		return;
+	}
+	std::unique_ptr<idCinematic> cinematic( idCinematic::Alloc() );
+	if ( !cinematic->InitFromFile( args.Argv( 1 ), false ) ) {
+		common->Printf( "can't play %s\n", args.Argv( 1 ) );
+		return;
+	}
+	cinematic->ExportToTGA( false );
 }
 
 static int R_QsortSurfaceAreas( const void *a, const void *b ) {
@@ -1917,6 +1938,7 @@ void R_InitCommands() {
 	cmdSystem->AddCommand( "modulateLights", R_ModulateLights_f, CMD_FL_RENDERER | CMD_FL_CHEAT, "modifies shader parms on all lights" );
 	cmdSystem->AddCommand( "testImage", R_TestImage_f, CMD_FL_RENDERER | CMD_FL_CHEAT, "displays the given image centered on screen", idCmdSystem::ArgCompletion_ImageName );
 	cmdSystem->AddCommand( "testVideo", R_TestVideo_f, CMD_FL_RENDERER | CMD_FL_CHEAT, "displays the given cinematic", idCmdSystem::ArgCompletion_VideoName );
+	cmdSystem->AddCommand( "exportVideo", R_ExportVideo_f, CMD_FL_RENDERER, "writes the frames of a cinematic as TGA files to fs_savepath", idCmdSystem::ArgCompletion_VideoName );
 	cmdSystem->AddCommand( "reportSurfaceAreas", R_ReportSurfaceAreas_f, CMD_FL_RENDERER, "lists all used materials sorted by surface area" );
 	cmdSystem->AddCommand( "showInteractionMemory", R_ShowInteractionMemory_f, CMD_FL_RENDERER, "shows memory used by interactions" );
 	cmdSystem->AddCommand( "vid_restart", R_VidRestart_f, CMD_FL_RENDERER, "restarts renderSystem" );

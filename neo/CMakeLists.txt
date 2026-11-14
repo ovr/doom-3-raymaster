@@ -91,6 +91,59 @@ set_target_properties(Doom3BFG PROPERTIES FOLDER "neo")
 set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT Doom3BFG)
 
 # ---------------------------------------------------------------------------
+# FFmpeg (optional): idCinematic plays the Bink videos with libavformat +
+# libavcodec. tools/ffmpeg/build-ffmpeg-win32.cmd builds a minimal 32-bit LGPL
+# FFmpeg into external/ffmpeg-win32. Without it the build keeps the old stub
+# (no videos). The DLLs are delay-loaded and copied next to Doom3BFG.exe; the
+# exe still starts without them, with the videos off.
+# ---------------------------------------------------------------------------
+set(D3BFG_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-win32" CACHE PATH
+	"FFmpeg for the Bink videos (include/, bin/*.dll, bin/ or lib/*.lib); empty or missing disables them")
+
+set(D3BFG_FFMPEG_FOUND OFF)
+set(_ffmpeg_implibs "")
+set(_ffmpeg_dlls "")
+if(D3BFG_FFMPEG_ROOT AND EXISTS "${D3BFG_FFMPEG_ROOT}/include/libavformat/avformat.h")
+	set(D3BFG_FFMPEG_FOUND ON)
+	foreach(_lib avformat avcodec avutil)
+		set(_implib "")
+		foreach(_dir lib bin)
+			if(EXISTS "${D3BFG_FFMPEG_ROOT}/${_dir}/${_lib}.lib")
+				set(_implib "${D3BFG_FFMPEG_ROOT}/${_dir}/${_lib}.lib")
+				break()
+			endif()
+		endforeach()
+		file(GLOB _dll "${D3BFG_FFMPEG_ROOT}/bin/${_lib}-*.dll")
+		list(LENGTH _dll _num_dlls)
+		if(NOT _implib OR NOT _num_dlls EQUAL 1)
+			set(D3BFG_FFMPEG_FOUND OFF)
+			break()
+		endif()
+		list(APPEND _ffmpeg_implibs "${_implib}")
+		list(APPEND _ffmpeg_dlls "${_dll}")
+	endforeach()
+endif()
+
+if(D3BFG_FFMPEG_FOUND)
+	message(STATUS "FFmpeg: ${D3BFG_FFMPEG_ROOT} (Bink videos on)")
+	target_compile_definitions(Doom3BFG PRIVATE USE_FFMPEG)
+	target_include_directories(Doom3BFG SYSTEM PRIVATE "${D3BFG_FFMPEG_ROOT}/include")
+	target_link_libraries(Doom3BFG PRIVATE ${_ffmpeg_implibs} delayimp)
+	foreach(_dll IN LISTS _ffmpeg_dlls)
+		get_filename_component(_dll_name "${_dll}" NAME)
+		target_link_options(Doom3BFG PRIVATE "/DELAYLOAD:${_dll_name}")
+	endforeach()
+	add_custom_command(TARGET Doom3BFG POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_ffmpeg_dlls} "$<TARGET_FILE_DIR:Doom3BFG>"
+		COMMENT "Copying the FFmpeg DLLs next to Doom3BFG.exe"
+		VERBATIM
+	)
+else()
+	message(STATUS "FFmpeg not found in '${D3BFG_FFMPEG_ROOT}': Bink videos off "
+		"(build it with tools/ffmpeg/build-ffmpeg-win32.cmd or set D3BFG_FFMPEG_ROOT)")
+endif()
+
+# ---------------------------------------------------------------------------
 # amplitude (standalone console tool)
 # ---------------------------------------------------------------------------
 add_executable(amplitude ${AMPLITUDE_SOURCES})

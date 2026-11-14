@@ -25,6 +25,7 @@ cmake --build --preset release       # also: debug, retail
 - `doomclassic` and `timidity` keep `/Zc:strictStrings-`, because the 1993 C code passes literals as `char *` everywhere.
 - Build all three configs after language-level changes. `Debug` and `Retail` compile code that `Release` doesn't (`assert` bodies, `#ifndef ID_RETAIL`).
 - Engine code builds at /W4. `-DD3BFG_WARNINGS_AS_ERRORS=ON` adds /WX.
+- The Bink videos play through FFmpeg (optional). `tools\ffmpeg\build-ffmpeg-win32.cmd` builds a minimal 32-bit LGPL FFmpeg 7.1 into `external\ffmpeg-win32` (gitignored; needs MSYS2 in `C:\msys64` with `pacman -S make diffutils`), then re-run the configure. CMake finds it there (`-DD3BFG_FFMPEG_ROOT=<dir>` to point elsewhere), defines `USE_FFMPEG` and copies `avformat-61.dll`, `avcodec-61.dll` and `avutil-59.dll` next to the exe. Copy them into the game install with the exe. Without FFmpeg, or without the DLLs at runtime (they are delay-loaded), the videos stay black.
 
 ## Tests
 
@@ -102,6 +103,7 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
   - `r_pix 1`: GPU and CPU ms per render pass (the `renderLog.OpenMainBlock( MRB_* )` blocks), printed about once a second from GL timestamp queries read back a few frames late, so nothing stalls. It also adds the top 3 GPU passes to `com_showFPS`. `r_pix 2` wraps the passes and render log blocks in `KHR_debug` groups for RenderDoc, Radeon GPU Profiler and Nsight, and `r_pix 3` does both.
   - `cm_traceStats 1|2`: per-second collision query cost by model, and with 2 also the slowest queries.
   - `sys_profile 1` together with `sys_profileTop`, and the commands `profileStart`, `profileStop` and `profileReport`: the game-thread stack sampling profiler. It resolves symbols via dbghelp, which needs the PDB next to the exe.
+  - `testVideo <video/file.bik>` (cheat) plays a video over the 3D view; `exportVideo <video/file.bik>` writes its frames as TGA files to `fs_savepath`. The startup log says whether the FFmpeg DLLs were found ("Bink videos: FFmpeg ...").
 
 ## Not included (from README.txt)
 

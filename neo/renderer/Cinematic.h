@@ -53,10 +53,11 @@ typedef enum {
 
 class idImage;
 
-// a cinematic stream generates an image buffer, which the caller will upload to a texture
+// a cinematic frame as Y, Cr and Cb textures (the chroma ones half size), uploaded by
+// ImageForTime and turned into RGB by the bink shaders; all NULL when there is no frame
 typedef struct {
 	int					imageWidth;
-	int					imageHeight;	// will be a power of 2
+	int					imageHeight;
 	idImage*			imageY;
 	idImage*			imageCr;
 	idImage*			imageCb;
@@ -84,7 +85,8 @@ public:
 	// returns the length of the animation in milliseconds
 	virtual int			AnimationLength();
 
-	// the pointers in cinData_t will remain valid until the next UpdateForTime() call
+	// the pointers in cinData_t will remain valid until the next ImageForTime() call;
+	// milliseconds <= 0 means now (Sys_Milliseconds). Uploads textures: main thread only.
 	virtual cinData_t	ImageForTime( int milliseconds );
 
 	// closes the file and frees all allocated memory

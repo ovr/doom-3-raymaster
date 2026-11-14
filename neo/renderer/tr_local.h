@@ -780,7 +780,6 @@ public:
 	const idMaterial *		defaultMaterial;
 	idImage *				testImage;
 	idCinematic *			testVideo;
-	int						testVideoStartTime;
 
 	idImage *				ambientCubeImage;	// hack for testing dependent ambient lighting
 
