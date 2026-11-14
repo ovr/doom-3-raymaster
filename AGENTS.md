@@ -1,0 +1,90 @@
+# AGENTS.md
+
+This file provides guidance to AI coding agents (Claude Code, Codex, etc.) when working with code in this repository. `CLAUDE.md` is a symlink to this file.
+
+`AGENTS_LOCAL.md` exists in the repository root, read it as well: it holds local, machine-specific instructions and is not committed (git-ignored).
+
+DOOM 3 BFG Edition (id Tech 4, GPL) ported to a CMake build on modern Windows. Only 32-bit MSVC (Win32/x86) builds are supported. You need VS2022 or its Build Tools, the Windows 10 SDK, and XAudio2 2.9 (Windows 10+). The legacy DirectX SDK is not used.
+
+## Build
+
+```
+cmake --preset vs2022-win32          # configure (VS 2022 generator, Win32)
+cmake --build --preset release       # also: debug, retail
+```
+
+- The output is `build\vs2022-win32\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-win32` can also be opened in Visual Studio.
+- For Ninja, run these from an "x86 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x86`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
+- `Retail` is `Release` plus `ID_RETAIL`.
+- Engine code builds at /W4. `-DD3BFG_WARNINGS_AS_ERRORS=ON` adds /WX.
+
+## Tests
+
+`idlibTests` is a console exe (`neo/tests/`) that links the idLib objects plus engine stubs (`idlib_test_stubs.cpp`: NULL `common`/`cvarSystem`/`fileSystem` and `Sys_Milliseconds` etc.). It covers math, MatX, LCP solvers, trace-model mass properties and SIMD-vs-generic joint routines.
+
+```
+cmake --build --preset release --target idlibTests
+ctest --test-dir build/vs2022-win32 -C Release
+build/vs2022-win32/bin/Release/idlibTests.exe LCP_Symmetric   # one test (substring filter), or "all"
+build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/DAZ
+```
+
+- The runner enables FTZ/DAZ by default, like the engine, and `noftz` turns that off.
+- Set `IDLIB_TESTS_VERBOSE=1` to print every failed check. By default each test prints its first 20.
+- `lcp_generic.cpp` recompiles `Lcp.cpp` under renamed classes (`idLCP_*_Generic`) with the SSE macros undefined, so the solvers can be compared. Right now both copies are the same code (see SIMD below).
+- There is no lint step and no other test suite. Game code is checked by running the game.
+
+## Architecture
+
+**Single executable.** `neo/CMakeLists.txt` builds `idLib`, `external` (zlib, jpeg, etc.) and `Game-d3xp` as CMake **OBJECT** libraries and links them straight into `Doom3BFG.exe`. Static libraries would let the linker drop translation units that hold only self-registering globals (`idCVar`, `idTypeInfo`/`CLASS_DECLARATION`, `idEventDef`, `idCommandLink`), which would silently remove cvars, entity classes and commands. `doomclassic` and `timidity` (classic DOOM 1/2) are ordinary static libs. `amplitude` is a separate tool exe.
+
+**Source lists are explicit.** New `.cpp`/`.h` files must be added to `neo/sources.cmake` (`IDLIB_SOURCES`, `EXTERNAL_SOURCES`, `GAME_D3XP_SOURCES`, `DOOMEXE_SOURCES`, `AMPLITUDE_SOURCES`) or `doomclassic/sources.cmake`. Engine files use the precompiled header `neo/idlib/precompiled.h`.
+
+**Layout of `neo/`:**
+- `idlib/`: the base library (math, containers, strings, the `idSIMD` processor, the parallel job system).
+- `framework/`: common, cvars, the console, the file system, and the main frame loop (`common_frame.cpp`).
+- `renderer/`: the frontend and an OpenGL backend. Shaders are loaded at runtime from `base/renderprogs/gl/`.
+- `d3xp/`: game logic (entities, AI, physics, scripts), compiled into the same exe rather than as a game DLL.
+- `cm/`: the collision model.
+- `aas/`: bot/AI navigation.
+- `sound/`: XAudio2.
+- `swf/`: the Flash-based UI.
+- `ui/`: legacy GUIs.
+- `sys/win32/`: the platform layer (window/GL creation in `win_glimp.cpp`, input, the wndproc, the sampling profiler `win_profiler.cpp`).
+
+**Threading and frame loop.**
+- With `com_smp 1` (the default), `idGameThread` (`framework/Common_local.h`) runs game logic and the renderer frontend, while the main thread runs the render backend for the previous frame.
+- Game tics are fixed-rate at `com_engineHz` (default 60). The frame loop runs a catch-up of several tics per frame when it falls behind, so one slow tic snowballs into visible hitches.
+- Parallel work goes through `idParallelJobList` (`idlib/ParallelJobList.h`).
+- `common->Printf` from non-main threads is queued and flushed by the main thread.
+
+**SIMD paths are disabled.** The `ID_WIN_X86_SSE*`/`ID_WIN_X86_MMX*` defines are commented out in `neo/idlib/sys/sys_defines.h`, so idLib's `#ifdef ID_WIN_X86_SSE*_INTRIN` branches (LCP, MatX, etc.) compile to their generic C++ fallbacks. The shipped game used SSE, so these generic paths are barely tested and have hidden real bugs. For example, a wrong unrolled loop in `DotProduct_SIMD` in `idlib/math/Lcp.cpp` produced NaN ragdolls, and NaN bounds then made every collision query test the whole world. `idSIMD_SSE` in `Simd_SSE.cpp` still uses intrinsics unconditionally.
+
+**Physics notes.**
+- `idPhysics_AF` (`d3xp/physics/Physics_AF.cpp`) builds row-padded `idMatX` systems with `MATX_ALLOCA`, whose padding is uninitialized, and solves them with `idLCP`.
+- `idLCP::Solve` leaves the matrix columns permuted, so callers must not reuse the matrix.
+- `af_checkInvalid 1` (the default) reports the first solver stage that produced a non-finite AF state.
+
+## Code conventions that bite
+
+- `idlib/Str.h` macro-redirects the CRT string compares. `strcmp` silently becomes `idStr::Cmp`, while `_stricmp`, `strcasecmp`, `strnicmp`, `_memicmp` and similar become undefined `use_idStr_*` tokens and fail to compile. Call `idStr::Cmp`, `idStr::Icmp` or `idStr::Icmpn` directly.
+- Source files use CRLF line endings. Keep them CRLF when editing with scripts, because `sed -i` and heredoc appends introduce LF.
+- Settings live in cvars (`idCVar` globals with flags such as `CVAR_ARCHIVE` or `CVAR_SYSTEM`). Externs for game cvars go in `d3xp/gamesys/SysCvar.h`.
+
+## Running and diagnosing
+
+- Game data is not in the repo. You need a retail DOOM 3 BFG install, and the built exe is copied into it. `testing_1/` … `testing_5/` are gitignored local installs. `testing_1/Doom3BFG_perf.bat` launches with logging and the perf cvars below.
+- The repo's `base/` holds `default.cfg` and `renderprogs/` only.
+- With `+set logFile 2`, the console log is written to `%USERPROFILE%\Saved Games\id Software\DOOM 3 BFG\base\qconsole.log`.
+- Useful diagnostics:
+  - `com_showFPS 1`: the perf overlay. `com_showFPSScale` sets its size.
+  - `com_speeds 1`.
+  - `g_frametime 1` and `g_timeEntities <ms>`: per-entity think timing.
+  - `r_showPrimitives 1`.
+  - `cm_traceStats 1|2`: per-second collision query cost by model, and with 2 also the slowest queries.
+  - `sys_profile 1` together with `sys_profileTop`, and the commands `profileStart`, `profileStop` and `profileReport`: the game-thread stack sampling profiler. It resolves symbols via dbghelp, which needs the PDB next to the exe.
+
+## Not included (from README.txt)
+
+- Steam integration, Bink video and the patented "depth fail" stencil shadows (Carmack's Reverse) have been removed.
+- These third-party pieces are under their own licenses: jpeg-6 (`neo/renderer/jpeg-6`), zlib (`neo/framework/zlib`) and Base64 (`neo/idlib/Base64.cpp`).
