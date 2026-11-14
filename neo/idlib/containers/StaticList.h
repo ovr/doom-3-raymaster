@@ -391,7 +391,7 @@ ID_INLINE int idStaticList<type,size>::Insert( type const & obj, int index ) {
 	}
 
 	for( i = num; i > index; --i ) {
-		list[i] = list[i-1];
+		list[i] = std::move( list[i-1] );
 	}
 
 	num++;
@@ -550,7 +550,7 @@ ID_INLINE bool idStaticList<type,size>::RemoveIndex( int index ) {
 
 	num--;
 	for( i = index; i < num; i++ ) {
-		list[ i ] = list[ i + 1 ];
+		list[ i ] = std::move( list[ i + 1 ] );
 	}
 
 	return true;
@@ -579,7 +579,7 @@ ID_INLINE bool idStaticList<_type_,size>::RemoveIndexFast( int index ) {
 
 	num--;
 	if ( index != num ) {
-		list[ index ] = list[ num ];
+		list[ index ] = std::move( list[ num ] );
 	}
 
 	return true;

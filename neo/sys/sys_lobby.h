@@ -139,7 +139,7 @@ public:
 
 		RELIABLE_PLAYER_TO_PLAYER_BEGIN,
 		// use reliablePlayerToPlayer_t
-		RELIABLE_PLAYER_TO_PLAYER_END = RELIABLE_PLAYER_TO_PLAYER_BEGIN + NUM_RELIABLE_PLAYER_TO_PLAYER,
+		RELIABLE_PLAYER_TO_PLAYER_END = RELIABLE_PLAYER_TO_PLAYER_BEGIN + static_cast< int >( NUM_RELIABLE_PLAYER_TO_PLAYER ),
 
 		// * to * : misc reliable game data above this
 		RELIABLE_GAME_DATA = RELIABLE_PLAYER_TO_PLAYER_END	
@@ -857,6 +857,7 @@ idSessionCallbacks
 */
 class idSessionCallbacks { 
 public:
+	virtual							~idSessionCallbacks() {}
 	virtual idLobby &				GetPartyLobby() = 0;
 	virtual idLobby &				GetGameLobby() = 0;
 	virtual idLobby &				GetActingGameStateLobby() = 0;

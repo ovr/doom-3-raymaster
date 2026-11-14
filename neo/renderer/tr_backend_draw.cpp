@@ -609,7 +609,7 @@ static void RB_FillDepthBufferGeneric( const drawSurf_t * const * drawSurfs, int
 
 		// subviews will just down-modulate the color buffer
 		float color[4];
-		if ( shader->GetSort() == SS_SUBVIEW ) {
+		if ( shader->GetSort() == static_cast< float >( SS_SUBVIEW ) ) {
 			surfGLState |= GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO | GLS_DEPTHFUNC_LESS;
 			color[0] = 1.0f;
 			color[1] = 1.0f;
@@ -714,7 +714,7 @@ static void RB_FillDepthBufferGeneric( const drawSurf_t * const * drawSurfs, int
 
 		// draw the entire surface solid
 		if ( drawSolid ) {
-			if ( shader->GetSort() == SS_SUBVIEW ) {
+			if ( shader->GetSort() == static_cast< float >( SS_SUBVIEW ) ) {
 				renderProgManager.BindShader_Color();
 				GL_Color( color );
 				GL_State( surfGLState );
@@ -784,7 +784,7 @@ static void RB_FillDepthBufferFast( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 
 	int	surfNum;
 	for ( surfNum = 0; surfNum < numDrawSurfs; surfNum++ ) {
-		if ( drawSurfs[surfNum]->material->GetSort() != SS_SUBVIEW ) {
+		if ( drawSurfs[surfNum]->material->GetSort() != static_cast< float >( SS_SUBVIEW ) ) {
 			break;
 		}
 		RB_FillDepthBufferGeneric( &drawSurfs[surfNum], 1 );
@@ -1866,7 +1866,7 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 		}
 
 		// we need to draw the post process shaders after we have drawn the fog lights
-		if ( shader->GetSort() >= SS_POST_PROCESS && !backEnd.currentRenderCopied ) {
+		if ( shader->GetSort() >= static_cast< float >( SS_POST_PROCESS ) && !backEnd.currentRenderCopied ) {
 			break;
 		}
 

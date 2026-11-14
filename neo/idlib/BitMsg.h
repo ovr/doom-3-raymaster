@@ -827,7 +827,7 @@ ID_INLINE void idBitMsg::WriteQuantizedFloat( float value ) {
 		WriteBits( idMath::ClampInt( -storeMax, storeMax, idMath::Ftoi( value * scale ) ), -_numBits_ );	
 	} else {
 		// Scaling up (scale should be >= 1) (Preserve whole numbers when possible)
-		enum { scale = storeMax / _max_ };
+		constexpr int scale = storeMax / _max_;
 		WriteBits( idMath::ClampInt( -storeMax, storeMax, idMath::Ftoi( value * scale ) ), -_numBits_ );	
 	}
 }
@@ -839,14 +839,14 @@ idBitMsg::WriteQuantizedUFloat
 */
 template< int _max_, int _numBits_ >
 ID_INLINE void idBitMsg::WriteQuantizedUFloat( float value ) {
-	enum { storeMax = ( 1 << _numBits_ ) - 1 };
+	constexpr int storeMax = ( 1 << _numBits_ ) - 1;
 	if ( _max_ > storeMax ) {
 		// Scaling down (scale should be < 1)
 		const float scale = (float)storeMax / (float)_max_;
 		WriteBits( idMath::ClampInt( 0, storeMax, idMath::Ftoi( value * scale ) ), _numBits_ );	
 	} else {
 		// Scaling up (scale should be >= 1) (Preserve whole numbers when possible)
-		enum { scale = storeMax / _max_ };
+		constexpr int scale = storeMax / _max_;
 		WriteBits( idMath::ClampInt( 0, storeMax, idMath::Ftoi( value * scale ) ), _numBits_ );	
 	}
 }
@@ -880,7 +880,7 @@ idBitMsg::ReadQuantizedUFloat
 */
 template< int _max_, int _numBits_ >
 float idBitMsg::ReadQuantizedUFloat() const {
-	enum { storeMax = ( 1 << _numBits_ ) - 1 };
+	constexpr int storeMax = ( 1 << _numBits_ ) - 1;
 	if ( _max_ > storeMax ) {
 		// Scaling down (scale should be < 1)
 		const float invScale = (float)_max_ / (float)storeMax;

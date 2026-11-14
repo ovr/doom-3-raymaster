@@ -38,6 +38,23 @@ endforeach()
 # Static CRT: /MT, /MTd
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# ---------------------------------------------------------------------------
+# C++23. CMake maps it to /std:c++latest on MSVC, which also enables
+# C++26 work in progress, so pin /std:c++23preview (MSVC 19.43+; it stays an
+# alias of /std:c++23 in later toolsets). /std:c++20 and later imply the
+# /permissive- conformance mode.
+# ---------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.43)
+	message(FATAL_ERROR "C++23 needs MSVC 19.43 (Visual Studio 2022 17.13) or newer, found ${CMAKE_CXX_COMPILER_VERSION}.")
+endif()
+set(CMAKE_CXX23_STANDARD_COMPILE_OPTION "/std:c++23preview")
+set(CMAKE_CXX23_EXTENSION_COMPILE_OPTION "/std:c++23preview")
+# report the real standard in __cplusplus instead of 199711L
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)

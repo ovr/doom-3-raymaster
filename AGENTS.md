@@ -16,6 +16,14 @@ cmake --build --preset release       # also: debug, retail
 - The output is `build\vs2022-win32\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-win32` can also be opened in Visual Studio.
 - For Ninja, run these from an "x86 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x86`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
 - `Retail` is `Release` plus `ID_RETAIL`.
+- The language is **C++23**. The root `CMakeLists.txt` sets `CMAKE_CXX_STANDARD 23` and pins `/std:c++23preview` (CMake would otherwise pick `/std:c++latest`), plus `/Zc:__cplusplus`. You need MSVC 19.43 (VS 2022 17.13) or newer.
+- C++20 and later imply the `/permissive-` conformance mode. That means:
+  - string literals are `const char[]`;
+  - two-phase name lookup is enforced;
+  - `requires` is a keyword;
+  - `==` has reversed candidates, so comparison operators need `const` parameters.
+- `doomclassic` and `timidity` keep `/Zc:strictStrings-`, because the 1993 C code passes literals as `char *` everywhere.
+- Build all three configs after language-level changes. `Debug` and `Retail` compile code that `Release` doesn't (`assert` bodies, `#ifndef ID_RETAIL`).
 - Engine code builds at /W4. `-DD3BFG_WARNINGS_AS_ERRORS=ON` adds /WX.
 
 ## Tests
@@ -29,6 +37,7 @@ build/vs2022-win32/bin/Release/idlibTests.exe LCP_Symmetric   # one test (substr
 build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/DAZ
 ```
 
+- Run the tests in `Release`. Some tests feed out-of-range inputs on purpose. In `Debug`, those trip `assert`, and `AssertFailed` calls `common->Warning` on the NULL stub `common`, so the test crashes.
 - The runner enables FTZ/DAZ by default, like the engine, and `noftz` turns that off.
 - Set `IDLIB_TESTS_VERBOSE=1` to print every failed check. By default each test prints its first 20.
 - `lcp_generic.cpp` recompiles `Lcp.cpp` under renamed classes (`idLCP_*_Generic`) with the SSE macros undefined, so the solvers can be compared. Right now both copies are the same code (see SIMD below).
@@ -67,6 +76,13 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 
 ## Code conventions that bite
 
+- **Write modern C++, standard C++23.** New and changed code uses the current language: `nullptr`, `constexpr`, `auto`, range-for, lambdas, `enum class`, `std::unique_ptr`/move semantics, `override`, `[[nodiscard]]`, `std::span`/`std::string_view`, and so on. Don't add things deprecated or removed since C++17:
+  - `register`;
+  - `std::auto_ptr`;
+  - arithmetic or comparisons between different enums, or between an enum and a float;
+  - `==` on arrays;
+  - literals into `char *`.
+- The existing code is C++03-era id style. Modernize what you touch, and keep it compiling in all three configs.
 - `idlib/Str.h` macro-redirects the CRT string compares. `strcmp` silently becomes `idStr::Cmp`, while `_stricmp`, `strcasecmp`, `strnicmp`, `_memicmp` and similar become undefined `use_idStr_*` tokens and fail to compile. Call `idStr::Cmp`, `idStr::Icmp` or `idStr::Icmpn` directly.
 - Source files use CRLF line endings. Keep them CRLF when editing with scripts, because `sed -i` and heredoc appends introduce LF.
 - Settings live in cvars (`idCVar` globals with flags such as `CVAR_ARCHIVE` or `CVAR_SYSTEM`). Externs for game cvars go in `d3xp/gamesys/SysCvar.h`.

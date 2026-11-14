@@ -1551,7 +1551,8 @@ void R_TestDegenerateTextureSpace( srfTriangles_t *tri ) {
 		const idDrawVert &b = tri->verts[tri->indexes[i+1]];
 		const idDrawVert &c = tri->verts[tri->indexes[i+2]];
 
-		if ( a.st == b.st || b.st == c.st || c.st == a.st ) {
+		auto sameST = []( const idDrawVert & v0, const idDrawVert & v1 ) { return v0.st[0] == v1.st[0] && v0.st[1] == v1.st[1]; };
+		if ( sameST( a, b ) || sameST( b, c ) || sameST( c, a ) ) {
 			c_degenerate++;
 		}
 	}

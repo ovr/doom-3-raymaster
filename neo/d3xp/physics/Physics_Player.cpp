@@ -477,7 +477,7 @@ void idPhysics_Player::Friction() {
 	}
 	// apply water friction even if just wading
 	else if ( waterLevel ) {
-		drop += speed * PM_WATERFRICTION * waterLevel * frametime;
+		drop += speed * PM_WATERFRICTION * static_cast< float >( waterLevel ) * frametime;
 	}
 	// apply air friction
 	else {
@@ -691,7 +691,7 @@ void idPhysics_Player::WalkMove() {
 	if ( waterLevel ) {
 		float	waterScale;
 
-		waterScale = waterLevel / 3.0f;
+		waterScale = static_cast< float >( waterLevel ) / 3.0f;
 		waterScale = 1.0f - ( 1.0f - PM_SWIMSCALE ) * waterScale;
 		if ( wishspeed > playerSpeed * waterScale ) {
 			wishspeed = playerSpeed * waterScale;

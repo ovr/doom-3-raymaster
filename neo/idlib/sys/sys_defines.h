@@ -183,8 +183,10 @@ bulk of the codebase, so it is the best place for analyze pragmas.
 
 
 // checking format strings catches a LOT of errors
-#include <CodeAnalysis\SourceAnnotations.h>
-#define	VERIFY_FORMAT_STRING	[SA_FormatString(Style="printf")]
+// (the old [SA_FormatString] attribute from CodeAnalysis\SourceAnnotations.h does not compile
+// in the /permissive- conformance mode, the SAL annotation does the same check)
+#include <sal.h>
+#define	VERIFY_FORMAT_STRING	_Printf_format_string_
 
 
 // We need to inform the compiler that Error() and FatalError() will

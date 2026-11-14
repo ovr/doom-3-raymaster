@@ -14,6 +14,9 @@ function(d3bfg_doomclassic_common tgt)
 	)
 	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}")
 	d3bfg_configure_target(${tgt} WARNING_LEVEL 3)
+	# The original 1993 C code passes string literals as char * everywhere.
+	# Keep that one conversion allowed instead of the C++20 strict strings rule.
+	target_compile_options(${tgt} PRIVATE /Zc:strictStrings-)
 	set_target_properties(${tgt} PROPERTIES FOLDER "doomclassic")
 endfunction()
 

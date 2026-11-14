@@ -92,6 +92,7 @@ class idLocalUser {
 public:	
 								idLocalUser();
 	virtual						~idLocalUser() {}
+								idLocalUser & operator=( idLocalUser && ) = default;	// idStaticList moves users
 
 			void				Pump();
 	virtual void				PumpPlatform() = 0;

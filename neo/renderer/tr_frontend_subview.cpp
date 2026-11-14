@@ -460,7 +460,7 @@ bool R_GenerateSurfaceSubview( const drawSurf_t *drawSurf ) {
 	}
 
 	// see what kind of subview we are making
-	if ( shader->GetSort() != SS_SUBVIEW ) {
+	if ( shader->GetSort() != static_cast< float >( SS_SUBVIEW ) ) {
 		for ( int i = 0; i < shader->GetNumStages(); i++ ) {
 			const shaderStage_t	*stage = shader->GetStage( i );
 			switch ( stage->texture.dynamic ) {
