@@ -28,6 +28,9 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 #include "tr_local.h"
 
+#include <array>
+#include <vector>
+
 /*
 ================================================================================================
 Contains the RenderLog implementation.
@@ -41,157 +44,709 @@ idCVar r_logLevel( "r_logLevel", "2", CVAR_INTEGER, "1 = blocks only, 2 = everyt
 static const int LOG_LEVEL_BLOCKS_ONLY	= 1;
 static const int LOG_LEVEL_EVERYTHING	= 2;
 
-const char * renderLogMainBlockLabels[] = {
-	ASSERT_ENUM_STRING( MRB_NONE,							0 ),
-	ASSERT_ENUM_STRING( MRB_BEGIN_DRAWING_VIEW,				1 ),
-	ASSERT_ENUM_STRING( MRB_FILL_DEPTH_BUFFER,				2 ),
-	ASSERT_ENUM_STRING( MRB_DRAW_INTERACTIONS,				3 ),
-	ASSERT_ENUM_STRING( MRB_DRAW_SHADER_PASSES,				4 ),
-	ASSERT_ENUM_STRING( MRB_FOG_ALL_LIGHTS,					5 ),
-	ASSERT_ENUM_STRING( MRB_DRAW_SHADER_PASSES_POST,		6 ),
-	ASSERT_ENUM_STRING( MRB_DRAW_DEBUG_TOOLS,				7 ),
-	ASSERT_ENUM_STRING( MRB_CAPTURE_COLORBUFFER,			8 ),
-	ASSERT_ENUM_STRING( MRB_POSTPROCESS,					9 ),
-	ASSERT_ENUM_STRING( MRB_GPU_SYNC,						10 ),
-	ASSERT_ENUM_STRING( MRB_END_FRAME,						11 ),
-	ASSERT_ENUM_STRING( MRB_BINK_FRAME,						12 ),
-	ASSERT_ENUM_STRING( MRB_BINK_NEXT_FRAME,				13 ),
-	ASSERT_ENUM_STRING( MRB_TOTAL,							14 ),
-	ASSERT_ENUM_STRING( MRB_MAX,							15 )
-};
-
-extern uint64 Sys_Microseconds();
 /*
 ================================================================================================
 
-PIX events on all platforms
+GPU / CPU time per render pass and KHR_debug groups (r_pix)
 
+The backend marks its passes with renderLog.OpenMainBlock( MRB_* ) / CloseMainBlock(), and the
+smaller pieces in them (views, lights, materials) with renderLog.OpenBlock( label ) / CloseBlock().
+
+r_pix 1 times every main block with two GL_TIMESTAMP queries (glQueryCounter). Unlike
+GL_TIME_ELAPSED queries, timestamps can nest, and they also work inside the GL_TIME_ELAPSED query
+that measures the whole backend for com_showFPS and com_speeds. The timestamps of a frame go into
+one of QUERY_FRAMES query sets, and a set is read back only once the GPU has written its last
+timestamp, a frame or more later, so the CPU never waits for the GPU. About once a second the GPU and
+CPU milliseconds of each pass, per frame, are printed.
+
+r_pix 2 wraps every main block and block in a KHR_debug group, so RenderDoc, Radeon GPU Profiler and
+Nsight show named passes, views, lights and materials.
+
+Only the backend opens blocks, and the backend runs on the main thread with com_smp 0 and 1, the
+thread that owns the GL context. Events from any other thread are dropped. The results are read
+back in SwapCommandBuffers, while the game thread is idle, so the com_showFPS overlay can read them
+while the game thread builds the next frame.
 ================================================================================================
 */
 
+idCVar r_pix( "r_pix", "0", CVAR_RENDERER | CVAR_INTEGER,
+	"GPU time per render pass: 1 = print the GPU and CPU ms of each pass about once a second "
+	"(GL timestamp queries, also adds the top passes to com_showFPS), 2 = KHR_debug groups named after "
+	"the passes, views, lights and materials for RenderDoc / Radeon GPU Profiler / Nsight, 3 = both",
+	0, 3 );
+
+/*
+========================
+RenderPassName
+
+The name in the r_pix table and of the debug group.
+========================
+*/
+static constexpr const char * RenderPassName( const renderLogMainBlock_t pass ) {
+	switch ( pass ) {
+		case MRB_NONE:						return "None";
+		case MRB_BEGIN_DRAWING_VIEW:		return "Begin drawing view";
+		case MRB_FILL_DEPTH_BUFFER:			return "Fill depth buffer";
+		case MRB_DRAW_INTERACTIONS:			return "Interactions";
+		case MRB_STENCIL_SHADOWS:			return "Stencil shadows";
+		case MRB_LIGHT_INTERACTIONS:		return "Light interactions";
+		case MRB_TRANSLUCENT_INTERACTIONS:	return "Translucent interactions";
+		case MRB_DRAW_SHADER_PASSES:		return "Shader passes";
+		case MRB_DRAW_GUI:					return "GUI";
+		case MRB_FOG_ALL_LIGHTS:			return "Fog and blend lights";
+		case MRB_DRAW_SHADER_PASSES_POST:	return "Shader passes post";
+		case MRB_DRAW_DEBUG_TOOLS:			return "Debug tools";
+		case MRB_CAPTURE_COLORBUFFER:		return "Framebuffer copies";
+		case MRB_POSTPROCESS:				return "Post process";
+		case MRB_GPU_SYNC:					return "GPU sync";
+		case MRB_END_FRAME:					return "End frame";
+		case MRB_BINK_FRAME:				return "Bink frame";
+		case MRB_BINK_NEXT_FRAME:			return "Bink next frame";
+		case MRB_TOTAL:						return "Backend frame";
+		case MRB_MAX:						break;
+	}
+	return "?";
+}
 
 /*
 ================================================
-pixEvent_t 
+idRenderPassTimer
 ================================================
 */
-struct pixEvent_t {
-	char		name[256];
-	uint64		cpuTime;
-	uint64		gpuTime;
+class idRenderPassTimer {
+public:
+	void	BeginFrame();
+	void	EndFrame();
+	void	BeginMainBlock( renderLogMainBlock_t pass );
+	void	EndMainBlock();
+	void	BeginNamedEvent( const char * name );
+	void	EndNamedEvent();
+	void	FinishRendering( uint64 gpuTotalNanoseconds );
+	int		GetPassTimings( std::span<renderPassTiming_t> passes ) const;
+	void	Shutdown();
+
+private:
+	static constexpr int	TIMING			= BIT( 0 );	// r_pix 1
+	static constexpr int	DEBUG_GROUPS	= BIT( 1 );	// r_pix 2
+
+	static constexpr int	QUERY_FRAMES	= 4;		// frames of timestamps in flight
+	static constexpr int	MAX_BLOCKS		= 1024;		// timed main blocks in a frame, the frame itself included
+	static constexpr int	MAX_DEPTH		= 32;		// nesting of the timed main blocks
+	static constexpr int	MAX_GROUP_DEPTH	= 48;		// nesting of the debug groups, GL guarantees 64
+	static constexpr int	REPORT_MSEC		= 1000;
+
+	struct block_t {
+		renderLogMainBlock_t	pass;
+		int						depth;			// 0 = the whole frame, 1 = a top level pass
+		uint64					cpuStart;		// Sys_Microseconds() when it was opened
+		uint64					cpuMicroSec;
+	};
+
+	struct frame_t {
+		std::vector<GLuint>		queries;		// the timestamps of blocks[i] are queries[2 * i] and [2 * i + 1]
+		std::vector<block_t>	blocks;			// blocks[0] is the whole frame
+		int						numUntimed = 0;	// main blocks over MAX_BLOCKS or MAX_DEPTH
+		bool					pending = false;// the timestamps are issued and not read back yet
+	};
+
+	// ms per frame, over the frames of a report period
+	struct passStats_t {
+		double	gpuSum = 0.0;
+		double	gpuMax = 0.0;
+		double	cpuSum = 0.0;
+		double	cpuMax = 0.0;
+		int		count = 0;				// instances of the pass
+		int		depth = MAX_DEPTH;		// the least nesting it was seen at
+
+		void	Add( double gpuMs, double cpuMs, int instances, int atDepth );
+	};
+
+	bool	IsBackendThread() const { return Sys_GetCurrentThreadID() == backendThread; }
+	void	AbortFrame();
+	void	OpenTimedBlock( renderLogMainBlock_t pass );
+	void	CloseTimedBlock();
+	void	PushGroup( const char * name );
+	void	PopGroup();
+	void	FetchResults();
+	void	ReadFrame( const frame_t & frame );
+	void	PublishPeriod();
+	void	PrintPeriod( int periodMsec ) const;
+	void	ResetPeriod();
+	void	FreeQueries();
+
+	// the frame being drawn, backend thread only
+	int								frameFlags = 0;			// r_pix bits latched for the frame, 0 between frames
+	int								requestedFlags = 0;		// r_pix when the missing extensions were reported
+	uintptr_t						backendThread = 0;
+	std::array<frame_t, QUERY_FRAMES>	frames;
+	int								currentFrame = 0;
+	std::array<int, MAX_DEPTH>		openBlocks = {};		// indexes into the blocks of the frame, -1 = not timed
+	int								blockDepth = 0;
+	int								groupDepth = 0;
+	int								maxGroupDepth = 0;		// 0 until GL is asked
+
+	// the report period, main thread only
+	std::array<passStats_t, MRB_MAX>	periodPasses;
+	passStats_t						periodOther;			// the time of the frame outside all top level passes
+	double							timeElapsedSum = 0.0;	// the GL_TIME_ELAPSED total that com_showFPS shows
+	double							timeElapsedMax = 0.0;
+	int								timeElapsedFrames = 0;
+	int								periodFrames = 0;		// frames read back
+	int								periodUntimedBlocks = 0;
+	int								periodSkippedFrames = 0;
+	int								periodStartMsec = 0;
+	bool							periodStarted = false;
+
+	// published at the end of a period for com_showFPS, written while the game thread is idle
+	std::array<renderPassTiming_t, MRB_MAX>	published = {};
+	int								numPublished = 0;
 };
 
-idCVar r_pix( "r_pix", "0", CVAR_INTEGER, "print GPU/CPU event timing" );
-
-static const int	MAX_PIX_EVENTS = 256;
-// defer allocation of this until needed, so we don't waste lots of memory
-pixEvent_t *		pixEvents;	// [MAX_PIX_EVENTS]
-int					numPixEvents;
-int					numPixLevels;
-static GLuint		timeQueryIds[MAX_PIX_EVENTS];
+static idRenderPassTimer renderPassTimer;
 
 /*
 ========================
-PC_BeginNamedEvent
-
-FIXME: this is not thread safe on the PC
+idRenderPassTimer::passStats_t::Add
 ========================
 */
-void PC_BeginNamedEvent( const char *szName, ... ) {
-#if 0
-	if ( !r_pix.GetBool() ) {
-		return;
-	}
-	if ( !pixEvents ) {
-		// lazy allocation to not waste memory
-		pixEvents = (pixEvent_t *)Mem_ClearedAlloc( sizeof( *pixEvents ) * MAX_PIX_EVENTS, TAG_CRAP );
-	}
-	if ( numPixEvents >= MAX_PIX_EVENTS ) {
-		idLib::FatalError( "PC_BeginNamedEvent: event overflow" );
-	}
-	if ( ++numPixLevels > 1 ) {
-		return;	// only get top level timing information
-	}
-	if ( !qglGetQueryObjectui64vEXT ) {
-		return;
-	}
-
-	GL_CheckErrors();
-	if ( timeQueryIds[0] == 0 ) {
-		qglGenQueriesARB( MAX_PIX_EVENTS, timeQueryIds );
-	}
-	qglFinish();
-	qglBeginQueryARB( GL_TIME_ELAPSED_EXT, timeQueryIds[numPixEvents] );
-	GL_CheckErrors();
-
-	pixEvent_t *ev = &pixEvents[numPixEvents++];
-	strncpy( ev->name, szName, sizeof( ev->name ) - 1 );
-	ev->cpuTime = Sys_Microseconds();
-#endif
+void idRenderPassTimer::passStats_t::Add( const double gpuMs, const double cpuMs, const int instances, const int atDepth ) {
+	gpuSum += gpuMs;
+	gpuMax = Max( gpuMax, gpuMs );
+	cpuSum += cpuMs;
+	cpuMax = Max( cpuMax, cpuMs );
+	count += instances;
+	depth = Min( depth, atDepth );
 }
 
 /*
 ========================
-PC_EndNamedEvent
+idRenderPassTimer::BeginFrame
+
+Called by the backend before it draws anything of the frame.
 ========================
 */
-void PC_EndNamedEvent() {
-#if 0
-	if ( !r_pix.GetBool() ) {
+void idRenderPassTimer::BeginFrame() {
+	if ( frameFlags != 0 ) {
+		// the backend returned without EndFrame, for an empty command list
+		AbortFrame();
+	}
+
+	int flags = r_pix.GetInteger();
+	if ( flags != requestedFlags ) {
+		requestedFlags = flags;
+		if ( ( flags & TIMING ) != 0 && !glConfig.timestampQueryAvailable ) {
+			common->Printf( "r_pix: no GPU time per pass, GL_ARB_timer_query (glQueryCounter) is not available\n" );
+		}
+		if ( ( flags & DEBUG_GROUPS ) != 0 && !glConfig.debugGroupsAvailable ) {
+			common->Printf( "r_pix: no debug groups, GL_KHR_debug is not available\n" );
+		}
+	}
+	if ( flags == 0 ) {
 		return;
 	}
-	if ( numPixLevels <= 0 ) {
-		idLib::FatalError( "PC_EndNamedEvent: level underflow" );
+	if ( !glConfig.timestampQueryAvailable ) {
+		flags &= ~TIMING;
 	}
-	if ( --numPixLevels > 0 ) {
-		// only do timing on top level events
-		return;
+	if ( !glConfig.debugGroupsAvailable ) {
+		flags &= ~DEBUG_GROUPS;
 	}
-	if ( !qglGetQueryObjectui64vEXT ) {
+
+	if ( ( flags & TIMING ) != 0 ) {
+		FetchResults();
+		if ( frames[currentFrame].pending ) {
+			// the GPU is QUERY_FRAMES frames behind, skip timing this frame rather than wait for it
+			periodSkippedFrames++;
+			flags &= ~TIMING;
+		}
+	}
+	if ( flags == 0 ) {
 		return;
 	}
 
-	pixEvent_t *ev = &pixEvents[numPixEvents-1];
-	ev->cpuTime = Sys_Microseconds() - ev->cpuTime;
+	if ( ( flags & DEBUG_GROUPS ) != 0 && maxGroupDepth == 0 ) {
+		GLint maxStackDepth = 0;
+		qglGetIntegerv( GL_MAX_DEBUG_GROUP_STACK_DEPTH, &maxStackDepth );
+		// the default group takes the first level of the stack
+		maxGroupDepth = idMath::ClampInt( 1, MAX_GROUP_DEPTH, maxStackDepth - 1 );
+	}
 
-	GL_CheckErrors();
-	qglEndQueryARB( GL_TIME_ELAPSED_EXT );
-	GL_CheckErrors();
-#endif
+	backendThread = Sys_GetCurrentThreadID();
+	frameFlags = flags;
+	blockDepth = 0;
+	groupDepth = 0;
+
+	if ( ( flags & TIMING ) != 0 ) {
+		frame_t & frame = frames[currentFrame];
+		frame.blocks.clear();
+		frame.numUntimed = 0;
+		OpenTimedBlock( MRB_TOTAL );
+	}
 }
 
 /*
 ========================
-PC_EndFrame
+idRenderPassTimer::EndFrame
+
+Called by the backend after the last command of the frame.
 ========================
 */
+void idRenderPassTimer::EndFrame() {
+	if ( frameFlags == 0 || !IsBackendThread() ) {
+		return;
+	}
+	if ( ( frameFlags & TIMING ) != 0 ) {
+		// close what unbalanced code left open, then the frame itself
+		while ( blockDepth > 0 ) {
+			CloseTimedBlock();
+		}
+		frames[currentFrame].pending = true;
+		currentFrame = ( currentFrame + 1 ) % QUERY_FRAMES;
+	}
+	while ( groupDepth > 0 ) {
+		PopGroup();
+	}
+	frameFlags = 0;
+}
+
+/*
+========================
+idRenderPassTimer::AbortFrame
+
+Drops the frame being drawn, its timestamps are never read.
+========================
+*/
+void idRenderPassTimer::AbortFrame() {
+	while ( groupDepth > 0 ) {
+		PopGroup();
+	}
+	blockDepth = 0;
+	frameFlags = 0;
+}
+
+/*
+========================
+idRenderPassTimer::BeginMainBlock
+========================
+*/
+void idRenderPassTimer::BeginMainBlock( const renderLogMainBlock_t pass ) {
+	if ( frameFlags == 0 || !IsBackendThread() ) {
+		return;
+	}
+	if ( ( frameFlags & DEBUG_GROUPS ) != 0 ) {
+		PushGroup( RenderPassName( pass ) );
+	}
+	if ( ( frameFlags & TIMING ) != 0 ) {
+		OpenTimedBlock( pass );
+	}
+}
+
+/*
+========================
+idRenderPassTimer::EndMainBlock
+========================
+*/
+void idRenderPassTimer::EndMainBlock() {
+	if ( frameFlags == 0 || !IsBackendThread() ) {
+		return;
+	}
+	// the frame itself, at depth 0, is closed by EndFrame
+	if ( ( frameFlags & TIMING ) != 0 && blockDepth > 1 ) {
+		CloseTimedBlock();
+	}
+	if ( ( frameFlags & DEBUG_GROUPS ) != 0 ) {
+		PopGroup();
+	}
+}
+
+/*
+========================
+idRenderPassTimer::BeginNamedEvent
+========================
+*/
+void idRenderPassTimer::BeginNamedEvent( const char * name ) {
+	if ( ( frameFlags & DEBUG_GROUPS ) == 0 || !IsBackendThread() ) {
+		return;
+	}
+	PushGroup( name );
+}
+
+/*
+========================
+idRenderPassTimer::EndNamedEvent
+========================
+*/
+void idRenderPassTimer::EndNamedEvent() {
+	if ( ( frameFlags & DEBUG_GROUPS ) == 0 || !IsBackendThread() ) {
+		return;
+	}
+	PopGroup();
+}
+
+/*
+========================
+idRenderPassTimer::OpenTimedBlock
+========================
+*/
+void idRenderPassTimer::OpenTimedBlock( const renderLogMainBlock_t pass ) {
+	frame_t & frame = frames[currentFrame];
+
+	int index = -1;
+	if ( blockDepth < MAX_DEPTH && frame.blocks.size() < MAX_BLOCKS ) {
+		index = static_cast<int>( frame.blocks.size() );
+		const size_t numQueries = frame.blocks.size() * 2 + 2;
+		if ( frame.queries.size() < numQueries ) {
+			// grow in steps, so a frame like the last one creates no queries
+			const size_t oldSize = frame.queries.size();
+			frame.queries.resize( Min( Max3( numQueries, oldSize * 2, size_t( 128 ) ), size_t( MAX_BLOCKS * 2 ) ) );
+			qglGenQueriesARB( static_cast<GLsizei>( frame.queries.size() - oldSize ), frame.queries.data() + oldSize );
+		}
+		qglQueryCounter( frame.queries[index * 2], GL_TIMESTAMP );
+		frame.blocks.push_back( { pass, blockDepth, Sys_Microseconds(), 0 } );
+	} else {
+		frame.numUntimed++;
+	}
+
+	if ( blockDepth < MAX_DEPTH ) {
+		openBlocks[blockDepth] = index;
+	}
+	blockDepth++;
+}
+
+/*
+========================
+idRenderPassTimer::CloseTimedBlock
+========================
+*/
+void idRenderPassTimer::CloseTimedBlock() {
+	if ( blockDepth <= 0 ) {
+		return;
+	}
+	blockDepth--;
+	const int index = ( blockDepth < MAX_DEPTH ) ? openBlocks[blockDepth] : -1;
+	if ( index < 0 ) {
+		return;
+	}
+	frame_t & frame = frames[currentFrame];
+	block_t & block = frame.blocks[index];
+	block.cpuMicroSec = Sys_Microseconds() - block.cpuStart;
+	qglQueryCounter( frame.queries[index * 2 + 1], GL_TIMESTAMP );
+}
+
+/*
+========================
+idRenderPassTimer::PushGroup
+
+Past the depth GL allows the group is only counted, so the pops stay balanced.
+========================
+*/
+void idRenderPassTimer::PushGroup( const char * name ) {
+	if ( groupDepth < maxGroupDepth ) {
+		qglPushDebugGroup( GL_DEBUG_SOURCE_APPLICATION, 0, -1, ( name != nullptr && name[0] != '\0' ) ? name : "?" );
+	}
+	groupDepth++;
+}
+
+/*
+========================
+idRenderPassTimer::PopGroup
+
+A pop without a push, as an unbalanced CloseBlock() would do, is dropped.
+========================
+*/
+void idRenderPassTimer::PopGroup() {
+	if ( groupDepth <= 0 ) {
+		return;
+	}
+	groupDepth--;
+	if ( groupDepth < maxGroupDepth ) {
+		qglPopDebugGroup();
+	}
+}
+
+/*
+========================
+idRenderPassTimer::FetchResults
+
+Reads back the query sets the GPU has finished, oldest first. Never waits for the GPU.
+========================
+*/
+void idRenderPassTimer::FetchResults() {
+	for ( int i = 0; i < QUERY_FRAMES; i++ ) {
+		frame_t & frame = frames[( currentFrame + i ) % QUERY_FRAMES];
+		if ( !frame.pending ) {
+			continue;
+		}
+		// the end of the whole frame is the last timestamp of the set
+		GLuint available = GL_FALSE;
+		qglGetQueryObjectuivARB( frame.queries[1], GL_QUERY_RESULT_AVAILABLE, &available );
+		if ( available == GL_FALSE ) {
+			break;	// the newer sets aren't done either
+		}
+		ReadFrame( frame );
+		frame.pending = false;
+	}
+}
+
+/*
+========================
+idRenderPassTimer::ReadFrame
+========================
+*/
+void idRenderPassTimer::ReadFrame( const frame_t & frame ) {
+	std::array<double, MRB_MAX> gpuMs = {};
+	std::array<double, MRB_MAX> cpuMs = {};
+	std::array<int, MRB_MAX> count = {};
+	std::array<int, MRB_MAX> depth;
+	depth.fill( MAX_DEPTH );
+	double topLevelGpuMs = 0.0;
+	double topLevelCpuMs = 0.0;
+
+	for ( size_t i = 0; i < frame.blocks.size(); i++ ) {
+		const block_t & block = frame.blocks[i];
+		uint64 begin = 0;
+		uint64 end = 0;
+		qglGetQueryObjectui64vEXT( frame.queries[i * 2], GL_QUERY_RESULT, &begin );
+		qglGetQueryObjectui64vEXT( frame.queries[i * 2 + 1], GL_QUERY_RESULT, &end );
+		const double blockGpuMs = ( end > begin ) ? ( end - begin ) * 1.0e-6 : 0.0;
+		const double blockCpuMs = block.cpuMicroSec * 1.0e-3;
+
+		gpuMs[block.pass] += blockGpuMs;
+		cpuMs[block.pass] += blockCpuMs;
+		count[block.pass]++;
+		depth[block.pass] = Min( depth[block.pass], block.depth );
+		if ( block.depth == 1 ) {
+			topLevelGpuMs += blockGpuMs;
+			topLevelCpuMs += blockCpuMs;
+		}
+	}
+
+	for ( int pass = 0; pass < MRB_MAX; pass++ ) {
+		if ( count[pass] > 0 ) {
+			periodPasses[pass].Add( gpuMs[pass], cpuMs[pass], count[pass], depth[pass] );
+		}
+	}
+	periodOther.Add( Max( 0.0, gpuMs[MRB_TOTAL] - topLevelGpuMs ), Max( 0.0, cpuMs[MRB_TOTAL] - topLevelCpuMs ), 1, 1 );
+	periodUntimedBlocks += frame.numUntimed;
+	periodFrames++;
+}
+
+/*
+========================
+idRenderPassTimer::FinishRendering
+
+Called after the swap of the previous frame, while the game thread is idle.
+========================
+*/
+void idRenderPassTimer::FinishRendering( const uint64 gpuTotalNanoseconds ) {
+	if ( ( r_pix.GetInteger() & TIMING ) == 0 || !glConfig.timestampQueryAvailable ) {
+		const bool hasQueries = std::ranges::any_of( frames, []( const frame_t & frame ) { return !frame.queries.empty(); } );
+		if ( periodStarted || hasQueries ) {
+			// r_pix 1 was turned off: give the queries back
+			FreeQueries();
+			ResetPeriod();
+			numPublished = 0;
+			periodStarted = false;
+		}
+		return;
+	}
+
+	FetchResults();
+
+	const double timeElapsedMs = gpuTotalNanoseconds * 1.0e-6;
+	timeElapsedSum += timeElapsedMs;
+	timeElapsedMax = Max( timeElapsedMax, timeElapsedMs );
+	timeElapsedFrames++;
+
+	const int now = Sys_Milliseconds();
+	if ( !periodStarted ) {
+		periodStarted = true;
+		periodStartMsec = now;
+		return;
+	}
+	if ( now - periodStartMsec < REPORT_MSEC ) {
+		return;
+	}
+	PublishPeriod();
+	PrintPeriod( now - periodStartMsec );
+	ResetPeriod();
+	periodStartMsec = now;
+}
+
+/*
+========================
+idRenderPassTimer::PublishPeriod
+
+Keeps the top level passes of the period for com_showFPS, the most expensive first.
+========================
+*/
+void idRenderPassTimer::PublishPeriod() {
+	numPublished = 0;
+	if ( periodFrames == 0 ) {
+		return;
+	}
+	for ( int pass = 0; pass < MRB_MAX; pass++ ) {
+		const passStats_t & stats = periodPasses[pass];
+		if ( pass == MRB_TOTAL || stats.count == 0 || stats.depth != 1 ) {
+			continue;
+		}
+		published[numPublished++] = { RenderPassName( static_cast<renderLogMainBlock_t>( pass ) ), static_cast<float>( stats.gpuSum / periodFrames ) };
+	}
+	std::sort( published.begin(), published.begin() + numPublished, []( const renderPassTiming_t & a, const renderPassTiming_t & b ) {
+		return a.gpuMilliseconds > b.gpuMilliseconds;
+	} );
+}
+
+/*
+========================
+idRenderPassTimer::PrintPeriod
+========================
+*/
+void idRenderPassTimer::PrintPeriod( const int periodMsec ) const {
+	if ( periodFrames == 0 ) {
+		// quiet when the backend drew nothing, as in a level load
+		if ( periodSkippedFrames > 0 ) {
+			common->Printf( "r_pix: no timestamps came back from the GPU in %.2f s, %d frames not timed\n", periodMsec * 0.001f, periodSkippedFrames );
+		}
+		return;
+	}
+
+	const double frameScale = 1.0 / periodFrames;
+	const auto printRow = [frameScale]( const char * name, const char * count, const passStats_t & stats ) {
+		common->Printf( "%-28s %6s %8.3f %8.3f %8.3f %8.3f\n", name, count,
+			stats.gpuSum * frameScale, stats.gpuMax, stats.cpuSum * frameScale, stats.cpuMax );
+	};
+
+	common->Printf( "----- r_pix: ms per frame, average and max of %d frames in %.2f s -----\n", periodFrames, periodMsec * 0.001f );
+	common->Printf( "%-28s %6s %8s %8s %8s %8s\n", "pass", "count", "GPU avg", "GPU max", "CPU avg", "CPU max" );
+	for ( int pass = 0; pass < MRB_MAX; pass++ ) {
+		const passStats_t & stats = periodPasses[pass];
+		if ( pass == MRB_TOTAL || stats.count == 0 ) {
+			continue;
+		}
+		// nested passes are indented under the pass they are drawn in
+		const int indent = idMath::ClampInt( 0, 8, ( stats.depth - 1 ) * 2 );
+		char name[64];
+		idStr::snPrintf( name, sizeof( name ), "%*s%s", indent, "", RenderPassName( static_cast<renderLogMainBlock_t>( pass ) ) );
+		char count[16];
+		idStr::snPrintf( count, sizeof( count ), "%.1f", stats.count * frameScale );
+		printRow( name, count, stats );
+	}
+	printRow( "Outside the passes", "", periodOther );
+	printRow( RenderPassName( MRB_TOTAL ), "", periodPasses[MRB_TOTAL] );
+	if ( timeElapsedFrames > 0 && glConfig.timerQueryAvailable ) {
+		// the GL_TIME_ELAPSED query of com_showFPS and com_speeds, it should match the backend frame
+		common->Printf( "%-28s %6s %8.3f %8.3f\n", "GPU total (time elapsed)", "", timeElapsedSum / timeElapsedFrames, timeElapsedMax );
+	}
+	if ( periodSkippedFrames > 0 ) {
+		common->Printf( "%d frames not timed, the GPU was %d frames behind\n", periodSkippedFrames, QUERY_FRAMES );
+	}
+	if ( periodUntimedBlocks > 0 ) {
+		common->Printf( "%d passes not timed, over %d per frame or nested over %d deep\n", periodUntimedBlocks, MAX_BLOCKS, MAX_DEPTH );
+	}
+}
+
+/*
+========================
+idRenderPassTimer::ResetPeriod
+========================
+*/
+void idRenderPassTimer::ResetPeriod() {
+	periodPasses.fill( {} );
+	periodOther = {};
+	timeElapsedSum = 0.0;
+	timeElapsedMax = 0.0;
+	timeElapsedFrames = 0;
+	periodFrames = 0;
+	periodUntimedBlocks = 0;
+	periodSkippedFrames = 0;
+}
+
+/*
+========================
+idRenderPassTimer::FreeQueries
+========================
+*/
+void idRenderPassTimer::FreeQueries() {
+	if ( ( frameFlags & TIMING ) != 0 ) {
+		AbortFrame();
+	}
+	for ( frame_t & frame : frames ) {
+		if ( !frame.queries.empty() ) {
+			qglDeleteQueriesARB( static_cast<GLsizei>( frame.queries.size() ), frame.queries.data() );
+		}
+		frame = {};
+	}
+	currentFrame = 0;
+}
+
+/*
+========================
+idRenderPassTimer::GetPassTimings
+========================
+*/
+int idRenderPassTimer::GetPassTimings( std::span<renderPassTiming_t> passes ) const {
+	const int num = Min( numPublished, static_cast<int>( passes.size() ) );
+	std::copy_n( published.begin(), num, passes.begin() );
+	return num;
+}
+
+/*
+========================
+idRenderPassTimer::Shutdown
+========================
+*/
+void idRenderPassTimer::Shutdown() {
+	AbortFrame();
+	FreeQueries();
+	ResetPeriod();
+	numPublished = 0;
+	periodStarted = false;
+	maxGroupDepth = 0;
+	requestedFlags = 0;
+}
+
+/*
+================================================================================================
+
+PC_* entry points of the render log, see RenderLog.h
+
+================================================================================================
+*/
+
+void PC_BeginFrame() {
+	renderPassTimer.BeginFrame();
+}
+
 void PC_EndFrame() {
-#if 0
-	if ( !r_pix.GetBool() ) {
-		return;
-	}
+	renderPassTimer.EndFrame();
+}
 
-	int64 totalGPU = 0;
-	int64 totalCPU = 0;
+void PC_BeginMainBlock( const renderLogMainBlock_t block ) {
+	renderPassTimer.BeginMainBlock( block );
+}
 
-	idLib::Printf( "----- GPU Events -----\n" );
-	for ( int i = 0 ; i < numPixEvents ; i++ ) {
-		pixEvent_t *ev = &pixEvents[i];
+void PC_EndMainBlock() {
+	renderPassTimer.EndMainBlock();
+}
 
-		int64 gpuTime = 0;
-		qglGetQueryObjectui64vEXT( timeQueryIds[i], GL_QUERY_RESULT, (GLuint64EXT *)&gpuTime );
-		ev->gpuTime = gpuTime;
+void PC_BeginNamedEvent( const char * name ) {
+	renderPassTimer.BeginNamedEvent( name );
+}
 
-		idLib::Printf( "%2d: %1.2f (GPU) %1.3f (CPU) = %s\n", i, ev->gpuTime / 1000000.0f, ev->cpuTime / 1000.0f, ev->name );
-		totalGPU += ev->gpuTime;
-		totalCPU += ev->cpuTime;
-	}
-	idLib::Printf( "%2d: %1.2f (GPU) %1.3f (CPU) = total\n", numPixEvents, totalGPU / 1000000.0f, totalCPU / 1000.0f );
-	memset( pixEvents, 0, numPixLevels * sizeof( pixEvents[0] ) );
-	
-	numPixEvents = 0;
-	numPixLevels = 0;
-#endif
+void PC_EndNamedEvent() {
+	renderPassTimer.EndNamedEvent();
+}
+
+void PC_FinishRendering( const uint64 gpuTotalNanoseconds ) {
+	renderPassTimer.FinishRendering( gpuTotalNanoseconds );
+}
+
+int PC_GetPassTimings( std::span<renderPassTiming_t> passes ) {
+	return renderPassTimer.GetPassTimings( passes );
+}
+
+void PC_Shutdown() {
+	renderPassTimer.Shutdown();
 }
 
 
@@ -229,6 +784,9 @@ idRenderLog::StartFrame
 ========================
 */
 void idRenderLog::StartFrame() {
+	// r_pix works without the log file
+	PC_BeginFrame();
+
 	if ( r_logFile.GetInteger() == 0 ) {
 		return;
 	}
@@ -291,8 +849,6 @@ idRenderLog::EndFrame
 ========================
 */
 void idRenderLog::EndFrame() {
-	PC_EndFrame();
-
 	if ( logFile != NULL ) {
 		if ( r_logFile.GetInteger() == 1 ) {
 			Close();
@@ -300,8 +856,10 @@ void idRenderLog::EndFrame() {
 		// log is open, so decrement r_logFile and stop if it is zero
 		r_logFile.SetInteger( r_logFile.GetInteger() - 1 );
 		idLib::Printf( "Frame logged.\n" );
-		return;
 	}
+
+	// after Close(), so the "Frame" block of the log closes inside the frame
+	PC_EndFrame();
 }
 
 /*
@@ -325,6 +883,7 @@ idRenderLog::OpenMainBlock
 ========================
 */
 void idRenderLog::OpenMainBlock( renderLogMainBlock_t block ) {
+	PC_BeginMainBlock( block );
 }
 
 /*
@@ -333,6 +892,7 @@ idRenderLog::CloseMainBlock
 ========================
 */
 void idRenderLog::CloseMainBlock() {
+	PC_EndMainBlock();
 }
 
 /*
@@ -427,26 +987,6 @@ void idRenderLog::LogCloseBlock( renderLogIndentLabel_t label ) {
 
 	if ( logFile != NULL ) {
 	}
-}
-
-#else	// !STUB_RENDER_LOG
-
-/*
-========================
-idRenderLog::OpenBlock
-========================
-*/
-void idRenderLog::OpenBlock( const char *label ) {
-	PC_BeginNamedEvent( label );
-}
-
-/*
-========================
-idRenderLog::CloseBlock
-========================
-*/
-void idRenderLog::CloseBlock() {
-	PC_EndNamedEvent();
 }
 
 #endif // !STUB_RENDER_LOG

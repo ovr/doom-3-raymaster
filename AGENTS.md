@@ -99,6 +99,7 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
   - `com_speeds 1`.
   - `g_frametime 1` and `g_timeEntities <ms>`: per-entity think timing.
   - `r_showPrimitives 1`.
+  - `r_pix 1`: GPU and CPU ms per render pass (the `renderLog.OpenMainBlock( MRB_* )` blocks), printed about once a second from GL timestamp queries read back a few frames late, so nothing stalls. It also adds the top 3 GPU passes to `com_showFPS`. `r_pix 2` wraps the passes and render log blocks in `KHR_debug` groups for RenderDoc, Radeon GPU Profiler and Nsight, and `r_pix 3` does both.
   - `cm_traceStats 1|2`: per-second collision query cost by model, and with 2 also the slowest queries.
   - `sys_profile 1` together with `sys_profileTop`, and the commands `profileStart`, `profileStop` and `profileReport`: the game-thread stack sampling profiler. It resolves symbols via dbghelp, which needs the PDB next to the exe.
 

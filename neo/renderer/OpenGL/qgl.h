@@ -158,6 +158,21 @@ extern PFNGLGETQUERYOBJECTUIVARBPROC		qglGetQueryObjectuivARB;
 // GL_ARB_timer_query / GL_EXT_timer_query
 extern PFNGLGETQUERYOBJECTUI64VEXTPROC		qglGetQueryObjectui64vEXT;
 
+// GL_ARB_timer_query
+extern PFNGLQUERYCOUNTERPROC				qglQueryCounter;
+
+// GL_KHR_debug (core in OpenGL 4.3), newer than the local glext.h
+#ifndef GL_KHR_debug
+#define GL_DEBUG_SOURCE_APPLICATION			0x824A
+#define GL_DEBUG_TYPE_PUSH_GROUP			0x8269
+#define GL_DEBUG_TYPE_POP_GROUP				0x826A
+#define GL_MAX_DEBUG_GROUP_STACK_DEPTH		0x826C
+typedef void (APIENTRYP PFNGLPUSHDEBUGGROUPPROC) (GLenum source, GLuint id, GLsizei length, const GLchar *message);
+typedef void (APIENTRYP PFNGLPOPDEBUGGROUPPROC) (void);
+#endif
+extern PFNGLPUSHDEBUGGROUPPROC				qglPushDebugGroup;
+extern PFNGLPOPDEBUGGROUPPROC				qglPopDebugGroup;
+
 // GL_ARB_debug_output
 extern PFNGLDEBUGMESSAGECONTROLARBPROC		qglDebugMessageControlARB;
 extern PFNGLDEBUGMESSAGEINSERTARBPROC		qglDebugMessageInsertARB;

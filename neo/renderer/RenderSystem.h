@@ -121,8 +121,10 @@ struct glconfig_t {
 	bool				depthBoundsTestAvailable;
 	bool				syncAvailable;
 	bool				timerQueryAvailable;
+	bool				timestampQueryAvailable;	// glQueryCounter( GL_TIMESTAMP ), GL_ARB_timer_query only
 	bool				occlusionQueryAvailable;
 	bool				debugOutputAvailable;
+	bool				debugGroupsAvailable;		// glPushDebugGroup, GL_KHR_debug
 	bool				swapControlTearAvailable;
 
 	stereo3DMode_t		stereo3Dmode;
@@ -149,6 +151,12 @@ struct glconfig_t {
 
 
 struct emptyCommand_t;
+
+// GPU time of a render pass, averaged per frame over the last r_pix report period
+struct renderPassTiming_t {
+	const char *	name = nullptr;			// a string literal
+	float			gpuMilliseconds = 0.0f;
+};
 
 bool R_IsInitialized();
 
@@ -235,6 +243,11 @@ public:
 
 	// draw call and triangle counts of the last finished back end frame
 	virtual void			GetLastFrameDrawStats( int & numDraws, int & numTris, int & numShadowTris ) const = 0;
+
+	// with r_pix 1: the top level render passes with the most GPU time of the last report period
+	// (about a second), most expensive first; returns how many were filled, 0 without r_pix 1.
+	// Not thread safe against SwapCommandBuffers, call it while building the frame.
+	virtual int				GetRenderPassTimings( std::span<renderPassTiming_t> passes ) const = 0;
 
 	virtual void			SetColor( const idVec4 & rgba ) = 0;
 	virtual void			SetColor4( float r, float g, float b, float a ) { SetColor( idVec4( r, g, b, a ) ); }

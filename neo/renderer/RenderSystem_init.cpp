@@ -293,6 +293,13 @@ PFNGLGETQUERYOBJECTUIVARBPROC			qglGetQueryObjectuivARB;
 // GL_ARB_timer_query / GL_EXT_timer_query
 PFNGLGETQUERYOBJECTUI64VEXTPROC			qglGetQueryObjectui64vEXT;
 
+// GL_ARB_timer_query
+PFNGLQUERYCOUNTERPROC					qglQueryCounter;
+
+// GL_KHR_debug
+PFNGLPUSHDEBUGGROUPPROC					qglPushDebugGroup;
+PFNGLPOPDEBUGGROUPPROC					qglPopDebugGroup;
+
 // GL_ARB_debug_output
 PFNGLDEBUGMESSAGECONTROLARBPROC			qglDebugMessageControlARB;
 PFNGLDEBUGMESSAGEINSERTARBPROC			qglDebugMessageInsertARB;
@@ -339,6 +346,10 @@ For ARB_debug_output
 */
 static void CALLBACK DebugCallback(unsigned int source, unsigned int type,
 								   unsigned int id, unsigned int severity, int length, const char * message, void * userParam) {
+	// every r_pix 2 debug group would echo here
+	if ( type == GL_DEBUG_TYPE_PUSH_GROUP || type == GL_DEBUG_TYPE_POP_GROUP ) {
+		return;
+	}
 	// it probably isn't safe to do an idLib::Printf at this point
 	OutputDebugString( message );
 	OutputDebugString( "\n" );
@@ -544,13 +555,30 @@ static void R_CheckPortableExtensions() {
 	}
 
 	// GL_ARB_timer_query
-	glConfig.timerQueryAvailable = R_CheckExtension( "GL_ARB_timer_query" ) || R_CheckExtension( "GL_EXT_timer_query" );
+	const bool arbTimerQueryAvailable = R_CheckExtension( "GL_ARB_timer_query" );
+	glConfig.timerQueryAvailable = arbTimerQueryAvailable || R_CheckExtension( "GL_EXT_timer_query" );
 	if ( glConfig.timerQueryAvailable ) {
 		qglGetQueryObjectui64vEXT = (PFNGLGETQUERYOBJECTUI64VEXTPROC)GLimp_ExtensionPointer( "glGetQueryObjectui64vARB" );
 		if ( qglGetQueryObjectui64vEXT == NULL ) {
 			qglGetQueryObjectui64vEXT = (PFNGLGETQUERYOBJECTUI64VEXTPROC)GLimp_ExtensionPointer( "glGetQueryObjectui64vEXT" );
 		}
 	}
+
+	// GL_TIMESTAMP queries, only in GL_ARB_timer_query: r_pix times the render passes with them
+	qglQueryCounter = nullptr;
+	if ( arbTimerQueryAvailable && glConfig.occlusionQueryAvailable && qglGetQueryObjectui64vEXT != nullptr ) {
+		qglQueryCounter = (PFNGLQUERYCOUNTERPROC)GLimp_ExtensionPointer( "glQueryCounter" );
+	}
+	glConfig.timestampQueryAvailable = ( qglQueryCounter != nullptr );
+
+	// GL_KHR_debug: r_pix 2 names the render passes for RenderDoc, Radeon GPU Profiler and Nsight
+	qglPushDebugGroup = nullptr;
+	qglPopDebugGroup = nullptr;
+	if ( R_CheckExtension( "GL_KHR_debug" ) || glConfig.glVersion >= 4.3f ) {
+		qglPushDebugGroup = (PFNGLPUSHDEBUGGROUPPROC)GLimp_ExtensionPointer( "glPushDebugGroup" );
+		qglPopDebugGroup = (PFNGLPOPDEBUGGROUPPROC)GLimp_ExtensionPointer( "glPopDebugGroup" );
+	}
+	glConfig.debugGroupsAvailable = ( qglPushDebugGroup != nullptr && qglPopDebugGroup != nullptr );
 
 	// GL_ARB_debug_output
 	glConfig.debugOutputAvailable = R_CheckExtension( "GL_ARB_debug_output" );
@@ -2378,6 +2406,9 @@ idRenderSystemLocal::ShutdownOpenGL
 ========================
 */
 void idRenderSystemLocal::ShutdownOpenGL() {
+	// the r_pix queries go away with the context
+	PC_Shutdown();
+
 	// free the context and close the window
 	R_ShutdownFrameData();
 	GLimp_Shutdown();

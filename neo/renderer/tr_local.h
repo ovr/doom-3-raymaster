@@ -709,6 +709,7 @@ public:
 	virtual idFont *		RegisterFont( const char * fontName );
 	virtual void			ResetFonts();
 	virtual void			GetLastFrameDrawStats( int & numDraws, int & numTris, int & numShadowTris ) const;
+	int						GetRenderPassTimings( std::span<renderPassTiming_t> passes ) const override;
 	virtual void			PrintMemInfo( MemInfo_t *mi );
 
 	virtual void			SetColor( const idVec4 & color );

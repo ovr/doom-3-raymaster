@@ -38,12 +38,18 @@ Contains the RenderLog declaration.
 #define STUB_RENDER_LOG
 #endif
 
+// The render passes of the backend. A main block can be opened inside another one: the light
+// passes are opened inside MRB_DRAW_INTERACTIONS. r_pix 1 times each main block on the GPU.
 enum renderLogMainBlock_t {
 	MRB_NONE,
 	MRB_BEGIN_DRAWING_VIEW,
 	MRB_FILL_DEPTH_BUFFER,
 	MRB_DRAW_INTERACTIONS,
+	MRB_STENCIL_SHADOWS,			// inside MRB_DRAW_INTERACTIONS
+	MRB_LIGHT_INTERACTIONS,			// inside MRB_DRAW_INTERACTIONS
+	MRB_TRANSLUCENT_INTERACTIONS,	// inside MRB_DRAW_INTERACTIONS
 	MRB_DRAW_SHADER_PASSES,
+	MRB_DRAW_GUI,					// the shader passes of 2D views: menus, HUD, console
 	MRB_FOG_ALL_LIGHTS,
 	MRB_DRAW_SHADER_PASSES_POST,
 	MRB_DRAW_DEBUG_TOOLS,
@@ -53,9 +59,27 @@ enum renderLogMainBlock_t {
 	MRB_END_FRAME,
 	MRB_BINK_FRAME,
 	MRB_BINK_NEXT_FRAME,
-	MRB_TOTAL,
+	MRB_TOTAL,						// the whole backend frame
 	MRB_MAX
 };
+
+/*
+================================================
+GPU / CPU time per render pass and KHR_debug groups (r_pix), see RenderLog.cpp.
+These only touch GL on the render backend thread.
+================================================
+*/
+void	PC_BeginFrame();
+void	PC_EndFrame();
+void	PC_BeginMainBlock( renderLogMainBlock_t block );
+void	PC_EndMainBlock();
+void	PC_BeginNamedEvent( const char * name );
+void	PC_EndNamedEvent();
+// after the swap of the previous frame, while the game thread is idle
+void	PC_FinishRendering( uint64 gpuTotalNanoseconds );
+int		PC_GetPassTimings( std::span<renderPassTiming_t> passes );
+// frees the GL queries while the context still exists
+void	PC_Shutdown();
 
 // these are used to make sure each Indent() is properly paired with an Outdent()
 enum renderLogIndentLabel_t {
@@ -163,15 +187,16 @@ class idRenderLog {
 public:
 				idRenderLog() {}
 
-	void		StartFrame() {}
-	void		EndFrame() {}
+	// r_pix keeps working without the log file
+	void		StartFrame() { PC_BeginFrame(); }
+	void		EndFrame() { PC_EndFrame(); }
 	void		Close() {}
 	int			Active() { return 0; }
 
-	void		OpenBlock( const char * label );
-	void		CloseBlock();
-	void		OpenMainBlock( renderLogMainBlock_t block ){}
-	void		CloseMainBlock(){}
+	void		OpenBlock( const char * label ) { PC_BeginNamedEvent( label ); }
+	void		CloseBlock() { PC_EndNamedEvent(); }
+	void		OpenMainBlock( renderLogMainBlock_t block ) { PC_BeginMainBlock( block ); }
+	void		CloseMainBlock() { PC_EndMainBlock(); }
 	void		Indent( renderLogIndentLabel_t label = RENDER_LOG_INDENT_DEFAULT ) {}
 	void		Outdent( renderLogIndentLabel_t label = RENDER_LOG_INDENT_DEFAULT ) {}
 

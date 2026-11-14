@@ -641,6 +641,15 @@ void idRenderSystemLocal::GetLastFrameDrawStats( int & numDraws, int & numTris, 
 
 /*
 =====================
+idRenderSystemLocal::GetRenderPassTimings
+=====================
+*/
+int idRenderSystemLocal::GetRenderPassTimings( std::span<renderPassTiming_t> passes ) const {
+	return PC_GetPassTimings( passes );
+}
+
+/*
+=====================
 idRenderSystemLocal::SwapCommandBuffers_FinishRendering
 =====================
 */
@@ -669,8 +678,8 @@ void idRenderSystemLocal::SwapCommandBuffers_FinishRendering(
 	}
 
 	// read back the start and end timer queries from the previous frame
+	uint64 drawingTimeNanoseconds = 0;
 	if ( glConfig.timerQueryAvailable ) {
-		uint64 drawingTimeNanoseconds = 0;
 		if ( tr.timerQueryId != 0 ) {
 			qglGetQueryObjectui64vEXT( tr.timerQueryId, GL_QUERY_RESULT, &drawingTimeNanoseconds );
 		}
@@ -678,6 +687,9 @@ void idRenderSystemLocal::SwapCommandBuffers_FinishRendering(
 			*gpuMicroSec = drawingTimeNanoseconds / 1000;
 		}
 	}
+
+	// r_pix: read back the render pass timestamps the GPU has written, print them about once a second
+	PC_FinishRendering( drawingTimeNanoseconds );
 
 	//------------------------------
 

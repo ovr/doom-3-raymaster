@@ -430,6 +430,12 @@ float idConsoleLocal::DrawFPS( float y ) {
 	resolutionScale.GetConsoleText( resolutionText );
 	const bool showResolution = resolutionText.Icmp( "rs-off" ) != 0;
 
+	// with r_pix 1, the render passes with the most GPU time
+	static const int MAX_PASS_ROWS = 3;
+	renderPassTiming_t passes[MAX_PASS_ROWS];
+	const int numPassRows = renderSystem->GetRenderPassTimings( passes );
+	const float passRowH = p.UI( 18 );
+
 	static const int NUM_TIMING_ROWS = 6;
 	const int numCountRows = showResolution ? 3 : 2;
 	const float panelH = pad
@@ -437,6 +443,7 @@ float idConsoleLocal::DrawFPS( float y ) {
 		+ graphH + p.UI( 6 )				// graph
 		+ rowH + p.UI( 10 )					// avg / max line + separator
 		+ NUM_TIMING_ROWS * rowH + p.UI( 10 )	// timings + separator
+		+ ( numPassRows > 0 ? numPassRows * passRowH + p.UI( 10 ) : 0.0f )	// GPU passes + separator
 		+ numCountRows * rowH
 		+ pad - p.UI( 4 );
 
@@ -511,6 +518,18 @@ float idConsoleLocal::DrawFPS( float y ) {
 
 	p.Fill( innerX, cy, innerW, lineH, perfColorSeparator );
 	cy += p.UI( 6 );
+
+	if ( numPassRows > 0 ) {
+		for ( int i = 0; i < numPassRows; i++ ) {
+			p.Text( innerX, cy, 14, perfColorLabel, va( "GPU  %s", passes[i].name ) );
+			p.Text( innerR, cy, 14, perfColorText, va( "%.2f", passes[i].gpuMilliseconds ), true );
+			cy += passRowH;
+		}
+		cy += p.UI( 4 );
+
+		p.Fill( innerX, cy, innerW, lineH, perfColorSeparator );
+		cy += p.UI( 6 );
+	}
 
 	// scene counters
 	p.Text( innerX, cy, 16, perfColorLabel, "Draw calls" );

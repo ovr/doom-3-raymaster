@@ -1734,31 +1734,40 @@ static void RB_DrawInteractions() {
 		}
 
 		if ( vLight->globalShadows != NULL ) {
+			renderLog.OpenMainBlock( MRB_STENCIL_SHADOWS );
 			renderLog.OpenBlock( "Global Light Shadows" );
 			RB_StencilShadowPass( vLight->globalShadows, vLight );
 			renderLog.CloseBlock();
+			renderLog.CloseMainBlock();
 		}
 
 		if ( vLight->localInteractions != NULL ) {
+			renderLog.OpenMainBlock( MRB_LIGHT_INTERACTIONS );
 			renderLog.OpenBlock( "Local Light Interactions" );
 			RB_RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
 			renderLog.CloseBlock();
+			renderLog.CloseMainBlock();
 		}
 
 		if ( vLight->localShadows != NULL ) {
+			renderLog.OpenMainBlock( MRB_STENCIL_SHADOWS );
 			renderLog.OpenBlock( "Local Light Shadows" );
 			RB_StencilShadowPass( vLight->localShadows, vLight );
 			renderLog.CloseBlock();
+			renderLog.CloseMainBlock();
 		}
 
 		if ( vLight->globalInteractions != NULL ) {
+			renderLog.OpenMainBlock( MRB_LIGHT_INTERACTIONS );
 			renderLog.OpenBlock( "Global Light Interactions" );
 			RB_RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
 			renderLog.CloseBlock();
+			renderLog.CloseMainBlock();
 		}
 
 
 		if ( vLight->translucentInteractions != NULL && !r_skipTranslucent.GetBool() ) {
+			renderLog.OpenMainBlock( MRB_TRANSLUCENT_INTERACTIONS );
 			renderLog.OpenBlock( "Translucent Interactions" );
 
 			// Disable the depth bounds test because translucent surfaces don't work with
@@ -1778,6 +1787,7 @@ static void RB_DrawInteractions() {
 			RB_RenderInteractions( vLight->translucentInteractions, vLight, GLS_DEPTHFUNC_LESS, false, false );
 
 			renderLog.CloseBlock();
+			renderLog.CloseMainBlock();
 		}
 
 		renderLog.CloseBlock();
@@ -2486,6 +2496,7 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 	//
 	// clear the z buffer, set the projection matrix, etc
 	//-------------------------------------------------
+	renderLog.OpenMainBlock( MRB_BEGIN_DRAWING_VIEW );
 
 	// set the window clipping
 	GL_Viewport( viewDef->viewport.x1,
@@ -2511,6 +2522,8 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 
 	// normal face culling
 	GL_Cull( CT_FRONT_SIDED );
+
+	renderLog.CloseMainBlock();
 
 #ifdef USE_CORE_PROFILE
 	// bind one global Vertex Array Object (VAO)
@@ -2565,7 +2578,8 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 	//-------------------------------------------------
 	int processed = 0;
 	if ( !r_skipShaderPasses.GetBool() ) {
-		renderLog.OpenMainBlock( MRB_DRAW_SHADER_PASSES );
+		// 2D views (menus, HUD, console) only have shader passes, r_pix shows them apart
+		renderLog.OpenMainBlock( viewDef->viewEntitys != NULL ? MRB_DRAW_SHADER_PASSES : MRB_DRAW_GUI );
 		float guiScreenOffset;
 		if ( viewDef->viewEntitys != NULL ) {
 			// guiScreenOffset will be 0 in non-gui views
@@ -2587,8 +2601,10 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 	// capture the depth for the motion blur before rendering any post process surfaces that may contribute to the depth
 	//-------------------------------------------------
 	if ( r_motionBlur.GetInteger() > 0 ) {
+		renderLog.OpenMainBlock( MRB_CAPTURE_COLORBUFFER );
 		const idScreenRect & viewport = backEnd.viewDef->viewport;
 		globalImages->currentDepthImage->CopyDepthbuffer( viewport.x1, viewport.y1, viewport.GetWidth(), viewport.GetHeight() );
+		renderLog.CloseMainBlock();
 	}
 
 	//-------------------------------------------------
@@ -2605,7 +2621,9 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 		GL_SelectTexture( 0 );
 
 		// resolve the screen
+		renderLog.OpenMainBlock( MRB_CAPTURE_COLORBUFFER );
 		globalImages->currentRenderImage->CopyFramebuffer( x, y, w, h );
+		renderLog.CloseMainBlock();
 		backEnd.currentRenderCopied = true;
 
 		// RENDERPARM_SCREENCORRECTIONFACTOR amd RENDERPARM_WINDOWCOORD overlap
@@ -2659,6 +2677,9 @@ void RB_MotionBlur() {
 	if ( backEnd.viewDef->isSubview ) {
 		return;
 	}
+
+	renderLog.OpenMainBlock( MRB_POSTPROCESS );
+	renderLog.OpenBlock( "RB_MotionBlur" );
 
 	GL_CheckErrors();
 
@@ -2740,6 +2761,9 @@ void RB_MotionBlur() {
 
 	RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 	GL_CheckErrors();
+
+	renderLog.CloseBlock();
+	renderLog.CloseMainBlock();
 }
 
 /*
@@ -2827,6 +2851,9 @@ void RB_CopyRender( const void *data ) {
 
 	RENDERLOG_PRINTF( "***************** RB_CopyRender *****************\n" );
 
+	renderLog.OpenMainBlock( MRB_CAPTURE_COLORBUFFER );
+	renderLog.OpenBlock( "RB_CopyRender" );
+
 	if ( cmd->image ) {
 		cmd->image->CopyFramebuffer( cmd->x, cmd->y, cmd->imageWidth, cmd->imageHeight );
 	}
@@ -2834,6 +2861,9 @@ void RB_CopyRender( const void *data ) {
 	if ( cmd->clearColorAfterCopy ) {
 		GL_Clear( true, false, false, STENCIL_SHADOW_TEST_VALUE, 0, 0, 0, 0 );
 	}
+
+	renderLog.CloseBlock();
+	renderLog.CloseMainBlock();
 }
 
 /*
@@ -2847,9 +2877,12 @@ void RB_PostProcess( const void * data ) {
 
 	// only do the post process step if resolution scaling is enabled. Prevents the unnecessary copying of the framebuffer and
 	// corresponding full screen quad pass.
-	if ( rs_enable.GetInteger() == 0 ) { 
+	if ( rs_enable.GetInteger() == 0 ) {
 		return;
 	}
+
+	renderLog.OpenMainBlock( MRB_POSTPROCESS );
+	renderLog.OpenBlock( "RB_PostProcess" );
 
 	// resolve the scaled rendering to a temporary texture
 	postProcessCommand_t * cmd = (postProcessCommand_t *)data;
@@ -2874,4 +2907,5 @@ void RB_PostProcess( const void * data ) {
 	RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
 	renderLog.CloseBlock();
+	renderLog.CloseMainBlock();
 }
