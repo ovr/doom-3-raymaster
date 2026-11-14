@@ -29,6 +29,8 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 #include "../idlib/precompiled.h"
 
+#include <new>
+
 //===============================================================
 //
 //	memory allocation all in one place
@@ -37,17 +39,78 @@ If you have questions concerning this license or the applicable additional terms
 
 #undef new
 
+namespace {
+
+// every block is at least this aligned and its size is padded to a multiple of it
+constexpr size_t MEM_ALIGNMENT = 16;
+
+/*
+==================
+AlignedAlloc
+
+nullptr when out of memory, also when the padded size doesn't fit in a size_t:
+new[] asks for SIZE_MAX when the array size overflows, and that must fail
+instead of wrapping around to a tiny block.
+==================
+*/
+void * AlignedAlloc( const size_t size, const size_t alignment ) noexcept {
+	if ( size > SIZE_MAX - ( MEM_ALIGNMENT - 1 ) ) {
+		return nullptr;
+	}
+	const size_t paddedSize = ( size + MEM_ALIGNMENT - 1 ) & ~( MEM_ALIGNMENT - 1 );
+	return _aligned_malloc( paddedSize, Max( alignment, MEM_ALIGNMENT ) );
+}
+
+/*
+==================
+NewAlloc
+
+What a throwing operator new must do: return a non-null pointer, a distinct one
+for zero bytes too, or call the new handler until it frees enough memory and
+throw std::bad_alloc when there is none.
+==================
+*/
+void * NewAlloc( const size_t size, const size_t alignment ) {
+	const size_t requested = ( size != 0 ) ? size : 1;
+	for ( ;; ) {
+		if ( void * const ptr = AlignedAlloc( requested, alignment ) ) {
+			return ptr;
+		}
+		const std::new_handler handler = std::get_new_handler();
+		if ( handler == nullptr ) {
+			throw std::bad_alloc();
+		}
+		handler();
+	}
+}
+
+/*
+==================
+NewAllocNoThrow
+
+The nothrow operator new: the throwing one, nullptr instead of the exception.
+==================
+*/
+void * NewAllocNoThrow( const size_t size, const size_t alignment ) noexcept {
+	try {
+		return NewAlloc( size, alignment );
+	} catch ( ... ) {
+		return nullptr;
+	}
+}
+
+}	// namespace
+
 /*
 ==================
 Mem_Alloc16
 ==================
 */
 void * Mem_Alloc16( const int size, const memTag_t tag ) {
-	if ( !size ) {
-		return NULL;
+	if ( size <= 0 ) {
+		return nullptr;
 	}
-	const int paddedSize = ( size + 15 ) & ~15;
-	return _aligned_malloc( paddedSize, 16 );
+	return AlignedAlloc( static_cast<size_t>( size ), MEM_ALIGNMENT );
 }
 
 /*
@@ -56,10 +119,111 @@ Mem_Free16
 ==================
 */
 void Mem_Free16( void *ptr ) {
-	if ( ptr == NULL ) {
+	if ( ptr == nullptr ) {
 		return;
 	}
 	_aligned_free( ptr );
+}
+
+/*
+===============================================================================
+
+	The replaceable global operator new and delete
+
+	Defined once, here, and not inline ([replacement.functions]): every form,
+	so no new or delete expression reaches the CRT's malloc and free, and
+	every allocation function has a matching deallocation function.
+
+	std::align_val_t (types aligned to more than __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+	8 on x86, such as ALIGNTYPE16 and ALIGNTYPE128 classes) goes through the
+	same allocator with the alignment raised to the type's, so over-aligned
+	objects come from our memory system too.
+
+===============================================================================
+*/
+
+void * operator new( size_t size ) {
+	return NewAlloc( size, MEM_ALIGNMENT );
+}
+void * operator new[]( size_t size ) {
+	return NewAlloc( size, MEM_ALIGNMENT );
+}
+void * operator new( size_t size, const std::nothrow_t & ) noexcept {
+	return NewAllocNoThrow( size, MEM_ALIGNMENT );
+}
+void * operator new[]( size_t size, const std::nothrow_t & ) noexcept {
+	return NewAllocNoThrow( size, MEM_ALIGNMENT );
+}
+void * operator new( size_t size, std::align_val_t alignment ) {
+	return NewAlloc( size, static_cast<size_t>( alignment ) );
+}
+void * operator new[]( size_t size, std::align_val_t alignment ) {
+	return NewAlloc( size, static_cast<size_t>( alignment ) );
+}
+void * operator new( size_t size, std::align_val_t alignment, const std::nothrow_t & ) noexcept {
+	return NewAllocNoThrow( size, static_cast<size_t>( alignment ) );
+}
+void * operator new[]( size_t size, std::align_val_t alignment, const std::nothrow_t & ) noexcept {
+	return NewAllocNoThrow( size, static_cast<size_t>( alignment ) );
+}
+
+// _aligned_free doesn't need the size or the alignment
+void operator delete( void * ptr ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete[]( void * ptr ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete( void * ptr, size_t ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete[]( void * ptr, size_t ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete( void * ptr, const std::nothrow_t & ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete[]( void * ptr, const std::nothrow_t & ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete( void * ptr, std::align_val_t ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete[]( void * ptr, std::align_val_t ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete( void * ptr, size_t, std::align_val_t ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete[]( void * ptr, size_t, std::align_val_t ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete( void * ptr, std::align_val_t, const std::nothrow_t & ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete[]( void * ptr, std::align_val_t, const std::nothrow_t & ) noexcept {
+	Mem_Free16( ptr );
+}
+
+/*
+==================
+new ( TAG_X ) T
+
+Placement forms, not replacements. They follow the rules of the throwing
+operator new; Mem_Alloc16 doesn't track tags yet, so the tag is unused.
+==================
+*/
+void * operator new( size_t size, memTag_t ) {
+	return NewAlloc( size, MEM_ALIGNMENT );
+}
+void * operator new[]( size_t size, memTag_t ) {
+	return NewAlloc( size, MEM_ALIGNMENT );
+}
+void operator delete( void * ptr, memTag_t ) noexcept {
+	Mem_Free16( ptr );
+}
+void operator delete[]( void * ptr, memTag_t ) noexcept {
+	Mem_Free16( ptr );
 }
 
 /*

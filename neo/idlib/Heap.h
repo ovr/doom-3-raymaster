@@ -58,34 +58,27 @@ ID_INLINE void		Mem_Free( void *ptr ) { Mem_Free16( ptr ); }
 void *		Mem_ClearedAlloc( const int size, const memTag_t tag );
 char *		Mem_CopyString( const char *in );
 
-ID_INLINE void *operator new( size_t s ) {
-	return Mem_Alloc( s, TAG_NEW );
-}
-ID_INLINE void operator delete( void *p ) {
-	Mem_Free( p );
-}
-ID_INLINE void *operator new[]( size_t s ) {
-	return Mem_Alloc( s, TAG_NEW );
-}
-ID_INLINE void operator delete[]( void *p ) {
-	Mem_Free( p );
-}
-ID_INLINE void *operator new( size_t s, memTag_t tag ) {
-	return Mem_Alloc( s, tag );
-}
-ID_INLINE void operator delete( void *p, memTag_t tag ) {
-	Mem_Free( p );
-}
-ID_INLINE void *operator new[]( size_t s, memTag_t tag ) {
-	return Mem_Alloc( s, tag );
-}
-ID_INLINE void operator delete[]( void *p, memTag_t tag ) {
-	Mem_Free( p );
-}
+/*
+================================================
+The global operator new and delete
 
-// Define replacements for the PS3 library's aligned new operator.
-// Without these, allocations of objects with 32 byte or greater alignment
-// may not go through our memory system.
+Heap.cpp replaces every replaceable form once, out of line: scalar and array,
+sized delete, nothrow and std::align_val_t. They allocate like Mem_Alloc16
+(_aligned_malloc, the size padded to 16, at least 16 byte aligned, more when
+the type asks for it), so new, Mem_Alloc and Mem_ClearedAlloc share one heap
+and none of it may reach the CRT's free(). A replacement must not be inline
+([replacement.functions], C4595), so <new> declares them and nothing is
+declared here.
+
+new ( TAG_X ) T is a placement form that passes the memory tag on. The matching
+deletes only run when the constructor throws; the object itself is freed with
+a plain delete or delete[].
+================================================
+*/
+void *	operator new( size_t size, memTag_t tag );
+void *	operator new[]( size_t size, memTag_t tag );
+void	operator delete( void * ptr, memTag_t tag ) noexcept;
+void	operator delete[]( void * ptr, memTag_t tag ) noexcept;
 
 /*
 ================================================

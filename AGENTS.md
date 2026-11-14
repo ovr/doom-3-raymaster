@@ -28,7 +28,7 @@ cmake --build --preset release       # also: debug, retail
 
 ## Tests
 
-`idlibTests` is a console exe (`neo/tests/`) that links the idLib objects plus engine stubs (`idlib_test_stubs.cpp`: NULL `common`/`cvarSystem`/`fileSystem` and `Sys_Milliseconds` etc.). It covers math, MatX, LCP solvers, trace-model mass properties and SIMD-vs-generic joint routines.
+`idlibTests` is a console exe (`neo/tests/`) that links the idLib objects plus engine stubs (`idlib_test_stubs.cpp`: NULL `common`/`cvarSystem`/`fileSystem` and `Sys_Milliseconds` etc.). It covers math, MatX, LCP solvers, trace-model mass properties, SIMD-vs-generic joint routines and the global `operator new`/`delete`.
 
 ```
 cmake --build --preset release --target idlibTests
@@ -85,6 +85,7 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 - The existing code is C++03-era id style. Modernize what you touch, and keep it compiling in all three configs.
 - `idlib/Str.h` macro-redirects the CRT string compares. `strcmp` silently becomes `idStr::Cmp`, while `_stricmp`, `strcasecmp`, `strnicmp`, `_memicmp` and similar become undefined `use_idStr_*` tokens and fail to compile. Call `idStr::Cmp`, `idStr::Icmp` or `idStr::Icmpn` directly.
 - Source files use CRLF line endings. Keep them CRLF when editing with scripts, because `sed -i` and heredoc appends introduce LF.
+- `idlib/Heap.cpp` replaces every global `operator new`/`delete` form (sized, nothrow, `std::align_val_t`) once, out of line, plus the tagged `new ( TAG_X ) T`. All of them, `Mem_Alloc` and `Mem_ClearedAlloc` use `_aligned_malloc`, so that memory must never reach the CRT's `free()`, and `malloc` memory must never reach `delete` or `Mem_Free`. Don't define `operator new`/`delete` inline anywhere (C4595). `new` throws `std::bad_alloc` and never returns NULL.
 - Settings live in cvars (`idCVar` globals with flags such as `CVAR_ARCHIVE` or `CVAR_SYSTEM`). Externs for game cvars go in `d3xp/gamesys/SysCvar.h`.
 
 ## Running and diagnosing

@@ -1060,6 +1060,131 @@ TEST( SIMD_JointsMatchGeneric ) {
 /*
 ===============================================================================
 
+	Global operator new and delete (Heap.cpp)
+
+	Every form must come from Heap.cpp, which allocates with _aligned_malloc and
+	pads the size to 16 bytes; _aligned_msize only works on such blocks, and the
+	padding shows the block didn't come from the CRT's operator new.
+
+===============================================================================
+*/
+
+struct alignas( 64 ) heapAligned64_t {
+	float	v[16];
+};
+
+struct ALIGNTYPE128 heapAligned128_t {
+	float	v[4];
+};
+
+static int heapNewHandlerCalls = 0;
+
+static void HeapTestNewHandler() {
+	heapNewHandlerCalls++;
+	std::set_new_handler( nullptr );	// nothing to free, the next failure throws
+}
+
+// true when ptr is an _aligned_malloc block of exactly paddedSize bytes, aligned to alignment
+static bool IsHeapBlock( const void *ptr, size_t paddedSize, size_t alignment ) {
+	return ptr != nullptr && ( reinterpret_cast<uintptr_t>( ptr ) & ( alignment - 1 ) ) == 0
+		&& _aligned_msize( const_cast<void *>( ptr ), alignment, 0 ) == paddedSize;
+}
+
+template< typename func_t >
+static bool ThrowsBadAlloc( func_t func ) {
+	try {
+		func();
+	} catch ( const std::bad_alloc & ) {
+		return true;
+	}
+	return false;
+}
+
+TEST( Heap_NewDelete ) {
+	// scalar, array, nothrow and tagged forms: 16 byte aligned, size padded to 16
+	{
+		int *scalar = new int;
+		CHECK( IsHeapBlock( scalar, 16, 16 ), "new int" );
+		delete scalar;
+
+		char *array = new char[17];
+		CHECK( IsHeapBlock( array, 32, 16 ), "new char[17]" );
+		delete[] array;
+
+		int *nothrowScalar = new ( std::nothrow ) int;
+		CHECK( IsHeapBlock( nothrowScalar, 16, 16 ), "new ( std::nothrow ) int" );
+		delete nothrowScalar;
+
+		char *nothrowArray = new ( std::nothrow ) char[33];
+		CHECK( IsHeapBlock( nothrowArray, 48, 16 ), "new ( std::nothrow ) char[33]" );
+		delete[] nothrowArray;
+
+		idVec3 *tagged = new ( TAG_TEMP ) idVec3;
+		CHECK( IsHeapBlock( tagged, 16, 16 ), "new ( TAG_TEMP ) idVec3" );
+		delete tagged;
+
+		float *taggedArray = new ( TAG_TEMP ) float[5];
+		CHECK( IsHeapBlock( taggedArray, 32, 16 ), "new ( TAG_TEMP ) float[5]" );
+		delete[] taggedArray;
+	}
+
+	// over-aligned types take the std::align_val_t forms, which must honor alignments above 16
+	{
+		heapAligned64_t *a64 = new heapAligned64_t;
+		CHECK( IsHeapBlock( a64, 64, 64 ), "new of an alignas( 64 ) type" );
+		delete a64;
+
+		heapAligned64_t *a64Array = new heapAligned64_t[3];
+		CHECK( IsHeapBlock( a64Array, 192, 64 ), "new[] of an alignas( 64 ) type" );
+		delete[] a64Array;
+
+		heapAligned128_t *a128 = new ( std::nothrow ) heapAligned128_t;
+		CHECK( IsHeapBlock( a128, 128, 128 ), "nothrow new of an ALIGNTYPE128 type" );
+		delete a128;
+	}
+
+	// zero bytes: a distinct non-null pointer every time, also from the tagged form
+	{
+		void *a = ::operator new( 0 );
+		void *b = ::operator new( 0 );
+		CHECK( a != nullptr && b != nullptr && a != b, "operator new( 0 ) %p %p", a, b );
+		::operator delete( a );
+		::operator delete( b );
+
+		char *tagged = new ( TAG_TEMP ) char[0];
+		CHECK( tagged != nullptr, "new ( TAG_TEMP ) char[0] returned nullptr" );
+		delete[] tagged;
+	}
+
+	// failure throws std::bad_alloc, never returns nullptr or a block smaller than asked for
+	{
+		// new[] passes SIZE_MAX when the element count overflows; padding it to 16 must not wrap around to 0
+		volatile size_t hugeCount = SIZE_MAX / 2;
+		CHECK( ThrowsBadAlloc( [&] { delete[] new int[hugeCount]; } ), "new int[SIZE_MAX / 2] didn't throw" );
+		CHECK( ThrowsBadAlloc( [] { ::operator delete( ::operator new( SIZE_MAX ) ); } ), "operator new( SIZE_MAX ) didn't throw" );
+		CHECK( ThrowsBadAlloc( [] { ::operator delete( ::operator new( SIZE_MAX - 3, TAG_TEMP ) ); } ), "tagged operator new( SIZE_MAX - 3 ) didn't throw" );
+		// a real out of memory: no 3.75 GB hole in a 32-bit address space
+		CHECK( ThrowsBadAlloc( [] { ::operator delete[]( ::operator new[]( 0xF0000000u ) ); } ), "operator new[]( 3.75 GB ) didn't throw" );
+		CHECK( ThrowsBadAlloc( [] { ::operator delete( ::operator new( SIZE_MAX - 3, std::align_val_t{ 64 } ), std::align_val_t{ 64 } ); } ), "aligned operator new( SIZE_MAX - 3 ) didn't throw" );
+
+		CHECK( ::operator new( SIZE_MAX, std::nothrow ) == nullptr, "nothrow operator new( SIZE_MAX )" );
+		CHECK( ::operator new[]( 0xF0000000u, std::nothrow ) == nullptr, "nothrow operator new[]( 3.75 GB )" );
+		CHECK( ::operator new( SIZE_MAX, std::align_val_t{ 128 }, std::nothrow ) == nullptr, "nothrow aligned operator new( SIZE_MAX )" );
+		CHECK( new ( std::nothrow ) int[hugeCount] == nullptr, "new ( std::nothrow ) int[SIZE_MAX / 2]" );
+
+		// the new handler runs before the exception; this one uninstalls itself
+		heapNewHandlerCalls = 0;
+		std::set_new_handler( HeapTestNewHandler );
+		CHECK( ThrowsBadAlloc( [] { ::operator delete( ::operator new( SIZE_MAX ) ); } ), "operator new( SIZE_MAX ) with a new handler didn't throw" );
+		CHECK( heapNewHandlerCalls == 1, "new handler called %d times", heapNewHandlerCalls );
+		CHECK( std::get_new_handler() == nullptr, "new handler still installed" );
+		std::set_new_handler( nullptr );
+	}
+}
+
+/*
+===============================================================================
+
 	main
 
 ===============================================================================
