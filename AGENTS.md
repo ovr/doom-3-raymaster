@@ -91,7 +91,8 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 
 - Game data is not in the repo. You need a retail DOOM 3 BFG install, and the built exe is copied into it. `testing_1/` … `testing_5/` are gitignored local installs. `testing_1/Doom3BFG_perf.bat` launches with logging and the perf cvars below.
 - The repo's `base/` holds `default.cfg` and `renderprogs/` only.
-- With `+set logFile 2`, the console log is written to `%USERPROFILE%\Saved Games\id Software\DOOM 3 BFG\base\qconsole.log`.
+- With `+set logFile 1`, the console log is written to `%USERPROFILE%\Saved Games\id Software\DOOM 3 BFG\base\qconsole.log`. The log survives a game crash.
+- `logFile 2` also calls `FlushFileBuffers` after every print. That costs milliseconds per line, so it skews perf measurements. Use it only when Windows itself crashes or hangs.
 - Useful diagnostics:
   - `com_showFPS 1`: the perf overlay. `com_showFPSScale` sets its size.
   - `com_speeds 1`.

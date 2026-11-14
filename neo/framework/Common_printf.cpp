@@ -31,7 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "Common_local.h"
 
-idCVar com_logFile( "logFile", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "1 = buffer log, 2 = flush after each print", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
+idCVar com_logFile( "logFile", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "1 = write each print to the log (kept if the game crashes), 2 = also flush it to disk after each print (kept if Windows crashes, slow)", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar com_logFileName( "logFileName", "qconsole.log", CVAR_SYSTEM | CVAR_NOCHEAT, "name of log file, if empty, qconsole.log will be used" );
 idCVar com_timestampPrints( "com_timestampPrints", "0", CVAR_SYSTEM, "print time with each console print, 1 = msec, 2 = sec", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 
@@ -279,8 +279,12 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 			Printf( "log file '%s' opened on %s\n", fileName, asctime( newtime ) );
 		}
 		if ( logFile ) {
+			// WriteFile hands the text to the OS right away, so the log survives a game crash.
+			// FlushFileBuffers waits for the disk, milliseconds per print, so only logFile 2 does it
 			logFile->Write( msg, strlen( msg ) );
-			logFile->Flush();	// ForceFlush doesn't help a whole lot
+			if ( com_logFile.GetInteger() > 1 ) {
+				logFile->Flush();
+			}
 		}
 	}
 
