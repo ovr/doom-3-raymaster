@@ -538,6 +538,7 @@ void idCommonLocal::Frame() {
 			// com_engineHz is 60, so sleep a bit and check again
 			Sys_Sleep( 0 );
 		}
+		const uint64 finishTicWaitTime = Sys_Microseconds();
 
 		//--------------------------------------------
 		// It would be better to push as much of this as possible
@@ -643,6 +644,7 @@ void idCommonLocal::Frame() {
 		// make sure the game / draw thread has completed
 		// This may block if the game is taking longer than the render back end
 		gameThread.WaitForThread();
+		const uint64 finishGameWaitTime = Sys_Microseconds();
 
 		// Send local usermds to the server.
 		// This happens after the game frame has run so that prediction data is up to date.
@@ -677,12 +679,36 @@ void idCommonLocal::Frame() {
 		}
 
 		// report timing information
+		// All times are in milliseconds with 0.01 precision:
+		//   all  - wall time since the previous report
+		//   sync - waiting for the previous frame's swap / GPU fence
+		//   tic  - waiting for the next game tic (com_engineHz frame limiter)
+		//   pre  - session, gui events and usercmd generation
+		//   game - game logic on the game thread (all tics of this frame)
+		//   draw - renderer front end on the game thread
+		//   bk   - renderer back end (GL command submission) on the main thread
+		//   wait - main thread waiting for the game thread after the back end
+		//   post - sound, snapshots and the game return processing
+		//   gpu  - GPU time of the previous frame (timer query)
 		if ( com_speeds.GetBool() ) {
-			static int lastTime = Sys_Milliseconds();
-			int	nowTime = Sys_Milliseconds();
-			int	com_frameMsec = nowTime - lastTime;
+			static uint64 lastTime = Sys_Microseconds();
+			const uint64 nowTime = Sys_Microseconds();
+			const uint64 frameMicroSec = nowTime - lastTime;
 			lastTime = nowTime;
-			Printf( "frame:%d all:%3d gfr:%3d rf:%3lld bk:%3lld\n", idLib::frameNumber, com_frameMsec, time_gameFrame, time_frontend / 1000, time_backend / 1000 );
+			const double toMs = 1.0 / 1000.0;
+			Printf( "frame:%d all:%.2f sync:%.2f tic:%.2f pre:%.2f game:%.2f draw:%.2f bk:%.2f wait:%.2f post:%.2f gpu:%.2f tics:%d\n",
+				idLib::frameNumber,
+				frameMicroSec * toMs,
+				( frameTiming.finishSyncTime - frameTiming.startSyncTime ) * toMs,
+				( finishTicWaitTime - frameTiming.finishSyncTime ) * toMs,
+				( frameTiming.startRenderTime - finishTicWaitTime ) * toMs,
+				( frameTiming.finishGameTime - frameTiming.startGameTime ) * toMs,
+				( frameTiming.finishDrawTime - frameTiming.finishGameTime ) * toMs,
+				( frameTiming.finishRenderTime - frameTiming.startRenderTime ) * toMs,
+				( finishGameWaitTime - frameTiming.finishRenderTime ) * toMs,
+				( nowTime - finishGameWaitTime ) * toMs,
+				time_gpu * toMs,
+				numGameFrames );
 			time_gameFrame = 0;
 			time_gameDraw = 0;
 		}

@@ -708,6 +708,7 @@ public:
 
 	virtual idFont *		RegisterFont( const char * fontName );
 	virtual void			ResetFonts();
+	virtual void			GetLastFrameDrawStats( int & numDraws, int & numTris, int & numShadowTris ) const;
 	virtual void			PrintMemInfo( MemInfo_t *mi );
 
 	virtual void			SetColor( const idVec4 & color );

@@ -42,7 +42,15 @@ This prints both front and back end counters, so it should
 only be called when the back end thread is idle.
 =====================
 */
+static int r_lastFrameDraws;
+static int r_lastFrameTris;
+static int r_lastFrameShadowTris;
+
 static void R_PerformanceCounters() {
+	r_lastFrameDraws = backEnd.pc.c_drawElements + backEnd.pc.c_shadowElements;
+	r_lastFrameTris = ( backEnd.pc.c_drawIndexes + backEnd.pc.c_shadowIndexes ) / 3;
+	r_lastFrameShadowTris = backEnd.pc.c_shadowIndexes / 3;
+
 	if ( r_showPrimitives.GetInteger() != 0 ) {
 		common->Printf( "views:%i draws:%i tris:%i (shdw:%i)\n",
 			tr.pc.c_numViews,
@@ -618,6 +626,17 @@ const emptyCommand_t * idRenderSystemLocal::SwapCommandBuffers(
 	SwapCommandBuffers_FinishRendering( frontEndMicroSec, backEndMicroSec, shadowMicroSec, gpuMicroSec );
 
 	return SwapCommandBuffers_FinishCommandBuffers();
+}
+
+/*
+=====================
+idRenderSystemLocal::GetLastFrameDrawStats
+=====================
+*/
+void idRenderSystemLocal::GetLastFrameDrawStats( int & numDraws, int & numTris, int & numShadowTris ) const {
+	numDraws = r_lastFrameDraws;
+	numTris = r_lastFrameTris;
+	numShadowTris = r_lastFrameShadowTris;
 }
 
 /*

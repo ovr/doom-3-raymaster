@@ -233,6 +233,9 @@ public:
 	virtual class idFont *	RegisterFont( const char * fontName ) = 0;
 	virtual void			ResetFonts() = 0;
 
+	// draw call and triangle counts of the last finished back end frame
+	virtual void			GetLastFrameDrawStats( int & numDraws, int & numTris, int & numShadowTris ) const = 0;
+
 	virtual void			SetColor( const idVec4 & rgba ) = 0;
 	virtual void			SetColor4( float r, float g, float b, float a ) { SetColor( idVec4( r, g, b, a ) ); }
 

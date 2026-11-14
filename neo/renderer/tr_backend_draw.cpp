@@ -208,11 +208,14 @@ void RB_DrawElementsWithCounters( const drawSurf_t *surf ) {
 		backEnd.glState.vertexLayout = LAYOUT_DRAW_VERT;
 	}
 	
-	qglDrawElementsBaseVertex( GL_TRIANGLES, 
+	qglDrawElementsBaseVertex( GL_TRIANGLES,
 							  r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
 							  GL_INDEX_TYPE,
 							  (triIndex_t *)indexOffset,
 							  vertOffset / sizeof ( idDrawVert ) );
+
+	backEnd.pc.c_drawElements++;
+	backEnd.pc.c_drawIndexes += surf->numIndexes;
 							  
 
 }
@@ -1560,6 +1563,9 @@ static void RB_StencilShadowPass( const drawSurf_t *drawSurfs, const viewLight_t
 		} else {
 			qglDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, (triIndex_t *)indexOffset, vertOffset / sizeof( idShadowVert ) );
 		}
+
+		backEnd.pc.c_shadowElements++;
+		backEnd.pc.c_shadowIndexes += drawSurf->numIndexes;
 
 		if ( !renderZPass && r_useStencilShadowPreload.GetBool() ) {
 			// render again with Z-pass

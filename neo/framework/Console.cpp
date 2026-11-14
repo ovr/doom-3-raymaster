@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ConsoleHistory.h"
 #include "../renderer/ResolutionScale.h"
 #include "Common_local.h"
+#include "../renderer/Font.h"
 
 #define	CON_TEXTSIZE			0x30000
 #define	NUM_CON_TIMES			4
@@ -194,96 +195,337 @@ void idConsoleLocal::DrawTextRightAlign( float x, float &y, const char *text, ..
 
 
 /*
+=============================================================================
+
+	Performance overlay (com_showFPS)
+
+	Drawn in real screen pixels (converted to the virtual 640x480 space),
+	so it keeps its proportions at any resolution and aspect ratio.
+
+=============================================================================
+*/
+
+idCVar com_showFPSScale( "com_showFPSScale", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "size of the com_showFPS overlay", 0.5f, 3.0f );
+
+static const int	PERF_GRAPH_FRAMES		= 120;		// frame time history shown in the graph
+static const int	PERF_REFRESH_MSEC		= 250;		// how often the numbers are refreshed
+
+static const idVec4	perfColorPanel( 0.02f, 0.02f, 0.03f, 0.72f );
+static const idVec4	perfColorGraphBg( 1.0f, 1.0f, 1.0f, 0.05f );
+static const idVec4	perfColorSeparator( 1.0f, 1.0f, 1.0f, 0.10f );
+static const idVec4	perfColorText( 1.0f, 1.0f, 1.0f, 1.0f );
+static const idVec4	perfColorLabel( 0.68f, 0.70f, 0.74f, 1.0f );
+static const idVec4	perfColorShadow( 0.0f, 0.0f, 0.0f, 0.55f );
+static const idVec4	perfColorBudget( 1.0f, 1.0f, 1.0f, 0.35f );
+static const idVec4	perfColorGood( 0.40f, 0.88f, 0.50f, 1.0f );
+static const idVec4	perfColorWarn( 1.0f, 0.78f, 0.28f, 1.0f );
+static const idVec4	perfColorBad( 1.0f, 0.34f, 0.30f, 1.0f );
+
+/*
+========================
+idPerfOverlayPainter
+
+Small helper that draws boxes and text with a real font in screen pixels.
+========================
+*/
+class idPerfOverlayPainter {
+public:
+	void Begin() {
+		const float w = (float)Max( 1, renderSystem->GetWidth() );
+		const float h = (float)Max( 1, renderSystem->GetHeight() );
+		screenWidth = w;
+		toVirtualX = SCREEN_WIDTH / w;
+		toVirtualY = SCREEN_HEIGHT / h;
+		ui = ( h / 1080.0f ) * com_showFPSScale.GetFloat();
+		font = renderSystem->RegisterFont( "Arial_Narrow" );
+	}
+
+	float	UI( float referencePixels ) const { return referencePixels * ui; }
+	float	ScreenWidth() const { return screenWidth; }
+	float	ToVirtualY( float y ) const { return y * toVirtualY; }
+
+	void Fill( float x, float y, float w, float h, const idVec4 & color ) const {
+		if ( w <= 0.0f || h <= 0.0f ) {
+			return;
+		}
+		renderSystem->DrawFilled( color, x * toVirtualX, y * toVirtualY, w * toVirtualX, h * toVirtualY );
+	}
+
+	float TextWidth( const char * text, float size ) const {
+		const float scale = size * ui / 48.0f;
+		float w = 0.0f;
+		for ( const char * c = text; *c != 0; c++ ) {
+			w += font->GetGlyphWidth( scale, (unsigned char)*c );
+		}
+		return w;
+	}
+
+	// y is the top of the text line; returns the width of the text
+	float Text( float x, float y, float size, const idVec4 & color, const char * text, bool alignRight = false ) const {
+		const float width = TextWidth( text, size );
+		if ( alignRight ) {
+			x -= width;
+		}
+		const float shadow = Max( 1.0f, idMath::Floor( ui + 0.5f ) );
+		DrawString( x + shadow, y + shadow, size, perfColorShadow, text );
+		DrawString( x, y, size, color, text );
+		return width;
+	}
+
+private:
+	void DrawString( float x, float y, float size, const idVec4 & color, const char * text ) const {
+		const float scale = size * ui / 48.0f;
+		const float baseline = idMath::Floor( y + size * ui * 0.82f + 0.5f );
+		renderSystem->SetColor( color );
+		float penX = x;
+		for ( const char * c = text; *c != 0; c++ ) {
+			scaledGlyphInfo_t glyph;
+			font->GetScaledGlyph( scale, (unsigned char)*c, glyph );
+			if ( glyph.material != NULL && glyph.width > 0.0f ) {
+				const float gx = idMath::Floor( penX + glyph.left + 0.5f );
+				const float gy = baseline - glyph.top;
+				renderSystem->DrawStretchPic( gx * toVirtualX, gy * toVirtualY, glyph.width * toVirtualX, glyph.height * toVirtualY,
+					glyph.s1, glyph.t1, glyph.s2, glyph.t2, glyph.material );
+			}
+			penX += glyph.xSkip;
+		}
+		renderSystem->SetColor( colorWhite );
+	}
+
+	idFont *	font;
+	float		screenWidth;
+	float		toVirtualX;
+	float		toVirtualY;
+	float		ui;
+};
+
+/*
+========================
+PerfFormatCount
+
+1234567 -> "1 234 567"
+========================
+*/
+static const char * PerfFormatCount( int value ) {
+	static char buffers[4][32];
+	static int next;
+	char * out = buffers[next++ & 3];
+	char digits[16];
+	idStr::snPrintf( digits, sizeof( digits ), "%d", Max( 0, value ) );
+	const int len = idStr::Length( digits );
+	int o = 0;
+	for ( int i = 0; i < len; i++ ) {
+		if ( i > 0 && ( len - i ) % 3 == 0 ) {
+			out[o++] = ' ';
+		}
+		out[o++] = digits[i];
+	}
+	out[o] = 0;
+	return out;
+}
+
+/*
+========================
+PerfStatusColor
+
+ratio = time / frame budget
+========================
+*/
+static const idVec4 & PerfStatusColor( float ratio ) {
+	if ( ratio <= 1.05f ) {
+		return perfColorGood;
+	}
+	if ( ratio <= 1.6f ) {
+		return perfColorWarn;
+	}
+	return perfColorBad;
+}
+
+enum perfStat_t {
+	PERF_FRAME,
+	PERF_GAME,
+	PERF_FRONTEND,
+	PERF_BACKEND,
+	PERF_SHADOWS,
+	PERF_GPU,
+	PERF_SYNC,
+	PERF_NUM_STATS
+};
+
+/*
 ==================
 idConsoleLocal::DrawFPS
 ==================
 */
-#define	FPS_FRAMES	6
 float idConsoleLocal::DrawFPS( float y ) {
-	static int previousTimes[FPS_FRAMES];
-	static int index;
-	static int previous;
+	// frame time history, sampled from the main thread frame timing
+	static float	frameHistory[PERF_GRAPH_FRAMES];
+	static int		frameHistoryCount;
+	static uint64	lastFrameStart;
 
-	// don't use serverTime, because that will be drifting to
-	// correct for internet lag changes, timescales, timedemos, etc
-	int t = Sys_Milliseconds();
-	int frameTime = t - previous;
-	previous = t;
+	// accumulated and displayed (averaged) values
+	static double	accum[PERF_NUM_STATS];
+	static double	accumMax;
+	static int		accumFrames;
+	static int		lastRefreshTime;
+	static float	shown[PERF_NUM_STATS];
+	static float	shownMax;
 
-	previousTimes[index % FPS_FRAMES] = frameTime;
-	index++;
-	if ( index > FPS_FRAMES ) {
-		// average multiple frames together to smooth changes out a bit
-		int total = 0;
-		for ( int i = 0 ; i < FPS_FRAMES ; i++ ) {
-			total += previousTimes[i];
+	const frameTiming_t & timing = commonLocal.mainFrameTiming;
+	if ( timing.startSyncTime != lastFrameStart ) {
+		if ( lastFrameStart != 0 && timing.startSyncTime > lastFrameStart ) {
+			const float frameMs = ( timing.startSyncTime - lastFrameStart ) / 1000.0f;
+			frameHistory[frameHistoryCount % PERF_GRAPH_FRAMES] = frameMs;
+			frameHistoryCount++;
+
+			accum[PERF_FRAME] += frameMs;
+			accum[PERF_GAME] += ( timing.finishGameTime - timing.startGameTime ) / 1000.0;
+			accum[PERF_FRONTEND] += ( timing.finishDrawTime - timing.finishGameTime ) / 1000.0;
+			accum[PERF_BACKEND] += commonLocal.GetRendererBackEndMicroseconds() / 1000.0;
+			accum[PERF_SHADOWS] += commonLocal.GetRendererShadowsMicroseconds() / 1000.0;
+			accum[PERF_GPU] += commonLocal.GetRendererGPUMicroseconds() / 1000.0;
+			accum[PERF_SYNC] += ( timing.finishSyncTime - timing.startSyncTime ) / 1000.0;
+			accumMax = Max( accumMax, (double)frameMs );
+			accumFrames++;
 		}
-		if ( !total ) {
-			total = 1;
-		}
-		int fps = 1000000 * FPS_FRAMES / total;
-		fps = ( fps + 500 ) / 1000;
-
-		const char * s = va( "%ifps", fps );
-		int w = strlen( s ) * BIGCHAR_WIDTH;
-
-		renderSystem->DrawBigStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, s, colorWhite, true );
+		lastFrameStart = timing.startSyncTime;
 	}
 
-	y += BIGCHAR_HEIGHT + 4;
+	const int now = Sys_Milliseconds();
+	if ( accumFrames > 0 && ( now - lastRefreshTime >= PERF_REFRESH_MSEC || lastRefreshTime == 0 ) ) {
+		for ( int i = 0; i < PERF_NUM_STATS; i++ ) {
+			shown[i] = (float)( accum[i] / accumFrames );
+			accum[i] = 0.0;
+		}
+		shownMax = (float)accumMax;
+		accumMax = 0.0;
+		accumFrames = 0;
+		lastRefreshTime = now;
+	}
 
-	// print the resolution scale so we can tell when we are at reduced resolution
+	int numDraws = 0;
+	int numTris = 0;
+	int numShadowTris = 0;
+	renderSystem->GetLastFrameDrawStats( numDraws, numTris, numShadowTris );
+
+	const float engineHz = Max( 1.0f, com_engineHz_latched );
+	const float budgetMs = 1000.0f / engineHz;
+
+	idPerfOverlayPainter p;
+	p.Begin();
+
+	// layout in screen pixels (reference values are for a 1080p screen)
+	const float pad = p.UI( 14 );
+	const float panelW = p.UI( 270 );
+	const float panelX = p.ScreenWidth() - p.UI( 16 ) - panelW;
+	const float panelY = p.UI( 16 );
+	const float innerX = panelX + pad;
+	const float innerW = panelW - pad * 2.0f;
+	const float innerR = innerX + innerW;
+	const float rowH = p.UI( 21 );
+	const float graphH = p.UI( 46 );
+	const float lineH = Max( 1.0f, p.UI( 1 ) );
+
 	idStr resolutionText;
 	resolutionScale.GetConsoleText( resolutionText );
-	int w = resolutionText.Length() * BIGCHAR_WIDTH;
-	renderSystem->DrawBigStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, resolutionText.c_str(), colorWhite, true );
+	const bool showResolution = resolutionText.Icmp( "rs-off" ) != 0;
 
-	const int gameThreadTotalTime = commonLocal.GetGameThreadTotalTime();
-	const int gameThreadGameTime = commonLocal.GetGameThreadGameTime();
-	const int gameThreadRenderTime = commonLocal.GetGameThreadRenderTime();
-	const int rendererBackEndTime = commonLocal.GetRendererBackEndMicroseconds();
-	const int rendererShadowsTime = commonLocal.GetRendererShadowsMicroseconds();
-	const int rendererGPUIdleTime = commonLocal.GetRendererIdleMicroseconds();
-	const int rendererGPUTime = commonLocal.GetRendererGPUMicroseconds();
-	const int maxTime = 16;
+	static const int NUM_TIMING_ROWS = 6;
+	const int numCountRows = showResolution ? 3 : 2;
+	const float panelH = pad
+		+ p.UI( 48 )						// fps header
+		+ graphH + p.UI( 6 )				// graph
+		+ rowH + p.UI( 10 )					// avg / max line + separator
+		+ NUM_TIMING_ROWS * rowH + p.UI( 10 )	// timings + separator
+		+ numCountRows * rowH
+		+ pad - p.UI( 4 );
 
-	y += SMALLCHAR_HEIGHT + 4;
-	idStr timeStr;
-	timeStr.Format( "%sG+RF: %4d", gameThreadTotalTime > maxTime ? S_COLOR_RED : "", gameThreadTotalTime );
-	w = timeStr.LengthWithoutColors() * SMALLCHAR_WIDTH;
-	renderSystem->DrawSmallStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, timeStr.c_str(), colorWhite, false );
-	y += SMALLCHAR_HEIGHT + 4;
+	const idVec4 & frameColor = PerfStatusColor( shown[PERF_FRAME] / budgetMs );
 
-	timeStr.Format( "%sG: %4d", gameThreadGameTime > maxTime ? S_COLOR_RED : "", gameThreadGameTime );
-	w = timeStr.LengthWithoutColors() * SMALLCHAR_WIDTH;
-	renderSystem->DrawSmallStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, timeStr.c_str(), colorWhite, false );
-	y += SMALLCHAR_HEIGHT + 4;
+	p.Fill( panelX, panelY, panelW, panelH, perfColorPanel );
+	p.Fill( panelX, panelY, panelW, Max( 1.0f, p.UI( 2 ) ), frameColor );
 
-	timeStr.Format( "%sRF: %4d", gameThreadRenderTime > maxTime ? S_COLOR_RED : "", gameThreadRenderTime );
-	w = timeStr.LengthWithoutColors() * SMALLCHAR_WIDTH;
-	renderSystem->DrawSmallStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, timeStr.c_str(), colorWhite, false );
-	y += SMALLCHAR_HEIGHT + 4;
+	float cy = panelY + pad;
 
-	timeStr.Format( "%sRB: %4.1f", rendererBackEndTime > maxTime * 1000 ? S_COLOR_RED : "", rendererBackEndTime / 1000.0f );
-	w = timeStr.LengthWithoutColors() * SMALLCHAR_WIDTH;
-	renderSystem->DrawSmallStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, timeStr.c_str(), colorWhite, false );
-	y += SMALLCHAR_HEIGHT + 4;
+	// big FPS number + frame time
+	const float fps = shown[PERF_FRAME] > 0.0f ? 1000.0f / shown[PERF_FRAME] : 0.0f;
+	const float fpsW = p.Text( innerX, cy - p.UI( 4 ), 40, frameColor, va( "%d", idMath::Ftoi( fps + 0.5f ) ) );
+	p.Text( innerX + fpsW + p.UI( 6 ), cy + p.UI( 15 ), 16, perfColorLabel, "FPS" );
+	p.Text( innerR, cy + p.UI( 1 ), 20, perfColorText, va( "%.2f ms", shown[PERF_FRAME] ), true );
+	p.Text( innerR, cy + p.UI( 23 ), 13, perfColorLabel, va( "target %d Hz", idMath::Ftoi( engineHz + 0.5f ) ), true );
+	cy += p.UI( 48 );
 
-	timeStr.Format( "%sSV: %4.1f", rendererShadowsTime > maxTime * 1000 ? S_COLOR_RED : "", rendererShadowsTime / 1000.0f );
-	w = timeStr.LengthWithoutColors() * SMALLCHAR_WIDTH;
-	renderSystem->DrawSmallStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, timeStr.c_str(), colorWhite, false );
-	y += SMALLCHAR_HEIGHT + 4;
+	// frame time graph, newest frame on the right
+	p.Fill( innerX, cy, innerW, graphH, perfColorGraphBg );
+	const float graphMaxMs = budgetMs * 2.5f;
+	const int numBars = Min( frameHistoryCount, PERF_GRAPH_FRAMES );
+	const float barW = innerW / PERF_GRAPH_FRAMES;
+	float windowMax = 0.0f;
+	for ( int i = 0; i < numBars; i++ ) {
+		const float ms = frameHistory[( frameHistoryCount - 1 - i ) % PERF_GRAPH_FRAMES];
+		windowMax = Max( windowMax, ms );
+		const float h = Max( lineH, graphH * Min( ms / graphMaxMs, 1.0f ) );
+		const float bx = innerR - ( i + 1 ) * barW;
+		idVec4 graphColor = PerfStatusColor( ms / budgetMs );
+		graphColor.w = 0.85f;
+		p.Fill( bx, cy + graphH - h, Max( 1.0f, barW - lineH * 0.5f ), h, graphColor );
+	}
+	const float budgetY = cy + graphH - graphH * ( budgetMs / graphMaxMs );
+	p.Fill( innerX, budgetY, innerW, lineH, perfColorBudget );
+	cy += graphH + p.UI( 6 );
 
-	timeStr.Format( "%sIDLE: %4.1f", rendererGPUIdleTime > maxTime * 1000 ? S_COLOR_RED : "", rendererGPUIdleTime / 1000.0f );
-	w = timeStr.LengthWithoutColors() * SMALLCHAR_WIDTH;
-	renderSystem->DrawSmallStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, timeStr.c_str(), colorWhite, false );
-	y += SMALLCHAR_HEIGHT + 4;
+	p.Text( innerX, cy, 14, perfColorLabel, va( "avg %.2f", shown[PERF_FRAME] ) );
+	p.Text( innerX + innerW * 0.34f, cy, 14, shownMax > budgetMs * 1.6f ? perfColorBad : perfColorLabel, va( "max %.1f", shownMax ) );
+	p.Text( innerR, cy, 14, windowMax > budgetMs * 1.6f ? perfColorBad : perfColorLabel, va( "graph max %.1f ms", windowMax ), true );
+	cy += rowH + p.UI( 4 );
 
-	timeStr.Format( "%sGPU: %4.1f", rendererGPUTime > maxTime * 1000 ? S_COLOR_RED : "", rendererGPUTime / 1000.0f );
-	w = timeStr.LengthWithoutColors() * SMALLCHAR_WIDTH;
-	renderSystem->DrawSmallStringExt( LOCALSAFE_RIGHT - w, idMath::Ftoi( y ) + 2, timeStr.c_str(), colorWhite, false );
+	p.Fill( innerX, cy, innerW, lineH, perfColorSeparator );
+	cy += p.UI( 6 );
 
-	return y + BIGCHAR_HEIGHT + 4;
+	// timing breakdown with small bars relative to the frame budget
+	struct timingRow_t {
+		const char *	label;
+		perfStat_t		stat;
+	};
+	static const timingRow_t rows[NUM_TIMING_ROWS] = {
+		{ "Game logic",		PERF_GAME },
+		{ "Render front",	PERF_FRONTEND },
+		{ "Render back",	PERF_BACKEND },
+		{ "Shadows",		PERF_SHADOWS },
+		{ "GPU",			PERF_GPU },
+		{ "GPU wait",		PERF_SYNC },
+	};
+	const float barX = innerX + p.UI( 96 );
+	const float barMaxW = innerW - p.UI( 96 ) - p.UI( 58 );
+	for ( int i = 0; i < NUM_TIMING_ROWS; i++ ) {
+		const float ms = shown[rows[i].stat];
+		p.Text( innerX, cy, 16, perfColorLabel, rows[i].label );
+		p.Fill( barX, cy + p.UI( 8 ), barMaxW, p.UI( 5 ), perfColorGraphBg );
+		idVec4 barColor = PerfStatusColor( ms / budgetMs );
+		barColor.w = 0.9f;
+		p.Fill( barX, cy + p.UI( 8 ), barMaxW * Min( ms / budgetMs, 1.0f ), p.UI( 5 ), barColor );
+		p.Text( innerR, cy, 16, perfColorText, va( "%.2f", ms ), true );
+		cy += rowH;
+	}
+	cy += p.UI( 4 );
+
+	p.Fill( innerX, cy, innerW, lineH, perfColorSeparator );
+	cy += p.UI( 6 );
+
+	// scene counters
+	p.Text( innerX, cy, 16, perfColorLabel, "Draw calls" );
+	p.Text( innerR, cy, 16, perfColorText, PerfFormatCount( numDraws ), true );
+	cy += rowH;
+	p.Text( innerX, cy, 16, perfColorLabel, "Triangles" );
+	p.Text( innerR, cy, 16, perfColorText, va( "%s  (%s shadow)", PerfFormatCount( numTris ), PerfFormatCount( numShadowTris ) ), true );
+	cy += rowH;
+	if ( showResolution ) {
+		p.Text( innerX, cy, 16, perfColorLabel, "Resolution scale" );
+		p.Text( innerR, cy, 16, perfColorText, resolutionText.c_str(), true );
+		cy += rowH;
+	}
+
+	return p.ToVirtualY( panelY + panelH ) + 8.0f;
 }
 
 /*
