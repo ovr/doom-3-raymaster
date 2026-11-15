@@ -223,7 +223,9 @@ idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def ) {
 	if ( def->dynamicModel != NULL && model->DepthHack() != 0.0f && tr.viewDef != NULL ) {
 		idPlane eye, clip;
 		idVec3 ndc;
-		R_TransformModelToClip( def->parms.origin, tr.viewDef->worldSpace.modelViewMatrix, tr.viewDef->projectionMatrix, eye, clip );
+		// the drawn origin, which r_interpolate moves off parms.origin
+		const idVec3 origin( def->modelMatrix[3 * 4 + 0], def->modelMatrix[3 * 4 + 1], def->modelMatrix[3 * 4 + 2] );
+		R_TransformModelToClip( origin, tr.viewDef->worldSpace.modelViewMatrix, tr.viewDef->projectionMatrix, eye, clip );
 		R_TransformClipToDevice( clip, ndc );
 		def->parms.modelDepthHack = model->DepthHack() * ( 1.0f - ndc.z );
 	} else {

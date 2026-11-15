@@ -37,6 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "Image.h"
 #include "RenderTexture.h"
 #include "Font.h"
+#include "RenderInterpolation.h"
 
 // everything that is needed by the backend needs
 // to be double buffered to allow it to run in
@@ -156,6 +157,18 @@ public:
 };
 
 
+// a def's pose before the current game tic, for drawing it between its last two tic poses (RenderWorld_interp.cpp)
+struct defInterp_t {
+	idVec3					prevOrigin = vec3_origin;
+	idMat3					prevAxis = mat3_identity;
+	idBounds				prevLocalBounds = bounds_zero;	// entities: localReferenceBounds
+	const idRenderModel *	prevModel = nullptr;			// entities: parms.hModel
+	int						ticStamp = -1;		// the world's ticCount at the first update of the tic, prev* is from before it
+	bool					snap = true;		// jumped in this tic, or new: drawn at the tic pose
+	bool					listed = false;		// on the world's ticEntities / ticLights for this tic
+	bool					posed = false;		// the derived data holds a render pose until RestoreTicPoses
+};
+
 class idRenderLightLocal : public idRenderLight {
 public:
 							idRenderLightLocal();
@@ -203,6 +216,8 @@ public:
 	idInteraction *			lastInteraction;
 
 	struct doublePortal_s *	foggedPortals;
+
+	defInterp_t				interp;
 };
 
 
@@ -263,6 +278,10 @@ public:
 	idInteraction *			lastInteraction;
 
 	bool					needsPortalSky;
+
+	// modelMatrix, modelRenderMatrix, inverseBaseModelProject and globalReferenceBounds hold
+	// a render pose while interp.posed (inside RenderScene), else the pose of parms
+	defInterp_t				interp;
 };
 
 struct shadowOnlyEntity_t {
@@ -591,6 +610,7 @@ struct performanceCounters_t {
 	int		c_lightReferences;
 	int		c_guiSurfs;
 	int		frontEndMicroSec;	// sum of time in all RE_RenderScene's in a frame
+	renderInterpStats_t	interp;	// of the last scene that interpolated, GetLastFrameInterpStats
 };
 
 
@@ -710,6 +730,7 @@ public:
 	virtual idFont *		RegisterFont( const char * fontName );
 	virtual void			ResetFonts();
 	virtual void			GetLastFrameDrawStats( int & numDraws, int & numTris, int & numShadowTris ) const;
+	void					GetLastFrameInterpStats( renderInterpStats_t & stats ) const override;
 	int						GetRenderPassTimings( std::span<renderPassTiming_t> passes ) const override;
 	virtual void			PrintMemInfo( MemInfo_t *mi );
 
@@ -951,6 +972,10 @@ extern idCVar r_shadowPolygonFactor;		// scale value for stencil shadow drawing
 extern idCVar r_jitter;						// randomly subpixel jitter the projection matrix
 extern idCVar r_orderIndexes;				// perform index reorganization to optimize vertex use
 
+extern idCVar r_interpolate;				// draw the defs that moved in the last tic between their two tic poses
+extern idCVar r_interpolateSnapDist;		// a move farther than this in one tic is drawn at the tic pose
+extern idCVar r_showInterpolation;			// boxes of the previous, current and drawn poses
+
 extern idCVar r_debugLineDepthTest;			// perform depth test on debug lines
 extern idCVar r_debugLineWidth;				// width of debug lines
 extern idCVar r_debugArrowStep;				// step size of arrow cone line rotation in degrees
@@ -1071,6 +1096,9 @@ RENDERWORLD_DEFS
 */
 
 void R_DeriveEntityData( idRenderEntityLocal *def );
+// the pose data of origin and axis; localBounds sets the culling volume (inverseBaseModelProject, globalBounds)
+void R_DeriveEntityData( const idVec3 & origin, const idMat3 & axis, const idBounds & localBounds, float modelMatrix[16],
+						idRenderMatrix & modelRenderMatrix, idRenderMatrix & inverseBaseModelProject, idBounds & globalBounds );
 void R_CreateEntityRefs( idRenderEntityLocal *def );
 void R_FreeEntityDefDerivedData( idRenderEntityLocal *def, bool keepDecals, bool keepCachedDynamicModel );
 void R_FreeEntityDefCachedDynamicModel( idRenderEntityLocal *def );

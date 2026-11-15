@@ -259,6 +259,8 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 
 	idRenderEntityLocal	*def = entityDefs[entityHandle];
 	if ( def != NULL ) {
+		// before any early out: the first update of a tic keeps the pose of the tic before
+		BeginEntityTic( def, re );
 
 		if ( !re->forceUpdate ) {
 
@@ -302,9 +304,16 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 
 		def->world = this;
 		def->index = entityHandle;
+
+		// a new def starts snapped, at its first pose
+		def->interp.ticStamp = ticCount;
+		def->interp.prevOrigin = re->origin;
+		def->interp.prevAxis = re->axis;
+		def->interp.prevModel = re->hModel;
 	}
 
 	def->parms = *re;
+	CheckEntitySnap( def );
 
 	def->lastModifiedFrameNum = tr.frameCount;
 	if ( common->WriteDemo() && def->archived ) {
@@ -326,6 +335,8 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 	// based on the model bounds, add references in each area
 	// that may contain the updated surface
 	R_CreateEntityRefs( def );
+
+	ListEntityDef( def );
 }
 
 /*
@@ -851,6 +862,10 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
 	tr.primaryRenderView = *renderView;
 	tr.primaryView = parms;
 
+	// the defs that moved in the last tic are drawn between their two tic poses, for this scene only;
+	// all of the front end reads the pose from the derived data, the back end only from copies
+	ApplyRenderPoses();
+
 	// rendering this view may cause other views to be rendered
 	// for mirrors / portals / shadows / environment maps
 	// this will also cause any necessary entities and lights to be
@@ -859,6 +874,8 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
 
 	// render any post processing after the view and all its subviews has been draw
 	R_RenderPostProcess( parms );
+
+	RestoreTicPoses();
 
 	// now write delete commands for any modified-but-not-visible entities, and
 	// add the renderView command to the demo

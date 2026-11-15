@@ -152,6 +152,10 @@ typedef struct renderEntity_s {
 	int						forceUpdate;			// force an update (NOTE: not a bool to keep this struct a multiple of 4 bytes)
 	int						timeGroup;
 	int						xrayIndex;
+
+	// if non-zero, the def follows the drawn view whose renderInterpolation_t has this id (view weapons)
+	// instead of being interpolated in the world; 0 = a world def
+	int						viewAttachedID;
 } renderEntity_t;
 
 
@@ -167,6 +171,9 @@ typedef struct renderLight_s {
 	// if non-zero, the light will only show up in the specific view
 	// which can allow player gun gui lights and such to not effect everyone
 	int						allowLightInViewID;
+
+	// see renderEntity_t::viewAttachedID (the flashlight, muzzle flashes)
+	int						viewAttachedID;
 
 	// I am sticking the four bools together so there are no unused gaps in
 	// the padded structure, which could confuse the memcmp that checks for redundant
@@ -228,6 +235,26 @@ typedef struct renderView_s {
 	int						viewEyeBuffer;				// -1 = left eye, 1 = right eye, 0 = monoscopic view or GUI
 	float					stereoScreenSeparation;		// projection matrix horizontal offset, positive or negative based on camera eye
 } renderView_t;
+
+
+// How the scenes of a frame between two game tics are drawn (idRenderWorld::SetInterpolation). Each scene
+// draws the defs that moved in the last tic between their two tic poses and puts the tic poses back after
+// it, so game code between scenes (traces, GuiTrace) sees tic poses; def->parms never changes.
+struct renderInterpolation_t {
+	float		alpha = 1.0f;				// 0 = the previous tic, 1 = the current tic (and after a cut)
+	int			guiTime = 0;				// tic time for in-world GUIs, so their scripts run once per tic
+	int			viewAttachedID = 0;			// defs with this viewAttachedID follow the drawn view; 0 = none
+
+	// the first-person view of the previous [0] and the current [1] tic, view-attached defs are relative to it
+	idVec3		ticViewOrigin[2] = { idVec3( 0.0f, 0.0f, 0.0f ), idVec3( 0.0f, 0.0f, 0.0f ) };
+	idMat3		ticViewAxis[2] = { idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f ),
+								   idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f ) };
+	bool		ticViewSnap = true;			// the two tic views aren't consecutive: [1] stands for both
+
+	// the view being drawn, before ShakeAxis
+	idVec3		drawViewOrigin = idVec3( 0.0f, 0.0f, 0.0f );
+	idMat3		drawViewAxis = idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f );
+};
 
 
 // exitPortal_t is returned by idRenderWorld::GetPortal()
@@ -333,6 +360,16 @@ public:
 	// may render composite textures for gui console screens and light projections
 	// It would also be acceptable to render a scene multiple times, for "rear view mirrors", etc
 	virtual void			RenderScene( const renderView_t *renderView ) = 0;
+
+	//-------------- Render Interpolation -----------------
+
+	// Called by the game at the start of every game tic, before it updates any def. The defs updated
+	// in a tic remember the pose they had before it, the defs of earlier tics are drawn at their tic pose.
+	virtual void			BeginGameTic() = 0;
+
+	// The scenes until SetInterpolation( nullptr ) draw the defs that moved in the last tic between their
+	// two tic poses (r_interpolate). Copied; nullptr = tic poses. Worlds that don't get it never interpolate.
+	virtual void			SetInterpolation( const renderInterpolation_t * interpolation ) = 0;
 
 	//-------------- Portal Area Information -----------------
 

@@ -44,16 +44,29 @@ ENTITY DEFS
 R_DeriveEntityData
 =================
 */
-void R_DeriveEntityData( idRenderEntityLocal * entity ) {
-	R_AxisToModelMatrix( entity->parms.axis, entity->parms.origin, entity->modelMatrix );
+void R_DeriveEntityData( const idVec3 & origin, const idMat3 & axis, const idBounds & localBounds, float modelMatrix[16],
+						idRenderMatrix & modelRenderMatrix, idRenderMatrix & inverseBaseModelProject, idBounds & globalBounds ) {
+	R_AxisToModelMatrix( axis, origin, modelMatrix );
 
-	idRenderMatrix::CreateFromOriginAxis( entity->parms.origin, entity->parms.axis, entity->modelRenderMatrix );
+	idRenderMatrix::CreateFromOriginAxis( origin, axis, modelRenderMatrix );
 
 	// calculate the matrix that transforms the unit cube to exactly cover the model in world space
-	idRenderMatrix::OffsetScaleForBounds( entity->modelRenderMatrix, entity->localReferenceBounds, entity->inverseBaseModelProject );
+	idRenderMatrix::OffsetScaleForBounds( modelRenderMatrix, localBounds, inverseBaseModelProject );
 
 	// calculate the global model bounds by inverse projecting the unit cube with the 'inverseBaseModelProject'
-	idRenderMatrix::ProjectedBounds( entity->globalReferenceBounds, entity->inverseBaseModelProject, bounds_unitCube, false );
+	idRenderMatrix::ProjectedBounds( globalBounds, inverseBaseModelProject, bounds_unitCube, false );
+}
+
+/*
+=================
+R_DeriveEntityData
+
+From parms, the tic pose. RestoreTicPoses relies on this giving the same bits as the call in R_CreateEntityRefs.
+=================
+*/
+void R_DeriveEntityData( idRenderEntityLocal * entity ) {
+	R_DeriveEntityData( entity->parms.origin, entity->parms.axis, entity->localReferenceBounds, entity->modelMatrix,
+						entity->modelRenderMatrix, entity->inverseBaseModelProject, entity->globalReferenceBounds );
 }
 
 /*
@@ -186,6 +199,19 @@ void R_CreateEntityRefs( idRenderEntityLocal *entity ) {
 
 	// derive entity data
 	R_DeriveEntityData( entity );
+
+	// a def drawn between its last two tic poses needs the areas of both; AddEntityRefToArea skips duplicates
+	idBounds prevBounds;
+	if ( entity->world->PrevPoseNeedsRefs( entity, prevBounds ) ) {
+		float prevModelMatrix[16];
+		idRenderMatrix prevRenderMatrix;
+		idRenderMatrix prevProject;
+		idBounds prevGlobalBounds;
+		R_DeriveEntityData( entity->interp.prevOrigin, entity->interp.prevAxis, prevBounds, prevModelMatrix,
+							prevRenderMatrix, prevProject, prevGlobalBounds );
+		tr.viewCount++;
+		entity->world->PushFrustumIntoTree( entity, NULL, prevProject, bounds_unitCube );
+	}
 
 	// bump the view count so we can tell if an
 	// area already has a reference
