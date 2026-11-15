@@ -1,0 +1,19 @@
+# 04_lighting: d3dm4 hall. Pulsing, strobing and orbiting point lights, a spot light, the flashlight, a light switched off and on.
+map game/mp/d3dm4
+at 0 god
+at 0 notarget
+at 0 noclip
+at 1 setviewpos 272 -240 68 90
+at 2 spawn light origin "150 40 100" light_radius "240 240 240" _color "1 0.3 0.1" texture "lights/round_sin" name lsin
+at 2 spawn light origin "400 40 100" light_radius "240 240 240" _color "0.2 0.4 1" texture "lights/round_strobe" name lstrobe
+at 2 spawn light origin "272 60 200" light_target "0 0 -250" light_up "0 120 0" light_right "120 0 0" _color "1 1 0.8" texture "lights/spot01" name lspot
+at 2 spawn func_rotating origin "272 160 80" model "models/weapons/rocketlauncher/rocket.lwo" speed 120 name rot1
+at 3 spawn light origin "272 280 80" light_radius "200 200 200" _color "0.2 1 0.3" bind rot1 name lorbit
+impulse 40 16
+move 50 110 yaw=20
+move 110 170 yaw=-20 pitch=10
+at 120 trigger lstrobe
+at 150 trigger lstrobe
+end 180
+capture 0 180 every=10 fps=60
+capture 60 69

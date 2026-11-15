@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 #include "Common_local.h"
+#include "VisualDemo.h"
 
 idCVar com_logFile( "logFile", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "1 = write each print to the log (kept if the game crashes), 2 = also flush it to disk after each print (kept if Windows crashes, slow)", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar com_logFileName( "logFileName", "qconsole.log", CVAR_SYSTEM | CVAR_NOCHEAT, "name of log file, if empty, qconsole.log will be used" );
@@ -553,6 +554,7 @@ void idCommonLocal::Error( const char *fmt, ... ) {
 	} else if ( code == ERP_DROP ) {
 		Printf( "********************\nERROR: %s\n********************\n", errorMessage );
 		com_errorEntered = ERP_NONE;
+		visualDemo->OnDropError();
 		throw idException( errorMessage );
 	} else {
 		Printf( "********************\nERROR: %s\n********************\n", errorMessage );

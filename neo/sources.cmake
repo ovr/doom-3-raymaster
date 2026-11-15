@@ -300,6 +300,7 @@ set(DOOMEXE_SOURCES
 	framework/TokenParser.cpp
 	framework/Unzip.cpp
 	framework/UsercmdGen.cpp
+	framework/VisualDemo.cpp
 	framework/Zip.cpp
 	renderer/AutoRender.cpp
 	renderer/AutoRenderBink.cpp

@@ -1,0 +1,27 @@
+# 08_cpuboss: stress scene. Sabaoth and a dozen monsters in the arena against the (god mode) player
+# with the chaingun, the arena earthquake shaking the view.
+map game/cpuboss
+at 0 god
+at 1 setviewpos -32 1700 188 90
+at 2 give all
+impulse 3 6
+at 5 spawn monster_boss_sabaoth origin "-32 2450 130" angle 270 name boss1
+at 5 spawn monster_demon_imp origin "-300 2200 130" angle 280 name imp1
+at 5 spawn monster_demon_imp origin "240 2200 130" angle 260 name imp2
+at 5 spawn monster_demon_imp origin "-400 2400 130" angle 290 name imp3
+at 5 spawn monster_demon_imp origin "340 2400 130" angle 250 name imp4
+at 5 spawn monster_demon_trite origin "-200 2000 130" angle 290 name trite1
+at 5 spawn monster_demon_trite origin "140 2000 130" angle 250 name trite2
+at 5 spawn monster_demon_trite origin "-120 2100 130" angle 280 name trite3
+at 5 spawn monster_demon_trite origin "60 2100 130" angle 260 name trite4
+at 5 spawn monster_zombie_commando_cgun origin "-450 2000 130" angle 300 name cgun1
+at 5 spawn monster_zombie_commando_cgun origin "380 2000 130" angle 240 name cgun2
+at 5 spawn monster_demon_revenant origin "-250 2550 130" angle 280 name rev1
+at 5 spawn monster_flying_cacodemon origin "200 2500 340" angle 260 name caco1
+at 100 trigger func_earthquake_1
+move 60 300 attack
+move 120 180 yaw=20
+move 180 300 yaw=-20
+end 300
+capture 0 300 every=10 fps=60
+capture 200 207

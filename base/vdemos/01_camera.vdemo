@@ -1,0 +1,18 @@
+# 01_camera: delta3 corridor. Flashlight, fast view sweeps, the double door opening, running through it.
+map game/delta3
+at 0 god
+at 0 notarget
+at 1 setviewpos 2976 -1000 -376 90
+at 2 give all
+impulse 3 2
+impulse 40 16
+move 30 90 yaw=60
+move 90 150 yaw=-120
+move 150 180 yaw=120 pitch=-40
+move 180 210 pitch=40
+at 190 trigger mal_func_door_23
+move 240 330 forward=127 run
+end 340
+capture 0 340 every=10 fps=60
+capture 100 107
+capture 260 265

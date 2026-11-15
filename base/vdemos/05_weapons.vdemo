@@ -1,0 +1,20 @@
+# 05_weapons: d3dm4 hall. A rocket, a plasma burst, a shotgun blast and a grenade against the far wall.
+# Impulses: 3 shotgun, 7 grenade, 8 plasma gun, 9 rocket launcher.
+map game/mp/d3dm4
+at 0 god
+at 0 notarget
+at 0 noclip
+at 1 setviewpos 272 300 68 270
+at 2 give all
+impulse 3 9
+move 50 52 attack
+impulse 90 8
+move 130 160 attack
+impulse 170 3
+move 205 207 attack
+impulse 230 7
+move 260 275 attack
+end 330
+capture 0 330 every=10 fps=60
+capture 54 61
+capture 140 145

@@ -1,0 +1,14 @@
+# 02_monsters: cpuboss arena. Imp, revenant, cacodemon, chaingun commando and trite attack the (god mode) player.
+map game/cpuboss
+at 0 god
+at 1 setviewpos -32 1850 188 90
+at 5 spawn monster_demon_imp origin "-200 2200 130" angle 270 name imp1
+at 5 spawn monster_demon_revenant origin "100 2350 130" angle 270 name rev1
+at 5 spawn monster_flying_cacodemon origin "-30 2300 320" angle 270 name caco1
+at 5 spawn monster_zombie_commando_cgun origin "220 2150 130" angle 250 name cgun1
+at 5 spawn monster_demon_trite origin "-300 2050 130" angle 300 name trite1
+move 60 120 yaw=15
+move 120 210 yaw=-15
+end 210
+capture 0 210 every=10 fps=60
+capture 150 159

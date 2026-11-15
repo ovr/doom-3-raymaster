@@ -1,0 +1,7 @@
+# smoke test of the harness (not part of "vdemo all")
+map game/mp/d3dm1
+at 0 god
+at 0 notarget
+move 0 120 yaw=45 forward=64
+capture 0 120 every=10
+end 130

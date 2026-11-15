@@ -1,0 +1,18 @@
+# 06_particles: mars_city2 start room. Floor steam, automatic and triggered sparks, the steam blast, scanner GUIs.
+# The camera spot is clear of the room's scripted triggers; the dormant zombie in view is removed.
+map game/mars_city2
+at 0 god
+at 0 notarget
+at 1 remove monster_zsec_pistol_2
+at 1 setviewpos -300 -2040 84 90
+at 20 trigger func_fx_9
+at 20 trigger func_fx_10
+move 20 50 pitch=-40
+move 70 100 pitch=40
+move 110 170 yaw=-75
+at 150 trigger steamblast_1
+move 200 260 yaw=75
+end 270
+capture 0 270 every=10 fps=60
+capture 30 37
+capture 155 162
