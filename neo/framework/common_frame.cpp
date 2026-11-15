@@ -87,6 +87,35 @@ be called directly in the foreground thread for comparison.
 ===============
 */
 int idGameThread::Run() {
+	// an ERP_DROP error must not unwind into idSysThread, which exits the process without a word
+	try {
+		RunFrame();
+	} catch ( idException & ex ) {
+		error = ex.GetError();
+	}
+	return 0;
+}
+
+/*
+===============
+idGameThread::RethrowError
+===============
+*/
+void idGameThread::RethrowError() {
+	if ( error.IsEmpty() ) {
+		return;
+	}
+	const idStr message = error;
+	error.Clear();
+	throw idException( message.c_str() );
+}
+
+/*
+===============
+idGameThread::RunFrame
+===============
+*/
+void idGameThread::RunFrame() {
 	// let the sampling profiler know which thread runs the game (cheap after the first call)
 	Sys_ProfilerRegisterThread();
 
@@ -157,8 +186,6 @@ int idGameThread::Run() {
 	SetThreadRenderTime( ( commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.finishGameTime ) / 1000 );
 
 	SetThreadTotalTime( ( commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.startGameTime ) / 1000 );
-
-	return 0;
 }
 
 /*
@@ -183,6 +210,7 @@ gameReturn_t idGameThread::RunGameAndDraw( const gameThreadFrame_t & frame_, idU
 	if ( com_smp.GetBool() == false ) {
 		// run it in the main thread so PIX profiling catches everything
 		Run();
+		RethrowError();
 	} else {
 		this->SignalWork();
 	}
@@ -746,6 +774,7 @@ void idCommonLocal::Frame() {
 
 		// print what the game thread printed this frame
 		FlushThreadedPrints();
+		gameThread.RethrowError();
 
 		// Send local usermds to the server.
 		// This happens after the game frame has run so that prediction data is up to date.
