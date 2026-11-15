@@ -202,6 +202,7 @@ public:
 
 	virtual bool			IsFullScreen() const = 0;
 	virtual int				GetWidth() const = 0;
+	virtual int				GetDisplayRefreshRate() const = 0;	// Hz of the window's monitor, 0 when unknown
 	virtual int				GetHeight() const = 0;
 
 	// return w/h of a single pixel. This will be 1.0 for normal cases.

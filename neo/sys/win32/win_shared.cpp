@@ -72,14 +72,41 @@ Sys_Microseconds
 ========================
 */
 uint64 Sys_Microseconds() {
-	static uint64 ticksPerMicrosecondTimes1024 = 0;
+	// QPC, not the TSC scaled by the registry's nominal ~MHz: that one ran off real time by up to
+	// about 1 %, and the frame loop now times the game tics with this clock
+	static const uint64 frequency = [] { LARGE_INTEGER f; QueryPerformanceFrequency( &f ); return static_cast<uint64>( f.QuadPart ); }();
+	LARGE_INTEGER counter;
+	QueryPerformanceCounter( &counter );
+	const uint64 ticks = static_cast<uint64>( counter.QuadPart );
+	return ( ticks / frequency ) * 1000000 + ( ticks % frequency ) * 1000000 / frequency;
+}
 
-	if ( ticksPerMicrosecondTimes1024 == 0 ) {
-		ticksPerMicrosecondTimes1024 = ( (uint64)Sys_ClockTicksPerSecond() << 10 ) / 1000000;
-		assert( ticksPerMicrosecondTimes1024 > 0 );
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION	0x00000002
+#endif
+
+/*
+========================
+Sys_WaitUntilMicroseconds
+========================
+*/
+void Sys_WaitUntilMicroseconds( const uint64 targetMicroseconds ) {
+	// a high-resolution timer (Windows 10 1803+) wakes within about 0.5 ms, Sleep under
+	// timeBeginPeriod( 1 ) within about 2 ms; the rest is spun on the clock
+	thread_local const HANDLE timer = CreateWaitableTimerExW( nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS );
+	const uint64 spinMicroseconds = ( timer != nullptr ) ? 1000 : 2000;
+
+	for ( uint64 now = Sys_Microseconds(); now + spinMicroseconds < targetMicroseconds; now = Sys_Microseconds() ) {
+		const uint64 sleepMicroseconds = targetMicroseconds - spinMicroseconds - now;
+		LARGE_INTEGER dueTime;
+		dueTime.QuadPart = -static_cast<LONGLONG>( sleepMicroseconds * 10 );	// relative, in 100 ns units
+		if ( timer == nullptr || !SetWaitableTimer( timer, &dueTime, 0, nullptr, nullptr, FALSE ) || WaitForSingleObject( timer, INFINITE ) != WAIT_OBJECT_0 ) {
+			Sleep( static_cast<DWORD>( sleepMicroseconds / 1000 ) );
+		}
 	}
-
-	return ((uint64)( (int64)Sys_GetClockTicks() << 10 )) / ticksPerMicrosecondTimes1024;
+	while ( Sys_Microseconds() < targetMicroseconds ) {
+		YieldProcessor();
+	}
 }
 
 /*

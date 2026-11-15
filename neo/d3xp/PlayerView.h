@@ -156,8 +156,15 @@ public:
 	void					SetFadeSpeed( int msec )				{ fader.SetFadeTime( msec ); };
 	float					GetFadeAlpha()							{ return fader.GetAlpha(); };
 
+	// true once per game time: the accum pass feeds _accum back into itself, so running it on
+	// every drawn frame would shorten the trails and speed up their zoom and spin
+	bool					AccumDue( const int time )				{ const bool due = time != lastAccumTime; lastAccumTime = time; return due; }
+
 	virtual void			Save( idSaveGame *savefile );
 	virtual void			Restore( idRestoreGame *savefile );
+
+private:
+	int						lastAccumTime = -1;		// not saved
 };
 
 /*
@@ -281,6 +288,7 @@ class FullscreenFX_Bloom : public FullscreenFX {
 
 	float					currentIntensity;
 	float					targetIntensity;
+	int						lastStepTime = 0;	// game time of the previous blend step, not saved
 
 public:
 	virtual void			Initialize();
@@ -376,6 +384,7 @@ private:
 	screenBlob_t *		GetScreenBlob();
 
 	screenBlob_t		screenBlobs[MAX_SCREEN_BLOBS];
+	int					lastBlobDriftTime = 0;	// render time of the previous drift step, not saved
 
 public:
 	int					dvFinishTime;		// double vision will be stopped at this time

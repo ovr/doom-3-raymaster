@@ -36,7 +36,7 @@ If you have questions concerning this license or the applicable additional terms
 #define	CON_TEXTSIZE			0x30000
 #define	NUM_CON_TIMES			4
 #define CONSOLE_FIRSTREPEAT		200
-#define CONSOLE_REPEAT			100
+#define CONSOLE_REPEAT			16		// the old rate: it repeated once per drawn frame at 60 Hz
 
 #define	COMMAND_HISTORY			64
 
@@ -408,8 +408,9 @@ float idConsoleLocal::DrawFPS( float y ) {
 	int numShadowTris = 0;
 	renderSystem->GetLastFrameDrawStats( numDraws, numTris, numShadowTris );
 
-	const float engineHz = Max( 1.0f, com_engineHz_latched );
-	const float budgetMs = 1000.0f / engineHz;
+	// frames no longer wait for a tic, so the budget is the frame rate the loop aims for
+	const float targetHz = Max( 1.0f, commonLocal.GetTargetFrameRate() );
+	const float budgetMs = 1000.0f / targetHz;
 
 	idPerfOverlayPainter p;
 	p.Begin();
@@ -459,7 +460,7 @@ float idConsoleLocal::DrawFPS( float y ) {
 	const float fpsW = p.Text( innerX, cy - p.UI( 4 ), 40, frameColor, va( "%d", idMath::Ftoi( fps + 0.5f ) ) );
 	p.Text( innerX + fpsW + p.UI( 6 ), cy + p.UI( 15 ), 16, perfColorLabel, "FPS" );
 	p.Text( innerR, cy + p.UI( 1 ), 20, perfColorText, va( "%.2f ms", shown[PERF_FRAME] ), true );
-	p.Text( innerR, cy + p.UI( 23 ), 13, perfColorLabel, va( "target %d Hz", idMath::Ftoi( engineHz + 0.5f ) ), true );
+	p.Text( innerR, cy + p.UI( 23 ), 13, perfColorLabel, va( "target %d Hz", idMath::Ftoi( targetHz + 0.5f ) ), true );
 	cy += p.UI( 48 );
 
 	// frame time graph, newest frame on the right
@@ -908,18 +909,22 @@ deals with scrolling text because we don't have key repeat
 ==============
 */
 void idConsoleLocal::Scroll( ) {
-	if (lastKeyEvent == -1 || (lastKeyEvent+200) > eventLoop->Milliseconds()) {
+	// Draw calls this every frame, so the repeat has to be timed
+	const int now = eventLoop->Milliseconds();
+	if ( lastKeyEvent == -1 || now < lastKeyEvent + nextKeyEvent ) {
 		return;
 	}
 	// console scrolling
 	if ( idKeyInput::IsDown( K_PGUP ) ) {
 		PageUp();
+		lastKeyEvent = now;
 		nextKeyEvent = CONSOLE_REPEAT;
 		return;
 	}
 
 	if ( idKeyInput::IsDown( K_PGDN ) ) {
 		PageDown();
+		lastKeyEvent = now;
 		nextKeyEvent = CONSOLE_REPEAT;
 		return;
 	}

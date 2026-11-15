@@ -694,6 +694,7 @@ public:
 	virtual void			EnableStereoScopicRendering( const stereo3DMode_t mode ) const;
 	virtual int				GetWidth() const;
 	virtual int				GetHeight() const;
+	virtual int				GetDisplayRefreshRate() const;
 	virtual float			GetPixelAspect() const;
 	virtual float			GetPhysicalScreenWidthInCentimeters() const;
 	virtual idRenderWorld *	AllocRenderWorld();

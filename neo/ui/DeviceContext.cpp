@@ -671,7 +671,7 @@ idRegion *idDeviceContext::GetTextRegion(const char *text, float textScale, idRe
 }
 
 void idDeviceContext::DrawEditCursor( float x, float y, float scale ) {
-	if ( (int)( idLib::frameNumber >> 4 ) & 1 ) {
+	if ( ( Sys_Milliseconds() >> 8 ) & 1 ) {	// blink by time, not by frames
 		return;
 	}
 	char cursorChar = (overStrikeMode) ? '_' : '|';

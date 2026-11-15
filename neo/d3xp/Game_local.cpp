@@ -271,6 +271,9 @@ void idGameLocal::Clear() {
 
 	lastCmdRunTimeOnClient.Zero();
 	lastCmdRunTimeOnServer.Zero();
+
+	renderAlpha = 1.0f;
+	renderCmd = usercmd_t();
 }
 
 /*
@@ -2804,6 +2807,18 @@ void idGameLocal::CalcFov( float base_fov, float &fov_x, float &fov_y ) const {
 	const float ratio_y = height;
 	const float tanHalfY = idMath::Tan( DEG2RAD( fov_y * 0.5f ) );
 	fov_x = 2.0f * RAD2DEG( idMath::ATan( ratio_x * tanHalfY, ratio_y ) );
+}
+
+/*
+================
+idGameLocal::SetRenderFrame
+================
+*/
+void idGameLocal::SetRenderFrame( const float alpha, const usercmd_t & latestCmd ) {
+	// stored for the render interpolation and the late view angles; Draw doesn't use them yet,
+	// so a frame between two tics shows the last tic
+	renderAlpha = idMath::ClampFloat( 0.0f, 1.0f, alpha );
+	renderCmd = latestCmd;
 }
 
 /*

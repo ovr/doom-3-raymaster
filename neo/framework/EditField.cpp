@@ -582,8 +582,8 @@ void idEditField::Draw( int x, int y, int width, bool showCursor ) {
 		return;
 	}
 
-	if ( (int)( idLib::frameNumber >> 4 ) & 1 ) {
-		return;		// off blink
+	if ( ( Sys_Milliseconds() >> 8 ) & 1 ) {
+		return;		// off blink, by time: the frame counter no longer runs at 60 Hz
 	}
 
 	if ( idKeyInput::GetOverstrikeMode() ) {

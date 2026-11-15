@@ -1377,8 +1377,12 @@ idWinVar *idGameSSDWindow::GetWinVarByName	(const char *_name, bool winLookup, d
 
 void idGameSSDWindow::Draw(int time, float x, float y) {
 
-	//Update the game every frame before drawing
-	UpdateGame();
+	// the game steps a fixed 16 ms per update, which was once per drawn frame; the gui time of
+	// an in-world gui is the game time, so this keeps it to once per tic
+	if ( time != lastUpdateTime ) {
+		lastUpdateTime = time;
+		UpdateGame();
+	}
 
 	RefreshGuiData();
 

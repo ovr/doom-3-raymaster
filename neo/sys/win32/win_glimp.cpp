@@ -981,6 +981,28 @@ bool R_GetModeListForDisplay( const int requestedDisplayNum, idList<vidMode_t> &
 
 /*
 ====================
+GLW_GetDisplayFrequency
+
+The refresh rate in Hz of the monitor the window is on, 0 when unknown.
+====================
+*/
+static int GLW_GetDisplayFrequency() {
+	MONITORINFOEX monitorInfo = {};
+	monitorInfo.cbSize = sizeof( monitorInfo );
+	if ( !GetMonitorInfo( MonitorFromWindow( win32.hWnd, MONITOR_DEFAULTTOPRIMARY ), &monitorInfo ) ) {
+		return 0;
+	}
+	DEVMODE devmode = {};
+	devmode.dmSize = sizeof( devmode );
+	if ( !EnumDisplaySettings( monitorInfo.szDevice, ENUM_CURRENT_SETTINGS, &devmode ) ) {
+		return 0;
+	}
+	// 0 and 1 mean the hardware default
+	return devmode.dmDisplayFrequency > 1 ? static_cast<int>( devmode.dmDisplayFrequency ) : 0;
+}
+
+/*
+====================
 GLW_GetWindowDimensions
 ====================
 */
@@ -1300,6 +1322,7 @@ bool GLimp_Init( glimpParms_t parms ) {
 	glConfig.nativeScreenWidth = parms.width;
 	glConfig.nativeScreenHeight = parms.height;
 	glConfig.multisamples = parms.multiSamples;
+	glConfig.displayFrequency = GLW_GetDisplayFrequency();
 
 	glConfig.pixelAspect = 1.0f;	// FIXME: some monitor modes may be distorted
 									// should side-by-side stereo modes be consider aspect 0.5?
@@ -1374,6 +1397,7 @@ bool GLimp_SetScreenParms( glimpParms_t parms ) {
 	glConfig.isFullscreen = parms.fullScreen;
 	glConfig.nativeScreenWidth = parms.width;
 	glConfig.nativeScreenHeight = parms.height;
+	glConfig.displayFrequency = GLW_GetDisplayFrequency();
 
 	return true;
 }

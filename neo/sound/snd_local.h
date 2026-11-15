@@ -257,6 +257,7 @@ public:
 	idDemoFile *		writeDemo;		// if not NULL, archive commands here
 
 	float				currentCushionDB;	// channels at or below this level will be faded to 0
+	uint64				lastCushionUpdateUS;	// Sys_Microseconds of the previous Update, 0 before the first
 	float				shakeAmp;			// last calculated shake amplitude
 
 	listener_t			listener;

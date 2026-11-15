@@ -750,7 +750,7 @@ void idSWF::RenderEditText( idRenderSystem * gui, idSWFTextInstance * textInstan
 
 	bool drawCursor = false;
 
-	if ( inputField && ( ( idLib::frameNumber >> 4 ) & 1 ) == 0 ) {
+	if ( inputField && ( ( Sys_Milliseconds() >> 8 ) & 1 ) == 0 ) {	// blink by time, not by frames
 		cursorPos = selEnd;
 		drawCursor = true;
 	}

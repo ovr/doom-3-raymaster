@@ -172,6 +172,9 @@ idCommonLocal::idCommonLocal() :
 	gameFrame = 0;
 	gameTimeResidual = 0;
 	syncNextGameFrame = true;
+	lastFrameTimeUS = 0;
+	limiterFrameUS = 0;
+	renderAlpha = 1.0f;
 	mapSpawned = false;
 	aviCaptureMode = false;
 	timeDemo = TD_NO;

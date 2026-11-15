@@ -135,6 +135,7 @@ private:
 	void				LoadBoardFiles();
 	void				SetCurrentBoard();
 	void				UpdateGame();
+	int					lastUpdateTime = -1;
 	void				UpdatePowerups();
 	void				UpdatePaddle();
 	void				UpdateBall();

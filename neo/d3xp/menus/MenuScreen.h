@@ -1222,7 +1222,7 @@ public:
 
 		int originalFullscreen;
 		bool originalBorderless;
-		int originalFramerate;
+		int originalMaxFPS;
 		int originalAntialias;
 		int originalMotionBlur;
 		int originalVsync;

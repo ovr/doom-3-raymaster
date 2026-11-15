@@ -64,6 +64,7 @@ idSoundWorldLocal::idSoundWorldLocal() {
 
 	shakeAmp = 0.0f;
 	currentCushionDB = DB_SILENCE;
+	lastCushionUpdateUS = 0;
 
 	localSound = AllocSoundEmitter();
 
@@ -379,7 +380,10 @@ void idSoundWorldLocal::Update() {
 		}
 	}
 
-	const float secondsPerFrame = 1.0f / com_engineHz_latched;
+	// Update runs once per rendered frame, which is no longer once per game tic
+	const uint64 nowUS = Sys_Microseconds();
+	const float secondsPerFrame = ( lastCushionUpdateUS != 0 ) ? Min( static_cast<float>( nowUS - lastCushionUpdateUS ) * 1e-6f, 0.05f ) : 1.0f / com_engineHz_latched;
+	lastCushionUpdateUS = nowUS;
 
 	// ------------------
 	// In the very common case of having more sounds that would contribute to the

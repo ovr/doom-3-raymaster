@@ -225,8 +225,10 @@ public:
 	// Directly sample a keystate.
 	virtual int			KeyState( int key ) = 0;
 
-	// called at vsync time
-	virtual void		BuildCurrentUsercmd( int deviceNum ) = 0;
+	// Called once per rendered frame. tic: a game tic runs this frame and consumes the cmd (aim assist is
+	// added, latched buttons are released). decoupled: frames run between tics, so keyboard turning
+	// follows real time and an impulse that comes before the tic took the previous one waits for the next.
+	virtual void		BuildCurrentUsercmd( int deviceNum, bool tic, bool decoupled ) = 0;
 
 	// return the current usercmd
 	virtual usercmd_t	GetCurrentUsercmd() = 0;

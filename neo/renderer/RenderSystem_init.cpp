@@ -2457,6 +2457,15 @@ bool idRenderSystemLocal::IsFullScreen() const {
 
 /*
 ========================
+idRenderSystemLocal::GetDisplayRefreshRate
+========================
+*/
+int idRenderSystemLocal::GetDisplayRefreshRate() const {
+	return glConfig.displayFrequency;
+}
+
+/*
+========================
 idRenderSystemLocal::GetWidth
 ========================
 */

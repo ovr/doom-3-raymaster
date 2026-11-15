@@ -107,6 +107,10 @@ public:
 	// Runs a game frame, may return a session command for level changing, etc
 	virtual void				RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & gameReturn ) = 0;
 
+	// Called on the game thread before each Draw. alpha: how far the frame is from the last tic towards
+	// the next one, 0..1 (1 when it shows the last tic). latestCmd: built this frame, maybe not run yet.
+	virtual void				SetRenderFrame( float alpha, const usercmd_t & latestCmd ) = 0;
+
 	// Makes rendering and sound system calls to display for a given clientNum.
 	virtual bool				Draw( int clientNum ) = 0;
 

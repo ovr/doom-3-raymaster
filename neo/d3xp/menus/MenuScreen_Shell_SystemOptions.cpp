@@ -133,7 +133,7 @@ void idMenuScreen_Shell_SystemOptions::Initialize( idMenuHandler * data ) {
 
 	control = new (TAG_SWF) idMenuWidget_ControlButton();
 	control->SetOptionType( OPTION_SLIDER_TEXT );
-	control->SetLabel( "#str_swf_framerate" );
+	control->SetLabel( "Max Frame Rate" );
 	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_FRAMERATE );
 	control->SetupEvents( DEFAULT_REPEAT_TIME, options->GetChildren().Num() );
 	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_FRAMERATE );
@@ -415,7 +415,7 @@ idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadData
 ========================
 */
 void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadData() {
-	originalFramerate = com_engineHz.GetInteger();
+	originalMaxFPS = com_maxFPS.GetInteger();
 	originalAntialias = r_multiSamples.GetInteger();
 	originalMotionBlur = r_motionBlur.GetInteger();
 	originalVsync = r_swapInterval.GetInteger();
@@ -448,9 +448,6 @@ idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsRestartRequ
 */
 bool idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsRestartRequired() const {
 	if ( originalAntialias != r_multiSamples.GetInteger() ) {
-		return true;
-	}
-	if ( originalFramerate != com_engineHz.GetInteger() ) {
 		return true;
 	}
 	return false;
@@ -529,9 +526,10 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 			break;
 		}
 		case SYSTEM_FIELD_FRAMERATE: {
-			static const int numValues = 2;
-			static const int values[numValues] = { 60, 120 };
-			com_engineHz.SetInteger( AdjustOption( com_engineHz.GetInteger(), values, numValues, adjustAmount ) );
+			// the frame rate cap: the game tics stay at com_engineHz, which is console only
+			static constexpr int numValues = 7;
+			static constexpr int values[numValues] = { 0, 60, 120, 144, 165, 240, 360 };
+			com_maxFPS.SetInteger( AdjustOption( com_maxFPS.GetInteger(), values, numValues, adjustAmount ) );
 			break;
 		}
 		case SYSTEM_FIELD_VSYNC: {
@@ -614,7 +612,10 @@ idSWFScriptVar idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings
 			}
 		}
 		case SYSTEM_FIELD_FRAMERATE:
-			return va( "%d FPS", com_engineHz.GetInteger() );
+			if ( com_maxFPS.GetInteger() <= 0 ) {
+				return "Unlimited";
+			}
+			return va( "%d FPS", com_maxFPS.GetInteger() );
 		case SYSTEM_FIELD_VSYNC:
 			if ( r_swapInterval.GetInteger() == 1 ) {
 				return "#str_swf_smart";
@@ -656,7 +657,7 @@ bool idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsDataCh
 	if ( originalBorderless != r_borderless.GetBool() ) {
 		return true;
 	}
-	if ( originalFramerate != com_engineHz.GetInteger() ) {
+	if ( originalMaxFPS != com_maxFPS.GetInteger() ) {
 		return true;
 	}
 	if ( originalAntialias != r_multiSamples.GetInteger() ) {

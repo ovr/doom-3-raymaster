@@ -360,6 +360,7 @@ public:
 	void					RunAllUserCmdsForPlayer( idUserCmdMgr & cmdMgr, const int playerNumber );
 	void					RunSingleUserCmd( usercmd_t & cmd, idPlayer & player );
 	void					RunEntityThink( idEntity & ent, idUserCmdMgr & userCmdMgr );
+	virtual void			SetRenderFrame( float alpha, const usercmd_t & latestCmd );
 	virtual bool			Draw( int clientNum );
 	virtual bool			HandlePlayerGuiEvent( const sysEvent_t * ev );
 	virtual void			ServerWriteSnapshot( idSnapShot & ss );
@@ -466,6 +467,10 @@ public:
 	// added the following to assist licensees with merge issues
 	int						GetFrameNum() const { return framenum; };
 	int						GetTime() const { return time; };
+
+	// what SetRenderFrame passed for the frame being drawn
+	float					GetRenderAlpha() const { return renderAlpha; }
+	const usercmd_t &		GetRenderCmd() const { return renderCmd; }
 
 	int						GetNextClientNum( int current ) const;
 	idPlayer *				GetClientByNum( int current ) const;
@@ -601,6 +606,9 @@ private:
 	netInterpolationInfo_t	netInterpolationInfo;
 
 	idDict					newInfo;
+
+	float					renderAlpha = 1.0f;
+	usercmd_t				renderCmd;
 
 	idArray< int, MAX_PLAYERS >	usercmdLastClientMilliseconds;	// The latest client time the server has run.
 	idArray< int, MAX_PLAYERS >	lastCmdRunTimeOnClient;
