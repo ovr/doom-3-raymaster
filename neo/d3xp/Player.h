@@ -494,8 +494,8 @@ public:
 	void					CalculateFirstPersonView();
 
 	// The view of a frame between two game tics, from the views of the last two tics: alpha as in
-	// renderInterpolation_t. Fills interp's view fields; renderView never changes.
-	void					BuildDrawView( float alpha, renderView_t & view, renderInterpolation_t & interp ) const;
+	// renderInterpolation_t, cmd the newest usercmd. Fills interp's view fields; renderView never changes.
+	void					BuildDrawView( float alpha, const usercmd_t & cmd, renderView_t & view, renderInterpolation_t & interp ) const;
 
 	void					AddChatMessage( int index, int alpha, const idStr & message );
 	void					UpdateSpectatingText();
@@ -788,6 +788,8 @@ private:
 
 	idAngles				ViewExtraAngles() const;
 	void					RecordTicView( ticViewMode_t mode, const idCamera * camera );
+	// the view angles the next tic will turn to with cmd (com_lateLatchAngles); false where the tics don't
+	bool					GetDrawViewAngles( const usercmd_t & cmd, idAngles & angles ) const;
 
 	static const int		NUM_LOGGED_VIEW_ANGLES = 64;		// for weapon turning angle offsets
 	idAngles				loggedViewAngles[NUM_LOGGED_VIEW_ANGLES];	// [gameLocal.framenum&(LOGGED_VIEW_ANGLES-1)]

@@ -256,6 +256,10 @@ struct renderInterpolation_t {
 	// the view being drawn, before ShakeAxis and the stereo eye offset
 	idVec3		drawViewOrigin = idVec3( 0.0f, 0.0f, 0.0f );
 	idMat3		drawViewAxis = idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f );
+
+	// the drawn view angles minus the tic's (com_lateLatchAngles), degrees, for com_showFPS
+	float		lateYaw = 0.0f;
+	float		latePitch = 0.0f;
 };
 
 

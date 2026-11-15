@@ -2856,7 +2856,7 @@ bool idGameLocal::Draw( int clientNum ) {
 	renderView_t view;
 	renderInterpolation_t interp;
 	interp.alpha = renderAlpha;
-	player->BuildDrawView( viewAlpha, view, interp );
+	player->BuildDrawView( viewAlpha, renderCmd, view, interp );
 	gameRenderWorld->SetInterpolation( &interp );
 	player->playerView.RenderPlayerView( &view, player->hudManager );
 	gameRenderWorld->SetInterpolation( nullptr );
