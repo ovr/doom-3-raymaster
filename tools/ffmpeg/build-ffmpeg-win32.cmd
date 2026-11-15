@@ -1,8 +1,7 @@
 @echo off
-rem Builds the minimal 32-bit LGPL FFmpeg for the Bink videos into external\ffmpeg-win32.
-rem Sets up the x86 VS 2022 environment, then runs build-ffmpeg-win32.sh in MSYS2 bash.
-rem   build-ffmpeg-win32.cmd [--asm] [--prefix DIR] [--work DIR] [--jobs N]
-rem Needs MSYS2 (default C:\msys64, override with MSYS2_ROOT) with: pacman -S make diffutils
+rem build-ffmpeg-win32.cmd [--asm] [--prefix DIR] [--work DIR] [--jobs N]: the x86 VS 2022
+rem environment, then build-ffmpeg-win32.sh in MSYS2 bash (MSYS2_ROOT, default C:\msys64,
+rem with pacman -S make diffutils).
 setlocal
 
 if "%MSYS2_ROOT%"=="" set "MSYS2_ROOT=C:\msys64"

@@ -85,10 +85,9 @@ constexpr int64			REWIND_TOLERANCE_FRAMES = 2;
 
 /*
 ================================================
-Y, Cr and Cb textures of a cinematic (the bink shaders sample Y from unit 0, Cr from 1 and
-Cb from 2). They are standalone images, not in the image manager's list, kept in a pool: a
-cinematic can be freed on any thread, but deleting a texture needs the GL context, so a freed
-cinematic returns its images to the pool and the next one reuses them.
+Y, Cr and Cb textures of a cinematic (bink shader units 0, 1, 2), outside the image manager.
+A cinematic can be freed on any thread but deleting a texture needs the GL context, so freed
+sets go to a pool for the next cinematic.
 ================================================
 */
 struct cinematicImages_t {
@@ -166,10 +165,9 @@ private:
 
 /*
 ================================================
-idCinematicAudio plays the sound track of a video (only video/loadvideo.bik has one; the PDA
-videos play theirs as separate sound shaders) on its own XAudio2 source voice, the way the
-Bink SDK did through idSoundSystem::GetIXAudio2. The voice goes straight to the mastering
-voice, so s_volume_dB and muting apply. Called with the cinematic locked.
+The sound track of a video (only video/loadvideo.bik has one) on its own XAudio2 voice into
+the mastering voice, as the Bink SDK did, so s_volume_dB and muting apply. Called with the
+cinematic locked.
 ================================================
 */
 class idCinematicAudio {

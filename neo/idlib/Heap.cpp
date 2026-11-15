@@ -127,18 +127,8 @@ void Mem_Free16( void *ptr ) {
 
 /*
 ===============================================================================
-
-	The replaceable global operator new and delete
-
-	Defined once, here, and not inline ([replacement.functions]): every form,
-	so no new or delete expression reaches the CRT's malloc and free, and
-	every allocation function has a matching deallocation function.
-
-	std::align_val_t (types aligned to more than __STDCPP_DEFAULT_NEW_ALIGNMENT__,
-	8 on x86, such as ALIGNTYPE16 and ALIGNTYPE128 classes) goes through the
-	same allocator with the alignment raised to the type's, so over-aligned
-	objects come from our memory system too.
-
+The replaceable global operator new and delete, see Heap.h. The std::align_val_t forms
+(types aligned to more than 8 on x86) raise the alignment to the type's.
 ===============================================================================
 */
 

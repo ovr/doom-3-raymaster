@@ -1060,11 +1060,8 @@ TEST( SIMD_JointsMatchGeneric ) {
 /*
 ===============================================================================
 
-	Global operator new and delete (Heap.cpp)
-
-	Every form must come from Heap.cpp, which allocates with _aligned_malloc and
-	pads the size to 16 bytes; _aligned_msize only works on such blocks, and the
-	padding shows the block didn't come from the CRT's operator new.
+	Global operator new and delete: every form must come from Heap.cpp, and only its
+	_aligned_malloc blocks padded to 16 pass _aligned_msize, the CRT's new doesn't.
 
 ===============================================================================
 */
