@@ -1180,6 +1180,80 @@ TEST( Interp_PoseJumped ) {
 	CHECK( Near( R_AxisRotationCos( axis, axis ), 1.0f, 1e-5f ), "cos of no turn" );
 }
 
+// a projected light as idLight spawns it; the shader and prelight pointers are only compared
+static renderLight_t TestSpotLight() {
+	renderLight_t light;
+	memset( &light, 0, sizeof( light ) );
+	light.axis = YawAxis( 30.0f );
+	light.origin = idVec3( 100.0f, -50.0f, 64.0f );
+	light.target = idVec3( 0.0f, 0.0f, -256.0f );
+	light.right = idVec3( 128.0f, 0.0f, 0.0f );
+	light.up = idVec3( 0.0f, 128.0f, 0.0f );
+	light.end = light.target;
+	light.lightRadius = idVec3( 300.0f, 300.0f, 300.0f );
+	light.shaderParms[0] = 1.0f;
+	return light;
+}
+
+TEST( Interp_LightShapeMatches ) {
+	static int materialA, materialB, prelight;
+	const idMaterial * shaderA = reinterpret_cast<const idMaterial *>( &materialA );
+	const idMaterial * shaderB = reinterpret_cast<const idMaterial *>( &materialB );
+
+	renderLight_t from = TestSpotLight();
+	from.shader = shaderA;
+
+	// the pose and what is evaluated per frame lerp
+	renderLight_t moved = from;
+	moved.origin += idVec3( 12.0f, -3.0f, 1.0f );
+	moved.axis = YawAxis( 41.0f );
+	moved.shaderParms[0] = 0.25f;
+	moved.shaderParms[7] = 3.0f;
+	moved.noShadows = true;
+	moved.forceShadows = true;
+	moved.noSpecular = true;
+	moved.lightId = 7;
+	moved.suppressLightInViewID = 2;
+	moved.viewAttachedID = 3;
+	CHECK( R_LightShapeMatches( from, moved, false ), "pose, shader parms, shadow flags, ids" );
+	CHECK( R_LightShapeMatches( from, from, false ), "no change" );
+
+	// every change of the volume or the shader snaps
+	struct shapeChange_t {
+		const char *	name;
+		void			( *change )( renderLight_t & light, const idMaterial * other );
+	};
+	const shapeChange_t changes[] = {
+		{ "lightRadius",	[]( renderLight_t & l, const idMaterial * ) { l.lightRadius.y += 1.0f; } },
+		{ "lightCenter",	[]( renderLight_t & l, const idMaterial * ) { l.lightCenter.z = 8.0f; } },
+		{ "target",			[]( renderLight_t & l, const idMaterial * ) { l.target.x = 16.0f; } },
+		{ "right",			[]( renderLight_t & l, const idMaterial * ) { l.right *= 1.5f; } },
+		{ "up",				[]( renderLight_t & l, const idMaterial * ) { l.up.x = 1.0f; } },
+		{ "start",			[]( renderLight_t & l, const idMaterial * ) { l.start.z = -8.0f; } },
+		{ "end",			[]( renderLight_t & l, const idMaterial * ) { l.end.z = -512.0f; } },
+		{ "pointLight",		[]( renderLight_t & l, const idMaterial * ) { l.pointLight = true; } },
+		{ "parallel",		[]( renderLight_t & l, const idMaterial * ) { l.parallel = true; } },
+		{ "shader",			[]( renderLight_t & l, const idMaterial * other ) { l.shader = other; } },
+		{ "shader NULL",	[]( renderLight_t & l, const idMaterial * ) { l.shader = nullptr; } },
+	};
+	for ( const shapeChange_t & c : changes ) {
+		renderLight_t changed = moved;
+		c.change( changed, shaderB );
+		CHECK( !R_LightShapeMatches( from, changed, false ), "%s", c.name );
+		CHECK( !R_LightShapeMatches( from, changed, true ), "%s, prelight dropped", c.name );
+	}
+
+	// UpdateLightDef drops the prelight of a light that moved, the game keeps passing it
+	idRenderModel * prelightModel = reinterpret_cast<idRenderModel *>( &prelight );
+	renderLight_t mapLight = from;
+	mapLight.prelightModel = prelightModel;
+	renderLight_t mapLightMoved = moved;
+	mapLightMoved.prelightModel = prelightModel;
+	CHECK( R_LightShapeMatches( mapLight, mapLightMoved, false ), "the first move keeps the prelight" );
+	CHECK( R_LightShapeMatches( from, mapLightMoved, true ), "later moves: dropped in the def, passed by the game" );
+	CHECK( !R_LightShapeMatches( from, mapLightMoved, false ), "a new prelight on a light that never moved" );
+}
+
 /*
 ===============================================================================
 

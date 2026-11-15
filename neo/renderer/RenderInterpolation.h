@@ -44,6 +44,9 @@ If you have questions concerning this license or the applicable additional terms
 	A pose that jumped is drawn at the tic pose: a move farther than r_interpolateSnapDist (a teleport)
 	or a turn of more than 90 degrees, which a lerp would smear across the screen.
 
+	A light lerps its origin and axis the same way, and only when they are all that changed: a new
+	radius, frustum, shader or type would morph the light volume between two shapes.
+
 ===============================================================================
 */
 
@@ -95,6 +98,17 @@ ID_INLINE bool R_PoseJumped( const idVec3 & fromOrigin, const idMat3 & fromAxis,
 		return true;
 	}
 	return !( R_AxisRotationCos( fromAxis, toAxis ) >= 0.0f );
+}
+
+// the shape of a light is the same in two updates, so only its pose (and per-frame parms) changed;
+// prelightDropped: UpdateLightDef has dropped the prelight of a light that moved, the game still passes it
+ID_INLINE bool R_LightShapeMatches( const renderLight_t & from, const renderLight_t & to, const bool prelightDropped ) {
+	return from.lightRadius == to.lightRadius && from.lightCenter == to.lightCenter
+		&& from.target == to.target && from.right == to.right && from.up == to.up
+		&& from.start == to.start && from.end == to.end
+		&& from.pointLight == to.pointLight && from.parallel == to.parallel
+		&& from.shader == to.shader
+		&& ( prelightDropped || from.prelightModel == to.prelightModel );
 }
 
 #endif /* !__RENDERINTERPOLATION_H__ */

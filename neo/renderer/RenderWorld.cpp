@@ -449,6 +449,10 @@ void idRenderWorldLocal::UpdateLightDef( qhandle_t lightHandle, const renderLigh
 	bool justUpdate = false;
 	idRenderLightLocal *light = lightDefs[lightHandle];
 	if ( light ) {
+		// before light->parms changes: the first update of a tic keeps the pose of the tic before
+		BeginLightTic( light, rlight );
+		CheckLightSnap( light, rlight );
+
 		// if the shape of the light stays the same, we don't need to dump
 		// any of our derived data, because shader parms are calculated every frame
 		if ( rlight->axis == light->parms.axis && rlight->end == light->parms.end &&
@@ -471,6 +475,9 @@ void idRenderWorldLocal::UpdateLightDef( qhandle_t lightHandle, const renderLigh
 
 		light->world = this;
 		light->index = lightHandle;
+
+		// a new def starts snapped, at its first pose
+		BeginLightTic( light, rlight );
 	}
 
 	light->parms = *rlight;
@@ -490,9 +497,12 @@ void idRenderWorldLocal::UpdateLightDef( qhandle_t lightHandle, const renderLigh
 		light->parms.prelightModel = NULL;
 	}
 
+	// a justUpdate keeps the derived data, so RestoreTicPoses must leave the tic pose in it after every scene
 	if ( !justUpdate ) {
 		R_CreateLightRefs( light );
 	}
+
+	ListLightDef( light );
 }
 
 /*

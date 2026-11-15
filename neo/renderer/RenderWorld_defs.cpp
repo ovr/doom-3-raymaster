@@ -236,15 +236,15 @@ R_ComputePointLightProjectionMatrix
 Computes the light projection matrix for a point light.
 ========================
 */
-static float R_ComputePointLightProjectionMatrix( idRenderLightLocal * light, idRenderMatrix & localProject ) {
-	assert( light->parms.pointLight );
+static float R_ComputePointLightProjectionMatrix( const renderLight_t & parms, idRenderMatrix & localProject ) {
+	assert( parms.pointLight );
 
 	// A point light uses a box projection.
 	// This projects into the 0.0 - 1.0 texture range instead of -1.0 to 1.0 clip space range.
 	localProject.Zero();
-	localProject[0][0] = 0.5f / light->parms.lightRadius[0];
-	localProject[1][1] = 0.5f / light->parms.lightRadius[1];
-	localProject[2][2] = 0.5f / light->parms.lightRadius[2];
+	localProject[0][0] = 0.5f / parms.lightRadius[0];
+	localProject[1][1] = 0.5f / parms.lightRadius[1];
+	localProject[2][2] = 0.5f / parms.lightRadius[2];
 	localProject[0][3] = 0.5f;
 	localProject[1][3] = 0.5f;
 	localProject[2][3] = 0.5f;
@@ -263,14 +263,14 @@ R_ComputeSpotLightProjectionMatrix
 Computes the light projection matrix for a spot light.
 ========================
 */
-static float R_ComputeSpotLightProjectionMatrix( idRenderLightLocal * light, idRenderMatrix & localProject ) {
-	const float targetDistSqr = light->parms.target.LengthSqr();
+static float R_ComputeSpotLightProjectionMatrix( const renderLight_t & parms, idRenderMatrix & localProject ) {
+	const float targetDistSqr = parms.target.LengthSqr();
 	const float invTargetDist = idMath::InvSqrt( targetDistSqr );
 	const float targetDist = invTargetDist * targetDistSqr;
 
-	const idVec3 normalizedTarget = light->parms.target * invTargetDist;
-	const idVec3 normalizedRight = light->parms.right * ( 0.5f * targetDist / light->parms.right.LengthSqr() );
-	const idVec3 normalizedUp = light->parms.up * ( -0.5f * targetDist / light->parms.up.LengthSqr() );
+	const idVec3 normalizedTarget = parms.target * invTargetDist;
+	const idVec3 normalizedRight = parms.right * ( 0.5f * targetDist / parms.right.LengthSqr() );
+	const idVec3 normalizedUp = parms.up * ( -0.5f * targetDist / parms.up.LengthSqr() );
 
 	localProject[0][0] = normalizedRight[0];
 	localProject[0][1] = normalizedRight[1];
@@ -290,8 +290,8 @@ static float R_ComputeSpotLightProjectionMatrix( idRenderLightLocal * light, idR
 	// Set the falloff vector.
 	// This is similar to the Z calculation for depth buffering, which means that the
 	// mapped texture is going to be perspective distorted heavily towards the zero end.
-	const float zNear = Max( light->parms.start * normalizedTarget, SPOT_LIGHT_MIN_Z_NEAR );
-	const float zFar = Max( light->parms.end * normalizedTarget, SPOT_LIGHT_MIN_Z_FAR );
+	const float zNear = Max( parms.start * normalizedTarget, SPOT_LIGHT_MIN_Z_NEAR );
+	const float zFar = Max( parms.end * normalizedTarget, SPOT_LIGHT_MIN_Z_FAR );
 	const float zScale = ( zNear + zFar ) / zFar;
 
 	localProject[2][0] = normalizedTarget[0] * zScale;
@@ -301,7 +301,7 @@ static float R_ComputeSpotLightProjectionMatrix( idRenderLightLocal * light, idR
 
 	// now offset to the 0.0 - 1.0 texture range instead of -1.0 to 1.0 clip space range
 	idVec4 projectedTarget;
-	localProject.TransformPoint( light->parms.target, projectedTarget );
+	localProject.TransformPoint( parms.target, projectedTarget );
 
 	const float ofs0 = 0.5f - projectedTarget[0] / projectedTarget[3];
 	localProject[0][0] += ofs0 * localProject[3][0];
@@ -325,21 +325,129 @@ R_ComputeParallelLightProjectionMatrix
 Computes the light projection matrix for a parallel light.
 ========================
 */
-static float R_ComputeParallelLightProjectionMatrix( idRenderLightLocal * light, idRenderMatrix & localProject ) {
-	assert( light->parms.parallel );
+static float R_ComputeParallelLightProjectionMatrix( const renderLight_t & parms, idRenderMatrix & localProject ) {
+	assert( parms.parallel );
 
 	// A parallel light uses a box projection.
 	// This projects into the 0.0 - 1.0 texture range instead of -1.0 to 1.0 clip space range.
 	localProject.Zero();
-	localProject[0][0] = 0.5f / light->parms.lightRadius[0];
-	localProject[1][1] = 0.5f / light->parms.lightRadius[1];
-	localProject[2][2] = 0.5f / light->parms.lightRadius[2];
+	localProject[0][0] = 0.5f / parms.lightRadius[0];
+	localProject[1][1] = 0.5f / parms.lightRadius[1];
+	localProject[2][2] = 0.5f / parms.lightRadius[2];
 	localProject[0][3] = 0.5f;
 	localProject[1][3] = 0.5f;
 	localProject[2][3] = 0.5f;
 	localProject[3][3] = 1.0f;	// identity perspective
 
 	return 1.0f;
+}
+
+/*
+=================
+R_DeriveLightData
+
+The pose part of the derived data at origin and axis, the shape from parms.
+=================
+*/
+void R_DeriveLightData( const renderLight_t & parms, const idVec3 & origin, const idMat3 & axis, lightPose_t & pose ) {
+	// ------------------------------------
+	// compute the light projection matrix
+	// ------------------------------------
+
+	idRenderMatrix localProject;
+	float zScale = 1.0f;
+	if ( parms.parallel ) {
+		zScale = R_ComputeParallelLightProjectionMatrix( parms, localProject );
+	} else if ( parms.pointLight ) {
+		zScale = R_ComputePointLightProjectionMatrix( parms, localProject );
+	} else {
+		zScale = R_ComputeSpotLightProjectionMatrix( parms, localProject );
+	}
+
+	// set the old style light projection where Z and W are flipped and
+	// for projected lights lightProject[3] is divided by ( zNear + zFar )
+	pose.lightProject[0][0] = localProject[0][0];
+	pose.lightProject[0][1] = localProject[0][1];
+	pose.lightProject[0][2] = localProject[0][2];
+	pose.lightProject[0][3] = localProject[0][3];
+
+	pose.lightProject[1][0] = localProject[1][0];
+	pose.lightProject[1][1] = localProject[1][1];
+	pose.lightProject[1][2] = localProject[1][2];
+	pose.lightProject[1][3] = localProject[1][3];
+
+	pose.lightProject[2][0] = localProject[3][0];
+	pose.lightProject[2][1] = localProject[3][1];
+	pose.lightProject[2][2] = localProject[3][2];
+	pose.lightProject[2][3] = localProject[3][3];
+
+	pose.lightProject[3][0] = localProject[2][0] * zScale;
+	pose.lightProject[3][1] = localProject[2][1] * zScale;
+	pose.lightProject[3][2] = localProject[2][2] * zScale;
+	pose.lightProject[3][3] = localProject[2][3] * zScale;
+
+	// transform the lightProject
+	float lightTransform[16];
+	R_AxisToModelMatrix( axis, origin, lightTransform );
+	for ( int i = 0; i < 4; i++ ) {
+		idPlane temp = pose.lightProject[i];
+		R_LocalPlaneToGlobal( lightTransform, temp, pose.lightProject[i] );
+	}
+
+	// adjust global light origin for off center projections and parallel projections
+	// we are just faking parallel by making it a very far off center for now
+	if ( parms.parallel ) {
+		idVec3 dir = parms.lightCenter;
+		if ( dir.Normalize() == 0.0f ) {
+			// make point straight up if not specified
+			dir[2] = 1.0f;
+		}
+		pose.globalLightOrigin = origin + dir * 100000.0f;
+	} else {
+		pose.globalLightOrigin = origin + axis * parms.lightCenter;
+	}
+
+	// Rotate and translate the light projection by the light matrix.
+	// 99% of lights remain axis aligned in world space.
+	idRenderMatrix lightMatrix;
+	idRenderMatrix::CreateFromOriginAxis( origin, axis, lightMatrix );
+
+	idRenderMatrix inverseLightMatrix;
+	if ( !idRenderMatrix::Inverse( lightMatrix, inverseLightMatrix ) ) {
+		idLib::Warning( "lightMatrix invert failed" );
+	}
+
+	// 'baseLightProject' goes from global space -> light local space -> light projective space
+	idRenderMatrix::Multiply( localProject, inverseLightMatrix, pose.baseLightProject );
+
+	// Invert the light projection so we can deform zero-to-one cubes into
+	// the light model and calculate global bounds.
+	if ( !idRenderMatrix::Inverse( pose.baseLightProject, pose.inverseBaseLightProject ) ) {
+		idLib::Warning( "baseLightProject invert failed" );
+	}
+
+	// calculate the global light bounds by inverse projecting the zero to one cube with the 'inverseBaseLightProject'
+	idRenderMatrix::ProjectedBounds( pose.globalLightBounds, pose.inverseBaseLightProject, bounds_zeroOneCube, false );
+}
+
+/*
+=================
+R_DeriveLightData
+
+RestoreTicPoses relies on parms.origin and parms.axis giving the same bits as the call in R_CreateLightRefs.
+=================
+*/
+void R_DeriveLightData( idRenderLightLocal * light, const idVec3 & origin, const idMat3 & axis ) {
+	lightPose_t pose;
+	R_DeriveLightData( light->parms, origin, axis, pose );
+
+	for ( int i = 0; i < 4; i++ ) {
+		light->lightProject[i] = pose.lightProject[i];
+	}
+	light->baseLightProject = pose.baseLightProject;
+	light->inverseBaseLightProject = pose.inverseBaseLightProject;
+	light->globalLightOrigin = pose.globalLightOrigin;
+	light->globalLightBounds = pose.globalLightBounds;
 }
 
 /*
@@ -388,84 +496,7 @@ static void R_DeriveLightData( idRenderLightLocal * light ) {
 		}
 	}
 
-	// ------------------------------------
-	// compute the light projection matrix
-	// ------------------------------------
-
-	idRenderMatrix localProject;
-	float zScale = 1.0f;
-	if ( light->parms.parallel ) {
-		zScale = R_ComputeParallelLightProjectionMatrix( light, localProject );
-	} else if ( light->parms.pointLight ) {
-		zScale = R_ComputePointLightProjectionMatrix( light, localProject );
-	} else {
-		zScale = R_ComputeSpotLightProjectionMatrix( light, localProject );
-	}
-
-	// set the old style light projection where Z and W are flipped and
-	// for projected lights lightProject[3] is divided by ( zNear + zFar )
-	light->lightProject[0][0] = localProject[0][0];
-	light->lightProject[0][1] = localProject[0][1];
-	light->lightProject[0][2] = localProject[0][2];
-	light->lightProject[0][3] = localProject[0][3];
-
-	light->lightProject[1][0] = localProject[1][0];
-	light->lightProject[1][1] = localProject[1][1];
-	light->lightProject[1][2] = localProject[1][2];
-	light->lightProject[1][3] = localProject[1][3];
-
-	light->lightProject[2][0] = localProject[3][0];
-	light->lightProject[2][1] = localProject[3][1];
-	light->lightProject[2][2] = localProject[3][2];
-	light->lightProject[2][3] = localProject[3][3];
-
-	light->lightProject[3][0] = localProject[2][0] * zScale;
-	light->lightProject[3][1] = localProject[2][1] * zScale;
-	light->lightProject[3][2] = localProject[2][2] * zScale;
-	light->lightProject[3][3] = localProject[2][3] * zScale;
-
-	// transform the lightProject
-	float lightTransform[16];
-	R_AxisToModelMatrix( light->parms.axis, light->parms.origin, lightTransform );
-	for ( int i = 0; i < 4; i++ ) {
-		idPlane temp = light->lightProject[i];
-		R_LocalPlaneToGlobal( lightTransform, temp, light->lightProject[i] );
-	}
-
-	// adjust global light origin for off center projections and parallel projections
-	// we are just faking parallel by making it a very far off center for now
-	if ( light->parms.parallel ) {
-		idVec3 dir = light->parms.lightCenter;
-		if ( dir.Normalize() == 0.0f ) {
-			// make point straight up if not specified
-			dir[2] = 1.0f;
-		}
-		light->globalLightOrigin = light->parms.origin + dir * 100000.0f;
-	} else {
-		light->globalLightOrigin = light->parms.origin + light->parms.axis * light->parms.lightCenter;
-	}
-
-	// Rotate and translate the light projection by the light matrix.
-	// 99% of lights remain axis aligned in world space.
-	idRenderMatrix lightMatrix;
-	idRenderMatrix::CreateFromOriginAxis( light->parms.origin, light->parms.axis, lightMatrix );
-
-	idRenderMatrix inverseLightMatrix;
-	if ( !idRenderMatrix::Inverse( lightMatrix, inverseLightMatrix ) ) {
-		idLib::Warning( "lightMatrix invert failed" );
-	}
-
-	// 'baseLightProject' goes from global space -> light local space -> light projective space
-	idRenderMatrix::Multiply( localProject, inverseLightMatrix, light->baseLightProject );
-
-	// Invert the light projection so we can deform zero-to-one cubes into
-	// the light model and calculate global bounds.
-	if ( !idRenderMatrix::Inverse( light->baseLightProject, light->inverseBaseLightProject ) ) {
-		idLib::Warning( "baseLightProject invert failed" );
-	}
-
-	// calculate the global light bounds by inverse projecting the zero to one cube with the 'inverseBaseLightProject'
-	idRenderMatrix::ProjectedBounds( light->globalLightBounds, light->inverseBaseLightProject, bounds_zeroOneCube, false );
+	R_DeriveLightData( light, light->parms.origin, light->parms.axis );
 }
 
 /*
@@ -574,6 +605,11 @@ void R_CreateLightRefs( idRenderLightLocal * light ) {
 	light->areaNum = light->world->PointInArea( light->globalLightOrigin );
 	if ( light->areaNum == -1 ) {
 		light->areaNum = light->world->PointInArea( light->parms.origin );
+	}
+
+	// a light drawn between its last two tic poses needs the areas of both; AddLightRefToArea skips duplicates
+	if ( light->world->PrevPoseNeedsRefs( light ) ) {
+		light->world->AddLightPoseRefs( light, light->interp.prevOrigin, light->interp.prevAxis );
 	}
 
 	// bump the view count so we can tell if an

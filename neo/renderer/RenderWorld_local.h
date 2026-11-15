@@ -90,6 +90,13 @@ struct reusableOverlay_t {
 
 struct portalStack_t;
 
+// r_showInterpolation in one scene: the drawn poses go in every frame, prev and cur once a tic
+struct interpShow_t {
+	int						level = 0;
+	bool					frame = false;
+	bool					tic = false;
+};
+
 class idRenderWorldLocal : public idRenderWorld {
 public:
 							idRenderWorldLocal();
@@ -204,7 +211,8 @@ public:
 
 	int						ticCount = 0;				// BeginGameTic calls, never reset
 	idList<int, TAG_ENTITY>	ticEntities;				// entityDefs moved (or view-attached) in the last tic
-	idList<int, TAG_LIGHT>	ticLights;					// lightDefs moved in the last tic
+	idList<int, TAG_LIGHT>	ticLights;					// lightDefs moved (or view-attached) in the last tic
+	idList<int, TAG_LIGHT>	posedLights;				// lightDefs PoseLight moved off their tic pose in this scene
 	renderInterpolation_t	interpolation;				// the copy SetInterpolation made
 	bool					interpOn = false;			// between SetInterpolation( &x ) and SetInterpolation( nullptr )
 	bool					posesApplied = false;		// render poses are in the derived data, inside RenderScene
@@ -220,9 +228,22 @@ public:
 	void					ListEntityDef( idRenderEntityLocal * def );
 	bool					PrevPoseNeedsRefs( const idRenderEntityLocal * def, idBounds & bounds ) const;
 	bool					IsViewAttached( const idRenderEntityLocal * def ) const;
+	void					BeginLightTic( idRenderLightLocal * light, const renderLight_t * rlight );
+	void					CheckLightSnap( idRenderLightLocal * light, const renderLight_t * rlight ) const;
+	void					ListLightDef( idRenderLightLocal * light );
+	bool					PrevPoseNeedsRefs( const idRenderLightLocal * light ) const;
+	bool					IsViewAttached( const idRenderLightLocal * light ) const;
 	void					ApplyRenderPoses();
-	void					ApplyEntityPoses( float alpha );
+	void					ApplyEntityPoses( float alpha, const interpShow_t & show );
+	void					ApplyLightPoses( float alpha, const interpShow_t & show );
+	void					DebugLightPose( const idVec4 & color, const idRenderLightLocal * light, const idVec3 & origin, const idMat3 & axis );
 	void					RestoreTicPoses();
+
+	// for the view-attached lights, between ApplyRenderPoses and RestoreTicPoses: PoseLight draws the light
+	// at origin and axis in this scene (false: it keeps its tic pose); AddLightPoseRefs adds the areas of a
+	// pose to the light's refs until it next moves (R_CreateLightRefs adds the previous tic pose with it)
+	bool					PoseLight( idRenderLightLocal * light, const idVec3 & origin, const idMat3 & axis );
+	void					AddLightPoseRefs( idRenderLightLocal * light, const idVec3 & origin, const idMat3 & axis );
 
 	//-----------------------
 	// RenderWorld_load.cpp
