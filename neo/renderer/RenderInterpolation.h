@@ -50,8 +50,23 @@ If you have questions concerning this license or the applicable additional terms
 	An MD5 that animated in the last tic (r_interpolateSkeletons) is drawn with its model-space joints
 	blended the same way, per joint: rotation slerp, translation lerp (tr_frontend_addmodels.cpp).
 
+	A view-attached def (the view weapon, its lights, the flashlight) follows the drawn view instead.
+	Its pose D relative to the first-person view C of its tic is lerped and put on the drawn view Cd,
+	row vectors ( v * axis goes from the frame to the world ):
+
+		rel_i  = { ( D_i.origin - C_i.origin ) * C_i.axisT, D_i.axis * C_i.axisT }	i = prev, cur
+		rel    = lerp( rel_prev, rel_cur, alpha )			alpha 1 when the views jumped
+		D_draw = { rel.origin * Cd.axis + Cd.origin, rel.axis * Cd.axis }
+
+	So it stays rigid with the camera however the drawn view is built (lerped, late mouse angles).
+
 ===============================================================================
 */
+
+struct interpPose_t {
+	idVec3		origin;
+	idMat3		axis;
+};
 
 // orthonormal rows, right handed; false for NaN
 ID_INLINE bool R_IsRotationAxis( const idMat3 & axis ) {
@@ -124,6 +139,28 @@ inline void R_BlendJointMats( idSIMDProcessor * simd, idJointMat * out, const id
 	simd->BlendJoints( quats, toQuats, alpha, index, numJoints );
 	simd->ConvertJointQuatsToJointMats( out, quats, numJoints );
 	SIMD_INIT_LAST_JOINT( out, numJoints );
+}
+
+// the frame's axis is a rotation, so its transpose is its inverse
+ID_INLINE interpPose_t R_PoseInFrame( const interpPose_t & pose, const interpPose_t & frame ) {
+	const idMat3 toFrame = frame.axis.Transpose();
+	return { ( pose.origin - frame.origin ) * toFrame, pose.axis * toFrame };
+}
+
+ID_INLINE interpPose_t R_PoseFromFrame( const interpPose_t & local, const interpPose_t & frame ) {
+	return { local.origin * frame.axis + frame.origin, local.axis * frame.axis };
+}
+
+// prev, cur: the def's two tic poses, placed in the first-person views prevView, curView
+ID_INLINE interpPose_t R_ViewAttachedPose( const interpPose_t & prev, const interpPose_t & cur, const interpPose_t & prevView,
+										   const interpPose_t & curView, const interpPose_t & drawView, const float alpha ) {
+	interpPose_t rel = R_PoseInFrame( cur, curView );
+	if ( alpha < 1.0f ) {
+		const interpPose_t relPrev = R_PoseInFrame( prev, prevView );
+		rel.origin = relPrev.origin + ( rel.origin - relPrev.origin ) * alpha;
+		rel.axis = R_LerpAxis( relPrev.axis, rel.axis, alpha );
+	}
+	return R_PoseFromFrame( rel, drawView );
 }
 
 #endif /* !__RENDERINTERPOLATION_H__ */

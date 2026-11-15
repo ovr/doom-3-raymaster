@@ -2850,12 +2850,15 @@ bool idGameLocal::Draw( int clientNum ) {
 		return false;
 	}
 
-	// render the scene, the defs that moved in the last tic between their two tic poses
+	// render the scene, the view and the defs that moved in the last tic between their two tic poses;
+	// a frame the renderer draws at the tic (a frame loop sync) draws the tic view
+	const float viewAlpha = gameRenderWorld->TicSnapped( renderAlpha ) ? 1.0f : renderAlpha;
+	renderView_t view;
 	renderInterpolation_t interp;
 	interp.alpha = renderAlpha;
-	interp.guiTime = player->GetRenderView()->time[0];
+	player->BuildDrawView( viewAlpha, view, interp );
 	gameRenderWorld->SetInterpolation( &interp );
-	player->playerView.RenderPlayerView( player->hudManager );
+	player->playerView.RenderPlayerView( &view, player->hudManager );
 	gameRenderWorld->SetInterpolation( nullptr );
 
 	return true;

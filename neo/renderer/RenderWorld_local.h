@@ -130,6 +130,7 @@ public:
 
 	void					BeginGameTic() override;
 	void					SetInterpolation( const renderInterpolation_t * interpolation ) override;
+	bool					TicSnapped( float alpha ) const override;
 
 	virtual	int				NumAreas() const;
 	virtual int				PointInArea( const idVec3 &point ) const;
@@ -233,6 +234,9 @@ public:
 	void					ListLightDef( idRenderLightLocal * light );
 	bool					PrevPoseNeedsRefs( const idRenderLightLocal * light ) const;
 	bool					IsViewAttached( const idRenderLightLocal * light ) const;
+	bool					ViewAttachedPose( const defInterp_t & interp, const idVec3 & origin, const idMat3 & axis, float alpha, interpPose_t & pose ) const;
+	int						GuiTime( int viewTime ) const;	// in-world GUIs of a scene of this world
+	float					PoseAlpha() const;			// the defs of this scene draw at it, 1 = the tic poses
 	void					ApplyRenderPoses();
 	void					ApplyEntityPoses( float alpha, const interpShow_t & show );
 	void					ApplyLightPoses( float alpha, const interpShow_t & show );

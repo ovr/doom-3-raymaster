@@ -351,11 +351,13 @@ bool idSmokeParticles::UpdateRenderEntity( renderEntity_s *renderEntity, const r
 		for ( last = NULL, smoke = active->smokes; smoke; smoke = next ) {
 			next = smoke->next;
 
-			if ( smoke->timeGroup ) {
-				g.frac = (float)( gameLocal.fast.time - smoke->privateStartTime ) / (stage->particleLife * 1000);
-			}
-			else {
-				g.frac = (float)( gameLocal.time - smoke->privateStartTime ) / (stage->particleLife * 1000);
+			// the view's time, which leads the tic between tics (g_interpolateTime)
+			const int viewTime = renderView->time[smoke->timeGroup ? TIME_GROUP2 : TIME_GROUP1];
+			g.frac = static_cast<float>( viewTime - smoke->privateStartTime ) / ( stage->particleLife * 1000 );
+			if ( g.frac < 0.0f ) {
+				// a view behind the tic that emitted it
+				last = smoke;
+				continue;
 			}
 			if ( g.frac >= 1.0f ) {
 				// remove the particle from the stage list

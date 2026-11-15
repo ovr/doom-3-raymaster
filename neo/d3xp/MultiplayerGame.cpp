@@ -1668,7 +1668,7 @@ bool idMultiplayerGame::Draw( int clientNum ) {
 	UpdatePlayerRanks();
 	UpdateHud( viewPlayer, player->hudManager );
 	// use the hud of the local player
-	viewPlayer->playerView.RenderPlayerView( player->hudManager );
+	viewPlayer->playerView.RenderPlayerView( viewPlayer->GetRenderView(), player->hudManager );
 
 	idStr spectatetext[ 2 ];
 	GetSpectateText( player, spectatetext, true );

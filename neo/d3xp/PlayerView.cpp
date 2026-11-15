@@ -666,19 +666,18 @@ float	GetScreenSeparationForGuis() {
 idPlayerView::EmitStereoEyeView
 ===================
 */
-void idPlayerView::EmitStereoEyeView( const int eye, idMenuHandler_HUD * hudManager ) {
-	renderView_t * view = player->GetRenderView();
-	if ( view == NULL ) {
+void idPlayerView::EmitStereoEyeView( const int eye, const renderView_t * drawView, idMenuHandler_HUD * hudManager ) {
+	if ( drawView == nullptr ) {
 		return;
 	}
 
-	renderView_t eyeView = *view;
+	renderView_t eyeView = *drawView;
 
 	const stereoDistances_t dists = CaclulateStereoDistances(
 		stereoRender_interOccularCentimeters.GetFloat(),
 		renderSystem->GetPhysicalScreenWidthInCentimeters(),
 		stereoRender_convergence.GetFloat(),
-		view->fov_x );
+		drawView->fov_x );
 
 	eyeView.vieworg += eye * dists.worldSeparation * eyeView.viewaxis[1];
 
@@ -711,16 +710,15 @@ int EyeForHalfRateFrame( const int frameCount ) {
 idPlayerView::RenderPlayerView
 ===================
 */
-void idPlayerView::RenderPlayerView( idMenuHandler_HUD * hudManager ) {
-	const renderView_t *view = player->GetRenderView();
+void idPlayerView::RenderPlayerView( const renderView_t * drawView, idMenuHandler_HUD * hudManager ) {
 	if ( renderSystem->GetStereo3DMode() != STEREO3D_OFF ) {
 		// render both eye views each frame on the PC
 		for ( int eye = 1 ; eye >= -1 ; eye -= 2 ) {
-			EmitStereoEyeView( eye, hudManager );
+			EmitStereoEyeView( eye, drawView, hudManager );
 		}
-	} else 
+	} else
 	{
-		SingleView( view, hudManager );
+		SingleView( drawView, hudManager );
 	}
 	ScreenFade();
 }

@@ -1088,10 +1088,13 @@ void idWeapon::GetWeaponDef( const char *objectname, int ammoinclip ) {
 	memset( &muzzleFlash, 0, sizeof( muzzleFlash ) );
 	muzzleFlash.lightId = LIGHTID_VIEW_MUZZLE_FLASH + owner->entityNumber;
 	muzzleFlash.allowLightInViewID = owner->entityNumber+1;
+	muzzleFlash.viewAttachedID = owner->entityNumber + 1;
 
 	// the weapon lights will only be in first person
 	guiLight.allowLightInViewID = owner->entityNumber+1;
 	nozzleGlow.allowLightInViewID = owner->entityNumber+1;
+	guiLight.viewAttachedID = owner->entityNumber + 1;
+	nozzleGlow.viewAttachedID = owner->entityNumber + 1;
 
 	muzzleFlash.pointLight								= flashPointLight;
 	muzzleFlash.shader									= flashShader;
@@ -1115,6 +1118,7 @@ void idWeapon::GetWeaponDef( const char *objectname, int ammoinclip ) {
 	worldMuzzleFlash = muzzleFlash;
 	worldMuzzleFlash.suppressLightInViewID = owner->entityNumber+1;
 	worldMuzzleFlash.allowLightInViewID = 0;
+	worldMuzzleFlash.viewAttachedID = 0;
 	worldMuzzleFlash.lightId = LIGHTID_WORLD_MUZZLE_FLASH + owner->entityNumber;
 
 	//-----------------------------------
@@ -1290,6 +1294,7 @@ void idWeapon::GetWeaponDef( const char *objectname, int ammoinclip ) {
 			newLight.light.noShadows = true;
 
 			newLight.light.allowLightInViewID = owner->entityNumber+1;
+			newLight.light.viewAttachedID = owner->entityNumber + 1;
 
 			weaponLights.Set(name.c_str(), newLight);
 
@@ -1996,6 +2001,7 @@ void idWeapon::UpdateNozzleFx() {
 		memset(&nozzleGlow, 0, sizeof(nozzleGlow));
 		if ( owner ) {
 			nozzleGlow.allowLightInViewID = owner->entityNumber+1;
+			nozzleGlow.viewAttachedID = owner->entityNumber + 1;
 		}
 		nozzleGlow.pointLight = true;
 		nozzleGlow.noShadows = true;
@@ -2348,6 +2354,14 @@ void idWeapon::PresentWeapon( bool showViewModel ) {
 	playerViewOrigin = owner->firstPersonViewOrigin;
 	playerViewAxis = owner->firstPersonViewAxis;
 
+	// between tics the view model and its lights follow the drawn view (renderWorld view-attached defs);
+	// set every tic, a savegame doesn't keep it
+	const int viewAttachedID = owner->entityNumber + 1;
+	renderEntity.viewAttachedID = viewAttachedID;
+	muzzleFlash.viewAttachedID = viewAttachedID;
+	guiLight.viewAttachedID = viewAttachedID;
+	nozzleGlow.viewAttachedID = viewAttachedID;
+
 	if ( isPlayerFlashlight ) {
 		viewWeaponOrigin = playerViewOrigin;
 		viewWeaponAxis = playerViewAxis;
@@ -2486,6 +2500,7 @@ void idWeapon::PresentWeapon( bool showViewModel ) {
 						//Manually update the position of the emitter so it follows the weapon
 						renderEntity_t* rendEnt = part->emitter->GetRenderEntity();
 						GetGlobalJointTransform( true, part->joint, rendEnt->origin, rendEnt->axis );
+						rendEnt->viewAttachedID = viewAttachedID;
 
 						if ( part->emitter->GetModelDefHandle() != -1 ) {
 							gameRenderWorld->UpdateEntityDef( part->emitter->GetModelDefHandle(), rendEnt );
@@ -2501,6 +2516,7 @@ void idWeapon::PresentWeapon( bool showViewModel ) {
 			if(light->active) {
 
 				GetGlobalJointTransform( true, light->joint, light->light.origin, light->light.axis );
+				light->light.viewAttachedID = viewAttachedID;
 				if ( ( light->lightHandle != -1 ) ) {
 					gameRenderWorld->UpdateLightDef( light->lightHandle, &light->light );
 				} else {

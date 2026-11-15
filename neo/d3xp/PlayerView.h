@@ -366,9 +366,9 @@ public:
 	void				CalculateShake();
 
 	// this may involve rendering to a texture and displaying
-	// that with a warp model or in double vision mode
-	void				RenderPlayerView( idMenuHandler_HUD * hudManager );
-	void				EmitStereoEyeView( const int eye, idMenuHandler_HUD * hudManager );
+	// that with a warp model or in double vision mode; drawView: idPlayer::BuildDrawView
+	void				RenderPlayerView( const renderView_t * drawView, idMenuHandler_HUD * hudManager );
+	void				EmitStereoEyeView( const int eye, const renderView_t * drawView, idMenuHandler_HUD * hudManager );
 
 	void				Fade( idVec4 color, int time );
 

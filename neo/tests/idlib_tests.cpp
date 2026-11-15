@@ -1331,6 +1331,48 @@ TEST( Interp_BlendJointMats ) {
 	}
 }
 
+static bool PosesMatch( const interpPose_t & a, const interpPose_t & b, const float epsilon ) {
+	return a.origin.Compare( b.origin, epsilon ) && a.axis.Compare( b.axis, epsilon );
+}
+
+TEST( Interp_ViewAttachedPose ) {
+	// two first-person views a tic apart, a weapon placed relative to each, and a drawn view turned past both
+	const interpPose_t prevView = { idVec3( 100.0f, -40.0f, 64.0f ), idAngles( 5.0f, 30.0f, 0.0f ).ToMat3() };
+	const interpPose_t curView = { idVec3( 104.0f, -38.0f, 65.0f ), idAngles( -3.0f, 41.0f, 2.0f ).ToMat3() };
+	const interpPose_t drawView = { idVec3( 106.0f, -37.0f, 64.5f ), idAngles( -8.0f, 47.0f, 1.0f ).ToMat3() };
+	const interpPose_t relPrev = { idVec3( 12.0f, -6.0f, -9.0f ), idAngles( 1.0f, -2.0f, 0.0f ).ToMat3() };
+	const interpPose_t relCur = { idVec3( 11.0f, -5.0f, -8.0f ), idAngles( -3.0f, 4.0f, 1.0f ).ToMat3() };
+	const interpPose_t prev = R_PoseFromFrame( relPrev, prevView );
+	const interpPose_t cur = R_PoseFromFrame( relCur, curView );
+
+	CHECK( PosesMatch( R_PoseInFrame( cur, curView ), relCur, 1e-3f ), "the frame round trip" );
+
+	// on the tic it is the tic pose; a frame drawn at the tic view keeps it
+	CHECK( PosesMatch( R_ViewAttachedPose( prev, cur, prevView, curView, curView, 1.0f ), cur, 1e-3f ), "alpha 1 at the tic view" );
+
+	// rigid with the drawn view, whatever the alpha
+	CHECK( PosesMatch( R_PoseInFrame( R_ViewAttachedPose( prev, cur, prevView, curView, drawView, 1.0f ), drawView ), relCur, 1e-3f ), "alpha 1" );
+	CHECK( PosesMatch( R_PoseInFrame( R_ViewAttachedPose( prev, cur, prevView, curView, drawView, 0.0f ), drawView ), relPrev, 1e-3f ), "alpha 0" );
+
+	// between: the relative pose lerps, the world motion of the views doesn't leak in
+	const interpPose_t half = R_PoseInFrame( R_ViewAttachedPose( prev, cur, prevView, curView, drawView, 0.5f ), drawView );
+	CHECK( half.origin.Compare( ( relPrev.origin + relCur.origin ) * 0.5f, 1e-3f ), "alpha 0.5 origin (%s)", half.origin.ToString( 3 ) );
+	CHECK( IsOrthonormal( half.axis, 1e-3f ), "alpha 0.5 axis (%s)", half.axis.ToString( 5 ) );
+	const float toPrev = AxisAngleBetween( relPrev.axis, half.axis );
+	const float toCur = AxisAngleBetween( half.axis, relCur.axis );
+	CHECK( idMath::Fabs( toPrev - toCur ) < 0.1f && toPrev > 0.5f, "alpha 0.5 axis: %f and %f degrees", toPrev, toCur );
+
+	// a def that isn't moved relative to the view between tics stays where the drawn view puts it
+	const interpPose_t still = R_PoseFromFrame( relCur, prevView );
+	CHECK( PosesMatch( R_PoseInFrame( R_ViewAttachedPose( still, cur, prevView, curView, drawView, 0.3f ), drawView ), relCur, 1e-3f ), "still" );
+
+	// a scaled axis (g_gunScale) lerps per row and keeps its scale
+	const interpPose_t scaledPrev = { prev.origin, prev.axis * 0.7f };
+	const interpPose_t scaledCur = { cur.origin, cur.axis * 0.7f };
+	const interpPose_t scaled = R_ViewAttachedPose( scaledPrev, scaledCur, prevView, curView, drawView, 1.0f );
+	CHECK( PosesMatch( R_PoseInFrame( scaled, drawView ), { relCur.origin, relCur.axis * 0.7f }, 1e-3f ), "scaled" );
+}
+
 /*
 ===============================================================================
 
