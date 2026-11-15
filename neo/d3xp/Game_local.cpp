@@ -2316,6 +2316,10 @@ the game until the cinematic has finished.
 ================
 */
 void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
+	// only the frame that finishes a cinematic skip asks the session to resync,
+	// a stale flag would run one tic per rendered frame (see idGameThread::Run)
+	ret.syncNextGameFrame = false;
+
 	if ( !skipCinematic && inCinematic && !common->IsMultiplayer() && !g_stopTime.GetBool() ) {
 		if ( skipCinematicRequested || g_skipCinematics.GetBool() ) {
 			StartSkipCinematic();

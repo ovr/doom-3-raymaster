@@ -43,19 +43,11 @@ If you have questions concerning this license or the applicable additional terms
 #define SCRIPT_DEFAULTFUNC			"doom_main"
 
 struct gameReturn_t {
-
-	gameReturn_t() :
-		syncNextGameFrame( false ), 
-		vibrationLow( 0 ),
-		vibrationHigh( 0 ) {
-
-	}
-
-	char		sessionCommand[MAX_STRING_CHARS];	// "map", "disconnect", "victory", etc
-	bool		syncNextGameFrame;					// used when cinematics are skipped to prevent session from simulating several game frames to
-													// keep the game time in sync with real time
-	int			vibrationLow;
-	int			vibrationHigh;
+	char		sessionCommand[MAX_STRING_CHARS] = {};	// "map", "disconnect", "victory", etc
+	bool		syncNextGameFrame = false;				// set by the frame that finished a cinematic skip, so the session doesn't
+														// try to catch up on the real time spent skipping
+	int			vibrationLow = 0;
+	int			vibrationHigh = 0;
 };
 
 #define TIME_GROUP1		0
