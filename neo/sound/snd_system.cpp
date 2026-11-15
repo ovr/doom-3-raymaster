@@ -392,6 +392,11 @@ idSoundSample * idSoundSystemLocal::LoadSample( const char * name ) {
 	for ( int i = sampleHash.First( hashKey ); i != -1; i = sampleHash.Next( i ) ) {
 		if ( idStr::Cmp( samples[i]->GetName(), canonical ) == 0 ) {
 			samples[i]->SetLevelLoadReferenced();
+			if ( !insideLevelLoad && !samples[i]->IsLoaded() ) {
+				// purged by a level load and referenced again outside one, e.g. by a spawn command
+				samples[i]->SetNeverPurge();
+				samples[i]->LoadResource();
+			}
 			return samples[i];
 		}
 	}

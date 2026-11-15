@@ -241,6 +241,7 @@ private:
 	int							checksum;		// checksum of all loaded decl text
 	int							indent;			// for MediaPrint
 	bool						insideLevelLoad;
+	idList<idDeclLocal *>		parseStack;		// the decls being parsed, outermost first (under mutex)
 
 	static idCVar				decl_show;
 
@@ -1159,6 +1160,15 @@ const idDecl *idDeclManagerLocal::FindType( declType_t type, const char *name, b
 	decl->everReferenced = true;
 	if ( insideLevelLoad ) {
 		decl->parsedOutsideLevelLoad = false;
+	}
+
+	// A decl kept over level loads must not depend on one that is purged: an entityDef spawned at
+	// run time would keep its purged sounds, which the game thread can't parse. Purge it as well,
+	// so its next use parses it and its media again.
+	if ( !decl->parsedOutsideLevelLoad ) {
+		for ( int i = 0; i < parseStack.Num(); i++ ) {
+			parseStack[i]->parsedOutsideLevelLoad = false;
+		}
 	}
 
 	return decl->self;
@@ -2392,6 +2402,11 @@ void idDeclLocal::ParseLocal() {
 	// parse
 	char *declText = (char *) _alloca( ( GetTextLength() + 1 ) * sizeof( char ) );
 	GetText( declText );
+	struct parseScope_t {
+		idList<idDeclLocal *> & stack;
+		parseScope_t( idList<idDeclLocal *> & stack_, idDeclLocal * decl ) : stack( stack_ ) { stack.Append( decl ); }
+		~parseScope_t() { stack.RemoveIndex( stack.Num() - 1 ); }
+	} parseScope( declManagerLocal.parseStack, this );
 	self->Parse( declText, GetTextLength(), true );
 
 	// free generated text
