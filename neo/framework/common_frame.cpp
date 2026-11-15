@@ -56,8 +56,8 @@ which should also be nicely contained.
 
 idCVar com_deltaTimeClamp( "com_deltaTimeClamp", "50", CVAR_INTEGER, "don't process more than this time in a single frame" );
 
-idCVar com_fixedTic( "com_fixedTic", DEFAULT_FIXED_TIC, CVAR_BOOL, "run a single game frame per render frame" );
-idCVar com_noSleep( "com_noSleep", DEFAULT_NO_SLEEP, CVAR_BOOL, "don't sleep if the game is running too fast" );
+idCVar com_fixedTic( "com_fixedTic", DEFAULT_FIXED_TIC, CVAR_INTEGER, "debug: run this many game tics per rendered frame, ties the game speed to the frame rate" );
+idCVar com_noSleep( "com_noSleep", DEFAULT_NO_SLEEP, CVAR_BOOL, "debug: run a game tic every rendered frame instead of waiting for it, ties the game speed to the frame rate" );
 idCVar com_smp( "com_smp", "1", CVAR_BOOL|CVAR_SYSTEM|CVAR_NOCHEAT, "run the game and draw code in a separate thread" );
 idCVar com_aviDemoSamples( "com_aviDemoSamples", "16", CVAR_SYSTEM, "" );
 idCVar com_aviDemoWidth( "com_aviDemoWidth", "256", CVAR_SYSTEM, "" );
@@ -97,6 +97,11 @@ int idGameThread::Run() {
 	if ( numGameFrames == 0 ) {
 		// Ensure there's no stale gameReturn data from a paused game
 		ret = gameReturn_t();
+	} else {
+		// RunGameAndDraw already handed the last results to the session, and a stale
+		// syncNextGameFrame would run one tic per rendered frame (game speed = FPS / Hz)
+		ret.syncNextGameFrame = false;
+		ret.sessionCommand[0] = '\0';
 	}
 
 	if ( isClient ) {
