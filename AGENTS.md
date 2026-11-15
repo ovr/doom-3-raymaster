@@ -84,6 +84,7 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
   - `==` on arrays;
   - literals into `char *`.
 - The existing code is C++03-era id style. Modernize what you touch, and keep it compiling in all three configs.
+- **Breaking changes are fine.** There is no public API: the engine, the game code and the tools build into executables from this repo, with no mods or outside callers to stay compatible with. Change interfaces (`idGame`, `idRenderWorld`, `idCommon`, ...) and update every caller. Rewrite or refactor bad code instead of working around it. Only the retail game data (maps, defs, scripts, GUIs) has to keep loading.
 - `idlib/Str.h` macro-redirects the CRT string compares. `strcmp` silently becomes `idStr::Cmp`, while `_stricmp`, `strcasecmp`, `strnicmp`, `_memicmp` and similar become undefined `use_idStr_*` tokens and fail to compile. Call `idStr::Cmp`, `idStr::Icmp` or `idStr::Icmpn` directly.
 - Source files use CRLF line endings. Keep them CRLF when editing with scripts, because `sed -i` and heredoc appends introduce LF.
 - `idlib/Heap.cpp` replaces every global `operator new`/`delete` form (sized, nothrow, `std::align_val_t`) once, out of line, plus the tagged `new ( TAG_X ) T`. All of them, `Mem_Alloc` and `Mem_ClearedAlloc` use `_aligned_malloc`, so that memory must never reach the CRT's `free()`, and `malloc` memory must never reach `delete` or `Mem_Free`. Don't define `operator new`/`delete` inline anywhere (C4595). `new` throws `std::bad_alloc` and never returns NULL.
