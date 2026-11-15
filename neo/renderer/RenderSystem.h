@@ -158,6 +158,20 @@ struct renderPassTiming_t {
 	float			gpuMilliseconds = 0.0f;
 };
 
+// what the render interpolation (renderInterpolation_t) did in the last scene of a frame that used it
+struct renderInterpStats_t {
+	bool			active = false;			// r_interpolate is on and the game interpolated a scene
+	float			alpha = 1.0f;
+	int				listed = 0;				// entities that moved in the last tic
+	int				entities = 0;			// entities drawn between two tic poses
+	int				snapped = 0;			// entities that jumped (teleport, new model, new def): drawn at the tic pose
+	int				attached = 0;			// view-attached entities
+	int				lights = 0;				// lights drawn between two tic poses
+	int				skeletons = 0;			// skeletal poses blended between two tics
+	float			lateYaw = 0.0f;			// the drawn view angles minus the tic view angles, degrees
+	float			latePitch = 0.0f;
+};
+
 bool R_IsInitialized();
 
 const int SMALLCHAR_WIDTH		= 8;
@@ -244,6 +258,9 @@ public:
 
 	// draw call and triangle counts of the last finished back end frame
 	virtual void			GetLastFrameDrawStats( int & numDraws, int & numTris, int & numShadowTris ) const = 0;
+
+	// the render interpolation of the last finished front end frame, like GetLastFrameDrawStats
+	virtual void			GetLastFrameInterpStats( renderInterpStats_t & stats ) const = 0;
 
 	// with r_pix 1: the top level render passes with the most GPU time of the last report period
 	// (about a second), most expensive first; returns how many were filled, 0 without r_pix 1.

@@ -47,9 +47,12 @@ the Free Software Foundation, either version 3 of the License, or
 #include "../idlib/math/Simd_Generic.h"
 #include "../idlib/math/Simd_SSE.h"
 
+#include "../renderer/RenderInterpolation.h"
+
 #include <stdio.h>
 #include <math.h>
 #include <float.h>
+#include <limits>
 
 // idSIMD::InitProcessor needs the engine (common, sys), so the tests create the processors themselves
 static idSIMDProcessor *	genericProcessor = NULL;
@@ -1055,6 +1058,126 @@ TEST( SIMD_JointsMatchGeneric ) {
 			CHECK( IsFinite( r.q.ToFloatPtr(), 4 ), "%s BlendJoints of identical joints gives NaN", proc->GetName() );
 		}
 	}
+}
+
+/*
+===============================================================================
+
+	Render interpolation (renderer/RenderInterpolation.h): the axis lerp of a def drawn
+	between two tic poses, and the decision to draw a jump at the tic pose instead
+
+===============================================================================
+*/
+
+static idMat3 YawAxis( const float yaw ) {
+	return idAngles( 0.0f, yaw, 0.0f ).ToMat3();
+}
+
+static idMat3 RowLerp( const idMat3 & from, const idMat3 & to, const float t ) {
+	return from + ( to - from ) * t;
+}
+
+TEST( Interp_IsRotationAxis ) {
+	CHECK( R_IsRotationAxis( mat3_identity ) );
+	CHECK( R_IsRotationAxis( idAngles( 30.0f, -120.0f, 45.0f ).ToMat3() ) );
+	CHECK( !R_IsRotationAxis( YawAxis( 20.0f ) * 0.7f ), "scaled (g_gunScale)" );
+
+	idMat3 mirrored = YawAxis( 20.0f );
+	mirrored[1] = -mirrored[1];
+	CHECK( !R_IsRotationAxis( mirrored ), "mirrored" );
+
+	idMat3 sheared = mat3_identity;
+	sheared[0][1] = 0.1f;
+	CHECK( !R_IsRotationAxis( sheared ), "sheared" );
+
+	CHECK( !R_IsRotationAxis( mat3_zero ), "zero" );
+
+	idMat3 nan = mat3_identity;
+	nan[2][0] = std::numeric_limits<float>::quiet_NaN();
+	CHECK( !R_IsRotationAxis( nan ), "NaN" );
+}
+
+TEST( Interp_LerpAxisRotation ) {
+	const idMat3 from = idAngles( 10.0f, 20.0f, 30.0f ).ToMat3();
+	const idMat3 to = idAngles( -40.0f, 75.0f, 5.0f ).ToMat3();
+
+	CHECK( R_LerpAxis( from, to, 0.0f ).Compare( from, 1e-5f ), "t = 0 is from" );
+	CHECK( R_LerpAxis( from, to, 1.0f ).Compare( to, 1e-5f ), "t = 1 is to" );
+	CHECK( R_LerpAxis( from, from, 0.37f ).Compare( from, 1e-5f ), "equal axes" );
+
+	for ( int i = 0; i <= 20; i++ ) {
+		const float t = i / 20.0f;
+		const idMat3 m = R_LerpAxis( from, to, t );
+		CHECK( IsFinite( m ) && IsOrthonormal( m, 1e-4f ), "t %.2f", t );
+	}
+
+	// a tiny turn goes through the plain lerp in Slerp and must still come back orthonormal
+	const idMat3 tiny = R_LerpAxis( YawAxis( 0.0f ), YawAxis( 0.01f ), 0.5f );
+	CHECK( IsFinite( tiny ) && IsOrthonormal( tiny, 1e-5f ), "tiny turn" );
+}
+
+TEST( Interp_LerpAxisAngles ) {
+	// constant angular speed: a quarter and half of 80 degrees of yaw
+	CHECK( Near( R_LerpAxis( YawAxis( 0.0f ), YawAxis( 80.0f ), 0.25f ).ToAngles().yaw, 20.0f, 0.05f / 20.0f ) );
+	CHECK( Near( R_LerpAxis( YawAxis( 0.0f ), YawAxis( 80.0f ), 0.5f ).ToAngles().yaw, 40.0f, 0.05f / 40.0f ) );
+
+	// the short way across +-180: 170 -> -170 passes 180, not 0
+	const float half = R_LerpAxis( YawAxis( 170.0f ), YawAxis( -170.0f ), 0.5f ).ToAngles().yaw;
+	CHECK( Near( idMath::Fabs( half ), 180.0f, 0.05f / 180.0f ), "yaw %f", half );
+	const float quarter = idMath::AngleNormalize180( R_LerpAxis( YawAxis( 170.0f ), YawAxis( -170.0f ), 0.25f ).ToAngles().yaw );
+	CHECK( Near( quarter, 175.0f, 0.05f / 175.0f ), "yaw %f", quarter );
+
+	// pitch and roll together
+	const idAngles mid = R_LerpAxis( idAngles( 0.0f, 0.0f, 0.0f ).ToMat3(), idAngles( 30.0f, 0.0f, 0.0f ).ToMat3(), 0.5f ).ToAngles();
+	CHECK( Near( mid.pitch, 15.0f, 0.05f / 15.0f ) && idMath::Fabs( mid.yaw ) < 0.05f && idMath::Fabs( mid.roll ) < 0.05f,
+		"%f %f %f", mid.pitch, mid.yaw, mid.roll );
+}
+
+TEST( Interp_LerpAxisNotRotation ) {
+	// a scaled axis (the view weapon with g_gunScale) and a mirrored one fall back to the row lerp
+	const idMat3 scaledFrom = YawAxis( 0.0f ) * 0.5f;
+	const idMat3 scaledTo = YawAxis( 30.0f ) * 0.5f;
+	CHECK( R_LerpAxis( scaledFrom, scaledTo, 0.25f ).Compare( RowLerp( scaledFrom, scaledTo, 0.25f ), 1e-6f ), "scaled" );
+	CHECK( R_LerpAxis( scaledFrom, scaledTo, 0.0f ).Compare( scaledFrom, 1e-6f ), "scaled t = 0" );
+	CHECK( R_LerpAxis( scaledFrom, scaledTo, 1.0f ).Compare( scaledTo, 1e-6f ), "scaled t = 1" );
+
+	idMat3 mirrored = YawAxis( 10.0f );
+	mirrored[2] = -mirrored[2];
+	CHECK( R_LerpAxis( mirrored, YawAxis( 20.0f ), 0.5f ).Compare( RowLerp( mirrored, YawAxis( 20.0f ), 0.5f ), 1e-6f ), "mirrored" );
+}
+
+TEST( Interp_PoseJumped ) {
+	const idMat3 axis = YawAxis( 45.0f );
+
+	// distance, against r_interpolateSnapDist 64
+	CHECK( !R_PoseJumped( vec3_origin, axis, idVec3( 63.0f, 0.0f, 0.0f ), axis, 64.0f ), "63 units" );
+	CHECK( R_PoseJumped( vec3_origin, axis, idVec3( 65.0f, 0.0f, 0.0f ), axis, 64.0f ), "65 units" );
+	CHECK( !R_PoseJumped( vec3_origin, axis, idVec3( 40.0f, 40.0f, 0.0f ), axis, 64.0f ), "56.6 units diagonal" );
+	CHECK( R_PoseJumped( idVec3( 100.0f, 0.0f, 0.0f ), axis, idVec3( 100.0f, 40.0f, 50.0f ), axis, 64.0f ), "64.03 units" );
+	CHECK( !R_PoseJumped( vec3_origin, axis, idVec3( 5000.0f, 0.0f, 0.0f ), axis, 0.0f ), "snap distance 0 = no limit" );
+
+	// rotation, more than 90 degrees
+	CHECK( !R_PoseJumped( vec3_origin, YawAxis( 0.0f ), vec3_origin, YawAxis( 89.0f ), 64.0f ), "89 degrees" );
+	CHECK( R_PoseJumped( vec3_origin, YawAxis( 0.0f ), vec3_origin, YawAxis( 91.0f ), 64.0f ), "91 degrees" );
+	CHECK( !R_PoseJumped( vec3_origin, YawAxis( 170.0f ), vec3_origin, YawAxis( -170.0f ), 64.0f ), "20 degrees across 180" );
+	CHECK( R_PoseJumped( vec3_origin, mat3_identity, vec3_origin, idAngles( 100.0f, 0.0f, 0.0f ).ToMat3(), 64.0f ), "100 degrees of pitch" );
+
+	// a scaled axis compares by orientation
+	CHECK( !R_PoseJumped( vec3_origin, YawAxis( 0.0f ) * 0.5f, vec3_origin, YawAxis( 45.0f ) * 0.5f, 64.0f ), "scaled, 45 degrees" );
+	CHECK( R_PoseJumped( vec3_origin, YawAxis( 0.0f ) * 0.5f, vec3_origin, YawAxis( 120.0f ) * 0.5f, 64.0f ), "scaled, 120 degrees" );
+
+	// NaN and infinity never lerp
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	CHECK( R_PoseJumped( vec3_origin, axis, idVec3( nan, 0.0f, 0.0f ), axis, 64.0f ), "NaN origin" );
+	CHECK( R_PoseJumped( vec3_origin, axis, idVec3( nan, 0.0f, 0.0f ), axis, 0.0f ), "NaN origin, no limit" );
+	CHECK( R_PoseJumped( vec3_origin, axis, idVec3( std::numeric_limits<float>::infinity(), 0.0f, 0.0f ), axis, 0.0f ), "infinite origin" );
+	idMat3 nanAxis = axis;
+	nanAxis[0][0] = nan;
+	CHECK( R_PoseJumped( vec3_origin, axis, vec3_origin, nanAxis, 64.0f ), "NaN axis" );
+
+	// no move at all
+	CHECK( !R_PoseJumped( vec3_origin, axis, vec3_origin, axis, 64.0f ), "no move" );
+	CHECK( Near( R_AxisRotationCos( axis, axis ), 1.0f, 1e-5f ), "cos of no turn" );
 }
 
 /*

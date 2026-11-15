@@ -351,6 +351,7 @@ set(DOOMEXE_SOURCES
 	renderer/RenderWorld.cpp
 	renderer/RenderWorld_defs.cpp
 	renderer/RenderWorld_demo.cpp
+	renderer/RenderWorld_interp.cpp
 	renderer/RenderWorld_load.cpp
 	renderer/RenderWorld_portals.cpp
 	renderer/ResolutionScale.cpp

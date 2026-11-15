@@ -437,8 +437,23 @@ float idConsoleLocal::DrawFPS( float y ) {
 	const int numPassRows = renderSystem->GetRenderPassTimings( passes );
 	const float passRowH = p.UI( 18 );
 
+	// render interpolation (r_interpolate), when the last frame used it
+	renderInterpStats_t interp;
+	renderSystem->GetLastFrameInterpStats( interp );
+	idStr interpText;
+	idStr interpMoreText;
+	if ( interp.active ) {
+		interpText = va( "%d/%d  snap %d  a %.2f", interp.entities, interp.listed, interp.snapped, interp.alpha );
+		if ( interp.attached + interp.lights + interp.skeletons > 0 ) {
+			interpMoreText = va( "attached %d  lights %d  skel %d", interp.attached, interp.lights, interp.skeletons );
+		}
+		if ( interp.lateYaw != 0.0f || interp.latePitch != 0.0f ) {
+			interpMoreText += va( "%slate %.1f %.1f", interpMoreText.IsEmpty() ? "" : "  ", interp.lateYaw, interp.latePitch );
+		}
+	}
+
 	static const int NUM_TIMING_ROWS = 6;
-	const int numCountRows = showResolution ? 3 : 2;
+	const int numCountRows = ( showResolution ? 3 : 2 ) + ( interp.active ? 1 : 0 ) + ( interpMoreText.IsEmpty() ? 0 : 1 );
 	const float panelH = pad
 		+ p.UI( 48 )						// fps header
 		+ graphH + p.UI( 6 )				// graph
@@ -542,6 +557,15 @@ float idConsoleLocal::DrawFPS( float y ) {
 	if ( showResolution ) {
 		p.Text( innerX, cy, 16, perfColorLabel, "Resolution scale" );
 		p.Text( innerR, cy, 16, perfColorText, resolutionText.c_str(), true );
+		cy += rowH;
+	}
+	if ( interp.active ) {
+		p.Text( innerX, cy, 16, perfColorLabel, "Interpolated" );
+		p.Text( innerR, cy, 14, perfColorText, interpText.c_str(), true );
+		cy += rowH;
+	}
+	if ( !interpMoreText.IsEmpty() ) {
+		p.Text( innerR, cy, 14, perfColorText, interpMoreText.c_str(), true );
 		cy += rowH;
 	}
 

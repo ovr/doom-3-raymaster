@@ -121,6 +121,9 @@ public:
 	virtual void			SetRenderView( const renderView_t *renderView );
 	virtual	void			RenderScene( const renderView_t *renderView );
 
+	void					BeginGameTic() override;
+	void					SetInterpolation( const renderInterpolation_t * interpolation ) override;
+
 	virtual	int				NumAreas() const;
 	virtual int				PointInArea( const idVec3 &point ) const;
 	virtual int				BoundsInAreas( const idBounds &bounds, int *areas, int maxAreas ) const;
@@ -192,6 +195,34 @@ public:
 	int						interactionTableHeight;		// lightDefs
 
 	bool					generateAllInteractionsCalled;
+
+	//-----------------------
+	// render interpolation, RenderWorld_interp.cpp
+	//
+	// Update*Def, the apply and the restore all run on the thread that runs the tics and draws
+	// (the game thread with com_smp 1); the parallel front end jobs only read the defs.
+
+	int						ticCount = 0;				// BeginGameTic calls, never reset
+	idList<int, TAG_ENTITY>	ticEntities;				// entityDefs moved (or view-attached) in the last tic
+	idList<int, TAG_LIGHT>	ticLights;					// lightDefs moved in the last tic
+	renderInterpolation_t	interpolation;				// the copy SetInterpolation made
+	bool					interpOn = false;			// between SetInterpolation( &x ) and SetInterpolation( nullptr )
+	bool					posesApplied = false;		// render poses are in the derived data, inside RenderScene
+	bool					ticSnapAll = false;			// the frame loop restarted the tic clock, nothing lerps into this tic
+	float					ticMaxAlpha = 0.0f;			// highest alpha drawn in this tic
+	int						debugFrameCount = -1;		// r_showInterpolation drew this frame
+	int						debugTicCount = -1;			// r_showInterpolation drew the tic boxes of this tic
+
+	bool					InterpolatesDefs() const;
+	void					ClearInterpolation();
+	void					BeginEntityTic( idRenderEntityLocal * def, const renderEntity_t * re );
+	void					CheckEntitySnap( idRenderEntityLocal * def ) const;
+	void					ListEntityDef( idRenderEntityLocal * def );
+	bool					PrevPoseNeedsRefs( const idRenderEntityLocal * def, idBounds & bounds ) const;
+	bool					IsViewAttached( const idRenderEntityLocal * def ) const;
+	void					ApplyRenderPoses();
+	void					ApplyEntityPoses( float alpha );
+	void					RestoreTicPoses();
 
 	//-----------------------
 	// RenderWorld_load.cpp

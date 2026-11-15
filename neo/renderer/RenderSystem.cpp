@@ -45,11 +45,13 @@ only be called when the back end thread is idle.
 static int r_lastFrameDraws;
 static int r_lastFrameTris;
 static int r_lastFrameShadowTris;
+static renderInterpStats_t r_lastFrameInterp;
 
 static void R_PerformanceCounters() {
 	r_lastFrameDraws = backEnd.pc.c_drawElements + backEnd.pc.c_shadowElements;
 	r_lastFrameTris = ( backEnd.pc.c_drawIndexes + backEnd.pc.c_shadowIndexes ) / 3;
 	r_lastFrameShadowTris = backEnd.pc.c_shadowIndexes / 3;
+	r_lastFrameInterp = tr.pc.interp;
 
 	if ( r_showPrimitives.GetInteger() != 0 ) {
 		common->Printf( "views:%i draws:%i tris:%i (shdw:%i)\n",
@@ -637,6 +639,15 @@ void idRenderSystemLocal::GetLastFrameDrawStats( int & numDraws, int & numTris, 
 	numDraws = r_lastFrameDraws;
 	numTris = r_lastFrameTris;
 	numShadowTris = r_lastFrameShadowTris;
+}
+
+/*
+=====================
+idRenderSystemLocal::GetLastFrameInterpStats
+=====================
+*/
+void idRenderSystemLocal::GetLastFrameInterpStats( renderInterpStats_t & stats ) const {
+	stats = r_lastFrameInterp;
 }
 
 /*

@@ -500,6 +500,8 @@ void	idRenderWorldLocal::ReadRenderLight( ) {
 		light.referenceSound = common->SW()->EmitterForIndex( index );
 	}
 
+	light.viewAttachedID = 0;		// not in the demo format, demos draw tic poses
+
 	UpdateLightDef( index, &light );
 
 	if ( r_showDemo.GetBool() ) {
@@ -708,6 +710,7 @@ void	idRenderWorldLocal::ReadRenderEntity() {
 
 	common->ReadDemo()->ReadInt( ent.timeGroup );
 	common->ReadDemo()->ReadInt( ent.xrayIndex );
+	ent.viewAttachedID = 0;		// not in the demo format, demos draw tic poses
 
 	UpdateEntityDef( index, &ent );
 

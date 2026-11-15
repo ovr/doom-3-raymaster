@@ -678,6 +678,8 @@ dump all the interactions
 void idRenderWorldLocal::FreeDefs() {
 	generateAllInteractionsCalled = false;
 
+	ClearInterpolation();
+
 	if ( interactionTable ) {
 		R_StaticFree( interactionTable );
 		interactionTable = NULL;

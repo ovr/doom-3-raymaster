@@ -2388,6 +2388,10 @@ void idGameLocal::RunSingleFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 		return;
 	}
 
+	// the defs this tic moves are drawn from their poses before it (r_interpolate); also with
+	// g_stopTime, where only the player thinks, and for the spawns of SyncPlayersWithLobbyUsers
+	gameRenderWorld->BeginGameTic();
+
 	SyncPlayersWithLobbyUsers( false );
 	ServerSendNetworkSyncCvars();
 
@@ -2815,8 +2819,7 @@ idGameLocal::SetRenderFrame
 ================
 */
 void idGameLocal::SetRenderFrame( const float alpha, const usercmd_t & latestCmd ) {
-	// stored for the render interpolation and the late view angles; Draw doesn't use them yet,
-	// so a frame between two tics shows the last tic
+	// stored for the render interpolation (Draw) and the late view angles
 	renderAlpha = idMath::ClampFloat( 0.0f, 1.0f, alpha );
 	renderCmd = latestCmd;
 }
@@ -2847,8 +2850,13 @@ bool idGameLocal::Draw( int clientNum ) {
 		return false;
 	}
 
-	// render the scene
+	// render the scene, the defs that moved in the last tic between their two tic poses
+	renderInterpolation_t interp;
+	interp.alpha = renderAlpha;
+	interp.guiTime = player->GetRenderView()->time[0];
+	gameRenderWorld->SetInterpolation( &interp );
 	player->playerView.RenderPlayerView( player->hudManager );
+	gameRenderWorld->SetInterpolation( nullptr );
 
 	return true;
 }
