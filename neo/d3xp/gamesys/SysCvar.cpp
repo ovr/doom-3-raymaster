@@ -283,6 +283,7 @@ idCVar g_viewNodalX(				"g_viewNodalX",				"3",			CVAR_GAME | CVAR_FLOAT, "" );
 idCVar g_viewNodalZ(				"g_viewNodalZ",				"6",			CVAR_GAME | CVAR_FLOAT, "" );
 idCVar g_interpolateView(			"g_interpolateView",		"1",			CVAR_GAME | CVAR_BOOL, "draw the camera and the fov between the last two game tics; 0 = the view of the last tic" );
 idCVar g_interpolateTime(			"g_interpolateTime",		"1",			CVAR_GAME | CVAR_BOOL, "the render time of the effects runs ahead of the last tic to the frame's time; 0 = the time of the last tic" );
+idCVar com_lateLatchAngles(			"com_lateLatchAngles",		"1",			CVAR_GAME | CVAR_SYSTEM | CVAR_BOOL, "single player: the first-person view turns with the newest mouse input every frame, not every tic; 0 = the view angles of the tics" );
 idCVar g_fov(						"g_fov",					"80",			CVAR_GAME | CVAR_INTEGER | CVAR_NOCHEAT, "" );
 idCVar g_skipViewEffects(			"g_skipViewEffects",		"0",			CVAR_GAME | CVAR_BOOL, "skip damage and other view effects" );
 idCVar g_mpWeaponAngleScale(		"g_mpWeaponAngleScale",		"0",			CVAR_GAME | CVAR_FLOAT, "Control the weapon sway in MP" );

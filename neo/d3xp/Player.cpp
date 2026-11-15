@@ -9161,10 +9161,46 @@ void idPlayer::RecordTicView( const ticViewMode_t mode, const idCamera * camera 
 
 /*
 ==================
+idPlayer::GetDrawViewAngles
+
+UpdateViewAngles of the next tic, from the angles of the last one: the usercmd angles only move by
+what the mouse turned since, so a frame on a tic (cmd = the tic's usercmd) gets the tic angles bit for bit.
+==================
+*/
+bool idPlayer::GetDrawViewAngles( const usercmd_t & cmd, idAngles & angles ) const {
+	if ( common->IsMultiplayer() || !com_lateLatchAngles.GetBool() || !spawnAnglesSet ) {
+		return false;
+	}
+
+	// where UpdateViewAngles doesn't turn the view straight from the usercmd: cameras, the PDA,
+	// influences, death, the mounted guns and the centerview turn
+	if ( !noclip && ( gameLocal.inCinematic || privateCameraView != nullptr || gameLocal.GetCamera() != nullptr || objectiveSystemOpen ) ) {
+		return false;
+	}
+	if ( influenceActive == INFLUENCE_LEVEL2 || influenceActive == INFLUENCE_LEVEL3 || health <= 0 || mountedObject != nullptr || !centerView.IsDone( gameLocal.time ) ) {
+		return false;
+	}
+
+	const idAngles & ticAngles = ticView[1].viewAngles;
+	for ( int i = 0; i < 3; i++ ) {
+		const short turn = static_cast<short>( cmd.angles[i] - usercmd.angles[i] );
+		angles[i] = ( turn == 0 ) ? ticAngles[i] : idMath::AngleNormalize180( ticAngles[i] + SHORT2ANGLE( turn ) );
+	}
+
+	if ( cmd.angles[PITCH] != usercmd.angles[PITCH] ) {
+		const float maxPitch = noclip ? 89.0f : pm_maxviewpitch.GetFloat();
+		const float minPitch = noclip ? -89.0f : pm_minviewpitch.GetFloat();
+		angles.pitch = idMath::ClampFloat( minPitch, maxPitch, angles.pitch );
+	}
+	return true;
+}
+
+/*
+==================
 idPlayer::BuildDrawView
 ==================
 */
-void idPlayer::BuildDrawView( const float alpha, renderView_t & view, renderInterpolation_t & interp ) const {
+void idPlayer::BuildDrawView( const float alpha, const usercmd_t & cmd, renderView_t & view, renderInterpolation_t & interp ) const {
 	view = *renderView;
 	interp.guiTime = renderView->time[TIME_GROUP1];
 
@@ -9184,9 +9220,15 @@ void idPlayer::BuildDrawView( const float alpha, renderView_t & view, renderInte
 
 	const bool firstPerson = cur.mode == ticViewMode_t::FIRST_PERSON || cur.mode == ticViewMode_t::FIRST_PERSON_FIXED;
 	if ( cur.mode == ticViewMode_t::FIRST_PERSON ) {
+		// the angles of the newest mouse input, else lerped between the tics
 		idAngles angles;
-		for ( int i = 0; i < 3; i++ ) {
-			angles[i] = cur.viewAngles[i] - idMath::AngleNormalize180( cur.viewAngles[i] - prev.viewAngles[i] ) * ( 1.0f - viewAlpha );
+		if ( GetDrawViewAngles( cmd, angles ) ) {
+			interp.lateYaw = idMath::AngleNormalize180( angles.yaw - cur.viewAngles.yaw );
+			interp.latePitch = angles.pitch - cur.viewAngles.pitch;
+		} else {
+			for ( int i = 0; i < 3; i++ ) {
+				angles[i] = cur.viewAngles[i] - idMath::AngleNormalize180( cur.viewAngles[i] - prev.viewAngles[i] ) * ( 1.0f - viewAlpha );
+			}
 		}
 		ComposeViewPos( lerp( prev.eye, cur.eye ), angles + lerp( prev.extraAngles, cur.extraAngles ), view.vieworg, view.viewaxis );
 	} else if ( viewAlpha < 1.0f ) {

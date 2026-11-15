@@ -512,6 +512,8 @@ void idRenderWorldLocal::ApplyRenderPoses() {
 	stats.active = true;
 	stats.alpha = PoseAlpha();
 	stats.listed = ticEntities.Num();
+	stats.lateYaw = interpolation.lateYaw;
+	stats.latePitch = interpolation.latePitch;
 
 	// alpha 1 draws the world at the tic poses; the late view can still differ from the tic view
 	const float alpha = stats.alpha;
