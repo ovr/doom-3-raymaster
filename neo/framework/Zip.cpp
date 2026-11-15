@@ -38,8 +38,8 @@ Contains external code for building ZipFiles.
 #include "Zip.h"
 #include "Unzip.h"
 
-#undef STDC
-#include "zlib/zutil.h"
+// zlib's default memory level (DEF_MEM_LEVEL, internal to its zutil.h)
+constexpr int ZIP_MEM_LEVEL = 8;
 
 /* zip.c -- IO on .zip files using zlib
    Version 1.01e, February 12th, 2005
@@ -882,7 +882,7 @@ zipOpenNewFileInZip2
 int zipOpenNewFileInZip2( zipFile file, const char* filename, const zip_fileinfo* zipfi, const void* extrafield_local, unsigned int size_extrafield_local,
 									const void* extrafield_global, unsigned int size_extrafield_global, const char* comment, int method, int level, int raw ) {
     return zipOpenNewFileInZip3( file, filename, zipfi, extrafield_local, size_extrafield_local, extrafield_global, size_extrafield_global,
-                                 comment, method, level, raw, -MAX_WBITS, DEF_MEM_LEVEL, Z_DEFAULT_STRATEGY, NULL, 0 );
+                                 comment, method, level, raw, -MAX_WBITS, ZIP_MEM_LEVEL, Z_DEFAULT_STRATEGY, NULL, 0 );
 }
 
 /*
@@ -1429,7 +1429,7 @@ bool idZipBuilder::CreateZipFile( bool appendFiles ) {
 		}
 
 		int errcode = zipOpenNewFileInZip3( zf, filenameInZip, &zi, NULL, 0, NULL, 0, NULL /* comment*/,
-											compressionMethod,	DEFAULT_COMPRESSION_LEVEL, 0, -MAX_WBITS, DEF_MEM_LEVEL, 
+											compressionMethod,	DEFAULT_COMPRESSION_LEVEL, 0, -MAX_WBITS, ZIP_MEM_LEVEL, 
 											Z_DEFAULT_STRATEGY, NULL /*password*/, 0 /*fileCRC*/ );
 
 		if ( errcode != ZIP_OK ) {
@@ -1545,7 +1545,7 @@ bool idZipBuilder::CreateZipFileFromFiles( const idList< idFile_Memory * > & src
 		}
 
 		int errcode = zipOpenNewFileInZip3( zf, src->GetName(), &zi, NULL, 0, NULL, 0, NULL /* comment*/,
-			compressionMethod,	DEFAULT_COMPRESSION_LEVEL, 0, -MAX_WBITS, DEF_MEM_LEVEL, 
+			compressionMethod,	DEFAULT_COMPRESSION_LEVEL, 0, -MAX_WBITS, ZIP_MEM_LEVEL, 
 			Z_DEFAULT_STRATEGY, NULL /*password*/, 0 /*fileCRC*/ );
 
 		if ( errcode != ZIP_OK ) {
@@ -1635,7 +1635,7 @@ bool idZipBuilder::AddFile( zipFile zf, idFile_Memory *src, bool deleteFile ) {
 	}
 
 	int errcode = zipOpenNewFileInZip3( zf, src->GetName(), &zi, NULL, 0, NULL, 0, NULL /* comment*/,
-		compressionMethod,	DEFAULT_COMPRESSION_LEVEL, 0, -MAX_WBITS, DEF_MEM_LEVEL, 
+		compressionMethod,	DEFAULT_COMPRESSION_LEVEL, 0, -MAX_WBITS, ZIP_MEM_LEVEL, 
 		Z_DEFAULT_STRATEGY, NULL /*password*/, 0 /*fileCRC*/ );
 
 	if ( errcode != ZIP_OK ) {

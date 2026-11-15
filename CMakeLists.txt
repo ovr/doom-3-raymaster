@@ -64,6 +64,10 @@ option(D3BFG_WARNINGS_AS_ERRORS "Treat compiler warnings as errors (/WX) in engi
 # Common compile settings
 # ---------------------------------------------------------------------------
 set(D3BFG_NEO_DIR "${CMAKE_SOURCE_DIR}/neo")
+set(D3BFG_ZLIB_DIR "${CMAKE_SOURCE_DIR}/third_party/zlib")
+if(NOT EXISTS "${D3BFG_ZLIB_DIR}/zlib.h")
+	message(FATAL_ERROR "third_party/zlib is empty: run git submodule update --init")
+endif()
 
 # Debug / Release(Retail) code generation, matching _Debug.props / _Release.props.
 #   WITH_INLINES  - _WithInlines.props (Debug only: /Ob1 + _INLINEDEBUG)
@@ -105,7 +109,7 @@ function(d3bfg_neo_common tgt)
 		_CRT_NONSTDC_NO_DEPRECATE
 		_USE_32BIT_TIME_T
 	)
-	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}")
+	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}" "${D3BFG_ZLIB_DIR}")
 endfunction()
 
 add_subdirectory(doomclassic)

@@ -13,6 +13,7 @@ cmake --preset vs2022-win32          # configure (VS 2022 generator, Win32)
 cmake --build --preset release       # also: debug, retail
 ```
 
+- zlib is a git submodule in `third_party/zlib` (upstream madler/zlib at a release tag), compiled into the `external` target from its `.c` files. After cloning run `git submodule update --init`, or configure stops with that hint.
 - The output is `build\vs2022-win32\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-win32` can also be opened in Visual Studio.
 - For Ninja, run these from an "x86 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x86`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
 - `Retail` is `Release` plus `ID_RETAIL`.
@@ -110,4 +111,4 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 ## Not included (from README.txt)
 
 - Steam integration, Bink video and the patented "depth fail" stencil shadows (Carmack's Reverse) have been removed.
-- These third-party pieces are under their own licenses: jpeg-6 (`neo/renderer/jpeg-6`), zlib (`neo/framework/zlib`) and Base64 (`neo/idlib/Base64.cpp`).
+- These third-party pieces are under their own licenses: jpeg-6 (`neo/renderer/jpeg-6`), zlib (`third_party/zlib`, a submodule) and Base64 (`neo/idlib/Base64.cpp`).

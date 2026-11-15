@@ -116,9 +116,9 @@ better release of the library.
 
 zlib library
 ---------------------------------------------------------------------------
-neo/framework/zlib/*
+third_party/zlib/* (git submodule, zlib 1.4)
 
-Copyright (C) 1995-2005 Jean-loup Gailly and Mark Adler
+Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler
 
 This software is provided 'as-is', without any express or implied
 warranty.  In no event will the authors be held liable for any damages

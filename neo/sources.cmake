@@ -59,18 +59,17 @@ set(IDLIB_SOURCES
 
 
 set(EXTERNAL_SOURCES
-	framework/zlib/adler32.c
-	framework/zlib/compress.c
-	framework/zlib/crc32.c
-	framework/zlib/deflate.c
-	framework/zlib/gzio.c
-	framework/zlib/infback.c
-	framework/zlib/inffast.c
-	framework/zlib/inflate.c
-	framework/zlib/inftrees.c
-	framework/zlib/trees.c
-	framework/zlib/uncompr.c
-	framework/zlib/zutil.c
+	../third_party/zlib/adler32.c
+	../third_party/zlib/compress.c
+	../third_party/zlib/crc32.c
+	../third_party/zlib/deflate.c
+	../third_party/zlib/infback.c
+	../third_party/zlib/inffast.c
+	../third_party/zlib/inflate.c
+	../third_party/zlib/inftrees.c
+	../third_party/zlib/trees.c
+	../third_party/zlib/uncompr.c
+	../third_party/zlib/zutil.c
 	renderer/jpeg-6/jcapimin.cpp
 	renderer/jpeg-6/jccoefct.cpp
 	renderer/jpeg-6/jccolor.cpp
