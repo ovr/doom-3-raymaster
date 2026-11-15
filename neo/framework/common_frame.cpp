@@ -402,12 +402,11 @@ float idCommonLocal::GetTargetFrameRate() {
 =================
 idCommonLocal::LimitFrameRate
 
-Waits for the next com_maxFPS frame start. It paces real time, not the game clock of the
-tic decision, so it reads Sys_Microseconds itself.
+Waits for the next frame start at maxFPS, 0 = no wait. It paces real time, not the game clock
+of the tic decision, so it reads Sys_Microseconds itself.
 =================
 */
-void idCommonLocal::LimitFrameRate() {
-	const int maxFPS = com_maxFPS.GetInteger();
+void idCommonLocal::LimitFrameRate( const int maxFPS ) {
 	if ( maxFPS <= 0 ) {
 		limiterFrameUS = 0;
 		return;
@@ -419,7 +418,7 @@ void idCommonLocal::LimitFrameRate() {
 		Sys_WaitUntilMicroseconds( targetUS );
 		limiterFrameUS = targetUS;
 	} else if ( limiterFrameUS != 0 && nowUS < targetUS + periodUS ) {
-		// less than a frame late: keep the cadence, so the average stays at com_maxFPS
+		// less than a frame late: keep the cadence, so the average stays at maxFPS
 		limiterFrameUS = targetUS;
 	} else {
 		limiterFrameUS = nowUS;
@@ -526,10 +525,9 @@ void idCommonLocal::Frame() {
 		//     none due, decoupled  draw anyway, alpha = residual / tic length
 		//     none due, coupled    sleep and decide again; the coupled loop always draws alpha 1
 		//--------------------------------------------
-		// a visual demo runs as fast as it can, its frames are paced by the virtual clock
-		if ( !visualDemo->IsRunning() ) {
-			LimitFrameRate();
-		}
+		// a visual demo's virtual clock steps once a frame: uncapped it runs as fast as it can,
+		// with vdemo_realtime 1 it waits for each step's real time
+		LimitFrameRate( visualDemo->IsRunning() ? visualDemo->MaxFrameRate() : com_maxFPS.GetInteger() );
 
 		const bool decoupled = DecoupledTics();
 

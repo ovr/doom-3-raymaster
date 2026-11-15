@@ -102,6 +102,7 @@ If you have questions concerning this license or the applicable additional terms
 
 idCVar vdemo_fps( "vdemo_fps", "240", CVAR_SYSTEM | CVAR_INTEGER, "steps per second of the visual demo clock, a multiple of com_engineHz" );
 idCVar vdemo_capture( "vdemo_capture", "1", CVAR_SYSTEM | CVAR_BOOL, "0 runs the visual demos without writing their frames" );
+idCVar vdemo_realtime( "vdemo_realtime", "0", CVAR_SYSTEM | CVAR_BOOL, "1 plays the visual demos at the speed of their clock, for watching; 0 runs them as fast as possible. The frames are the same" );
 
 extern idCVar s_noSound;
 
@@ -478,6 +479,7 @@ private:
 class idVisualDemoLocal final : public idVisualDemo {
 public:
 	bool			IsRunning() const override { return state != state_t::IDLE; }
+	int				MaxFrameRate() const override { return vdemo_realtime.GetBool() ? vdemo_fps.GetInteger() : 0; }
 	uint64			FrameLoopMicroseconds( int ticMilliseconds, double residual ) override;
 	void			RunFrame( bool gameRunning, int numGameFrames, float renderAlpha, usercmd_t & cmd ) override;
 	void			OnMapSpawned() override { mapSpawned = true; }

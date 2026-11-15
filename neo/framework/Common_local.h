@@ -471,7 +471,7 @@ private:
 	void	AdvanceRenderDemo( bool singleFrameOnly );
 
 	void	ProcessGameReturn( const gameReturn_t & ret );
-	void	LimitFrameRate();
+	void	LimitFrameRate( int maxFPS );
 
 	void	RunNetworkSnapshotFrame();
 	void	ExecuteReliableMessages();

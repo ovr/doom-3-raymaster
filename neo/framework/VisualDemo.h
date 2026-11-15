@@ -44,6 +44,9 @@ public:
 	// from the vdemo command until its last demo ended
 	[[nodiscard]] virtual bool	IsRunning() const = 0;
 
+	// the frame rate cap while a demo runs: vdemo_fps with vdemo_realtime 1, else 0 (no cap)
+	[[nodiscard]] virtual int	MaxFrameRate() const = 0;
+
 	// The game clock of the frame loop's tic decision. ticMilliseconds is the length of the next
 	// tic and residual the time already accumulated towards it. While a demo runs, each call is
 	// one virtual step that ends exactly on a 1 / vdemo_fps grid of that tic.
