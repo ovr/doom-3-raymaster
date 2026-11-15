@@ -432,6 +432,11 @@ void idPlayerView::SingleView( const renderView_t *view, idMenuHandler_HUD * hud
 		return;
 	}
 
+	// driftAmount is per tic, and SingleView runs per drawn frame and stereo eye
+	const int blobTime = view->time[TIME_GROUP2];
+	const float driftTics = idMath::ClampFloat( 0.0f, 4.0f, MS2SEC( blobTime - lastBlobDriftTime ) * com_engineHz_latched );
+	lastBlobDriftTime = blobTime;
+
 	// draw screen blobs
 	if ( !pm_thirdPerson.GetBool() && !g_skipViewEffects.GetBool() ) {
 		if ( !player->spectating ) {
@@ -441,7 +446,7 @@ void idPlayerView::SingleView( const renderView_t *view, idMenuHandler_HUD * hud
 					continue;
 				}
 
-				blob->y += blob->driftAmount;
+				blob->y += blob->driftAmount * driftTics;
 
 				float	fade = (float)( blob->finishTime - gameLocal.fast.time ) / ( blob->finishTime - blob->startFadeTime );
 				if ( fade > 1.0f ) {
@@ -1467,16 +1472,12 @@ void FullscreenFX_Bloom::HighQuality() {
 		targetIntensity = player->bloomIntensity;
 	}
 
-	float delta = targetIntensity - currentIntensity;
-	float step = 0.001f;
-
-	if ( step < fabs( delta ) ) {
-		if ( delta < 0 ) {
-			step = -step;
-		}
-
-		currentIntensity += step;
-	}
+	// the blend moved 0.001 per drawn frame, which was once per tic; frames between tics
+	// and paused frames don't advance the game time, so they don't move it
+	const float tics = idMath::ClampFloat( 0.0f, 4.0f, MS2SEC( gameLocal.slow.time - lastStepTime ) * com_engineHz_latched );
+	lastStepTime = gameLocal.slow.time;
+	const float step = 0.001f * tics;
+	currentIntensity += idMath::ClampFloat( -step, step, targetIntensity - currentIntensity );
 
 	// draw the blends
 	int num = g_testBloomNumPasses.GetInteger();
@@ -1728,7 +1729,7 @@ void FullscreenFXManager::Process( const renderView_t *view ) {
 			renderSystem->CaptureRenderToImage( "_currentRender" );
 
 			// handle the accum pass if we have one
-			if ( pfx->HasAccum() ) {
+			if ( pfx->HasAccum() && pfx->AccumDue( gameLocal.fast.time ) ) {
 				// we need to crop the accum pass
 				renderSystem->CropRenderSize( 512, 512 );
 				pfx->AccumPass( view );

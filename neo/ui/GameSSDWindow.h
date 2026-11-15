@@ -544,6 +544,7 @@ private:
 
 	void				UpdateGame();
 	void				CheckForHits();
+	int					lastUpdateTime = -1;
 	void				ZOrderEntities();
 
 	void				SpawnAsteroid();

@@ -89,6 +89,7 @@ private:
 	void				UpdateTurret();
 	void				UpdateButtons();
 	void				UpdateGame();
+	int					lastUpdateTime = -1;
 	void				UpdateScore();
 
 	virtual bool		ParseInternalVar(const char *name, idTokenParser *src);

@@ -428,6 +428,9 @@ void			Sys_Sleep( int msec );
 int				Sys_Milliseconds();
 uint64			Sys_Microseconds();
 
+// sleeps until Sys_Microseconds() reaches targetMicroseconds, spinning the last stretch for precision
+void			Sys_WaitUntilMicroseconds( uint64 targetMicroseconds );
+
 // for accurate performance testing
 double			Sys_GetClockTicks();
 double			Sys_ClockTicksPerSecond();

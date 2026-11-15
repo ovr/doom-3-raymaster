@@ -38,6 +38,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 extern idCVar com_engineHz;
+extern idCVar com_maxFPS;
 extern float com_engineHz_latched;
 extern int64 com_engineHz_numerator;
 extern int64 com_engineHz_denominator;

@@ -37,6 +37,15 @@ static const int initialBaseTicksPerSec = initialHz * initialBaseTicks;
 static const int LOAD_TIP_CHANGE_INTERVAL = 12000;
 static const int LOAD_TIP_COUNT = 26;
 
+// one frame's work for the game thread, copied into it before it is signalled
+struct gameThreadFrame_t {
+	int			numGameFrames = 0;		// 0 on a frame between two tics, or while paused
+	bool		paused = false;			// also drops the rumble the last tic asked for
+	bool		isClient = false;
+	float		renderAlpha = 1.0f;		// how far the frame is from the last tic towards the next one
+	usercmd_t	latestCmd;				// built every frame, also when no tic consumes it
+};
+
 class idGameThread : public idSysThread {
 public:
 	idGameThread() :
@@ -47,13 +56,12 @@ public:
 		threadRenderTime(),
 		userCmdMgr( NULL ),
 		ret(),
-		numGameFrames(),
-		isClient()
+		frame()
 	{}
 
 	// the gameReturn_t is from the previous frame, the
 	// new frame will be running in parallel on exit
-	gameReturn_t	RunGameAndDraw( int numGameFrames, idUserCmdMgr & userCmdMgr_, bool isClient_, int startGameFrame );
+	gameReturn_t	RunGameAndDraw( const gameThreadFrame_t & frame_, idUserCmdMgr & userCmdMgr_ );
 
 	// Accessors to the stored frame/thread time information
 	void			SetThreadTotalTime( const int inTime ) { threadTime = inTime; }
@@ -75,8 +83,7 @@ private:
 	int				threadRenderTime;			// render fg time only
 	idUserCmdMgr *	userCmdMgr;
 	gameReturn_t	ret;
-	int				numGameFrames;
-	bool			isClient;
+	gameThreadFrame_t	frame;
 };
 
 enum errorParm_t {
@@ -216,6 +223,11 @@ public:
 	int		GetRendererShadowsMicroseconds() const { return time_shadows; }
 	int		GetRendererIdleMicroseconds() const { return mainFrameTiming.startRenderTime - mainFrameTiming.finishSyncTime; }
 	int		GetRendererGPUMicroseconds() const { return time_gpu; }
+
+	// frames run between tics (single player); else the loop waits for a tic before each frame
+	bool	DecoupledTics();
+	// the frame rate the loop aims for: com_maxFPS, else the display refresh, at most com_engineHz when coupled
+	float	GetTargetFrameRate();
 
 	frameTiming_t		frameTiming;
 	frameTiming_t		mainFrameTiming;
@@ -361,6 +373,9 @@ private:
 	int					gameFrame;			// Frame number of the local game
 	double				gameTimeResidual;	// left over msec from the last game frame
 	bool				syncNextGameFrame;
+	uint64				lastFrameTimeUS;	// game clock of the previous tic decision, 0 before the first
+	uint64				limiterFrameUS;		// when com_maxFPS last let a frame start, 0 while it is off
+	float				renderAlpha;		// kept while paused, alpha 0 would draw the picture a tic back
 
 	bool				aviCaptureMode;		// if true, screenshots will be taken and sound captured
 	idStr				aviDemoShortName;	// 
@@ -456,6 +471,7 @@ private:
 	void	AdvanceRenderDemo( bool singleFrameOnly );
 
 	void	ProcessGameReturn( const gameReturn_t & ret );
+	void	LimitFrameRate();
 
 	void	RunNetworkSnapshotFrame();
 	void	ExecuteReliableMessages();

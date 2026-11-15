@@ -29,6 +29,10 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../idLib/precompiled.h"
 #include "../Game_local.h"
 
+// the audio log and radio bars are rolled on every Draw; the game's generator would make
+// the game's random numbers depend on the frame rate
+static idRandom hudRandom;
+
 extern idCVar pm_stamina;
 extern idCVar in_useJoystick;
 extern idCVar flashlight_batteryDrainTimeMS;
@@ -1288,9 +1292,9 @@ void  idMenuScreen_HUD::UpdateAudioLog( bool show ) {
 		for ( int index = 0; index < 13; ++index  ) {
 			idSWFSpriteInstance * node = audioLog->GetScriptObject()->GetNestedSprite( "bar", va( "node%d", index ) );
 			if ( node != NULL ) {
-				int frame = gameLocal.random.RandomInt( 100 );
+				int frame = hudRandom.RandomInt( 100 );
 				node->SetScale( 100.0f, frame );
-				float toFrame = gameLocal.random.RandomFloat();
+				float toFrame = hudRandom.RandomFloat();
 				node->SetMoveToScale( -1.0f, toFrame );
 			}
 		}
@@ -1311,7 +1315,7 @@ void  idMenuScreen_HUD::UpdateAudioLog( bool show ) {
 				float diff = gameLocal.time - audioLogPrevTime;
 				float speed = ( diff / 350.0f ) * 100.0f;
 				if ( !node->UpdateMoveToScale( speed ) ) {
-					int frame = gameLocal.random.RandomInt( 100 );
+					int frame = hudRandom.RandomInt( 100 );
 					float scale = frame / 100.0f;
 					node->SetMoveToScale( -1.0f, scale );
 				}
@@ -1348,9 +1352,9 @@ void  idMenuScreen_HUD::UpdateCommunication( bool show, idPlayer * player ) {
 		for ( int index = 0; index < 16; ++index  ) {
 			idSWFSpriteInstance * node = communication->GetScriptObject()->GetNestedSprite( "info", "bar", va( "node%d", index ) );
 			if ( node != NULL ) {
-				int frame = gameLocal.random.RandomInt( 100 );
+				int frame = hudRandom.RandomInt( 100 );
 				node->SetScale( 100.0f, frame );
-				float toFrame = gameLocal.random.RandomFloat();
+				float toFrame = hudRandom.RandomFloat();
 				node->SetMoveToScale( -1.0f, toFrame );
 			}
 		}
@@ -1376,7 +1380,7 @@ void  idMenuScreen_HUD::UpdateCommunication( bool show, idPlayer * player ) {
 				float diff = gameLocal.time - commPrevTime;
 				float speed = ( diff / 350.0f ) * 100.0f;
 				if ( !node->UpdateMoveToScale( speed ) ) {
-					int frame = gameLocal.random.RandomInt( 100 );
+					int frame = hudRandom.RandomInt( 100 );
 					float scale = frame / 100.0f;
 					node->SetMoveToScale( -1.0f, scale );
 				}

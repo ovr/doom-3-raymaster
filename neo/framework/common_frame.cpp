@@ -59,6 +59,8 @@ idCVar com_deltaTimeClamp( "com_deltaTimeClamp", "50", CVAR_INTEGER, "don't proc
 idCVar com_fixedTic( "com_fixedTic", DEFAULT_FIXED_TIC, CVAR_INTEGER, "debug: run this many game tics per rendered frame, ties the game speed to the frame rate" );
 idCVar com_noSleep( "com_noSleep", DEFAULT_NO_SLEEP, CVAR_BOOL, "debug: run a game tic every rendered frame instead of waiting for it, ties the game speed to the frame rate" );
 idCVar com_smp( "com_smp", "1", CVAR_BOOL|CVAR_SYSTEM|CVAR_NOCHEAT, "run the game and draw code in a separate thread" );
+idCVar com_decoupledTics( "com_decoupledTics", "1", CVAR_BOOL|CVAR_SYSTEM, "single player draws frames between game tics instead of waiting for the next tic; 0 = the old loop, which draws at most com_engineHz" );
+idCVar com_maxFPS( "com_maxFPS", "0", CVAR_INTEGER|CVAR_SYSTEM|CVAR_ARCHIVE, "frame rate cap, also in menus and while paused; 0 = no cap", 0, 1000 );
 idCVar com_aviDemoSamples( "com_aviDemoSamples", "16", CVAR_SYSTEM, "" );
 idCVar com_aviDemoWidth( "com_aviDemoWidth", "256", CVAR_SYSTEM, "" );
 idCVar com_aviDemoHeight( "com_aviDemoHeight", "256", CVAR_SYSTEM, "" );
@@ -94,17 +96,18 @@ int idGameThread::Run() {
 		Sys_Sleep( com_sleepGame.GetInteger() );
 	}
 
-	if ( numGameFrames == 0 ) {
+	if ( frame.paused ) {
 		// Ensure there's no stale gameReturn data from a paused game
 		ret = gameReturn_t();
 	} else {
-		// RunGameAndDraw already handed the last results to the session, and a stale
-		// syncNextGameFrame would run one tic per rendered frame (game speed = FPS / Hz)
+		// the session already has the last one-shot results (a stale syncNextGameFrame ran a tic
+		// every frame); the rumble stays, a frame between two tics doesn't set it again
 		ret.syncNextGameFrame = false;
 		ret.sessionCommand[0] = '\0';
 	}
 
-	if ( isClient ) {
+	const int numGameFrames = frame.numGameFrames;
+	if ( frame.isClient ) {
 		// run the game logic
 		for ( int i = 0; i < numGameFrames; i++ ) {
 			SCOPED_PROFILE_EVENT( "Client Prediction" );
@@ -142,6 +145,9 @@ int idGameThread::Run() {
 	// build render commands and geometry
 	{
 		SCOPED_PROFILE_EVENT( "Draw" );
+		if ( game != nullptr ) {
+			game->SetRenderFrame( frame.renderAlpha, frame.latestCmd );
+		}
 		commonLocal.Draw();
 	}
 
@@ -160,19 +166,17 @@ idGameThread::RunGameAndDraw
 
 ===============
 */
-gameReturn_t idGameThread::RunGameAndDraw( int numGameFrames_, idUserCmdMgr & userCmdMgr_, bool isClient_, int startGameFrame ) {
+gameReturn_t idGameThread::RunGameAndDraw( const gameThreadFrame_t & frame_, idUserCmdMgr & userCmdMgr_ ) {
 	// this should always immediately return
 	this->WaitForThread();
 
 	// save the usercmds for the background thread to pick up
 	userCmdMgr = &userCmdMgr_;
 
-	isClient = isClient_;
-
 	// grab the return value created by the last thread execution
 	gameReturn_t latchedRet = ret;
 
-	numGameFrames = numGameFrames_;
+	frame = frame_;
 
 	// start the thread going
 	if ( com_smp.GetBool() == false ) {
@@ -365,6 +369,62 @@ void idCommonLocal::ProcessGameReturn( const gameReturn_t & ret ) {
 	}
 }
 
+/*
+=================
+idCommonLocal::DecoupledTics
+=================
+*/
+bool idCommonLocal::DecoupledTics() {
+	// multiplayer sends one usercmd per tic, Doom Classic runs one tic per Frame and
+	// an AVI capture wants one tic per captured frame
+	return com_decoupledTics.GetBool() && !IsMultiplayer() && !IsPlayingDoomClassic() && !aviCaptureMode;
+}
+
+/*
+=================
+idCommonLocal::GetTargetFrameRate
+=================
+*/
+float idCommonLocal::GetTargetFrameRate() {
+	const float engineHz = Max( 1.0f, com_engineHz_latched );
+	float hz = static_cast<float>( com_maxFPS.GetInteger() );
+	if ( hz <= 0.0f ) {
+		hz = static_cast<float>( renderSystem->GetDisplayRefreshRate() );
+	}
+	if ( hz <= 0.0f ) {
+		hz = engineHz;
+	}
+	return DecoupledTics() ? hz : Min( hz, engineHz );
+}
+
+/*
+=================
+idCommonLocal::LimitFrameRate
+
+Waits for the next com_maxFPS frame start. It paces real time, not the game clock of the
+tic decision, so it reads Sys_Microseconds itself.
+=================
+*/
+void idCommonLocal::LimitFrameRate() {
+	const int maxFPS = com_maxFPS.GetInteger();
+	if ( maxFPS <= 0 ) {
+		limiterFrameUS = 0;
+		return;
+	}
+	const uint64 periodUS = ( 1000000 + maxFPS / 2 ) / maxFPS;
+	const uint64 targetUS = limiterFrameUS + periodUS;
+	const uint64 nowUS = Sys_Microseconds();
+	if ( limiterFrameUS != 0 && nowUS < targetUS ) {
+		Sys_WaitUntilMicroseconds( targetUS );
+		limiterFrameUS = targetUS;
+	} else if ( limiterFrameUS != 0 && nowUS < targetUS + periodUS ) {
+		// less than a frame late: keep the cadence, so the average stays at com_maxFPS
+		limiterFrameUS = targetUS;
+	} else {
+		limiterFrameUS = nowUS;
+	}
+}
+
 extern idCVar com_forceGenericSIMD;
 
 /*
@@ -453,58 +513,57 @@ void idCommonLocal::Frame() {
 		frameTiming.finishSyncTime = Sys_Microseconds();
 
 		//--------------------------------------------
-		// Determine how many game tics we are going to run,
-		// now that the previous frame is completely finished.
+		// Determine how many game tics we are going to run, now that the previous frame is
+		// completely finished. Waiting on the GPU and for com_maxFPS must come before this,
+		// or dropping frames for performance management stutters badly.
 		//
-		// It is important that any waiting on the GPU be done
-		// before this, or there will be a bad stuttering when
-		// dropping frames for performance management.
+		//   residual += min( time since the last decision, com_deltaTimeClamp ) * timescale
+		//   paused                 no tic; coupled: residual = 0; decoupled: residual and alpha stay
+		//   com_fixedTic N, sync   N or 1 tics, residual = 0, alpha = 1
+		//   otherwise              run every tic that is due ( while residual >= tic length )
+		//     none due, noSleep    1 tic, residual = 0, alpha = 1
+		//     none due, decoupled  draw anyway, alpha = residual / tic length
+		//     none due, coupled    sleep and decide again; the coupled loop always draws alpha 1
 		//--------------------------------------------
+		LimitFrameRate();
 
-		// input:
-		// thisFrameTime
-		// com_noSleep
-		// com_engineHz
-		// com_fixedTic
-		// com_deltaTimeClamp
-		// IsMultiplayer
-		//
-		// in/out state:
-		// gameFrame
-		// gameTimeResidual
-		// lastFrameTime
-		// syncNextFrame
-		//
-		// Output:
-		// numGameFrames
+		const bool decoupled = DecoupledTics();
 
-		// How many game frames to run
+		// the game clock of the tic decision, the only place it reads the time
+		const auto frameTimeUS = [] { return Sys_Microseconds(); };
+
 		int numGameFrames = 0;
+		bool showLastTic = !decoupled;
 
 		for(;;) {
-			const int thisFrameTime = Sys_Milliseconds();
-			static int lastFrameTime = thisFrameTime;	// initialized only the first time
-			const int deltaMilliseconds = thisFrameTime - lastFrameTime;
-			lastFrameTime = thisFrameTime;
+			const uint64 thisFrameTimeUS = frameTimeUS();
+			if ( lastFrameTimeUS == 0 ) {
+				lastFrameTimeUS = thisFrameTimeUS;
+			}
+			const double deltaMilliseconds = static_cast<double>( thisFrameTimeUS - lastFrameTimeUS ) / 1000.0;
+			lastFrameTimeUS = thisFrameTimeUS;
 
 			// if there was a large gap in time since the last frame, or the frame
 			// rate is very very low, limit the number of frames we will run
-			const int clampedDeltaMilliseconds = Min( deltaMilliseconds, com_deltaTimeClamp.GetInteger() );
-
-			gameTimeResidual += clampedDeltaMilliseconds * timescale.GetFloat();
+			const double clampedDeltaMilliseconds = Min( deltaMilliseconds, static_cast<double>( com_deltaTimeClamp.GetInteger() ) );
 
 			// don't run any frames when paused
 			if ( pauseGame ) {
 				gameFrame++;
-				gameTimeResidual = 0;
+				if ( !decoupled ) {
+					gameTimeResidual = 0;
+				}
 				break;
 			}
+
+			gameTimeResidual += clampedDeltaMilliseconds * timescale.GetFloat();
 
 			// debug cvar to force multiple game tics
 			if ( com_fixedTic.GetInteger() > 0 ) {
 				numGameFrames = com_fixedTic.GetInteger();
 				gameFrame += numGameFrames;
 				gameTimeResidual = 0;
+				showLastTic = true;
 				break;
 			}
 
@@ -514,6 +573,7 @@ void idCommonLocal::Frame() {
 				gameFrame++;
 				numGameFrames++;
 				gameTimeResidual = 0;
+				showLastTic = true;
 				break;
 			}
 
@@ -542,6 +602,11 @@ void idCommonLocal::Frame() {
 				numGameFrames = 1;
 				gameFrame += numGameFrames;
 				gameTimeResidual = 0;
+				showLastTic = true;
+				break;
+			}
+
+			if ( decoupled ) {
 				break;
 			}
 
@@ -549,6 +614,12 @@ void idCommonLocal::Frame() {
 			// we don't have vsync on, or the monitor is running at 120hz while
 			// com_engineHz is 60, so sleep a bit and check again
 			Sys_Sleep( 0 );
+		}
+
+		if ( !pauseGame ) {
+			const int ticMilliseconds = FRAME_TO_MSEC( gameFrame + 1 ) - FRAME_TO_MSEC( gameFrame );
+			const float alpha = ticMilliseconds > 0 ? static_cast<float>( gameTimeResidual / ticMilliseconds ) : 1.0f;
+			renderAlpha = showLastTic ? 1.0f : idMath::ClampFloat( 0.0f, 1.0f, alpha );
 		}
 		const uint64 finishTicWaitTime = Sys_Microseconds();
 
@@ -592,12 +663,10 @@ void idCommonLocal::Frame() {
 		// in a background thread
 		//--------------------------------------------
 
-		// get the previous usercmd for bypassed head tracking transform
-		const usercmd_t	previousCmd = usercmdGen->GetCurrentUsercmd();
-
-		// build a new usercmd
-		int deviceNum = session->GetSignInManager().GetMasterInputDevice();
-		usercmdGen->BuildCurrentUsercmd( deviceNum );
+		// build a new usercmd, every frame; the coupled loop treats each build as a tic's
+		const bool ticFrame = !decoupled || numGameFrames > 0;
+		const int deviceNum = session->GetSignInManager().GetMasterInputDevice();
+		usercmdGen->BuildCurrentUsercmd( deviceNum, ticFrame, decoupled );
 		if ( deviceNum == -1 ) {
 			for ( int i = 0; i < MAX_INPUT_DEVICES; i++ ) {
 				Sys_PollJoystickInputEvents( i );
@@ -633,7 +702,13 @@ void idCommonLocal::Frame() {
 		}
 		
 		// start the game / draw command generation thread going in the background
-		gameReturn_t ret = gameThread.RunGameAndDraw( numGameFrames, userCmdMgr, IsClient(), gameFrame - numGameFrames );
+		gameThreadFrame_t threadFrame;
+		threadFrame.numGameFrames = numGameFrames;
+		threadFrame.paused = pauseGame;
+		threadFrame.isClient = IsClient();
+		threadFrame.renderAlpha = renderAlpha;
+		threadFrame.latestCmd = newCmd;
+		gameReturn_t ret = gameThread.RunGameAndDraw( threadFrame, userCmdMgr );
 
 		if ( !com_smp.GetBool() ) {
 			// in non-smp mode, run the commands we just generated, instead of
@@ -697,21 +772,22 @@ void idCommonLocal::Frame() {
 		// All times are in milliseconds with 0.01 precision:
 		//   all  - wall time since the previous report
 		//   sync - waiting for the previous frame's swap / GPU fence
-		//   tic  - waiting for the next game tic (com_engineHz frame limiter)
+		//   wait - com_maxFPS limiter, and in the coupled loop the wait for the next game tic
 		//   pre  - session, gui events and usercmd generation
 		//   game - game logic on the game thread (all tics of this frame)
 		//   draw - renderer front end on the game thread
 		//   bk   - renderer back end (GL command submission) on the main thread
-		//   wait - main thread waiting for the game thread after the back end
+		//   join - main thread waiting for the game thread after the back end
 		//   post - sound, snapshots and the game return processing
 		//   gpu  - GPU time of the previous frame (timer query)
+		//   tics - game tics run this frame, alpha - the frame's position between two tics
 		if ( com_speeds.GetBool() ) {
 			static uint64 lastTime = Sys_Microseconds();
 			const uint64 nowTime = Sys_Microseconds();
 			const uint64 frameMicroSec = nowTime - lastTime;
 			lastTime = nowTime;
 			const double toMs = 1.0 / 1000.0;
-			Printf( "frame:%d all:%.2f sync:%.2f tic:%.2f pre:%.2f game:%.2f draw:%.2f bk:%.2f wait:%.2f post:%.2f gpu:%.2f tics:%d\n",
+			Printf( "frame:%d all:%.2f sync:%.2f wait:%.2f pre:%.2f game:%.2f draw:%.2f bk:%.2f join:%.2f post:%.2f gpu:%.2f tics:%d alpha:%.2f\n",
 				idLib::frameNumber,
 				frameMicroSec * toMs,
 				( frameTiming.finishSyncTime - frameTiming.startSyncTime ) * toMs,
@@ -723,7 +799,8 @@ void idCommonLocal::Frame() {
 				( finishGameWaitTime - frameTiming.finishRenderTime ) * toMs,
 				( nowTime - finishGameWaitTime ) * toMs,
 				time_gpu * toMs,
-				numGameFrames );
+				numGameFrames,
+				renderAlpha );
 			time_gameFrame = 0;
 			time_gameDraw = 0;
 		}

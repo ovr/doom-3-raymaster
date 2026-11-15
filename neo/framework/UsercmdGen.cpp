@@ -222,7 +222,7 @@ public:
 
 	int				CommandStringUsercmdData( const char *cmdString );
 
-	void			BuildCurrentUsercmd( int deviceNum );
+	void			BuildCurrentUsercmd( int deviceNum, bool tic, bool decoupled );
 
 	usercmd_t		GetCurrentUsercmd() { return cmd; };
 
@@ -232,8 +232,9 @@ public:
 	int				KeyState( int key );
 
 private:
-	void			MakeCurrent();
+	void			MakeCurrent( bool tic );
 	void			InitCurrent();
+	void			AddImpulse( int newImpulse );
 
 	bool			Inhibited();
 	void			AdjustAngles();
@@ -277,10 +278,15 @@ private:
 	int				mouseDx, mouseDy;	// added to by mouse events
 	float			joystickAxis[MAX_JOYSTICK_AXIS];	// set by joystick events
 
-	int				pollTime;
-	int				lastPollTime;
+	uint64			lastPollTimeUS;
+	float			pollSeconds;		// real time since the previous build, at most 0.1 s
 	float			lastLookValuePitch;
 	float			lastLookValueYaw;
+
+	bool			decoupledBuild;
+	int				latchedButtons;		// held since the last tic, so a tap between two tics isn't lost
+	bool			impulsePending;		// cmd carries an impulse that no tic has seen yet
+	idStaticList<byte, 8>	queuedImpulses;
 
 	static idCVar	in_yawSpeed;
 	static idCVar	in_pitchSpeed;
@@ -318,10 +324,14 @@ idUsercmdGenLocal::idUsercmdGenLocal
 idUsercmdGenLocal::idUsercmdGenLocal() {
 	initialized = false;
 
-	pollTime = 0;
-	lastPollTime = 0;
+	lastPollTimeUS = 0;
+	pollSeconds = 0.0f;
 	lastLookValuePitch = 0.0f;
 	lastLookValueYaw = 0.0f;
+
+	decoupledBuild = false;
+	latchedButtons = 0;
+	impulsePending = false;
 
 	impulseSequence = 0;
 	impulse = 0;
@@ -399,8 +409,9 @@ Moves the local angle positions
 ================
 */
 void idUsercmdGenLocal::AdjustAngles() {
-	float speed = MS2SEC( 16 );
-	
+	// the coupled loop keeps the old fixed 16 ms per build
+	float speed = decoupledBuild ? pollSeconds : MS2SEC( 16 );
+
 	if ( toggled_run.on || ( in_alwaysRun.GetBool() && common->IsMultiplayer() ) ) {
 		speed *= in_angleSpeedKey.GetFloat();
 	}
@@ -610,38 +621,38 @@ void idUsercmdGenLocal::HandleJoystickAxis( int keyNum, float unclampedValue, fl
 		}
 		case UB_LOOKUP: {
 			if ( joy_dampenLook.GetBool() ) {
-				lookValue = Min( lookValue, ( pollTime - lastPollTime ) * joy_deltaPerMSLook.GetFloat() + lastLookValuePitch );
+				lookValue = Min( lookValue, pollSeconds * 1000.0f * joy_deltaPerMSLook.GetFloat() + lastLookValuePitch );
 				lastLookValuePitch = lookValue;
 			}
 
 			float invertPitch = in_invertLook.GetBool() ? -1.0f : 1.0f;
-			viewangles[PITCH] -= MS2SEC( pollTime - lastPollTime ) * lookValue * joy_pitchSpeed.GetFloat() * invertPitch;
+			viewangles[PITCH] -= pollSeconds * lookValue * joy_pitchSpeed.GetFloat() * invertPitch;
 			break;
 		}
 		case UB_LOOKDOWN: {
 			if ( joy_dampenLook.GetBool() ) {
-				lookValue = Min( lookValue, ( pollTime - lastPollTime ) * joy_deltaPerMSLook.GetFloat() + lastLookValuePitch );
+				lookValue = Min( lookValue, pollSeconds * 1000.0f * joy_deltaPerMSLook.GetFloat() + lastLookValuePitch );
 				lastLookValuePitch = lookValue;
 			}
 
 			float invertPitch = in_invertLook.GetBool() ? -1.0f : 1.0f;
-			viewangles[PITCH] += MS2SEC( pollTime - lastPollTime ) * lookValue * joy_pitchSpeed.GetFloat() * invertPitch;
+			viewangles[PITCH] += pollSeconds * lookValue * joy_pitchSpeed.GetFloat() * invertPitch;
 			break;
 		}
 		case UB_LOOKLEFT: {
 			if ( joy_dampenLook.GetBool() ) {
-				lookValue = Min( lookValue, ( pollTime - lastPollTime ) * joy_deltaPerMSLook.GetFloat() + lastLookValueYaw );
+				lookValue = Min( lookValue, pollSeconds * 1000.0f * joy_deltaPerMSLook.GetFloat() + lastLookValueYaw );
 				lastLookValueYaw = lookValue;
 			}
-			viewangles[YAW] += MS2SEC( pollTime - lastPollTime ) * lookValue * joy_yawSpeed.GetFloat();
+			viewangles[YAW] += pollSeconds * lookValue * joy_yawSpeed.GetFloat();
 			break;
 		}
 		case UB_LOOKRIGHT: {
 			if ( joy_dampenLook.GetBool() ) {
-				lookValue = Min( lookValue, ( pollTime - lastPollTime ) * joy_deltaPerMSLook.GetFloat() + lastLookValueYaw );
+				lookValue = Min( lookValue, pollSeconds * 1000.0f * joy_deltaPerMSLook.GetFloat() + lastLookValueYaw );
 				lastLookValueYaw = lookValue;
 			}
-			viewangles[YAW] -= MS2SEC( pollTime - lastPollTime ) * lookValue * joy_yawSpeed.GetFloat();
+			viewangles[YAW] -= pollSeconds * lookValue * joy_yawSpeed.GetFloat();
 			break;
 		}
 	}
@@ -935,8 +946,8 @@ void idUsercmdGenLocal::JoystickMove2() {
 	cmd.forwardmove = idMath::ClampChar( cmd.forwardmove + KEY_MOVESPEED * -leftMapped.y );
 	cmd.rightmove = idMath::ClampChar( cmd.rightmove + KEY_MOVESPEED * leftMapped.x );
 
-	viewangles[PITCH] += MS2SEC( pollTime - lastPollTime ) * rightMapped.y * pitchSpeed;
-	viewangles[YAW] += MS2SEC( pollTime - lastPollTime ) * -rightMapped.x * yawSpeed;
+	viewangles[PITCH] += pollSeconds * rightMapped.y * pitchSpeed;
+	viewangles[YAW] += pollSeconds * -rightMapped.x * yawSpeed;
 
 	const float triggerThreshold = joy_triggerThreshold.GetFloat();
 	HandleJoystickAxis( K_JOY_TRIGGER1, joystickAxis[ AXIS_LEFT_TRIG ], triggerThreshold, true );
@@ -987,10 +998,34 @@ inits the current command for this frame
 ================
 */
 void idUsercmdGenLocal::InitCurrent() {
-	memset( &cmd, 0, sizeof( cmd ) );
+	cmd = usercmd_t();
 	cmd.impulseSequence = impulseSequence;
 	cmd.impulse = impulse;
 	cmd.buttons |= ( in_alwaysRun.GetBool() && common->IsMultiplayer() ) ? BUTTON_RUN : 0;
+
+	if ( !impulsePending && queuedImpulses.Num() > 0 ) {
+		AddImpulse( queuedImpulses[0] );
+		queuedImpulses.RemoveIndex( 0 );
+	}
+}
+
+/*
+================
+idUsercmdGenLocal::AddImpulse
+================
+*/
+void idUsercmdGenLocal::AddImpulse( const int newImpulse ) {
+	// a tic sees only the newest impulse, and with frames between tics a second one can come
+	// before a tic took the first: it waits for the next tic then
+	if ( decoupledBuild && impulsePending ) {
+		if ( queuedImpulses.Num() < queuedImpulses.Max() ) {
+			queuedImpulses.Append( static_cast<byte>( newImpulse ) );
+		}
+		return;
+	}
+	cmd.impulse = static_cast<byte>( newImpulse );
+	cmd.impulseSequence++;
+	impulsePending = true;
 }
 
 /*
@@ -1000,9 +1035,9 @@ idUsercmdGenLocal::MakeCurrent
 creates the current command for this frame
 ================
 */
-void idUsercmdGenLocal::MakeCurrent() {
+void idUsercmdGenLocal::MakeCurrent( const bool tic ) {
 	idVec3 oldAngles = viewangles;
-	
+
 	if ( !Inhibited() ) {
 		// update toggled key states
 		toggled_crouch.SetKeyState( ButtonState( UB_MOVEDOWN ), in_toggleCrouch.GetBool() );
@@ -1025,12 +1060,15 @@ void idUsercmdGenLocal::MakeCurrent() {
 
 		// set button bits
 		CmdButtons();
+		cmd.buttons |= latchedButtons;
 
 		// get basic movement from keyboard
 		KeyMove();
 
-		// aim assist
-		AimAssist();
+		// the game updates the correction once per tic
+		if ( tic ) {
+			AimAssist();
+		}
 
 		// check to make sure the angles haven't wrapped
 		if ( viewangles[PITCH] - oldAngles[PITCH] > 90 ) {
@@ -1053,6 +1091,11 @@ void idUsercmdGenLocal::MakeCurrent() {
 	impulseSequence = cmd.impulseSequence;
 	impulse = cmd.impulse;
 
+	// a tic samples the buttons once, so a tap between two tics is held until a tic sees it
+	latchedButtons = ( tic || Inhibited() ) ? 0 : cmd.buttons;
+	if ( tic ) {
+		impulsePending = false;
+	}
 }
 
 /*
@@ -1110,6 +1153,7 @@ idUsercmdGenLocal::InitForNewMap
 void idUsercmdGenLocal::InitForNewMap() {
 	impulseSequence = 0;
 	impulse = 0;
+	impulsePending = false;
 
 	toggled_crouch.Clear();
 	toggled_run.Clear();
@@ -1145,6 +1189,9 @@ void idUsercmdGenLocal::Clear() {
 	mouseDx = mouseDy = 0;
 	mouseButton = 0;
 	mouseDown = false;
+
+	latchedButtons = 0;
+	queuedImpulses.Clear();
 }
 
 /*
@@ -1180,8 +1227,7 @@ void idUsercmdGenLocal::Key( int keyNum, bool down ) {
 		buttonState[ action ]++;
 		if ( !Inhibited()  ) {
 			if ( action >= UB_IMPULSE0 && action <= UB_IMPULSE31 ) {
-				cmd.impulse = action - UB_IMPULSE0;
-				cmd.impulseSequence++;
+				AddImpulse( action - UB_IMPULSE0 );
 			}
 		}
 	} else {
@@ -1314,12 +1360,12 @@ void idUsercmdGenLocal::MouseState( int *x, int *y, int *button, bool *down ) {
 idUsercmdGenLocal::BuildCurrentUsercmd
 ================
 */
-void idUsercmdGenLocal::BuildCurrentUsercmd( int deviceNum ) {
+void idUsercmdGenLocal::BuildCurrentUsercmd( const int deviceNum, const bool tic, const bool decoupled ) {
+	const uint64 pollTimeUS = Sys_Microseconds();
+	pollSeconds = Min( static_cast<float>( pollTimeUS - lastPollTimeUS ) * 1e-6f, 0.1f );
+	lastPollTimeUS = pollTimeUS;
 
-	pollTime = Sys_Milliseconds();
-	if ( pollTime - lastPollTime > 100 ) {
-		lastPollTime = pollTime - 100;
-	}
+	decoupledBuild = decoupled;
 
 	// initialize current usercmd
 	InitCurrent();
@@ -1336,7 +1382,5 @@ void idUsercmdGenLocal::BuildCurrentUsercmd( int deviceNum ) {
 	}
 
 	// create the usercmd
-	MakeCurrent();
-
-	lastPollTime = pollTime;
+	MakeCurrent( tic );
 }
