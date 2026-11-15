@@ -499,6 +499,10 @@ void idCameraAnim::GetViewParms( renderView_t *view ) {
 		frame++;
 		cut++;
 	}
+	if ( cut != lastCut ) {
+		lastCut = cut;
+		viewCut++;
+	}
 
 	if ( g_debugCinematic.GetBool() ) {
 		int prevFrameTime	= ( gameLocal.previousTime - starttime ) * frameRate;
@@ -533,6 +537,7 @@ void idCameraAnim::GetViewParms( renderView_t *view ) {
 		if ( cycle != 0 ) {
 			// advance start time so that we loop
 			starttime += ( ( camera.Num() - cameraCuts.Num() ) * 1000 ) / frameRate;
+			viewCut++;
 			GetViewParms( view );
 			return;
 		}

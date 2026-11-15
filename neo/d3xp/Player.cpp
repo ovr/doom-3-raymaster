@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "Game_local.h"
 #include "../framework/Common_local.h"
+#include "../renderer/RenderInterpolation.h"
 #include "PredictedValue_impl.h"
 
 idCVar flashlight_batteryDrainTimeMS( "flashlight_batteryDrainTimeMS", "30000", CVAR_INTEGER, "amount of time (in MS) it takes for full battery to drain (-1 == no battery drain)" );
@@ -6038,6 +6039,9 @@ idPlayer::SetViewAngles
 void idPlayer::SetViewAngles( const idAngles &angles ) {
 	UpdateDeltaViewAngles( angles );
 	viewAngles = angles;
+
+	// a teleport or a scripted turn: the drawn view doesn't turn through the angles in between
+	viewSnapPending = true;
 }
 
 /*
@@ -7492,6 +7496,7 @@ void idPlayer::UpdateLaserSight() {
 
 	// only show in the player's view
 	laserSightRenderEntity.allowSurfaceInViewID = entityNumber+1;
+	laserSightRenderEntity.viewAttachedID = entityNumber + 1;
 	laserSightRenderEntity.axis.Identity();
 
 	laserSightRenderEntity.origin = muzzleOrigin - muzzleAxis[0] * 2.0f;
@@ -8958,18 +8963,33 @@ void idPlayer::GetViewPos( idVec3 &origin, idMat3 &axis ) const {
 		axis = angles.ToMat3();
 		origin = GetEyePosition();
 	} else {
-		origin = GetEyePosition() + viewBob;
-		angles = viewAngles + viewBobAngles + playerView.AngleOffset();
-
-		axis = angles.ToMat3() * physicsObj.GetGravityAxis();
-
-		// Move pivot point down so looking straight ahead is a no-op on the Z
-		const idVec3 & gravityVector = physicsObj.GetGravityNormal();
-		origin += gravityVector * g_viewNodalZ.GetFloat();
-
-		// adjust the origin based on the camera nodal distance (eye distance from neck)
-		origin += axis[0] * g_viewNodalX.GetFloat() + axis[2] * g_viewNodalZ.GetFloat();
+		ComposeViewPos( GetEyePosition() + viewBob, viewAngles + ViewExtraAngles(), origin, axis );
 	}
+}
+
+/*
+===============
+idPlayer::ViewExtraAngles
+===============
+*/
+idAngles idPlayer::ViewExtraAngles() const {
+	return viewBobAngles + playerView.AngleOffset();
+}
+
+/*
+===============
+idPlayer::ComposeViewPos
+===============
+*/
+void idPlayer::ComposeViewPos( const idVec3 & eye, const idAngles & angles, idVec3 & origin, idMat3 & axis ) const {
+	axis = angles.ToMat3() * physicsObj.GetGravityAxis();
+
+	// Move pivot point down so looking straight ahead is a no-op on the Z
+	const idVec3 & gravityVector = physicsObj.GetGravityNormal();
+	origin = eye + gravityVector * g_viewNodalZ.GetFloat();
+
+	// adjust the origin based on the camera nodal distance (eye distance from neck)
+	origin += axis[0] * g_viewNodalX.GetFloat() + axis[2] * g_viewNodalZ.GetFloat();
 }
 
 /*
@@ -9040,6 +9060,9 @@ void idPlayer::CalculateRenderView() {
 
 	renderView->viewID = 0;
 
+	ticViewMode_t mode = ticViewMode_t::FIRST_PERSON;
+	idCamera * camera = nullptr;
+
 	// check if we should be drawing from a camera's POV
 	if ( !noclip && (gameLocal.GetCamera() || privateCameraView) ) {
 		// get origin, axis, and fov
@@ -9048,6 +9071,10 @@ void idPlayer::CalculateRenderView() {
 		} else {
 			gameLocal.GetCamera()->GetViewParms( renderView );
 		}
+
+		// GetViewParms can stop the camera and start the next one
+		mode = ticViewMode_t::CAMERA;
+		camera = privateCameraView != nullptr ? privateCameraView : gameLocal.GetCamera();
 	} else {
 		if ( g_stopTime.GetBool() ) {
 			renderView->vieworg = firstPersonViewOrigin;
@@ -9058,11 +9085,14 @@ void idPlayer::CalculateRenderView() {
 				// allow the right player view weapons
 				renderView->viewID = entityNumber + 1;
 			}
+			mode = ticViewMode_t::STOP_TIME;
 		} else if ( pm_thirdPerson.GetBool() ) {
 			OffsetThirdPersonView( pm_thirdPersonAngle.GetFloat(), pm_thirdPersonRange.GetFloat(), pm_thirdPersonHeight.GetFloat(), pm_thirdPersonClip.GetBool() );
+			mode = ticViewMode_t::THIRD_PERSON;
 		} else if ( pm_thirdPersonDeath.GetBool() ) {
 			range = gameLocal.time < minRespawnTime ? ( gameLocal.time + RAGDOLL_DEATH_TIME - minRespawnTime ) * ( 120.0f / RAGDOLL_DEATH_TIME ) : 120.0f;
 			OffsetThirdPersonView( 0.0f, 20.0f + range, 0.0f, false );
+			mode = ticViewMode_t::THIRD_PERSON;
 		} else {
 			renderView->vieworg = firstPersonViewOrigin;
 			renderView->viewaxis = firstPersonViewAxis;
@@ -9070,8 +9100,12 @@ void idPlayer::CalculateRenderView() {
 			// set the viewID to the clientNum + 1, so we can suppress the right player bodies and
 			// allow the right player view weapons
 			renderView->viewID = entityNumber + 1;
+
+			// the branches of CalculateFirstPersonView and GetViewPos
+			const bool modelView = pm_modelView.GetInteger() == 1 || ( pm_modelView.GetInteger() == 2 && health <= 0 );
+			mode = ( modelView || health <= 0 ) ? ticViewMode_t::FIRST_PERSON_FIXED : ticViewMode_t::FIRST_PERSON;
 		}
-		
+
 		gameLocal.CalcFov( CalcFov( true ), renderView->fov_x, renderView->fov_y );
 	}
 
@@ -9081,6 +9115,109 @@ void idPlayer::CalculateRenderView() {
 
 	if ( g_showviewpos.GetBool() ) {
 		gameLocal.Printf( "%s : %s\n", renderView->vieworg.ToString(), renderView->viewaxis.ToAngles().ToString() );
+	}
+
+	RecordTicView( mode, camera );
+}
+
+/*
+==================
+idPlayer::RecordTicView
+
+The end of CalculateRenderView. A second call in the same tic (idCameraAnim::Start) replaces the tic's view.
+==================
+*/
+void idPlayer::RecordTicView( const ticViewMode_t mode, const idCamera * camera ) {
+	// a move farther than this in one tic is a cut, not a camera move
+	constexpr float VIEW_SNAP_DIST = 64.0f;
+
+	const bool sameTic = ticView[1].valid && ticView[1].framenum == gameLocal.framenum;
+	if ( !sameTic ) {
+		ticView[0] = ticView[1];
+	}
+	const ticView_t & prev = ticView[0];
+	ticView_t & cur = ticView[1];
+
+	const bool snapPending = viewSnapPending || ( sameTic && cur.snap );
+	viewSnapPending = false;
+
+	cur.renderView = *renderView;
+	cur.fpOrigin = firstPersonViewOrigin;
+	cur.fpAxis = firstPersonViewAxis;
+	cur.eye = GetEyePosition() + viewBob;
+	cur.viewAngles = viewAngles;
+	cur.extraAngles = ViewExtraAngles();
+	cur.mode = mode;
+	cur.camera = camera != nullptr ? gameLocal.GetSpawnId( camera ) : 0;
+	cur.cameraCut = camera != nullptr ? camera->GetViewCut() : 0;
+	cur.framenum = gameLocal.framenum;
+	cur.valid = true;
+
+	cur.snap = snapPending || !prev.valid || prev.framenum + 1 != cur.framenum
+		|| mode == ticViewMode_t::STOP_TIME || prev.mode != mode
+		|| prev.camera != cur.camera || prev.cameraCut != cur.cameraCut
+		|| R_PoseJumped( prev.renderView.vieworg, prev.renderView.viewaxis, cur.renderView.vieworg, cur.renderView.viewaxis, VIEW_SNAP_DIST );
+}
+
+/*
+==================
+idPlayer::BuildDrawView
+==================
+*/
+void idPlayer::BuildDrawView( const float alpha, renderView_t & view, renderInterpolation_t & interp ) const {
+	view = *renderView;
+	interp.guiTime = renderView->time[TIME_GROUP1];
+
+	// the tic didn't record its view (the player didn't think in it)
+	const ticView_t & prev = ticView[0];
+	const ticView_t & cur = ticView[1];
+	if ( !cur.valid || cur.framenum != gameLocal.framenum ) {
+		return;
+	}
+
+	// alpha 1 draws the last tic as it is: a cut, a teleport, a sync frame
+	const float viewAlpha = ( cur.snap || !g_interpolateView.GetBool() ) ? 1.0f : alpha;
+	const auto lerp = [viewAlpha]( const auto & from, const auto & to ) {
+		// to at alpha 1, bit for bit, so a frame on a tic draws the tic view
+		return to - ( to - from ) * ( 1.0f - viewAlpha );
+	};
+
+	const bool firstPerson = cur.mode == ticViewMode_t::FIRST_PERSON || cur.mode == ticViewMode_t::FIRST_PERSON_FIXED;
+	if ( cur.mode == ticViewMode_t::FIRST_PERSON ) {
+		idAngles angles;
+		for ( int i = 0; i < 3; i++ ) {
+			angles[i] = cur.viewAngles[i] - idMath::AngleNormalize180( cur.viewAngles[i] - prev.viewAngles[i] ) * ( 1.0f - viewAlpha );
+		}
+		ComposeViewPos( lerp( prev.eye, cur.eye ), angles + lerp( prev.extraAngles, cur.extraAngles ), view.vieworg, view.viewaxis );
+	} else if ( viewAlpha < 1.0f ) {
+		view.vieworg = lerp( prev.renderView.vieworg, cur.renderView.vieworg );
+		view.viewaxis = R_LerpAxis( prev.renderView.viewaxis, cur.renderView.viewaxis, viewAlpha );
+	}
+	view.fov_x = lerp( prev.renderView.fov_x, cur.renderView.fov_x );
+	view.fov_y = lerp( prev.renderView.fov_y, cur.renderView.fov_y );
+
+	// the effects run at the frame's time, ahead of the tic: the age of an effect started in this
+	// tic never goes below 0, and the time goes on across the next tic without a step back
+	if ( g_interpolateTime.GetBool() && alpha < 1.0f && prev.valid && prev.framenum + 1 == cur.framenum ) {
+		for ( int i = 0; i < 2; i++ ) {
+			const int ticMsec = Max( cur.renderView.time[i] - prev.renderView.time[i], 0 );
+			view.time[i] = cur.renderView.time[i] + idMath::Ftoi( alpha * ticMsec );
+		}
+	}
+
+	// a cut: the world and the skeletons draw their tic poses too
+	interp.ticViewSnap = cur.snap;
+
+	// the view weapon, its emitters and lights, the flashlight: placed relative to the first-person
+	// view of their tic, they follow the drawn view (renderWorld ApplyRenderPoses)
+	if ( firstPerson ) {
+		interp.viewAttachedID = entityNumber + 1;
+		interp.ticViewOrigin[0] = cur.snap ? cur.fpOrigin : prev.fpOrigin;
+		interp.ticViewAxis[0] = cur.snap ? cur.fpAxis : prev.fpAxis;
+		interp.ticViewOrigin[1] = cur.fpOrigin;
+		interp.ticViewAxis[1] = cur.fpAxis;
+		interp.drawViewOrigin = view.vieworg;
+		interp.drawViewAxis = view.viewaxis;
 	}
 }
 

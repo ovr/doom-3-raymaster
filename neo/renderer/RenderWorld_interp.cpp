@@ -45,7 +45,8 @@ If you have questions concerning this license or the applicable additional terms
 										a jump (Check*Snap) or a new def: snap, drawn at cur; a light
 										also snaps on a new shape, a fog, blend or parallel light always
 										refs in the areas of prev and cur, the def goes on ticEntities / ticLights
-	frame		SetInterpolation( &x )	alpha, the view; an alpha that falls without a tic snaps the tic
+	frame		SetInterpolation( &x )	alpha, the view; an alpha that falls without a tic snaps the tic,
+										so does a view cut (ticViewSnap: a camera cut, a teleport)
 				RenderScene
 				  ApplyRenderPoses		render pose -> entities: modelMatrix, modelRenderMatrix,
 										inverseBaseModelProject, globalReferenceBounds; lights: lightProject,
@@ -62,9 +63,17 @@ If you have questions concerning this license or the applicable additional terms
 	and R_FreeLightDefDerivedData its static interactions, so its interactions and shadow volumes are
 	made every frame from the drawn pose. Its areaNum (the area culling) stays the one of the tic pose.
 
-	Hooks for the later stages: IsViewAttached and renderInterpolation_t::viewAttachedID (view-attached
-	defs, the camera), PoseLight and AddLightPoseRefs (view-attached lights placed at the drawn view),
-	renderInterpStats_t::skeletons (the com_showFPS row).
+	View-attached defs (viewAttachedID = the id of the drawn first-person view: the view weapon, its
+	emitters and lights, the flashlight) skip the world lerp. Every frame, also with r_interpolate 0,
+	they keep their tic offset from the first-person tic view, lerped, on the drawn view the game
+	built (camera lerp, late mouse angles), so they never swim against the camera:
+
+	game tic	Update*Def				listed at every update, moved or not; new ones too
+	frame		SetInterpolation( &x )	ticViewOrigin / Axis [prev, cur], drawViewOrigin / Axis
+				ApplyRenderPoses		ViewAttachedPose (RenderInterpolation.h); static interactions dropped,
+										lights also get the area refs of the drawn pose (AddLightPoseRefs)
+
+	Hook for the later stages: renderInterpStats_t::skeletons (the com_showFPS row).
 
 ===============================================================================
 */
@@ -171,14 +180,46 @@ void idRenderWorldLocal::SetInterpolation( const renderInterpolation_t * interp 
 	const float alpha = !( interpolation.alpha < 1.0f ) ? 1.0f : Max( interpolation.alpha, 0.0f );
 	interpolation.alpha = alpha;
 
-	// the frame loop restarted the tic clock without a tic (the sync after a long frame): the tic
-	// pose was drawn already, going back towards prev would jerk; 0.1 absorbs a changed tic length
-	if ( alpha + 0.1f < ticMaxAlpha ) {
+	if ( TicSnapped( alpha ) ) {
 		ticSnapAll = true;
 	}
 	ticMaxAlpha = Max( ticMaxAlpha, alpha );
 
 	interpOn = true;
+}
+
+/*
+===================
+idRenderWorldLocal::TicSnapped
+===================
+*/
+bool idRenderWorldLocal::TicSnapped( const float alpha ) const {
+	// the frame loop restarted the tic clock without a tic (the sync after a long frame): the tic
+	// pose was drawn already, going back towards prev would jerk; 0.1 absorbs a changed tic length
+	return ticSnapAll || alpha + 0.1f < ticMaxAlpha;
+}
+
+/*
+===================
+idRenderWorldLocal::PoseAlpha
+===================
+*/
+float idRenderWorldLocal::PoseAlpha() const {
+	// a frame loop sync or a view cut draws the tic as it is
+	if ( !interpOn || !r_interpolate.GetBool() || ticSnapAll || interpolation.ticViewSnap ) {
+		return 1.0f;
+	}
+	return interpolation.alpha;
+}
+
+/*
+===================
+idRenderWorldLocal::GuiTime
+===================
+*/
+int idRenderWorldLocal::GuiTime( const int viewTime ) const {
+	// the render time leads the tic, the GUI scripts must still run once per tic
+	return interpOn ? interpolation.guiTime : viewTime;
 }
 
 /*
@@ -202,8 +243,8 @@ void idRenderWorldLocal::BeginEntityTic( idRenderEntityLocal * def, const render
 	interp.snap = false;
 	interp.listed = false;
 
-	// a view-attached def follows the drawn view every frame, moved or not
-	if ( re->viewAttachedID != 0 && InterpolatesDefs() ) {
+	// a view-attached def follows the drawn view every frame, moved or not, also with r_interpolate 0
+	if ( re->viewAttachedID != 0 && ticCount > 0 ) {
 		interp.listed = true;
 		ticEntities.Append( def->index );
 	}
@@ -236,14 +277,15 @@ void idRenderWorldLocal::CheckEntitySnap( idRenderEntityLocal * def ) const {
 idRenderWorldLocal::ListEntityDef
 
 After R_CreateEntityRefs. Snapped defs are listed too, the stats and r_showInterpolation count them.
+A new view-attached def gets here unlisted.
 ===================
 */
 void idRenderWorldLocal::ListEntityDef( idRenderEntityLocal * def ) {
 	defInterp_t & interp = def->interp;
-	if ( interp.listed || interp.ticStamp != ticCount || def->entityRefs == nullptr || !InterpolatesDefs() ) {
+	if ( interp.listed || interp.ticStamp != ticCount || def->entityRefs == nullptr || ticCount == 0 ) {
 		return;
 	}
-	if ( !R_EntityPoseChanged( def ) ) {
+	if ( def->parms.viewAttachedID == 0 && ( !r_interpolate.GetBool() || !R_EntityPoseChanged( def ) ) ) {
 		return;
 	}
 
@@ -302,8 +344,8 @@ void idRenderWorldLocal::BeginLightTic( idRenderLightLocal * light, const render
 	interp.snap = isNew;
 	interp.listed = false;
 
-	// a view-attached light follows the drawn view every frame, moved or not, new or not
-	if ( rlight->viewAttachedID != 0 && InterpolatesDefs() ) {
+	// a view-attached light follows the drawn view every frame, moved or not, new or not, also with r_interpolate 0
+	if ( rlight->viewAttachedID != 0 && ticCount > 0 ) {
 		interp.listed = true;
 		ticLights.Append( light->index );
 	}
@@ -386,6 +428,30 @@ bool idRenderWorldLocal::IsViewAttached( const idRenderLightLocal * light ) cons
 
 /*
 ===================
+idRenderWorldLocal::ViewAttachedPose
+
+The drawn pose of a view-attached def at its tic pose origin, axis; false when that is the tic pose itself.
+===================
+*/
+bool idRenderWorldLocal::ViewAttachedPose( const defInterp_t & interp, const idVec3 & origin, const idMat3 & axis, float alpha, interpPose_t & pose ) const {
+	const renderInterpolation_t & view = interpolation;
+
+	// new, jumped, or the tic views aren't consecutive: only the offset of this tic is known
+	if ( interp.snap || view.ticViewSnap ) {
+		alpha = 1.0f;
+	}
+	if ( alpha >= 1.0f && view.drawViewOrigin == view.ticViewOrigin[1] && view.drawViewAxis == view.ticViewAxis[1] ) {
+		return false;
+	}
+
+	pose = R_ViewAttachedPose( { interp.prevOrigin, interp.prevAxis }, { origin, axis },
+							   { view.ticViewOrigin[0], view.ticViewAxis[0] }, { view.ticViewOrigin[1], view.ticViewAxis[1] },
+							   { view.drawViewOrigin, view.drawViewAxis }, alpha );
+	return true;
+}
+
+/*
+===================
 idRenderWorldLocal::PoseLight
 
 The derived pose data of the light at origin and axis until RestoreTicPoses. Prelight shadows and static
@@ -430,7 +496,13 @@ RenderScene, before R_RenderView.
 ===================
 */
 void idRenderWorldLocal::ApplyRenderPoses() {
-	if ( !interpOn || posesApplied || !r_interpolate.GetBool() ) {
+	if ( !interpOn || posesApplied ) {
+		return;
+	}
+
+	// view-attached defs follow the drawn view also with r_interpolate 0, else they would swim on it
+	const bool attach = interpolation.viewAttachedID != 0;
+	if ( !attach && !r_interpolate.GetBool() ) {
 		return;
 	}
 
@@ -438,10 +510,12 @@ void idRenderWorldLocal::ApplyRenderPoses() {
 	renderInterpStats_t & stats = tr.pc.interp;
 	stats = renderInterpStats_t();
 	stats.active = true;
-	stats.alpha = ticSnapAll ? 1.0f : interpolation.alpha;
+	stats.alpha = PoseAlpha();
 	stats.listed = ticEntities.Num();
 
-	if ( stats.alpha >= 1.0f ) {
+	// alpha 1 draws the world at the tic poses; the late view can still differ from the tic view
+	const float alpha = stats.alpha;
+	if ( alpha >= 1.0f && !attach ) {
 		return;
 	}
 
@@ -459,8 +533,8 @@ void idRenderWorldLocal::ApplyRenderPoses() {
 		debugTicCount = ticCount;
 	}
 
-	ApplyEntityPoses( interpolation.alpha, show );
-	ApplyLightPoses( interpolation.alpha, show );
+	ApplyEntityPoses( alpha, show );
+	ApplyLightPoses( alpha, show );
 }
 
 /*
@@ -482,11 +556,28 @@ void idRenderWorldLocal::ApplyEntityPoses( const float alpha, const interpShow_t
 		defInterp_t & interp = def->interp;
 
 		if ( IsViewAttached( def ) ) {
-			// stage 4 poses these relative to the drawn view
-			stats.attached++;
-			if ( show.frame && show.level >= 2 ) {
-				DebugBox( colorCyan, idBox( def->localReferenceBounds, def->parms.origin, def->parms.axis ) );
+			interpPose_t pose;
+			if ( def->entityRefs == nullptr || !ViewAttachedPose( interp, def->parms.origin, def->parms.axis, alpha, pose ) ) {
+				continue;
 			}
+
+			// static interactions (a static model that was there at map load) are for the tic pose
+			while ( def->firstInteraction != nullptr ) {
+				def->firstInteraction->UnlinkAndFree();
+			}
+
+			const idBounds bounds = R_EntityDrawBounds( def );
+			R_DeriveEntityData( pose.origin, pose.axis, bounds, def->modelMatrix, def->modelRenderMatrix, def->inverseBaseModelProject, def->globalReferenceBounds );
+			interp.posed = true;
+			stats.attached++;
+
+			if ( show.frame && show.level >= 2 ) {
+				DebugBox( colorCyan, idBox( bounds, pose.origin, pose.axis ) );
+			}
+			continue;
+		}
+
+		if ( alpha >= 1.0f ) {
 			continue;
 		}
 
@@ -541,11 +632,31 @@ void idRenderWorldLocal::ApplyLightPoses( const float alpha, const interpShow_t 
 		const defInterp_t & interp = light->interp;
 
 		if ( IsViewAttached( light ) ) {
-			// stage 4 places these relative to the drawn view: PoseLight, and AddLightPoseRefs for the areas
-			stats.attached++;
-			if ( show.frame && showLights ) {
-				DebugLightPose( colorCyan, light, light->parms.origin, light->parms.axis );
+			interpPose_t pose;
+			if ( light->references == nullptr || !ViewAttachedPose( interp, light->parms.origin, light->parms.axis, alpha, pose ) ) {
+				continue;
 			}
+
+			// static interactions (the light was there at map load) are for the tic pose, and an
+			// attached light that doesn't move in the world still turns with the late view
+			while ( light->firstInteraction != nullptr ) {
+				light->firstInteraction->UnlinkAndFree();
+			}
+
+			// late angles can swing the cone into areas the tic poses don't reach
+			AddLightPoseRefs( light, pose.origin, pose.axis );
+			if ( !PoseLight( light, pose.origin, pose.axis ) ) {
+				continue;
+			}
+			stats.attached++;
+
+			if ( show.frame && showLights ) {
+				DebugLightPose( colorCyan, light, pose.origin, pose.axis );
+			}
+			continue;
+		}
+
+		if ( alpha >= 1.0f ) {
 			continue;
 		}
 

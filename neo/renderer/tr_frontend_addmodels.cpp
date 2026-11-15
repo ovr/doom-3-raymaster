@@ -166,7 +166,7 @@ bool R_IssueEntityDefCallback( idRenderEntityLocal *def ) {
 
 	front end, first call in tic T	callback (the game's CreateFrame), then pose[0] = pose[1],
 									pose[1] = parms.joints, poseTic = { T - 1 or older, T }
-	front end, any call				blend if poseTic = { T - 1, T }, no snap this tic, alpha < 1 and
+	front end, any call				blend if poseTic = { T - 1, T }, no snap or view cut this tic, alpha < 1 and
 									the poses differ: build the mesh from the blended joints
 	game trace (ModelTrace, Trace)	never captures (it can run before Think changes the animation)
 									and never gets a blended mesh: a blended cache is rebuilt
@@ -186,7 +186,8 @@ An MD5 drawn by the front end of a scene with render poses applied.
 */
 static bool R_InterpolatesSkeleton( const idRenderEntityLocal * def ) {
 	const idRenderWorldLocal * world = def->world;
-	if ( world == nullptr || !world->posesApplied || tr.viewDef == nullptr ) {
+	// posesApplied alone can mean only the view-attached defs moved (r_interpolate 0)
+	if ( world == nullptr || !world->posesApplied || tr.viewDef == nullptr || !r_interpolate.GetBool() ) {
 		return false;
 	}
 	const int mode = r_interpolateSkeletons.GetInteger();
@@ -215,7 +216,8 @@ static bool R_SkeletonBlends( const idRenderEntityLocal * def ) {
 	if ( def->interp.ticStamp == tic && def->interp.snap ) {
 		return false;
 	}
-	if ( world->ticSnapAll || !( world->interpolation.alpha < 1.0f ) ) {
+	// a frame loop sync or a view cut (cinematic cut, teleport): the world draws its tic poses
+	if ( !( world->PoseAlpha() < 1.0f ) ) {
 		return false;
 	}
 	return memcmp( def->pose[0].Ptr(), def->pose[1].Ptr(), def->pose[1].Num() * sizeof( idJointMat ) ) != 0;

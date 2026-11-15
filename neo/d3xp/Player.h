@@ -493,6 +493,10 @@ public:
 	void					CalculateRenderView();	// called every tic by player code
 	void					CalculateFirstPersonView();
 
+	// The view of a frame between two game tics, from the views of the last two tics: alpha as in
+	// renderInterpolation_t. Fills interp's view fields; renderView never changes.
+	void					BuildDrawView( float alpha, renderView_t & view, renderInterpolation_t & interp ) const;
+
 	void					AddChatMessage( int index, int alpha, const idStr & message );
 	void					UpdateSpectatingText();
 	void					ClearChatMessage( int index );
@@ -506,6 +510,8 @@ public:
 	void					CalculateViewWeaponPos( idVec3 &origin, idMat3 &axis );
 	idVec3					GetEyePosition() const;
 	void					GetViewPos( idVec3 &origin, idMat3 &axis ) const;
+	// the live first-person view from an eye with view bob and the view angles with bob and kick
+	void					ComposeViewPos( const idVec3 & eye, const idAngles & angles, idVec3 & origin, idMat3 & axis ) const;
 	void					OffsetThirdPersonView( float angle, float range, float height, bool clip );
 
 	bool					Give( const char *statname, const char *value, unsigned int giveFlags );
@@ -751,6 +757,37 @@ private:
 	const idDeclSkin *		influenceSkin;
 
 	idCamera *				privateCameraView;
+
+	// how CalculateRenderView made the view of a tic
+	enum class ticViewMode_t {
+		FIRST_PERSON,			// ComposeViewPos from the eye and the angles
+		FIRST_PERSON_FIXED,		// dead, or the camera joint of pm_modelView
+		THIRD_PERSON,			// pm_thirdPerson, the death cam
+		CAMERA,					// a cinematic or private camera
+		STOP_TIME				// g_stopTime
+	};
+
+	// The view of a game tic, for the frames until the next one (BuildDrawView). Not saved:
+	// after a load the first tic draws as it is.
+	struct ticView_t {
+		renderView_t		renderView = {};
+		idVec3				fpOrigin = vec3_origin;		// firstPersonViewOrigin / Axis: the view weapon
+		idMat3				fpAxis = mat3_identity;		// and its lights were placed in this frame
+		idVec3				eye = vec3_origin;			// eye with view bob, before the nodal offsets
+		idAngles			viewAngles = ang_zero;
+		idAngles			extraAngles = ang_zero;		// view bob and kick
+		ticViewMode_t		mode = ticViewMode_t::FIRST_PERSON;
+		int					camera = 0;					// spawn id of the camera entity, 0 = none
+		int					cameraCut = 0;
+		int					framenum = -1;
+		bool				snap = true;				// can't be reached from the tic before: draw it as it is
+		bool				valid = false;
+	};
+	ticView_t				ticView[2];					// the previous and the current tic
+	bool					viewSnapPending = false;	// a teleport or SetViewAngles: the next tic view snaps
+
+	idAngles				ViewExtraAngles() const;
+	void					RecordTicView( ticViewMode_t mode, const idCamera * camera );
 
 	static const int		NUM_LOGGED_VIEW_ANGLES = 64;		// for weapon turning angle offsets
 	idAngles				loggedViewAngles[NUM_LOGGED_VIEW_ANGLES];	// [gameLocal.framenum&(LOGGED_VIEW_ANGLES-1)]

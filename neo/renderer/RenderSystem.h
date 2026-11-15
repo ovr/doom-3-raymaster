@@ -160,7 +160,7 @@ struct renderPassTiming_t {
 
 // what the render interpolation (renderInterpolation_t) did in the last scene of a frame that used it
 struct renderInterpStats_t {
-	bool			active = false;			// r_interpolate is on and the game interpolated a scene
+	bool			active = false;			// r_interpolate is on or view-attached defs follow the drawn view
 	float			alpha = 1.0f;
 	int				listed = 0;				// entities that moved in the last tic
 	int				entities = 0;			// entities drawn between two tic poses

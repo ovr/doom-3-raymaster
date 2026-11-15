@@ -46,6 +46,9 @@ public:
 	virtual void			GetViewParms( renderView_t *view ) = 0;
 	virtual renderView_t *	GetRenderView();
 	virtual void			Stop(){} ;
+
+	// changes at every cut of the last GetViewParms; the drawn view doesn't lerp across it
+	virtual int				GetViewCut() const { return 0; }
 };
 
 /*
@@ -107,8 +110,11 @@ public:
 
 	void					Spawn();
 	virtual void			GetViewParms( renderView_t *view );
+	int						GetViewCut() const override { return viewCut; }
 
 private:
+	int						lastCut = 0;		// not saved, like the views the player keeps for drawing
+	int						viewCut = 0;		// cuts and loops of the anim seen by GetViewParms
 	int						threadNum;
 	idVec3					offset;
 	int						frameRate;

@@ -243,15 +243,17 @@ typedef struct renderView_s {
 struct renderInterpolation_t {
 	float		alpha = 1.0f;				// 0 = the previous tic, 1 = the current tic (and after a cut)
 	int			guiTime = 0;				// tic time for in-world GUIs, so their scripts run once per tic
-	int			viewAttachedID = 0;			// defs with this viewAttachedID follow the drawn view; 0 = none
+	int			viewAttachedID = 0;			// defs with this viewAttachedID follow the drawn view, also with r_interpolate 0; 0 = none
 
 	// the first-person view of the previous [0] and the current [1] tic, view-attached defs are relative to it
 	idVec3		ticViewOrigin[2] = { idVec3( 0.0f, 0.0f, 0.0f ), idVec3( 0.0f, 0.0f, 0.0f ) };
 	idMat3		ticViewAxis[2] = { idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f ),
 								   idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f ) };
-	bool		ticViewSnap = true;			// the two tic views aren't consecutive: [1] stands for both
+	// the view cut or jumped in the last tic (a camera cut, a teleport, a load): [1] stands for both,
+	// and the world, the skeletons and the view-attached defs draw their tic poses until the next tic
+	bool		ticViewSnap = false;
 
-	// the view being drawn, before ShakeAxis
+	// the view being drawn, before ShakeAxis and the stereo eye offset
 	idVec3		drawViewOrigin = idVec3( 0.0f, 0.0f, 0.0f );
 	idMat3		drawViewAxis = idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f );
 };
@@ -370,6 +372,10 @@ public:
 	// The scenes until SetInterpolation( nullptr ) draw the defs that moved in the last tic between their
 	// two tic poses (r_interpolate). Copied; nullptr = tic poses. Worlds that don't get it never interpolate.
 	virtual void			SetInterpolation( const renderInterpolation_t * interpolation ) = 0;
+
+	// True when SetInterpolation would draw a frame at this alpha at the last tic (alpha 1): the frame loop
+	// restarted the tic clock without a tic, after this tic was drawn closer to the next one. For the camera.
+	virtual bool			TicSnapped( float alpha ) const = 0;
 
 	//-------------- Portal Area Information -----------------
 
