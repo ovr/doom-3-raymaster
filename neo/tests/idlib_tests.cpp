@@ -1254,6 +1254,83 @@ TEST( Interp_LightShapeMatches ) {
 	CHECK( !R_LightShapeMatches( from, mapLightMoved, false ), "a new prelight on a light that never moved" );
 }
 
+static idJointMat MakeJointMat( const idMat3 & axis, const idVec3 & translation ) {
+	idJointMat joint;
+	joint.SetRotation( axis );
+	joint.SetTranslation( translation );
+	return joint;
+}
+
+static float AxisAngleBetween( const idMat3 & a, const idMat3 & b ) {
+	return RAD2DEG( idMath::ACos( R_AxisRotationCos( a, b ) ) );
+}
+
+TEST( Interp_BlendJointMats ) {
+	const int MAX_JOINTS = 67;
+	idTempArray<idJointMat> from( MAX_JOINTS );
+	idTempArray<idJointMat> to( MAX_JOINTS );
+	idTempArray<float> turn( MAX_JOINTS );
+	idTempArray<idJointMat> out( SIMD_ROUND_JOINTS( MAX_JOINTS ) );
+	idTempArray<idJointQuat> quats( 2 * MAX_JOINTS );
+	idTempArray<int> index( MAX_JOINTS );
+
+	// each joint of the second pose is turned by 1 to 150 degrees about a random axis and moved;
+	// joint 0 turns 20 degrees across a yaw of 180, the short way
+	idRandom random( 1234 );
+	for ( int i = 0; i < MAX_JOINTS; i++ ) {
+		const idAngles angles( random.CRandomFloat() * 180.0f, random.CRandomFloat() * 180.0f, random.CRandomFloat() * 180.0f );
+		idVec3 turnAxis( random.CRandomFloat(), random.CRandomFloat(), random.CRandomFloat() + 2.0f );
+		turnAxis.Normalize();
+		turn[i] = 1.0f + random.RandomFloat() * 149.0f;
+		const idVec3 origin( random.CRandomFloat() * 20.0f, random.CRandomFloat() * 20.0f, random.CRandomFloat() * 20.0f );
+		const idVec3 move( random.CRandomFloat() * 4.0f, random.CRandomFloat() * 4.0f, random.CRandomFloat() * 4.0f );
+		const idMat3 fromAxis = ( i == 0 ) ? YawAxis( 170.0f ) : angles.ToMat3();
+		const idMat3 toAxis = ( i == 0 ) ? YawAxis( -170.0f ) : idRotation( vec3_origin, turnAxis, turn[i] ).ToMat3() * fromAxis;
+		if ( i == 0 ) {
+			turn[i] = 20.0f;
+		}
+		from[i] = MakeJointMat( fromAxis, origin );
+		to[i] = MakeJointMat( toAxis, origin + move );
+		index[i] = i;
+	}
+
+	const float alphas[] = { 0.0f, 0.25f, 0.5f, 1.0f };
+	for ( int p = 0; p < 2; p++ ) {
+		idSIMDProcessor * simd = ( p == 0 ) ? sseProcessor : genericProcessor;
+		for ( int num = 1; num <= MAX_JOINTS; num += 11 ) {
+			for ( const float alpha : alphas ) {
+				R_BlendJointMats( simd, out.Ptr(), from.Ptr(), to.Ptr(), num, alpha, quats.Ptr(), index.Ptr() );
+				for ( int i = 0; i < num; i++ ) {
+					const idMat3 axis = out[i].ToMat3();
+					CHECK( IsFinite( out[i].ToFloatPtr(), 12 ) && IsOrthonormal( axis, 1e-3f ), "%s num %d alpha %g joint %d: not a rotation", simd->GetName(), num, alpha, i );
+
+					// on the short arc between the two rotations, at alpha of the way
+					const float fromAngle = AxisAngleBetween( from[i].ToMat3(), axis );
+					const float toAngle = AxisAngleBetween( axis, to[i].ToMat3() );
+					CHECK( idMath::Fabs( fromAngle - alpha * turn[i] ) < 0.25f && idMath::Fabs( toAngle - ( 1.0f - alpha ) * turn[i] ) < 0.25f,
+						"%s num %d alpha %g joint %d: %f and %f degrees of %f", simd->GetName(), num, alpha, i, fromAngle, toAngle, turn[i] );
+
+					const idVec3 translation = from[i].GetTranslation() + ( to[i].GetTranslation() - from[i].GetTranslation() ) * alpha;
+					CHECK( out[i].GetTranslation().Compare( translation, 1e-4f ), "%s num %d alpha %g joint %d: translation", simd->GetName(), num, alpha, i );
+
+					if ( alpha == 0.0f || alpha == 1.0f ) {
+						CHECK( JointMatsMatch( out[i], ( alpha == 0.0f ) ? from[i] : to[i], 1e-4f ), "%s num %d alpha %g joint %d: not the end pose", simd->GetName(), num, alpha, i );
+					}
+				}
+				if ( num & 1 ) {
+					CHECK( memcmp( &out[num], &out[num - 1], sizeof( idJointMat ) ) == 0, "%s num %d: padding joint", simd->GetName(), num );
+				}
+			}
+		}
+
+		// two equal poses blend to the same pose, not NaN
+		R_BlendJointMats( simd, out.Ptr(), from.Ptr(), from.Ptr(), MAX_JOINTS, 0.5f, quats.Ptr(), index.Ptr() );
+		for ( int i = 0; i < MAX_JOINTS; i++ ) {
+			CHECK( JointMatsMatch( out[i], from[i], 1e-4f ), "%s joint %d: equal poses", simd->GetName(), i );
+		}
+	}
+}
+
 /*
 ===============================================================================
 

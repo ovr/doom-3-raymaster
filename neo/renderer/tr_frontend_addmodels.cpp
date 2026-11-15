@@ -32,6 +32,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "tr_local.h"
 #include "Model_local.h"
 
+#include <atomic>
+
+idCVar r_interpolateSkeletons( "r_interpolateSkeletons", "1", CVAR_RENDERER | CVAR_INTEGER, "with r_interpolate, draw the animated models between their joints of the last two game tics: 1 = all, 2 = only view-attached ones (the view weapon), 0 = the tic joints", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_skipStaticShadows( "r_skipStaticShadows", "0", CVAR_RENDERER | CVAR_BOOL, "skip static shadows" );
 idCVar r_skipDynamicShadows( "r_skipDynamicShadows", "0", CVAR_RENDERER | CVAR_BOOL, "skip dynamic shadows" );
 idCVar r_useParallelAddModels( "r_useParallelAddModels", "1", CVAR_RENDERER | CVAR_BOOL, "add all models in parallel with jobs" );
@@ -153,6 +156,125 @@ bool R_IssueEntityDefCallback( idRenderEntityLocal *def ) {
 }
 
 /*
+===============================================================================
+
+	Skeletal poses between game tics (r_interpolateSkeletons, with r_interpolate)
+
+	The game computes an MD5's joints once per tic. The front end keeps copies of the joints of the
+	last two tics it drew (idRenderEntityLocal::pose) and draws the model between them at the alpha
+	of the scene, the way RenderWorld_interp.cpp lerps the def's origin and axis:
+
+	front end, first call in tic T	callback (the game's CreateFrame), then pose[0] = pose[1],
+									pose[1] = parms.joints, poseTic = { T - 1 or older, T }
+	front end, any call				blend if poseTic = { T - 1, T }, no snap this tic, alpha < 1 and
+									the poses differ: build the mesh from the blended joints
+	game trace (ModelTrace, Trace)	never captures (it can run before Think changes the animation)
+									and never gets a blended mesh: a blended cache is rebuilt
+
+	The dynamic model cache is shared with the traces, so a blended mesh is rebuilt every frame and
+	once more from parms.joints when the blending stops or a trace asks for it.
+
+===============================================================================
+*/
+
+/*
+===================
+R_InterpolatesSkeleton
+
+An MD5 drawn by the front end of a scene with render poses applied.
+===================
+*/
+static bool R_InterpolatesSkeleton( const idRenderEntityLocal * def ) {
+	const idRenderWorldLocal * world = def->world;
+	if ( world == nullptr || !world->posesApplied || tr.viewDef == nullptr ) {
+		return false;
+	}
+	const int mode = r_interpolateSkeletons.GetInteger();
+	if ( mode <= 0 || ( mode == 2 && !world->IsViewAttached( def ) ) ) {
+		return false;
+	}
+	const idRenderModel * model = def->parms.hModel;
+	return model != nullptr && model->NumJoints() > 0 && def->parms.joints != nullptr && def->parms.numJoints == model->NumJoints();
+}
+
+/*
+===================
+R_SkeletonBlends
+===================
+*/
+static bool R_SkeletonBlends( const idRenderEntityLocal * def ) {
+	const idRenderWorldLocal * world = def->world;
+	const int tic = world->ticCount;
+	if ( def->poseTic[1] != tic || def->poseTic[0] != tic - 1 ) {
+		return false;
+	}
+	if ( def->poseModel != def->parms.hModel || def->pose[1].Num() != def->parms.numJoints ) {
+		return false;
+	}
+	// a teleport or a new model in this tic draws the tic pose, like the def's transform
+	if ( def->interp.ticStamp == tic && def->interp.snap ) {
+		return false;
+	}
+	if ( world->ticSnapAll || !( world->interpolation.alpha < 1.0f ) ) {
+		return false;
+	}
+	return memcmp( def->pose[0].Ptr(), def->pose[1].Ptr(), def->pose[1].Num() * sizeof( idJointMat ) ) != 0;
+}
+
+/*
+===================
+R_CaptureSkeletonPose
+
+After the callback, so parms.joints holds the tic's pose whatever the callback returned.
+===================
+*/
+static void R_CaptureSkeletonPose( idRenderEntityLocal * def ) {
+	const int numJoints = def->parms.numJoints;
+	if ( def->poseModel != def->parms.hModel || def->pose[1].Num() != numJoints ) {
+		def->poseModel = def->parms.hModel;
+		def->poseTic[0] = def->poseTic[1] = idRenderEntityLocal::NO_POSE_TIC;
+		def->pose[0].SetNum( numJoints );
+		def->pose[1].SetNum( numJoints );
+	}
+	memcpy( def->pose[0].Ptr(), def->pose[1].Ptr(), numJoints * sizeof( idJointMat ) );
+	def->poseTic[0] = def->poseTic[1];
+	memcpy( def->pose[1].Ptr(), def->parms.joints, numJoints * sizeof( idJointMat ) );
+	def->poseTic[1] = def->world->ticCount;
+}
+
+/*
+===================
+R_InstantiateBlendedSkeleton
+
+The joints only feed this build (TransformJoints, CalculateBounds, DrawJoints), so the stack holds them.
+===================
+*/
+static idRenderModel * R_InstantiateBlendedSkeleton( idRenderEntityLocal * def, idRenderModel * model, const float alpha ) {
+	const int numJoints = def->parms.numJoints;
+	idJointMat * joints = static_cast<idJointMat *>( _alloca16( SIMD_ROUND_JOINTS( numJoints ) * sizeof( idJointMat ) ) );
+	idJointQuat * quats = static_cast<idJointQuat *>( _alloca16( 2 * numJoints * sizeof( idJointQuat ) ) );
+	int * index = static_cast<int *>( _alloca16( numJoints * sizeof( int ) ) );
+	for ( int i = 0; i < numJoints; i++ ) {
+		index[i] = i;
+	}
+	R_BlendJointMats( SIMDProcessor, joints, def->pose[0].Ptr(), def->pose[1].Ptr(), numJoints, alpha, quats, index );
+
+	renderEntity_t blended = def->parms;
+	blended.joints = joints;
+	return model->InstantiateDynamicModel( &blended, tr.viewDef, def->cachedDynamicModel );
+}
+
+/*
+===================
+R_CountBlendedSkeleton
+===================
+*/
+static void R_CountBlendedSkeleton() {
+	// the R_AddSingleModel jobs run in parallel
+	std::atomic_ref<int>( tr.pc.interp.skeletons ).fetch_add( 1, std::memory_order_relaxed );
+}
+
+/*
 ===================
 R_EntityDefDynamicModel
 
@@ -164,7 +286,18 @@ Returns the cached dynamic model if present, otherwise creates it.
 ===================
 */
 idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def ) {
-	if ( def->dynamicModelFrameCount == tr.frameCount ) {
+	// the first front end call of a tic runs the callback even when a trace built the model this frame
+	bool skeletal = R_InterpolatesSkeleton( def );
+	bool capture = skeletal && def->poseTic[1] != def->world->ticCount;
+	bool blend = skeletal && !capture && R_SkeletonBlends( def );
+	float blendAlpha = blend ? def->world->interpolation.alpha : 0.0f;
+
+	// a blended mesh serves only the scenes of its frame at its alpha, never a trace
+	if ( def->dynamicModelFrameCount == tr.frameCount && !capture && def->dynamicModelBlended == blend
+			&& ( !blend || def->dynamicModelBlendAlpha == blendAlpha ) ) {
+		if ( blend ) {
+			R_CountBlendedSkeleton();
+		}
 		return def->dynamicModel;
 	}
 
@@ -190,8 +323,19 @@ idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def ) {
 		return model;
 	}
 
-	// continously animating models (particle systems, etc) will have their snapshot updated every single view
-	if ( callbackUpdate || ( model->IsDynamicModel() == DM_CONTINUOUS && def->dynamicModelFrameCount != tr.frameCount ) ) {
+	// the callback can change the model
+	skeletal = R_InterpolatesSkeleton( def );
+	capture = skeletal && def->poseTic[1] != def->world->ticCount;
+	if ( capture ) {
+		R_CaptureSkeletonPose( def );
+	}
+	blend = skeletal && R_SkeletonBlends( def );
+	blendAlpha = blend ? def->world->interpolation.alpha : 0.0f;
+
+	// continously animating models (particle systems, etc) will have their snapshot updated every single view;
+	// a blended skeleton every frame, and once more from parms.joints after it
+	if ( callbackUpdate || ( model->IsDynamicModel() == DM_CONTINUOUS && def->dynamicModelFrameCount != tr.frameCount )
+			|| blend || def->dynamicModelBlended ) {
 		R_ClearEntityDefDynamicModel( def );
 	}
 
@@ -201,7 +345,13 @@ idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def ) {
 		SCOPED_PROFILE_EVENT( "InstantiateDynamicModel" );
 
 		// instantiate the snapshot of the dynamic model, possibly reusing memory from the cached snapshot
-		def->cachedDynamicModel = model->InstantiateDynamicModel( &def->parms, tr.viewDef, def->cachedDynamicModel );
+		if ( blend ) {
+			def->cachedDynamicModel = R_InstantiateBlendedSkeleton( def, model, blendAlpha );
+		} else {
+			def->cachedDynamicModel = model->InstantiateDynamicModel( &def->parms, tr.viewDef, def->cachedDynamicModel );
+		}
+		def->dynamicModelBlended = blend;
+		def->dynamicModelBlendAlpha = blendAlpha;
 
 		if ( def->cachedDynamicModel != NULL && r_checkBounds.GetBool() ) {
 			idBounds b = def->cachedDynamicModel->Bounds();
@@ -230,6 +380,10 @@ idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def ) {
 		def->parms.modelDepthHack = model->DepthHack() * ( 1.0f - ndc.z );
 	} else {
 		def->parms.modelDepthHack = 0.0f;
+	}
+
+	if ( blend ) {
+		R_CountBlendedSkeleton();
 	}
 
 	return def->dynamicModel;
@@ -299,7 +453,8 @@ void R_SetupDrawSurfJoints( drawSurf_t * drawSurf, const srfTriangles_t * tri, c
 	idRenderModelStatic * model = tri->staticModelWithJoints;
 	assert( model->jointsInverted != NULL );
 
-	if ( !vertexCache.CacheIsCurrent( model->jointsInvertedBuffer ) ) {
+	// 0 = changed since the upload (InstantiateDynamicModel); CacheIsCurrent takes it for frame 0 of the 15-bit counter
+	if ( model->jointsInvertedBuffer == 0 || !vertexCache.CacheIsCurrent( model->jointsInvertedBuffer ) ) {
 		const int alignment = glConfig.uniformBufferOffsetAlignment;
 		model->jointsInvertedBuffer = vertexCache.AllocJoint( model->jointsInverted, ALIGN( model->numInvertedJoints * sizeof( idJointMat ), alignment ) );
 	}

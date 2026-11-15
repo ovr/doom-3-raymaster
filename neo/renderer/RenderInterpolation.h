@@ -47,6 +47,9 @@ If you have questions concerning this license or the applicable additional terms
 	A light lerps its origin and axis the same way, and only when they are all that changed: a new
 	radius, frustum, shader or type would morph the light volume between two shapes.
 
+	An MD5 that animated in the last tic (r_interpolateSkeletons) is drawn with its model-space joints
+	blended the same way, per joint: rotation slerp, translation lerp (tr_frontend_addmodels.cpp).
+
 ===============================================================================
 */
 
@@ -109,6 +112,18 @@ ID_INLINE bool R_LightShapeMatches( const renderLight_t & from, const renderLigh
 		&& from.pointLight == to.pointLight && from.parallel == to.parallel
 		&& from.shader == to.shader
 		&& ( prelightDropped || from.prelightModel == to.prelightModel );
+}
+
+// out = the joints at alpha between from and to; out holds SIMD_ROUND_JOINTS( numJoints ), quats 2 * numJoints,
+// index the identity table 0 .. numJoints - 1, all 16-byte aligned (the SSE processor loads aligned)
+inline void R_BlendJointMats( idSIMDProcessor * simd, idJointMat * out, const idJointMat * from, const idJointMat * to,
+							const int numJoints, const float alpha, idJointQuat * quats, const int * index ) {
+	idJointQuat * toQuats = quats + numJoints;
+	simd->ConvertJointMatsToJointQuats( quats, from, numJoints );
+	simd->ConvertJointMatsToJointQuats( toQuats, to, numJoints );
+	simd->BlendJoints( quats, toQuats, alpha, index, numJoints );
+	simd->ConvertJointQuatsToJointMats( out, quats, numJoints );
+	SIMD_INIT_LAST_JOINT( out, numJoints );
 }
 
 #endif /* !__RENDERINTERPOLATION_H__ */

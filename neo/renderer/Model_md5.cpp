@@ -1249,6 +1249,9 @@ idRenderModel *idRenderModelMD5::InstantiateDynamicModel( const struct renderEnt
 
 	TransformJoints( staticModel->jointsInverted, joints.Num(), ent->joints, invertedDefaultPose.Ptr() );
 
+	// a second build in the same frame (r_interpolateSkeletons after a trace) uploads its joints again
+	staticModel->jointsInvertedBuffer = 0;
+
 	// create all the surfaces
 	idMD5Mesh * mesh = meshes.Ptr();
 	for ( int i = 0; i < meshes.Num(); i++, mesh++ ) {
