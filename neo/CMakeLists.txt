@@ -90,13 +90,8 @@ target_link_options(Doom3BFG PRIVATE
 set_target_properties(Doom3BFG PROPERTIES FOLDER "neo")
 set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT Doom3BFG)
 
-# ---------------------------------------------------------------------------
-# FFmpeg (optional): idCinematic plays the Bink videos with libavformat +
-# libavcodec. tools/ffmpeg/build-ffmpeg-win32.cmd builds a minimal 32-bit LGPL
-# FFmpeg into external/ffmpeg-win32. Without it the build keeps the old stub
-# (no videos). The DLLs are delay-loaded and copied next to Doom3BFG.exe; the
-# exe still starts without them, with the videos off.
-# ---------------------------------------------------------------------------
+# FFmpeg (optional, tools/ffmpeg/build-ffmpeg-win32.cmd) plays the Bink videos, without it they
+# stay black. The DLLs are delay-loaded and copied next to the exe, which starts without them.
 set(D3BFG_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-win32" CACHE PATH
 	"FFmpeg for the Bink videos (include/, bin/*.dll, bin/ or lib/*.lib); empty or missing disables them")
 

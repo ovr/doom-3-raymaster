@@ -60,19 +60,9 @@ char *		Mem_CopyString( const char *in );
 
 /*
 ================================================
-The global operator new and delete
-
-Heap.cpp replaces every replaceable form once, out of line: scalar and array,
-sized delete, nothrow and std::align_val_t. They allocate like Mem_Alloc16
-(_aligned_malloc, the size padded to 16, at least 16 byte aligned, more when
-the type asks for it), so new, Mem_Alloc and Mem_ClearedAlloc share one heap
-and none of it may reach the CRT's free(). A replacement must not be inline
-([replacement.functions], C4595), so <new> declares them and nothing is
-declared here.
-
-new ( TAG_X ) T is a placement form that passes the memory tag on. The matching
-deletes only run when the constructor throws; the object itself is freed with
-a plain delete or delete[].
+Heap.cpp replaces every global operator new/delete form once, out of line (C4595), on
+_aligned_malloc like Mem_Alloc16, so none of it may reach the CRT's free(). The matching
+deletes of new ( TAG_X ) T only run when the constructor throws.
 ================================================
 */
 void *	operator new( size_t size, memTag_t tag );

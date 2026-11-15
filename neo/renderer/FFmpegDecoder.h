@@ -43,12 +43,9 @@ struct AVPacket;
 
 /*
 ================================================
-idFFmpegDecoder decodes the game's Bink videos (any file libavformat + libavcodec can read)
-into planar YUV 4:2:0 frames and interleaved float audio.
-
-It does not depend on the engine: the bytes come through a Source, which idCinematic implements
-on top of an idFile (so files inside .resources containers work too) and a test can implement on
-a FILE *. Not thread safe, the owner serializes the calls.
+Decodes the Bink videos into planar YUV 4:2:0 frames and interleaved float audio. No engine
+dependency: the bytes come through a Source (idCinematic wraps an idFile, so .resources work).
+Not thread safe, the owner serializes the calls.
 ================================================
 */
 class idFFmpegDecoder {
@@ -93,7 +90,6 @@ public:
 
 	[[nodiscard]] int	Width() const { return width; }
 	[[nodiscard]] int	Height() const { return height; }
-	// frames per second as a fraction
 	[[nodiscard]] int	FrameRateNum() const { return frameRateNum; }
 	[[nodiscard]] int	FrameRateDen() const { return frameRateDen; }
 	// from the file header, 0 if unknown

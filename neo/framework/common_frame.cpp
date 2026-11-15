@@ -423,12 +423,8 @@ void idCommonLocal::Frame() {
 			// remove any printed lines at the top before taking the screenshot
 			console->ClearNotifyLines();
 
-			// TakeScreenshot reads GL_FRONT after each of its UpdateScreen calls, but the swap only
-			// presents what the previous call rendered, so its first sample is one render late.
-			// Render this frame once, without the notify lines, so that the late sample shows the
-			// current game state rather than the previous frame. This one render replaces an extra
-			// TakeScreenshot to the same file that ran first and was overwritten (a leftover of
-			// Doom 3's frame duplication).
+			// TakeScreenshot reads GL_FRONT one render late (the swap presents the previous render),
+			// so render this frame once first, or the AVI would show the previous game frame
 			constexpr bool captureToImage = false;
 			UpdateScreen( captureToImage );
 

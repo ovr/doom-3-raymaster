@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
-#
-# Builds the minimal 32-bit, LGPL FFmpeg that idCinematic uses to play the game's Bink videos:
-# libavformat (bink demuxer), libavcodec (bink, binkaudio_dct, binkaudio_rdft decoders) and
-# libavutil, as MSVC-linkable DLLs + import libs, installed into external/ffmpeg-win32.
-#
-# Run it through build-ffmpeg-win32.cmd (sets up the x86 VS 2022 environment and MSYS2 bash),
-# or by hand from MSYS2 bash started inside an "x86 Native Tools Command Prompt for VS 2022"
-# with MSYS2_PATH_TYPE=inherit. MSYS2 needs: pacman -S make diffutils (nasm optional, see below).
-#
-#   build-ffmpeg-win32.sh [--prefix DIR] [--work DIR] [--asm|--no-asm] [--jobs N]
-#
-#   --prefix  install dir, default <repo>/external/ffmpeg-win32 (include/, lib/, bin/)
-#   --work    download + build dir, default <repo>/build/ffmpeg
-#   --asm     use nasm for the x86 SIMD code (faster decoding); --no-asm (default) builds plain C
-#
-# The tarball is pinned by version and SHA-256 (release signed with the FFmpeg release key
-# FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8).
+# The minimal 32-bit LGPL FFmpeg (bink demuxer and decoders) as MSVC DLLs in external/ffmpeg-win32.
+# Run it through build-ffmpeg-win32.cmd, or from MSYS2 bash inside the x86 VS 2022 prompt with
+# MSYS2_PATH_TYPE=inherit.
 
 set -euo pipefail
 
+usage() {
+	cat <<'USAGE'
+build-ffmpeg-win32.sh [--prefix DIR] [--work DIR] [--asm|--no-asm] [--jobs N]
+  --prefix  install dir, default <repo>/external/ffmpeg-win32 (include/, lib/, bin/)
+  --work    download + build dir, default <repo>/build/ffmpeg
+  --asm     nasm for the x86 SIMD code (pacman -S nasm); --no-asm (default) builds plain C
+MSYS2 needs: pacman -S make diffutils
+USAGE
+}
+
 FFMPEG_VERSION="7.1.5"
+# release signed with the FFmpeg release key FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8
 FFMPEG_SHA256="de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
 FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 
@@ -38,7 +35,8 @@ while [ $# -gt 0 ]; do
 		--asm) use_asm=1; shift ;;
 		--no-asm) use_asm=0; shift ;;
 		--jobs) jobs="$2"; shift 2 ;;
-		*) echo "unknown option: $1" >&2; exit 1 ;;
+		-h|--help) usage; exit 0 ;;
+		*) echo "unknown option: $1" >&2; usage >&2; exit 1 ;;
 	esac
 done
 
