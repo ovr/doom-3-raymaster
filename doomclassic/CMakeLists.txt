@@ -12,7 +12,7 @@ function(d3bfg_doomclassic_common tgt)
 		UNICODE
 		_UNICODE
 	)
-	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}")
+	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}" "${D3BFG_ZLIB_DIR}")
 	d3bfg_configure_target(${tgt} WARNING_LEVEL 3)
 	# The original 1993 C code passes string literals as char * everywhere.
 	# Keep that one conversion allowed instead of the C++20 strict strings rule.

@@ -1,5 +1,6 @@
-# 03_physics: cpuboss arena. Crates dropped onto the floor, a crate stack, a commando ragdoll,
-# a rocket setting off two barrels that throw the crates around.
+# 03_physics: cpuboss arena. Crates dropped onto the floor, a crate stack, a commando ragdoll, a rocket setting off
+# barrels; then by flashlight a crate rain, rockets into barrels that fling crates and ragdolls, crates dropped
+# onto commando corpses, and a crate stack blown apart by a rocket and a barrel.
 map game/cpuboss
 at 0 god
 at 0 notarget
@@ -20,7 +21,79 @@ at 10 trigger box2
 at 10 trigger box3
 at 60 damage zc1 300
 move 100 102 attack
-end 240
+# flashlight on, walk past the old crates; barrels with an imp, a commando and a trite
+impulse 244 16
+move 250 400 forward=71 right=26
+at 250 spawn moveable_explodingbarrel origin "140 2240 140" name b1
+at 250 spawn moveable_explodingbarrel origin "185 2240 140" name b2
+at 250 spawn moveable_explodingbarrel origin "230 2240 140" name b3
+at 250 spawn moveable_explodingbarrel origin "185 2195 140" name b4
+at 252 spawn monster_demon_imp origin "110 2295 130" angle 250 name imp1 gib 0
+at 252 spawn monster_zombie_commando origin "170 2300 130" angle 250 name zc2 gib 0
+at 252 spawn monster_demon_trite origin "255 2185 130" angle 230 name trite1 gib 0
+# crate rain
+at 420 spawn moveable_metalbox1 origin "-60 2230 380" name r1 nodrop 1
+at 420 spawn moveable_cartonbox8 origin "-40 2215 420" name r2 nodrop 1
+at 420 spawn moveable_cartonbox2 origin "-80 2250 460" name r3 nodrop 1
+at 420 spawn moveable_diamondbox origin "-50 2240 510" name r4 nodrop 1
+at 420 spawn moveable_cartonbox1 origin "-70 2225 560" name r5 nodrop 1
+at 420 spawn moveable_cartonbox6 origin "-35 2235 600" name r6 nodrop 1
+at 420 spawn moveable_metalbox1 origin "-90 2230 640" name r7 nodrop 1
+at 420 spawn moveable_cartonbox8 origin "-5 2195 400" name r8 nodrop 1
+at 420 spawn moveable_pc1 origin "-120 2265 440" name r9 nodrop 1
+at 420 spawn moveable_cartonbox2 origin "-20 2270 480" name r10 nodrop 1
+at 440 trigger r1
+at 446 trigger r2
+at 452 trigger r3
+at 458 trigger r4
+at 464 trigger r5
+at 470 trigger r6
+at 476 trigger r7
+at 482 trigger r8
+at 488 trigger r9
+at 494 trigger r10
+# rockets into the crate pile, then into the barrels
+move 590 620 yaw=39.4
+move 630 632 attack
+move 700 760 yaw=-46.3
+move 780 782 attack
+move 840 940 yaw=21.6
+move 860 1000 forward=50
+# three commandos, killed, crates dropped onto them, a rocket into barrels behind them
+at 1000 spawn monster_zombie_commando origin "-60 2380 130" angle 280 name zd1 gib 0
+at 1000 spawn monster_zombie_commando origin "30 2410 130" angle 270 name zd2 gib 0
+at 1000 spawn monster_zombie_commando origin "100 2390 130" angle 260 name zd3 gib 0
+at 1060 damage zd1 500
+at 1090 damage zd2 500
+at 1120 damage zd3 500
+at 1150 spawn moveable_cartonbox8 origin "-60 2395 420" name s1 nodrop 1
+at 1150 spawn moveable_metalbox1 origin "30 2425 460" name s2 nodrop 1
+at 1150 spawn moveable_cartonbox2 origin "100 2405 500" name s3 nodrop 1
+at 1150 spawn moveable_cartonbox6 origin "-15 2410 560" name s4 nodrop 1
+at 1170 trigger s1
+at 1180 trigger s2
+at 1190 trigger s3
+at 1200 trigger s4
+at 1230 spawn moveable_explodingbarrel origin "-20 2460 140" name b5
+at 1230 spawn moveable_explodingbarrel origin "70 2465 140" name b6
+move 1300 1302 attack
+# a crate stack and a barrel, blown apart by a rocket
+move 1400 1480 yaw=53.25
+at 1430 spawn moveable_cartonbox8 origin "-200 2150 150" name w1 nodrop 1
+at 1430 spawn moveable_cartonbox8 origin "-200 2150 214" name w2 nodrop 1
+at 1430 spawn moveable_cartonbox2 origin "-200 2150 278" name w3 nodrop 1
+at 1430 spawn moveable_cartonbox1 origin "-200 2150 342" name w4 nodrop 1
+at 1440 trigger w1
+at 1455 trigger w2
+at 1470 trigger w3
+at 1485 trigger w4
+at 1500 spawn moveable_explodingbarrel origin "-170 2205 140" name b7
+move 1580 1582 attack
+move 1650 1790 yaw=-45
+end 1800
 capture 0 240 every=5 fps=60
 capture 15 22
 capture 104 111
+capture 242 1800 every=60 fps=60
+capture 797 802
+capture 1319 1324

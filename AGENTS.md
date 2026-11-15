@@ -13,6 +13,7 @@ cmake --preset vs2022-win32          # configure (VS 2022 generator, Win32)
 cmake --build --preset release       # also: debug, retail
 ```
 
+- zlib is a git submodule in `third_party/zlib` (upstream madler/zlib at a release tag), compiled into the `external` target from its `.c` files. After cloning run `git submodule update --init`, or configure stops with that hint.
 - The output is `build\vs2022-win32\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-win32` can also be opened in Visual Studio.
 - For Ninja, run these from an "x86 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x86`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
 - `Retail` is `Release` plus `ID_RETAIL`.
@@ -42,7 +43,7 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 - The runner enables FTZ/DAZ by default, like the engine, and `noftz` turns that off.
 - Set `IDLIB_TESTS_VERBOSE=1` to print every failed check. By default each test prints its first 20.
 - `lcp_generic.cpp` recompiles `Lcp.cpp` under renamed classes (`idLCP_*_Generic`) with the SSE macros undefined, so the solvers can be compared. Right now both copies are the same code (see SIMD below).
-- There is no lint step and no other test suite. Game code is checked by running the game.
+- There is no lint step and no other test suite. Game code is checked by running the game and the visual demos (below).
 
 ## Architecture
 
@@ -94,7 +95,11 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 ## Running and diagnosing
 
 - Game data is not in the repo. You need a retail DOOM 3 BFG install, and the built exe is copied into it. `testing_1/` … `testing_5/` are gitignored local installs. `testing_1/Doom3BFG_perf.bat` launches with logging and the perf cvars below.
-- The repo's `base/` holds `default.cfg` and `renderprogs/` only.
+- The repo's `base/` holds `default.cfg`, `renderprogs/` and the visual demos `vdemos/`.
+- Visual demos are scripted scenes on the retail maps (`base/vdemos/*.vdemo`), stepped by a virtual 240 fps clock, so their frames repeat exactly from run to run. They are for regression checks:
+  - `tools\vdemo\run-vdemos.ps1 -OutDir <dir> [-Demos 01_camera,...]` deploys the Release exe and the demos to `testing_1`, runs them and collects the frames;
+  - `tools/vdemo/analyze.py <run> --baseline <run>` compares two runs (SSIM, repeats, pops);
+  - in the game, `vdemo <name>|all [quit]` runs them, `vdemo_capture 0` skips saving the frames and `vdemo_realtime 1` plays them at real speed for watching (`testing_1/vdemo_<name>.bat` and `vdemo_all.bat` start them that way).
 - With `+set logFile 1`, the console log is written to `%USERPROFILE%\Saved Games\id Software\DOOM 3 BFG\base\qconsole.log`. The log survives a game crash.
 - `logFile 2` also calls `FlushFileBuffers` after every print. That costs milliseconds per line, so it skews perf measurements. Use it only when Windows itself crashes or hangs.
 - Useful diagnostics:
@@ -110,4 +115,4 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 ## Not included (from README.txt)
 
 - Steam integration, Bink video and the patented "depth fail" stencil shadows (Carmack's Reverse) have been removed.
-- These third-party pieces are under their own licenses: jpeg-6 (`neo/renderer/jpeg-6`), zlib (`neo/framework/zlib`) and Base64 (`neo/idlib/Base64.cpp`).
+- These third-party pieces are under their own licenses: jpeg-6 (`neo/renderer/jpeg-6`), zlib (`third_party/zlib`, a submodule) and Base64 (`neo/idlib/Base64.cpp`).

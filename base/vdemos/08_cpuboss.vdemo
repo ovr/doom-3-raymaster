@@ -1,5 +1,6 @@
-# 08_cpuboss: stress scene. Sabaoth and a dozen monsters in the arena against the (god mode) player
-# with the chaingun, the arena earthquake shaking the view.
+# 08_cpuboss: stress scene. Sabaoth and a dozen monsters in the arena against the (god mode) player, the arena
+# earthquake shaking the view; three more waves (imps, wraiths, commandos, revenants, cacodemons, an archvile)
+# while the player fires the chaingun, rockets, the BFG and the plasma gun, and the pillars throw lightning.
 map game/cpuboss
 at 0 god
 at 1 setviewpos -32 1700 188 90
@@ -22,6 +23,66 @@ at 100 trigger func_earthquake_1
 move 60 300 attack
 move 120 180 yaw=20
 move 180 300 yaw=-20
-end 300
+# no knockback: hits would push the player off the platform into the pit
+at 302 g_knockback 0
+move 302 900 attack
+move 302 400 forward=127 yaw=10
+move 400 480 yaw=25
+move 480 640 yaw=-25
+move 640 720 yaw=25
+# second wave, chasing the player (the arena is in aas_sabaoth)
+at 600 spawn monster_demon_imp origin "-32 2600 130" angle 270 name imp5 use_aas aas_sabaoth
+at 600 spawn monster_demon_imp origin "-520 2112 130" angle 0 name imp6 use_aas aas_sabaoth
+at 600 spawn monster_demon_imp origin "450 2112 130" angle 180 name imp7 use_aas aas_sabaoth
+at 600 spawn monster_demon_wraith origin "-200 2300 130" angle 290 name wraith1 use_aas aas_sabaoth
+at 600 spawn monster_demon_wraith origin "120 2300 130" angle 250 name wraith2 use_aas aas_sabaoth
+at 600 spawn monster_zombie_commando origin "-350 2150 130" angle 330 name zc1 use_aas aas_sabaoth
+at 600 spawn monster_zombie_commando origin "280 2150 130" angle 210 name zc2 use_aas aas_sabaoth
+at 600 spawn monster_demon_trite origin "-150 2350 130" angle 270 name trite5 use_aas aas_sabaoth
+at 600 spawn monster_demon_trite origin "90 2350 130" angle 270 name trite6 use_aas aas_sabaoth
+impulse 640 9
+# earthquake, BFG
+at 900 trigger func_earthquake_1
+impulse 902 10
+move 940 1000 attack
+move 1040 1100 attack
+move 1140 1190 attack
+# third wave, plasma gun, pillar lightning
+at 1200 spawn monster_demon_revenant origin "-250 2400 130" angle 290 name rev2 use_aas aas_sabaoth
+at 1200 spawn monster_demon_revenant origin "200 2400 130" angle 250 name rev3 use_aas aas_sabaoth
+at 1200 spawn monster_flying_cacodemon origin "-200 2300 340" angle 290 name caco2 use_aas aas_sabaoth
+at 1200 spawn monster_flying_cacodemon origin "150 2300 340" angle 250 name caco3 use_aas aas_sabaoth
+at 1200 spawn monster_demon_archvile origin "-32 2330 130" angle 270 name vile1 use_aas aas_sabaoth
+at 1200 spawn monster_zombie_commando_cgun origin "-350 2300 130" angle 300 name cgun3 use_aas aas_sabaoth
+at 1200 spawn monster_zombie_commando_cgun origin "280 2300 130" angle 240 name cgun4 use_aas aas_sabaoth
+impulse 1202 8
+at 1240 trigger trigger_multiple_1
+at 1260 trigger trigger_multiple_2
+at 1280 trigger trigger_multiple_3
+at 1300 trigger trigger_multiple_4
+at 1300 trigger func_earthquake_1
+move 1260 1480 attack
+move 1260 1340 yaw=30
+move 1300 1380 forward=80
+move 1340 1500 yaw=-30
+move 1500 1580 yaw=30
+move 1500 1560 forward=60
+# fourth wave, chaingun
+at 1450 spawn monster_demon_imp origin "-32 2600 130" angle 270 name imp8 use_aas aas_sabaoth
+at 1450 spawn monster_demon_imp origin "-520 2112 130" angle 0 name imp9 use_aas aas_sabaoth
+at 1450 spawn monster_demon_imp origin "450 2112 130" angle 180 name imp10 use_aas aas_sabaoth
+at 1450 spawn monster_demon_trite origin "-150 2300 130" angle 270 name trite7 use_aas aas_sabaoth
+at 1450 spawn monster_demon_trite origin "90 2300 130" angle 270 name trite8 use_aas aas_sabaoth
+at 1450 spawn monster_demon_wraith origin "-32 2250 130" angle 270 name wraith3 use_aas aas_sabaoth
+impulse 1490 6
+move 1520 1780 attack
+move 1600 1680 right=70
+at 1640 trigger trigger_multiple_1
+at 1660 trigger trigger_multiple_2
+at 1799 g_knockback 1000
+end 1800
 capture 0 300 every=10 fps=60
 capture 200 207
+capture 302 1800 every=60 fps=60
+capture 1005 1010
+capture 1400 1405

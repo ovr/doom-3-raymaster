@@ -31,7 +31,12 @@ If you have questions concerning this license or the applicable additional terms
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "VisualDemo.h"
@@ -85,7 +90,8 @@ If you have questions concerning this license or the applicable additional terms
 	Capture: the game thread builds a frame into render system frame F, and with com_smp 1 the
 	back end renders it during the next Frame(), so the tag is keyed by F and the back buffer is
 	read right after the back end rendered F, before its swap (TakeScreenshot reads GL_FRONT, one
-	frame late).
+	frame late). Worker threads encode the PNGs (zlib takes ~40 ms a frame), the main thread writes
+	them in capture order and waits for them only at the end of a demo or with 16 frames queued.
 
 	Determinism: single player seeds gameLocal.random with 0 on every map load (LoadMap). Sound
 	is off (s_noSound 1, needs a restart): muted sound would still be mixed by the wall clock,
@@ -96,6 +102,7 @@ If you have questions concerning this license or the applicable additional terms
 
 idCVar vdemo_fps( "vdemo_fps", "240", CVAR_SYSTEM | CVAR_INTEGER, "steps per second of the visual demo clock, a multiple of com_engineHz" );
 idCVar vdemo_capture( "vdemo_capture", "1", CVAR_SYSTEM | CVAR_BOOL, "0 runs the visual demos without writing their frames" );
+idCVar vdemo_realtime( "vdemo_realtime", "0", CVAR_SYSTEM | CVAR_BOOL, "1 plays the visual demos at the speed of their clock, for watching; 0 runs them as fast as possible. The frames are the same" );
 
 extern idCVar s_noSound;
 
@@ -358,7 +365,8 @@ bool EncodePNG( const byte * rgb, int width, int height, bool bottomUp, std::vec
 
 	uLongf compressedSize = compressBound( static_cast<uLong>( filtered.size() ) );
 	std::vector<byte> compressed( compressedSize );
-	if ( compress2( compressed.data(), &compressedSize, filtered.data(), static_cast<uLong>( filtered.size() ), Z_DEFAULT_COMPRESSION ) != Z_OK ) {
+	// level 2: 4x faster than the default level 6 (~40 against ~170 ms a frame), files 10% bigger
+	if ( compress2( compressed.data(), &compressedSize, filtered.data(), static_cast<uLong>( filtered.size() ), 2 ) != Z_OK ) {
 		return false;
 	}
 
@@ -377,6 +385,91 @@ bool EncodePNG( const byte * rgb, int width, int height, bool bottomUp, std::vec
 }
 
 /*
+========================
+idFrameEncoder
+
+Encodes captured frames to PNG on worker threads. A job belongs to the main thread, which frees it
+only after IsDone, so a worker never touches a freed job.
+========================
+*/
+struct encodeJob_t {
+	frameTag_t			tag;
+	int					width = 0;
+	int					height = 0;
+	std::vector<byte>	pixels;		// bottom-up RGB rows of glReadPixels
+	std::vector<byte>	png;
+	bool				encoded = false;
+	bool				done = false;	// guarded by the encoder's mutex
+};
+
+class idFrameEncoder {
+public:
+	void Start() {
+		if ( !workers.empty() ) {
+			return;
+		}
+		const int count = idMath::ClampInt( 1, 6, static_cast<int>( std::thread::hardware_concurrency() ) - 2 );
+		for ( int i = 0; i < count; i++ ) {
+			workers.emplace_back( [this]( std::stop_token stop ) { Work( stop ); } );
+		}
+	}
+
+	// finishes the queued jobs, then joins the workers
+	void Stop() {
+		for ( std::jthread & worker : workers ) {
+			worker.request_stop();
+		}
+		workers.clear();
+	}
+
+	void Submit( encodeJob_t * job ) {
+		{
+			std::scoped_lock lock( mutex );
+			jobs.push_back( job );
+		}
+		wake.notify_one();
+	}
+
+	bool IsDone( const encodeJob_t * job ) {
+		std::scoped_lock lock( mutex );
+		return job->done;
+	}
+
+	void WaitDone( const encodeJob_t * job ) {
+		std::unique_lock lock( mutex );
+		finished.wait( lock, [job] { return job->done; } );
+	}
+
+private:
+	void Work( std::stop_token stop ) {
+		while ( true ) {
+			encodeJob_t * job = nullptr;
+			{
+				std::unique_lock lock( mutex );
+				if ( !wake.wait( lock, stop, [this] { return !jobs.empty(); } ) ) {
+					return;
+				}
+				job = jobs.front();
+				jobs.pop_front();
+			}
+			job->encoded = EncodePNG( job->pixels.data(), job->width, job->height, true, job->png );
+			job->pixels = std::vector<byte>();
+			{
+				std::scoped_lock lock( mutex );
+				job->done = true;
+			}
+			finished.notify_all();
+		}
+	}
+
+	std::mutex						mutex;
+	std::condition_variable_any		wake;
+	std::condition_variable			finished;
+	std::deque<encodeJob_t *>		jobs;
+	std::vector<std::jthread>		workers;
+};
+
+/*
 ===============================================================================
 
 	idVisualDemoLocal
@@ -386,6 +479,7 @@ bool EncodePNG( const byte * rgb, int width, int height, bool bottomUp, std::vec
 class idVisualDemoLocal final : public idVisualDemo {
 public:
 	bool			IsRunning() const override { return state != state_t::IDLE; }
+	int				MaxFrameRate() const override { return vdemo_realtime.GetBool() ? vdemo_fps.GetInteger() : 0; }
 	uint64			FrameLoopMicroseconds( int ticMilliseconds, double residual ) override;
 	void			RunFrame( bool gameRunning, int numGameFrames, float renderAlpha, usercmd_t & cmd ) override;
 	void			OnMapSpawned() override { mapSpawned = true; }
@@ -420,6 +514,7 @@ private:
 	void			BuildUsercmd( int tic, int step, usercmd_t & cmd ) const;
 	bool			WantsCapture( int tic, int step ) const;
 	void			WriteFrame( const frameTag_t & tag );
+	void			WriteEncodedFrames( size_t maxPending );
 	void			WriteDemoSummary( const result_t & result ) const;
 	void			WriteRunSummary() const;
 
@@ -448,8 +543,10 @@ private:
 	std::vector<cvarSetting_t>	savedCVars;
 	std::vector<frameTag_t>		pendingFrames;
 	std::vector<result_t>		results;
-	std::vector<byte>			pixels;
-	std::vector<byte>			png;
+
+	static constexpr size_t		MAX_PENDING_FRAMES = 16;	// ~45 MB of frames in flight
+	std::deque<std::unique_ptr<encodeJob_t>>	encoding;	// capture order
+	idFrameEncoder				encoder;	// after encoding: its workers are joined before the jobs are freed
 };
 
 idVisualDemoLocal	visualDemoLocal;
@@ -565,6 +662,7 @@ idVisualDemoLocal::CaptureRenderedFrame
 ========================
 */
 void idVisualDemoLocal::CaptureRenderedFrame() {
+	WriteEncodedFrames( MAX_PENDING_FRAMES );
 	if ( pendingFrames.empty() ) {
 		return;
 	}
@@ -594,29 +692,57 @@ void idVisualDemoLocal::WriteFrame( const frameTag_t & tag ) {
 		warnedSize = true;
 	}
 
-	pixels.resize( static_cast<size_t>( width ) * height * 3 );
+	WriteEncodedFrames( MAX_PENDING_FRAMES - 1 );
+
+	auto job = std::make_unique<encodeJob_t>();
+	job->tag = tag;
+	job->width = width;
+	job->height = height;
+	job->pixels.resize( static_cast<size_t>( width ) * height * 3 );
 	GLint packAlignment = 4;
 	qglGetIntegerv( GL_PACK_ALIGNMENT, &packAlignment );
 	qglPixelStorei( GL_PACK_ALIGNMENT, 1 );
 	qglReadBuffer( GL_BACK );
-	qglReadPixels( 0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data() );
+	qglReadPixels( 0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, job->pixels.data() );
 	qglPixelStorei( GL_PACK_ALIGNMENT, packAlignment );
 
-	if ( !EncodePNG( pixels.data(), width, height, true, png ) ) {
-		common->Warning( "vdemo %s: couldn't compress tic %d", tag.demo.c_str(), tag.tic );
-		return;
-	}
-	const idStr fileName = va( "vdemos/%s/t%05d_s%d.png", tag.demo.c_str(), tag.tic, tag.step );
-	if ( fileSystem->WriteFile( fileName, png.data(), static_cast<int>( png.size() ) ) <= 0 ) {
-		common->Warning( "vdemo: couldn't write %s", fileName.c_str() );
-		return;
-	}
-	for ( auto it = results.rbegin(); it != results.rend(); ++it ) {
-		if ( it->name == tag.demo ) {
-			it->written.push_back( tag );
-			it->frames++;
-			break;
+	encoder.Submit( job.get() );
+	encoding.push_back( std::move( job ) );
+}
+
+/*
+========================
+idVisualDemoLocal::WriteEncodedFrames
+
+Writes the encoded frames in capture order, waiting for the oldest while more than maxPending are left.
+========================
+*/
+void idVisualDemoLocal::WriteEncodedFrames( const size_t maxPending ) {
+	while ( !encoding.empty() ) {
+		const encodeJob_t * job = encoding.front().get();
+		if ( !encoder.IsDone( job ) ) {
+			if ( encoding.size() <= maxPending ) {
+				return;
+			}
+			encoder.WaitDone( job );
 		}
+
+		const frameTag_t & tag = job->tag;
+		const idStr fileName = va( "vdemos/%s/t%05d_s%d.png", tag.demo.c_str(), tag.tic, tag.step );
+		if ( !job->encoded ) {
+			common->Warning( "vdemo %s: couldn't compress tic %d", tag.demo.c_str(), tag.tic );
+		} else if ( fileSystem->WriteFile( fileName, job->png.data(), static_cast<int>( job->png.size() ) ) <= 0 ) {
+			common->Warning( "vdemo: couldn't write %s", fileName.c_str() );
+		} else {
+			for ( auto it = results.rbegin(); it != results.rend(); ++it ) {
+				if ( it->name == tag.demo ) {
+					it->written.push_back( tag );
+					it->frames++;
+					break;
+				}
+			}
+		}
+		encoding.pop_front();
 	}
 }
 
@@ -931,6 +1057,7 @@ void idVisualDemoLocal::StartRun( std::vector<idStr> names, bool quit ) {
 		common->Warning( "vdemo: s_noSound is 0, sound-driven materials won't repeat between runs (+set s_noSound 1 at launch)" );
 	}
 	stepsPerTic = vdemo_fps.GetInteger() / engineHz;
+	encoder.Start();
 	queue = std::move( names );
 	nextDemo = 0;
 	quitWhenDone = quit;
@@ -950,6 +1077,8 @@ idVisualDemoLocal::FinishRun
 ========================
 */
 void idVisualDemoLocal::FinishRun() {
+	WriteEncodedFrames( 0 );
+	encoder.Stop();
 	RestoreCVars();
 	state = state_t::IDLE;
 	wallOffsetUS = static_cast<int64>( lastFrameLoopTimeUS ) - static_cast<int64>( Sys_Microseconds() );
@@ -1022,6 +1151,7 @@ idVisualDemoLocal::EndDemo
 ========================
 */
 void idVisualDemoLocal::EndDemo( const char * status ) {
+	WriteEncodedFrames( 0 );
 	result_t & result = results.back();
 	result.status = status;
 	result.runMsec = Sys_Milliseconds() - stateStartTime;

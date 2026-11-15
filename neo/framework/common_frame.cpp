@@ -87,6 +87,35 @@ be called directly in the foreground thread for comparison.
 ===============
 */
 int idGameThread::Run() {
+	// an ERP_DROP error must not unwind into idSysThread, which exits the process without a word
+	try {
+		RunFrame();
+	} catch ( idException & ex ) {
+		error = ex.GetError();
+	}
+	return 0;
+}
+
+/*
+===============
+idGameThread::RethrowError
+===============
+*/
+void idGameThread::RethrowError() {
+	if ( error.IsEmpty() ) {
+		return;
+	}
+	const idStr message = error;
+	error.Clear();
+	throw idException( message.c_str() );
+}
+
+/*
+===============
+idGameThread::RunFrame
+===============
+*/
+void idGameThread::RunFrame() {
 	// let the sampling profiler know which thread runs the game (cheap after the first call)
 	Sys_ProfilerRegisterThread();
 
@@ -157,8 +186,6 @@ int idGameThread::Run() {
 	SetThreadRenderTime( ( commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.finishGameTime ) / 1000 );
 
 	SetThreadTotalTime( ( commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.startGameTime ) / 1000 );
-
-	return 0;
 }
 
 /*
@@ -183,6 +210,7 @@ gameReturn_t idGameThread::RunGameAndDraw( const gameThreadFrame_t & frame_, idU
 	if ( com_smp.GetBool() == false ) {
 		// run it in the main thread so PIX profiling catches everything
 		Run();
+		RethrowError();
 	} else {
 		this->SignalWork();
 	}
@@ -402,12 +430,11 @@ float idCommonLocal::GetTargetFrameRate() {
 =================
 idCommonLocal::LimitFrameRate
 
-Waits for the next com_maxFPS frame start. It paces real time, not the game clock of the
-tic decision, so it reads Sys_Microseconds itself.
+Waits for the next frame start at maxFPS, 0 = no wait. It paces real time, not the game clock
+of the tic decision, so it reads Sys_Microseconds itself.
 =================
 */
-void idCommonLocal::LimitFrameRate() {
-	const int maxFPS = com_maxFPS.GetInteger();
+void idCommonLocal::LimitFrameRate( const int maxFPS ) {
 	if ( maxFPS <= 0 ) {
 		limiterFrameUS = 0;
 		return;
@@ -419,7 +446,7 @@ void idCommonLocal::LimitFrameRate() {
 		Sys_WaitUntilMicroseconds( targetUS );
 		limiterFrameUS = targetUS;
 	} else if ( limiterFrameUS != 0 && nowUS < targetUS + periodUS ) {
-		// less than a frame late: keep the cadence, so the average stays at com_maxFPS
+		// less than a frame late: keep the cadence, so the average stays at maxFPS
 		limiterFrameUS = targetUS;
 	} else {
 		limiterFrameUS = nowUS;
@@ -526,10 +553,9 @@ void idCommonLocal::Frame() {
 		//     none due, decoupled  draw anyway, alpha = residual / tic length
 		//     none due, coupled    sleep and decide again; the coupled loop always draws alpha 1
 		//--------------------------------------------
-		// a visual demo runs as fast as it can, its frames are paced by the virtual clock
-		if ( !visualDemo->IsRunning() ) {
-			LimitFrameRate();
-		}
+		// a visual demo's virtual clock steps once a frame: uncapped it runs as fast as it can,
+		// with vdemo_realtime 1 it waits for each step's real time
+		LimitFrameRate( visualDemo->IsRunning() ? visualDemo->MaxFrameRate() : com_maxFPS.GetInteger() );
 
 		const bool decoupled = DecoupledTics();
 
@@ -748,6 +774,7 @@ void idCommonLocal::Frame() {
 
 		// print what the game thread printed this frame
 		FlushThreadedPrints();
+		gameThread.RethrowError();
 
 		// Send local usermds to the server.
 		// This happens after the game frame has run so that prediction data is up to date.

@@ -73,8 +73,12 @@ public:
 	void			SetThreadRenderTime( const int time ) { threadRenderTime = time; }
 	int				GetThreadRenderTime() const { return threadRenderTime; }
 
+	// rethrows an ERP_DROP error of the last run on the calling (main) thread, after WaitForThread
+	void			RethrowError();
+
 private:
 	virtual int	Run();
+	void			RunFrame();
 
 	int				gameTime;
 	int				drawTime;
@@ -84,6 +88,7 @@ private:
 	idUserCmdMgr *	userCmdMgr;
 	gameReturn_t	ret;
 	gameThreadFrame_t	frame;
+	idStr			error;		// the idException of the last run; set by the game thread
 };
 
 enum errorParm_t {
@@ -471,7 +476,7 @@ private:
 	void	AdvanceRenderDemo( bool singleFrameOnly );
 
 	void	ProcessGameReturn( const gameReturn_t & ret );
-	void	LimitFrameRate();
+	void	LimitFrameRate( int maxFPS );
 
 	void	RunNetworkSnapshotFrame();
 	void	ExecuteReliableMessages();

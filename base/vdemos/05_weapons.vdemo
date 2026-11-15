@@ -1,5 +1,5 @@
-# 05_weapons: d3dm4 hall. A rocket, a plasma burst, a shotgun blast and a grenade against the far wall.
-# Impulses: 3 shotgun, 7 grenade, 8 plasma gun, 9 rocket launcher.
+# 05_weapons: d3dm4 hall. Shotgun blasts, a plasma burst and a grenade against the far wall, then pistol, machinegun, chaingun, shotgun, rocket launcher, BFG and plasma gun against barrels, an air tank and crates.
+# Impulses: 2 pistol, 3 shotgun, 5 machinegun, 6 chaingun, 7 grenade, 8 plasma gun, 9 rocket launcher, 10 BFG.
 map game/mp/d3dm4
 at 0 god
 at 0 notarget
@@ -14,7 +14,53 @@ impulse 170 3
 move 205 207 attack
 impulse 230 7
 move 260 275 attack
-end 330
+end 1860
 capture 0 330 every=10 fps=60
 capture 54 61
 capture 140 145
+# walk in while the thrown grenade rolls away and goes off; barrels, an air tank and crates to shoot at
+move 340 400 forward=35 right=13
+move 400 440 pitch=9
+at 345 spawn moveable_explodingbarrel origin "200 -40 9" angle 0 name barrelA
+at 345 spawn moveable_explodingbarrel origin "150 300 1" angle 0 name barrelB
+at 345 spawn moveable_explodingtank origin "100 120 9" angle 0 name tank1
+at 345 spawn moveable_diamondbox origin "140 215 1" angle 20 name crate1
+at 345 spawn moveable_cartonbox8 origin "115 255 1" angle 60 name crate2
+at 345 spawn moveable_cartonbox4 origin "175 250 1" angle 5 name crate3
+# pistol: two shots set off barrel A
+impulse 470 2
+move 480 530 yaw=-6.33 pitch=4.96
+move 545 580 attack
+# machinegun: a burst along the consoles into the air tank
+impulse 620 5
+move 650 690 yaw=-45.02 pitch=-8.74
+move 695 800 yaw=-21.82 pitch=7.34 attack
+# chaingun: spins up, hammers the crates and blows barrel B behind them
+at 820 spawn moveable_explodingbarrel origin "170 -230 1" angle 0 name barrel1
+at 820 spawn moveable_explodingbarrel origin "230 -250 1" angle 0 name barrel2
+at 820 spawn moveable_explodingbarrel origin "290 -230 1" angle 0 name barrel3
+impulse 830 6
+move 860 890 yaw=-108.19 pitch=17.7
+move 895 1000 attack
+move 950 990 yaw=-40.96 pitch=-16.46
+# shotgun: two blasts at the crates
+impulse 1040 3
+move 1080 1110 yaw=54.61 pitch=21.95
+move 1150 1152 attack
+move 1175 1215 yaw=-39.17 pitch=3.53
+move 1234 1240 attack
+# rocket: into the row of barrels at the far end, they go off one after another
+impulse 1260 9
+move 1300 1370 yaw=133.22 pitch=-18.98
+move 1390 1392 attack
+# BFG: charged and released, the ball crosses the smoke to the far wall
+impulse 1460 10
+move 1490 1520 yaw=-3.48 pitch=-10.43
+move 1530 1590 attack
+# plasma burst
+impulse 1700 8
+move 1720 1740 yaw=-24 pitch=6.01
+move 1750 1800 attack
+capture 332 1860 every=60 fps=60
+capture 569 574
+capture 1589 1594

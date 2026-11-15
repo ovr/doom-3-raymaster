@@ -1,4 +1,4 @@
-# 06_particles: mars_city2 start room. Floor steam, automatic and triggered sparks, the steam blast, scanner GUIs.
+# 06_particles: mars_city2 start room. Floor steam, sparks, the steam blast and scanner GUIs, then up the lowered airlock ladder into the upper room's vent haze.
 # The camera spot is clear of the room's scripted triggers; the dormant zombie in view is removed.
 map game/mars_city2
 at 0 god
@@ -12,7 +12,35 @@ move 70 100 pitch=40
 move 110 170 yaw=-75
 at 150 trigger steamblast_1
 move 200 260 yaw=75
-end 270
+end 1910
 capture 0 270 every=10 fps=60
 capture 30 37
 capture 155 162
+move 272 380 forward=127
+move 384 414 pitch=40
+at 400 trigger trigger_once_15
+move 420 450 pitch=-40
+move 452 535 forward=-127
+move 540 600 yaw=90
+move 605 719 forward=127
+at 620 trigger trigger_once_15
+move 720 780 yaw=-90
+move 785 810 forward=127
+move 815 870 pitch=-60
+move 870 910 yaw=10
+move 910 950 yaw=-10
+move 950 1005 pitch=60
+move 1010 1250 forward=127
+move 1255 1315 yaw=-97
+move 1380 1440 yaw=-83
+move 1445 1475 forward=127 right=-127
+move 1475 1530 forward=127
+move 1535 1595 yaw=-90
+move 1600 1650 forward=127
+move 1660 1720 yaw=-90
+move 1725 1765 forward=127
+move 1770 1830 yaw=-90
+move 1835 1895 yaw=30
+capture 272 1910 every=60 fps=60
+capture 880 885
+capture 1740 1745
