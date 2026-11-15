@@ -169,6 +169,15 @@ struct defInterp_t {
 	bool					posed = false;		// the derived data holds a render pose until RestoreTicPoses
 };
 
+// the derived data of a light that depends on its origin and axis (R_DeriveLightData)
+struct lightPose_t {
+	idPlane					lightProject[4];
+	idRenderMatrix			baseLightProject;
+	idRenderMatrix			inverseBaseLightProject;
+	idVec3					globalLightOrigin;
+	idBounds				globalLightBounds;
+};
+
 class idRenderLightLocal : public idRenderLight {
 public:
 							idRenderLightLocal();
@@ -217,6 +226,8 @@ public:
 
 	struct doublePortal_s *	foggedPortals;
 
+	// lightProject, baseLightProject, inverseBaseLightProject, globalLightOrigin and globalLightBounds
+	// hold a render pose while interp.posed (inside RenderScene), else the pose of parms
 	defInterp_t				interp;
 };
 
@@ -1106,6 +1117,10 @@ void R_FreeEntityDefDecals( idRenderEntityLocal *def );
 void R_FreeEntityDefOverlay( idRenderEntityLocal *def );
 void R_FreeEntityDefFadedDecals( idRenderEntityLocal *def, int time );
 
+// the pose data of a light at origin and axis, its shape from parms
+void R_DeriveLightData( const renderLight_t & parms, const idVec3 & origin, const idMat3 & axis, lightPose_t & pose );
+// the same into the light's derived data; at parms.origin and parms.axis it gives the bits of R_CreateLightRefs
+void R_DeriveLightData( idRenderLightLocal * light, const idVec3 & origin, const idMat3 & axis );
 void R_CreateLightRefs( idRenderLightLocal *light );
 void R_FreeLightDefDerivedData( idRenderLightLocal *light );
 

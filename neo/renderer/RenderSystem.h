@@ -165,7 +165,7 @@ struct renderInterpStats_t {
 	int				listed = 0;				// entities that moved in the last tic
 	int				entities = 0;			// entities drawn between two tic poses
 	int				snapped = 0;			// entities that jumped (teleport, new model, new def): drawn at the tic pose
-	int				attached = 0;			// view-attached entities
+	int				attached = 0;			// view-attached entities and lights
 	int				lights = 0;				// lights drawn between two tic poses
 	int				skeletons = 0;			// skeletal poses blended between two tics
 	float			lateYaw = 0.0f;			// the drawn view angles minus the tic view angles, degrees
