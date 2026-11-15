@@ -1,0 +1,7 @@
+# 07_cinematic: mars_city1 intro. The traffic monitor GUI, then skipCinematic to the next camera shot.
+map game/mars_city1
+capture 0 240 every=20 fps=60
+at 240 skipCinematic
+capture 250 420 every=10 fps=60
+capture 300 307
+end 420

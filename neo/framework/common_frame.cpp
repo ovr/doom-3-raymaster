@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 #include "Common_local.h"
+#include "VisualDemo.h"
 #include "../renderer/Image.h"
 #include "../renderer/ImageOpts.h"
 #include "../../doomclassic/doom/doomlib.h"
@@ -525,12 +526,19 @@ void idCommonLocal::Frame() {
 		//     none due, decoupled  draw anyway, alpha = residual / tic length
 		//     none due, coupled    sleep and decide again; the coupled loop always draws alpha 1
 		//--------------------------------------------
-		LimitFrameRate();
+		// a visual demo runs as fast as it can, its frames are paced by the virtual clock
+		if ( !visualDemo->IsRunning() ) {
+			LimitFrameRate();
+		}
 
 		const bool decoupled = DecoupledTics();
 
-		// the game clock of the tic decision, the only place it reads the time
-		const auto frameTimeUS = [] { return Sys_Microseconds(); };
+		// the game clock of the tic decision, the only place it reads the time; a running visual
+		// demo replaces it with a virtual clock that steps 1 / vdemo_fps on the grid of the next tic
+		const auto frameTimeUS = [this] {
+			const int ticMilliseconds = FRAME_TO_MSEC( gameFrame + 1 ) - FRAME_TO_MSEC( gameFrame );
+			return visualDemo->FrameLoopMicroseconds( ticMilliseconds, gameTimeResidual );
+		};
 
 		int numGameFrames = 0;
 		bool showLastTic = !decoupled;
@@ -679,6 +687,9 @@ void idCommonLocal::Frame() {
 
 		usercmd_t newCmd = usercmdGen->GetCurrentUsercmd();
 
+		// a running visual demo replaces the input and runs its timeline for the tics of this frame
+		visualDemo->RunFrame( mapSpawned && !pauseGame, numGameFrames, renderAlpha, newCmd );
+
 		// Store server game time - don't let time go past last SS time in case we are extrapolating
 		if ( IsClient() ) {
 			newCmd.serverGameMilliseconds = std::min( Game()->GetServerGameTimeMs(), Game()->GetSSEndTime() );
@@ -722,6 +733,8 @@ void idCommonLocal::Frame() {
 		//----------------------------------------
 		frameTiming.startRenderTime = Sys_Microseconds();
 		renderSystem->RenderCommandBuffers( renderCommands );
+		// the back buffer holds the frame until the next swap
+		visualDemo->CaptureRenderedFrame();
 		if ( com_sleepRender.GetInteger() > 0 ) {
 			// debug tool to test frame adaption
 			Sys_Sleep( com_sleepRender.GetInteger() );

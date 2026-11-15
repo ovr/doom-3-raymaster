@@ -37,6 +37,7 @@ Contains the windows implementation of the network session
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
 #include "../../framework/Common_local.h"
+#include "../../framework/VisualDemo.h"
 #include "../sys_session_local.h"
 #include "../sys_stats.h"
 #include "../sys_savegame.h"
@@ -428,7 +429,9 @@ idSessionLocalWin::IsSystemUIShowing
 ========================
 */
 bool idSessionLocalWin::IsSystemUIShowing() const {
-	return !win32.activeApp || isSysUIShowing; // If the user alt+tabs away, treat it the same as bringing up the steam overlay
+	// If the user alt+tabs away, treat it the same as bringing up the steam overlay,
+	// except while visual demos run: they would stall until the window got the focus back
+	return ( !win32.activeApp && !visualDemo->IsRunning() ) || isSysUIShowing;
 }
 
 /*

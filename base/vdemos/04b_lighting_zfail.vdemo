@@ -1,0 +1,3 @@
+# 04b_lighting_zfail: 04_lighting with r_useStencilShadowPreload 0 (the other stencil shadow path).
+include 04_lighting
+set r_useStencilShadowPreload 0

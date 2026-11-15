@@ -1,0 +1,26 @@
+# 03_physics: cpuboss arena. Crates dropped onto the floor, a crate stack, a commando ragdoll,
+# a rocket setting off two barrels that throw the crates around.
+map game/cpuboss
+at 0 god
+at 0 notarget
+at 1 setviewpos -32 1750 188 90
+at 2 give all
+impulse 3 9
+move 3 11 pitch=60
+at 2 spawn moveable_metalbox1 origin "-190 1950 300" name box1 nodrop 1
+at 2 spawn moveable_diamondbox origin "-120 1980 380" name box2 nodrop 1
+at 2 spawn moveable_cartonbox8 origin "100 1960 460" name box3 nodrop 1
+at 2 spawn moveable_cartonbox1 origin "170 2010 140" name box4
+at 2 spawn moveable_cartonbox2 origin "170 2010 200" name box5
+at 2 spawn moveable_explodingbarrel origin "-32 2050 140" name barrel1
+at 2 spawn moveable_explodingbarrel origin "40 2100 140" name barrel2
+at 2 spawn monster_zombie_commando origin "-250 2150 130" angle 300 name zc1 gib 0
+at 10 trigger box1
+at 10 trigger box2
+at 10 trigger box3
+at 60 damage zc1 300
+move 100 102 attack
+end 240
+capture 0 240 every=5 fps=60
+capture 15 22
+capture 104 111

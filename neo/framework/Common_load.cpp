@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 #include "Common_local.h"
+#include "VisualDemo.h"
 #include "../sys/sys_lobby_backend.h"
 
 
@@ -655,6 +656,8 @@ void idCommonLocal::ExecuteMapChange() {
 
 	// Issue a render at the very end of the load process to update soundTime before the first frame
 	soundSystem->Render();
+
+	visualDemo->OnMapSpawned();
 }
 
 /*
