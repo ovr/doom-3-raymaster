@@ -1,4 +1,4 @@
-# 04_lighting: d3dm4 hall. Pulsing, strobing and orbiting point lights, a spot light, the flashlight, a light switched off and on.
+# 04_lighting: d3dm4 hall. Pulsing, strobing and orbiting lights, a spot light, the flashlight; then the hall goes dark: swinging lamps, a rotating beacon, patterned lights, falling crates, an exploding barrel, and the lights come back on.
 map game/mp/d3dm4
 at 0 god
 at 0 notarget
@@ -14,6 +14,66 @@ move 50 110 yaw=20
 move 110 170 yaw=-20 pitch=10
 at 120 trigger lstrobe
 at 150 trigger lstrobe
-end 180
+end 1860
 capture 0 180 every=10 fps=60
 capture 60 69
+# lights out, one ceiling light after another
+move 182 242 pitch=-10
+at 190 trigger nkd_light_153
+at 205 trigger nkd_light_151
+at 220 trigger nkd_light_154
+at 235 trigger nkd_light_152
+at 250 trigger nkd_light_236
+at 250 trigger nkd_light_235
+at 265 trigger qfraggel_light_206
+at 280 remove lspot
+# two lamps swing on hidden pendulums, their spot lights sweep the floor
+at 282 spawn func_pendulum origin "170 90 222" model "models/mapobjects/swinglights/saucerlamp/saucerlamp.lwo" hide 1 speed 35 freq 0.35 angle 0 name pend1
+at 283 spawn func_static origin "170 90 140" model "models/mapobjects/swinglights/saucerlamp/saucerlamp.lwo" noshadows 1 angle 0 bind pend1 name lamp1
+at 283 spawn light origin "170 90 132" light_target "0 0 -220" light_up "0 130 0" light_right "130 0 0" texture "lights/spot01" _color "1 0.9 0.7" angle 0 bind pend1 name lpend1
+at 292 spawn func_pendulum origin "290 200 222" model "models/mapobjects/swinglights/saucerlamp/saucerlamp.lwo" hide 1 speed 30 freq 0.3 phase 0.4 angle 90 name pend2
+at 293 spawn func_static origin "290 200 140" model "models/mapobjects/swinglights/saucerlamp/saucerlamp.lwo" noshadows 1 angle 0 bind pend2 name lamp2
+at 293 spawn light origin "290 200 132" light_target "0 0 -220" light_up "0 130 0" light_right "130 0 0" texture "lights/spot01" _color "0.75 0.85 1" angle 0 bind pend2 name lpend2
+# the camera floats into the hall and looks down at the lamps
+move 300 360 forward=36 right=-12
+move 362 370 up=1
+move 380 440 pitch=20
+move 440 560 yaw=-10
+move 560 720 yaw=17
+# an alarm beacon sweeps two red beams over the walls
+at 700 spawn func_rotating origin "230 120 205" model "models/mapobjects/utility/tecknob1/tecknob1.lwo" speed 120 angle 0 name beacon
+at 701 spawn light origin "230 120 195" light_target "320 0 -120" light_up "0 0 130" light_right "0 130 0" texture "lights/spot01" _color "2 0.25 0.05" angle 0 bind beacon name lbeam1
+at 701 spawn light origin "230 120 195" light_target "-320 0 -120" light_up "0 0 130" light_right "0 -130 0" texture "lights/spot01" _color "2 0.5 0.05" angle 0 bind beacon name lbeam2
+move 720 780 yaw=-25.3 pitch=-10
+move 790 910 yaw=30
+move 910 1030 yaw=-30
+# patterned lights: a grate on the floor, hell fire on the stairs, a fire at their foot
+at 960 spawn light origin "200 250 230" light_target "0 0 -240" light_up "0 110 0" light_right "110 0 0" texture "lights/grate7" _color "0.6 0.8 1" angle 0 name lgrate
+at 990 spawn light origin "400 260 220" light_target "0 0 -220" light_up "0 120 0" light_right "120 0 0" texture "lights/hellgate1" _color "1 1 1" angle 0 name lhell
+at 1020 spawn light origin "420 140 30" light_radius "160 160 120" texture "lights/roundfire" _color "1 0.5 0.15" angle 0 name lfire
+move 1035 1100 forward=36
+move 1110 1190 yaw=-49.5 pitch=3.75
+# crates drop onto the stairs through the hell light, then a barrel at their foot goes off
+at 1100 spawn moveable_diamondbox origin "395 250 210" angle 30 nodrop 1 name crate1
+at 1100 spawn moveable_cartonbox8 origin "380 205 200" angle 70 nodrop 1 name crate2
+at 1100 spawn moveable_cartonbox4 origin "420 290 215" angle 10 nodrop 1 name crate3
+at 1100 spawn moveable_explodingbarrel origin "380 120 1" angle 0 health 1 name barrel1
+at 1200 trigger crate1
+at 1215 trigger crate2
+at 1230 trigger crate3
+at 1300 damage barrel1 1
+# the camera pulls back while the hall's lights come on again
+move 1380 1480 yaw=39.6 pitch=-3
+move 1500 1565 forward=-36
+at 1560 trigger qfraggel_light_206
+at 1575 trigger nkd_light_152
+at 1590 trigger nkd_light_154
+at 1605 trigger nkd_light_151
+at 1620 trigger nkd_light_153
+at 1635 trigger nkd_light_235
+at 1635 trigger nkd_light_236
+move 1580 1640 pitch=-10
+move 1660 1860 yaw=12
+capture 182 1860 every=60 fps=60
+capture 752 757
+capture 1300 1305

@@ -1,4 +1,6 @@
-# 02_monsters: cpuboss arena. Imp, revenant, cacodemon, chaingun commando and trite attack the (god mode) player.
+# 02_monsters: cpuboss arena. Imp, revenant, cacodemon, chaingun commando and trite attack the (god mode) player,
+# who walks in and kills them one by one (chaingun, rockets, shotgun), then fights a second wave (wraiths,
+# archvile, commando, imps, trites) with the chaingun and shoots down a last cacodemon.
 map game/cpuboss
 at 0 god
 at 1 setviewpos -32 1850 188 90
@@ -9,6 +11,62 @@ at 5 spawn monster_zombie_commando_cgun origin "220 2150 130" angle 250 name cgu
 at 5 spawn monster_demon_trite origin "-300 2050 130" angle 300 name trite1
 move 60 120 yaw=15
 move 120 210 yaw=-15
-end 210
+# no knockback: hits would push the player off the platform into the pit
+at 212 g_knockback 0
+at 212 give weapon_shotgun
+at 212 give weapon_chaingun
+at 212 give weapon_rocketlauncher
+at 212 give weapon_plasmagun
+at 212 give ammo
+impulse 213 6
+# walk in, then kill cgun1, rev1, caco1 and imp1 in turn
+move 240 330 forward=127
+move 332 392 yaw=-60.8
+move 392 480 attack
+at 470 damage cgun1 500
+impulse 482 9
+move 490 550 yaw=49.8
+move 560 640 attack
+at 630 damage rev1 500
+move 650 690 yaw=36.45 pitch=-45.9
+move 695 770 attack
+at 760 damage caco1 500
+impulse 772 3
+move 780 870 yaw=-108.7 pitch=33.7
+move 875 935 attack
+at 925 damage imp1 300
+move 945 1045 yaw=94.8 pitch=-12
+# second wave, chasing the player (the arena is in aas_sabaoth)
+at 1050 spawn monster_demon_wraith origin "-200 2400 130" angle 270 name wraith1 use_aas aas_sabaoth
+at 1050 spawn monster_demon_wraith origin "150 2400 130" angle 270 name wraith2 use_aas aas_sabaoth
+at 1050 spawn monster_zombie_commando origin "-32 2600 130" angle 270 name zc1 use_aas aas_sabaoth
+at 1050 spawn monster_demon_imp origin "-520 2112 130" angle 0 name imp2 use_aas aas_sabaoth
+at 1050 spawn monster_demon_imp origin "450 2112 130" angle 180 name imp3 use_aas aas_sabaoth
+at 1050 spawn monster_demon_archvile origin "-32 2450 130" angle 270 name vile1 use_aas aas_sabaoth
+at 1050 spawn monster_demon_trite origin "-250 2350 130" angle 290 name trite2 use_aas aas_sabaoth
+at 1050 spawn monster_demon_trite origin "200 2300 130" angle 250 name trite3 use_aas aas_sabaoth
+impulse 1052 6
+move 1150 1240 right=-90
+move 1170 1400 attack
+move 1250 1330 forward=-60
+at 1330 damage wraith1 500
+at 1350 damage wraith2 500
+at 1380 damage zc1 500
+at 1400 damage vile1 1000
+at 1405 damage imp2 300
+move 1410 1460 yaw=-103.2
+move 1465 1560 attack
+at 1540 damage imp3 300
+move 1580 1680 yaw=51
+move 1600 1760 forward=80
+# a last cacodemon
+at 1640 spawn monster_flying_cacodemon origin "-60 2450 260" angle 270 name caco2 use_aas aas_sabaoth
+move 1700 1790 attack
+at 1780 damage caco2 500
+at 1809 g_knockback 1000
+end 1810
 capture 0 210 every=10 fps=60
 capture 150 159
+capture 212 1810 every=60 fps=60
+capture 899 904
+capture 1202 1207

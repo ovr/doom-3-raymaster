@@ -1,7 +1,20 @@
-# 07_cinematic: mars_city1 intro. The traffic monitor GUI, then skipCinematic to the next camera shot.
+# 07_cinematic: mars_city1 intro. Traffic monitor GUI and skipCinematic, the hangar walk to R. Cooper, a cut to reception, its camera cinematic, then the PDA pickup and a pan around reception.
 map game/mars_city1
 capture 0 240 every=20 fps=60
 at 240 skipCinematic
 capture 250 420 every=10 fps=60
 capture 300 307
-end 420
+end 2490
+move 430 520 forward=127
+move 525 585 yaw=-47
+move 590 700 yaw=20
+at 702 setviewpos -203 -1390 196 180
+move 710 765 forward=127
+at 775 trigger reception_trigger
+at 2180 skipCinematic
+impulse 2200 19
+move 2210 2270 yaw=40
+move 2270 2470 yaw=-30
+capture 422 2490 every=60 fps=60
+capture 701 705
+capture 961 965
