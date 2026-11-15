@@ -267,6 +267,15 @@ public:
 													// dynamicModel if this doesn't == tr.viewCount
 	idRenderModel *			cachedDynamicModel;
 
+	// r_interpolateSkeletons (tr_frontend_addmodels.cpp): copies of the MD5 joints (model space) of the
+	// last two tics the front end drew, [1] the newest; poseTic is the world's ticCount of each copy
+	static constexpr int	NO_POSE_TIC = INT_MIN;
+	idList<idJointMat, TAG_JOINTMAT>	pose[2];
+	int						poseTic[2] = { NO_POSE_TIC, NO_POSE_TIC };
+	const idRenderModel *	poseModel = nullptr;
+	bool					dynamicModelBlended = false;		// dynamicModel is drawn between pose[0] and pose[1]
+	float					dynamicModelBlendAlpha = 0.0f;		// at this alpha
+
 
 	// the local bounds used to place entityRefs, either from parms for dynamic entities, or a model bounds
 	idBounds				localReferenceBounds;	
