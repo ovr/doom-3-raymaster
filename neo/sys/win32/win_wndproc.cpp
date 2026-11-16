@@ -243,9 +243,9 @@ LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam ) {
 				// (restores the desktop display mode and gamma, minimizes itself)
 				if ( R_IsInitialized() ) {
 					if ( win32.activeApp ) {
-						GLimp_WindowActivated();
+						Win_WindowActivated();
 					} else {
-						GLimp_WindowDeactivated();
+						Win_WindowDeactivated();
 					}
 				}
 

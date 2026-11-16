@@ -53,16 +53,6 @@ If you have questions concerning this license or the applicable additional terms
 
 typedef void (*GLExtension_t)(void);
 
-#ifdef __cplusplus
-	extern "C" {
-#endif
-
-GLExtension_t GLimp_ExtensionPointer( const char *name );
-
-#ifdef __cplusplus
-	}
-#endif
-
 // GL_EXT_direct_state_access
 extern PFNGLBINDMULTITEXTUREEXTPROC			qglBindMultiTextureEXT;
 

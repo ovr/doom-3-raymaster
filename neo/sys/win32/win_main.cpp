@@ -47,6 +47,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../sys_local.h"
 #include "win_local.h"
 #include "../../renderer/tr_local.h"
+#include "../../renderer/OpenGL/gl_glimp.h"
 
 idCVar Win32Vars_t::sys_arch( "sys_arch", "", CVAR_SYSTEM | CVAR_INIT, "" );
 idCVar Win32Vars_t::sys_cpustring( "sys_cpustring", "detect", CVAR_SYSTEM | CVAR_INIT, "" );
@@ -235,7 +236,8 @@ void Sys_Error( const char *error, ... ) {
 
 	Sys_ShutdownInput();
 
-	GLimp_Shutdown();
+	GLimp_DestroyContext();
+	Sys_DestroyWindow();
 
 	extern idCVar com_productionMode;
 	if ( com_productionMode.GetInteger() == 0 ) {

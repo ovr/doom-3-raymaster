@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../idlib/precompiled.h"
 
 #include "../tr_local.h"
+#include "gl_glimp.h"
 #include "../../framework/Common_local.h"
 
 idCVar r_drawFlickerBox( "r_drawFlickerBox", "0", CVAR_RENDERER | CVAR_BOOL, "visual test for dropping frames" );
@@ -48,7 +49,6 @@ idCVar r_syncEveryFrame( "r_syncEveryFrame", "1", CVAR_BOOL, "Don't let the GPU 
 static int		swapIndex;		// 0 or 1 into renderSync
 static GLsync	renderSync[2];
 
-void GLimp_SwapBuffers();
 void RB_SetMVP( const idRenderMatrix & mvp );
 
 /*
