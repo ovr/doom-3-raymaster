@@ -342,11 +342,11 @@ set(DOOMEXE_SOURCES
 	renderer/OpenGL/gl_State.cpp
 	renderer/OpenGL/gl_image.cpp
 	renderer/OpenGL/gl_RenderBackend.cpp
+	renderer/OpenGL/gl_RenderProgs.cpp
 	renderer/RenderBackend.cpp
 	renderer/RenderEntity.cpp
 	renderer/RenderLog.cpp
 	renderer/RenderProgs.cpp
-	renderer/RenderProgs_GLSL.cpp
 	renderer/RenderSystem.cpp
 	renderer/RenderSystem_init.cpp
 	renderer/RenderWorld.cpp

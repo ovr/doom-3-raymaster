@@ -124,6 +124,29 @@ ID_INLINE textureHandle_t GL_TextureHandle( glTexture_t * texture ) {
 	return static_cast<textureHandle_t>( reinterpret_cast<uintptr_t>( texture ) );
 }
 
+// What a shaderHandle_t points at.
+struct glShaderStage_t {
+	GLuint				shader;				// 0 when the source file is missing: such a stage is never loaded again
+	shaderStageInfo_t	info;
+	idStr				name;
+};
+
+// What a programHandle_t points at.
+struct glProgram_t {
+	GLuint				progId;
+	GLint				vertexUniformArray;		// location of the vec4 array of the stage, -1 when it has none
+	GLint				fragmentUniformArray;
+	shaderStageInfo_t	vertexInfo;				// copies: a stage can be destroyed before its program
+	shaderStageInfo_t	fragmentInfo;
+};
+
+ID_INLINE glShaderStage_t * GL_ShaderStage( shaderHandle_t shader ) {
+	return reinterpret_cast<glShaderStage_t *>( static_cast<uintptr_t>( shader ) );
+}
+ID_INLINE glProgram_t * GL_Program( programHandle_t program ) {
+	return reinterpret_cast<glProgram_t *>( static_cast<uintptr_t>( program ) );
+}
+
 // gl_Extensions.cpp: loads the qgl* extension pointers, fills the flags of glContext and creates global_vao
 void					R_CheckPortableExtensions();
 
@@ -161,6 +184,8 @@ public:
 	programHandle_t		CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * debugName, programInfo_t & info ) override;
 	void				DestroyShaderStage( shaderHandle_t shader ) override;
 	void				DestroyProgram( programHandle_t program ) override;
+	// Sends the parms both stages of the program read to the program GL has in use.
+	void				CommitParms( programHandle_t program, const idVec4 * parms );
 
 	void				WriteTimestamp( int set, int index ) override;
 	bool				TimestampReady( int set, int index ) override;
