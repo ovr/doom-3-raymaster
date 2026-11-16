@@ -403,6 +403,9 @@ void R_RenderView( viewDef_t *parms ) {
 	// sort all the ambient surfaces for translucency ordering
 	R_SortDrawSurfs( tr.viewDef->drawSurfs, tr.viewDef->numDrawSurfs );
 
+	// r_showPortals, r_showNormals, r_showViewEntitys, r_showSurfaceInfo
+	R_AddViewDebugTools( tr.viewDef );
+
 	// generate any subviews (mirrors, cameras, etc) before adding this view
 	if ( R_GenerateSubViews( tr.viewDef->drawSurfs, tr.viewDef->numDrawSurfs ) ) {
 		// if we are debugging subviews, allow the skipping of the main view draw

@@ -32,6 +32,27 @@ If you have questions concerning this license or the applicable additional terms
 #include "tr_local.h"
 #include "simplex.h"	// line font definition
 
+/*
+===============================================================================
+
+	Debug tools.
+
+	Nothing here draws on its own terms: every tool ends in RB_DrawElementsWithCounters, like the scene.
+
+	  game, front end (game thread)                main thread, frame sync      back end (main thread)
+	  -----------------------------                -----------------------      ----------------------
+	  idRenderWorld::DebugLine, DrawText,   -+
+	   DebugPolygon: the stores, kept until  |
+	   the game clears them                  +->   RB_SnapshotDebugGeometry ->  RB_DrawDebugBatches,
+	  R_AddViewDebugTools (portals, normals, |      idDrawVert + indexes in      once per 3D view
+	   view entities, surface info): lines  -+      the frame's vertex cache
+	   of one frame
+
+	r_showTris, r_showLightCount, r_showLights, testImage and the line patterns are back-end passes.
+
+===============================================================================
+*/
+
 idCVar r_showCenterOfProjection( "r_showCenterOfProjection", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a cross to show the center of projection" );
 idCVar r_showLines( "r_showLines", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = draw alternate horizontal lines, 2 = draw alternate vertical lines" );
 
@@ -79,47 +100,23 @@ debugPolygon_t	rb_debugPolygons[ MAX_DEBUG_POLYGONS ];
 int				rb_numDebugPolygons = 0;
 int				rb_debugPolygonTime = 0;
 
-static void RB_DrawText( const char *text, const idVec3 &origin, float scale, const idVec4 &color, const idMat3 &viewAxis, const int align );
+// lines the front end adds for the frame it builds; the snapshot draws them once and empties the list
+static idList<debugLine_t>	rb_frameDebugLines( 4096 );
 
 void RB_SetMVP( const idRenderMatrix & mvp );
 
 /*
 ================
-RB_DrawBounds
+RB_ResetViewScissor
 ================
 */
-void RB_DrawBounds( const idBounds &bounds ) {
-	if ( bounds.IsCleared() ) {
-		return;
-	}
-	qglBegin( GL_LINE_LOOP );
-	qglVertex3f( bounds[0][0], bounds[0][1], bounds[0][2] );
-	qglVertex3f( bounds[0][0], bounds[1][1], bounds[0][2] );
-	qglVertex3f( bounds[1][0], bounds[1][1], bounds[0][2] );
-	qglVertex3f( bounds[1][0], bounds[0][1], bounds[0][2] );
-	qglEnd();
-	qglBegin( GL_LINE_LOOP );
-	qglVertex3f( bounds[0][0], bounds[0][1], bounds[1][2] );
-	qglVertex3f( bounds[0][0], bounds[1][1], bounds[1][2] );
-	qglVertex3f( bounds[1][0], bounds[1][1], bounds[1][2] );
-	qglVertex3f( bounds[1][0], bounds[0][1], bounds[1][2] );
-	qglEnd();
-
-	qglBegin( GL_LINES );
-	qglVertex3f( bounds[0][0], bounds[0][1], bounds[0][2] );
-	qglVertex3f( bounds[0][0], bounds[0][1], bounds[1][2] );
-
-	qglVertex3f( bounds[0][0], bounds[1][1], bounds[0][2] );
-	qglVertex3f( bounds[0][0], bounds[1][1], bounds[1][2] );
-
-	qglVertex3f( bounds[1][0], bounds[0][1], bounds[0][2] );
-	qglVertex3f( bounds[1][0], bounds[0][1], bounds[1][2] );
-
-	qglVertex3f( bounds[1][0], bounds[1][1], bounds[0][2] );
-	qglVertex3f( bounds[1][0], bounds[1][1], bounds[1][2] );
-	qglEnd();
+static void RB_ResetViewScissor() {
+	GL_Scissor( backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+				backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
+				backEnd.viewDef->scissor.x2 + 1 - backEnd.viewDef->scissor.x1,
+				backEnd.viewDef->scissor.y2 + 1 - backEnd.viewDef->scissor.y1 );
+	backEnd.currentScissor = backEnd.viewDef->scissor;
 }
-
 
 /*
 ================
@@ -129,13 +126,13 @@ RB_SimpleSurfaceSetup
 static void RB_SimpleSurfaceSetup( const drawSurf_t *drawSurf ) {
 	// change the matrix if needed
 	if ( drawSurf->space != backEnd.currentSpace ) {
-		qglLoadMatrixf( drawSurf->space->modelViewMatrix );
+		RB_SetMVP( drawSurf->space->mvp );
 		backEnd.currentSpace = drawSurf->space;
 	}
 
 	// change the scissor if needed
 	if ( !backEnd.currentScissor.Equals( drawSurf->scissorRect ) && r_useScissor.GetBool() ) {
-		GL_Scissor( backEnd.viewDef->viewport.x1 + drawSurf->scissorRect.x1, 
+		GL_Scissor( backEnd.viewDef->viewport.x1 + drawSurf->scissorRect.x1,
 					backEnd.viewDef->viewport.y1 + drawSurf->scissorRect.y1,
 					drawSurf->scissorRect.x2 + 1 - drawSurf->scissorRect.x1,
 					drawSurf->scissorRect.y2 + 1 - drawSurf->scissorRect.y1 );
@@ -145,48 +142,79 @@ static void RB_SimpleSurfaceSetup( const drawSurf_t *drawSurf ) {
 
 /*
 ================
-RB_SimpleWorldSetup
+RB_SetTextureColorParms
+
+The parms of the texture_color programs: the white image on slot 0, no texgen, no alpha test.
+The colour is the vertex colour, or the one of GL_Color.
 ================
 */
-static void RB_SimpleWorldSetup() {
-	backEnd.currentSpace = &backEnd.viewDef->worldSpace;
+static void RB_SetTextureColorParms( bool useVertexColor ) {
+	static const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	static const float one[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	static const float texS[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+	static const float texT[4] = { 0.0f, 1.0f, 0.0f, 0.0f };
 
+	globalImages->whiteImage->Bind( 0 );
 
-	qglLoadMatrixf( backEnd.viewDef->worldSpace.modelViewMatrix );
-
-	GL_Scissor( backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
-				backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
-				backEnd.viewDef->scissor.x2 + 1 - backEnd.viewDef->scissor.x1,
-				backEnd.viewDef->scissor.y2 + 1 - backEnd.viewDef->scissor.y1 );
-	backEnd.currentScissor = backEnd.viewDef->scissor;
+	renderProgManager.SetRenderParm( RENDERPARM_TEXTUREMATRIX_S, texS );
+	renderProgManager.SetRenderParm( RENDERPARM_TEXTUREMATRIX_T, texT );
+	renderProgManager.SetRenderParm( RENDERPARM_TEXGEN_0_ENABLED, zero );
+	renderProgManager.SetRenderParm( RENDERPARM_ALPHA_TEST, zero );
+	renderProgManager.SetRenderParm( RENDERPARM_VERTEXCOLOR_MODULATE, useVertexColor ? one : zero );
+	renderProgManager.SetRenderParm( RENDERPARM_VERTEXCOLOR_ADD, useVertexColor ? zero : one );
 }
 
 /*
-=================
-RB_PolygonClear
+================
+RB_DrawSurfaceOneColor
 
-This will cover the entire screen with normal rasterization.
-Texturing is disabled, but the existing glColor, glDepthMask,
-glColorMask, and the enabled state of depth buffering and
-stenciling will matter.
-=================
+There is no skinned colour-only program, so the texture_color pair draws with the white image.
+================
 */
-void RB_PolygonClear() {
-	qglPushMatrix();
-	qglPushAttrib( GL_ALL_ATTRIB_BITS  );
-	qglLoadIdentity();
-	qglDisable( GL_TEXTURE_2D );
-	qglDisable( GL_DEPTH_TEST );
-	qglDisable( GL_CULL_FACE );
-	qglDisable( GL_SCISSOR_TEST );
-	qglBegin( GL_POLYGON );
-	qglVertex3f( -20, -20, -10 );
-	qglVertex3f( 20, -20, -10 );
-	qglVertex3f( 20, 20, -10 );
-	qglVertex3f( -20, 20, -10 );
-	qglEnd();
-	qglPopAttrib();
-	qglPopMatrix();
+static void RB_DrawSurfaceOneColor( const drawSurf_t * surf ) {
+	if ( surf->jointCache ) {
+		renderProgManager.BindShader_TextureVertexColorSkinned();
+	} else {
+		renderProgManager.BindShader_TextureVertexColor();
+	}
+	RB_DrawElementsWithCounters( surf );
+}
+
+/*
+================
+RB_ClearRect
+
+A scissored clear as a drawing primitive, in window pixels. The caller restores the scissor.
+================
+*/
+static void RB_ClearRect( int x, int y, int width, int height, const idVec4 & color ) {
+	if ( x < 0 ) {
+		width += x;
+		x = 0;
+	}
+	if ( y < 0 ) {
+		height += y;
+		y = 0;
+	}
+	if ( width <= 0 || height <= 0 ) {
+		return;
+	}
+	GL_Scissor( x, y, width, height );
+	GL_Clear( true, false, false, 0, color.x, color.y, color.z, color.w );
+}
+
+/*
+================
+RB_RestoreScissor
+
+Puts back the scissor backEnd.currentScissor stands for, after RB_ClearRect.
+================
+*/
+static void RB_RestoreScissor() {
+	GL_Scissor( backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1,
+				backEnd.viewDef->viewport.y1 + backEnd.currentScissor.y1,
+				backEnd.currentScissor.x2 + 1 - backEnd.currentScissor.x1,
+				backEnd.currentScissor.y2 + 1 - backEnd.currentScissor.y1 );
 }
 
 /*
@@ -199,8 +227,7 @@ stencil buffer.  Stencil of 0 = black, 1 = red, 2 = green,
 ===================
 */
 static void R_ColorByStencilBuffer() {
-	int		i;
-	static float	colors[8][3] = {
+	static const float colors[7][3] = {
 		{0,0,0},
 		{1,0,0},
 		{0,1,0},
@@ -208,22 +235,25 @@ static void R_ColorByStencilBuffer() {
 		{0,1,1},
 		{1,0,1},
 		{1,1,0},
-		{1,1,1},
 	};
 
-	// clear color buffer to white (>6 passes)
+	// clear color buffer to white (more passes than the table has)
+	RB_ResetViewScissor();
+	GL_State( GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS );
 	GL_Clear( true, false, false, 0, 1.0f, 1.0f, 1.0f, 1.0f );
 
 	// now draw color for each stencil value
-	qglStencilOp( GL_KEEP, GL_KEEP, GL_KEEP );
-	for ( i = 0; i < 6; i++ ) {
-		GL_Color( colors[i] );
-		renderProgManager.BindShader_Color();
-		qglStencilFunc( GL_EQUAL, i, 255 );
-		RB_PolygonClear();
+	GL_Cull( CT_TWO_SIDED );
+	RB_SetMVP( renderMatrix_identity );
+	backEnd.currentSpace = NULL;
+	renderProgManager.BindShader_Color();
+	for ( int i = 0; i < 7; i++ ) {
+		GL_State( GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_REF( i ) | GLS_STENCIL_MAKE_MASK( 255 ) );
+		GL_Color( colors[i][0], colors[i][1], colors[i][2] );
+		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 	}
 
-	qglStencilFunc( GL_ALWAYS, 0, 255 );
+	GL_State( GLS_DEFAULT );
 }
 
 //======================================================================
@@ -245,144 +275,35 @@ static void RB_ShowLightCount() {
 		return;
 	}
 
-	RB_SimpleWorldSetup();
+	RB_ResetViewScissor();
 
 	GL_Clear( false, false, true, 0, 0.0f, 0.0f, 0.0f, 0.0f );
 
-	// optionally count everything through walls
+	// only the stencil buffer is written; optionally count everything through walls
+	const uint64 countBits = GLS_COLORMASK | GLS_ALPHAMASK | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL | GLS_STENCIL_MAKE_MASK( 255 );
 	if ( r_showLightCount.GetInteger() >= 2 ) {
-		GL_State( GLS_DEPTHFUNC_EQUAL | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_INCR | GLS_STENCIL_OP_PASS_INCR );
+		GL_State( countBits | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_INCR | GLS_STENCIL_OP_PASS_INCR );
 	} else {
-		GL_State( GLS_DEPTHFUNC_EQUAL | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR );
+		GL_State( countBits | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR );
 	}
+	GL_Cull( CT_FRONT_SIDED );
 
-	globalImages->defaultImage->Bind( 0 );
+	GL_Color( 1.0f, 1.0f, 1.0f );
+	RB_SetTextureColorParms( false );
+
+	backEnd.currentSpace = NULL;
 
 	for ( vLight = backEnd.viewDef->viewLights; vLight; vLight = vLight->next ) {
 		for ( i = 0; i < 2; i++ ) {
 			for ( surf = i ? vLight->localInteractions: vLight->globalInteractions; surf; surf = (drawSurf_t *)surf->nextOnLight ) {
 				RB_SimpleSurfaceSetup( surf );
-				RB_DrawElementsWithCounters( surf );
+				RB_DrawSurfaceOneColor( surf );
 			}
 		}
 	}
 
 	// display the results
 	R_ColorByStencilBuffer();
-}
-
-/*
-===============
-RB_EnterWeaponDepthHack
-===============
-*/
-static void RB_EnterWeaponDepthHack() {
-	float	matrix[16];
-
-	memcpy( matrix, backEnd.viewDef->projectionMatrix, sizeof( matrix ) );
-
-	const float modelDepthHack = 0.25f;
-	matrix[2] *= modelDepthHack;
-	matrix[6] *= modelDepthHack;
-	matrix[10] *= modelDepthHack;
-	matrix[14] *= modelDepthHack;
-
-	qglMatrixMode( GL_PROJECTION );
-	qglLoadMatrixf( matrix );
-	qglMatrixMode( GL_MODELVIEW );
-}
-
-/*
-===============
-RB_EnterModelDepthHack
-===============
-*/
-static void RB_EnterModelDepthHack( float depth ) {
-	float matrix[16];
-
-	memcpy( matrix, backEnd.viewDef->projectionMatrix, sizeof( matrix ) );
-
-	matrix[14] -= depth;
-
-	qglMatrixMode( GL_PROJECTION );
-	qglLoadMatrixf( matrix );
-	qglMatrixMode( GL_MODELVIEW );
-}
-
-/*
-===============
-RB_LeaveDepthHack
-===============
-*/
-static void RB_LeaveDepthHack() {
-	qglMatrixMode( GL_PROJECTION );
-	qglLoadMatrixf( backEnd.viewDef->projectionMatrix );
-	qglMatrixMode( GL_MODELVIEW );
-}
-
-/*
-=============
-RB_LoadMatrixWithBypass
-
-does a glLoadMatrixf after optionally applying the low-latency bypass matrix
-=============
-*/
-static void RB_LoadMatrixWithBypass( const float m[16] ) {
-	glLoadMatrixf( m );
-}
-
-/*
-====================
-RB_RenderDrawSurfListWithFunction
-
-The triangle functions can check backEnd.currentSpace != surf->space
-to see if they need to perform any new matrix setup.  The modelview
-matrix will already have been loaded, and backEnd.currentSpace will
-be updated after the triangle function completes.
-====================
-*/
-static void RB_RenderDrawSurfListWithFunction( drawSurf_t **drawSurfs, int numDrawSurfs, void (*triFunc_)( const drawSurf_t *) ) {
-	backEnd.currentSpace = NULL;
-
-	for ( int i = 0 ; i < numDrawSurfs ; i++ ) {
-		const drawSurf_t * drawSurf = drawSurfs[i];
-		if ( drawSurf == NULL ) {
-			continue;
-		}
-		assert( drawSurf->space != NULL );
-		if ( drawSurf->space != NULL ) {	// is it ever NULL?  Do we need to check?
-			// change the matrix if needed
-			if ( drawSurf->space != backEnd.currentSpace ) {
-				RB_LoadMatrixWithBypass( drawSurf->space->modelViewMatrix );
-			}
-
-			if ( drawSurf->space->weaponDepthHack ) {
-				RB_EnterWeaponDepthHack();
-			}
-
-			if ( drawSurf->space->modelDepthHack != 0.0f ) {
-				RB_EnterModelDepthHack( drawSurf->space->modelDepthHack );
-			}
-		}
-
-		// change the scissor if needed
-		if ( r_useScissor.GetBool() && !backEnd.currentScissor.Equals( drawSurf->scissorRect ) ) {
-			backEnd.currentScissor = drawSurf->scissorRect;
-			GL_Scissor( backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1, 
-				backEnd.viewDef->viewport.y1 + backEnd.currentScissor.y1,
-				backEnd.currentScissor.x2 + 1 - backEnd.currentScissor.x1,
-				backEnd.currentScissor.y2 + 1 - backEnd.currentScissor.y1 );
-		}
-
-		// render it
-		triFunc_( drawSurf );
-
-		if ( drawSurf->space != NULL && ( drawSurf->space->weaponDepthHack || drawSurf->space->modelDepthHack != 0.0f ) ) {
-			RB_LeaveDepthHack();
-		}
-
-		backEnd.currentSpace = drawSurf->space;
-	}
 }
 
 /*
@@ -393,10 +314,6 @@ Debugging tool
 =====================
 */
 static void RB_ShowTris( drawSurf_t **drawSurfs, int numDrawSurfs ) {
-
-	modelTrace_t mt;
-	idVec3 end;
-
 	if ( r_showTris.GetInteger() == 0 ) {
 		return;
 	}
@@ -404,8 +321,8 @@ static void RB_ShowTris( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 	float color[4] = { 1, 1, 1, 1 };
 
 	GL_PolygonOffset( -1.0f, -2.0f );
-	
-	switch ( r_showTris.GetInteger() ) {			
+
+	switch ( r_showTris.GetInteger() ) {
 		case 1: // only draw visible ones
 			GL_State( GLS_DEPTHMASK | GLS_ALPHAMASK | GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET );
 			break;
@@ -419,231 +336,24 @@ static void RB_ShowTris( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 			break;
 	}
 
-	if ( r_showTris.GetInteger() == 3 ) {
-		GL_Cull( CT_TWO_SIDED );
-	}
+	GL_Cull( ( r_showTris.GetInteger() == 3 ) ? CT_TWO_SIDED : CT_FRONT_SIDED );
 
 	GL_Color( color );
-	renderProgManager.BindShader_Color();
+	RB_SetTextureColorParms( false );
 
-	RB_RenderDrawSurfListWithFunction( drawSurfs, numDrawSurfs, []( const drawSurf_t * surf ) { RB_DrawElementsWithCounters( surf ); } );
+	backEnd.currentSpace = NULL;
+
+	for ( int i = 0 ; i < numDrawSurfs ; i++ ) {
+		const drawSurf_t * drawSurf = drawSurfs[i];
+		if ( drawSurf == NULL || drawSurf->space == NULL ) {
+			continue;
+		}
+		RB_SimpleSurfaceSetup( drawSurf );
+		RB_DrawSurfaceOneColor( drawSurf );
+	}
 
 	if ( r_showTris.GetInteger() == 3 ) {
 		GL_Cull( CT_FRONT_SIDED );
-	}
-}
-
-/*
-=====================
-RB_ShowSurfaceInfo
-
-Debugging tool
-=====================
-*/
-static void RB_ShowSurfaceInfo( drawSurf_t **drawSurfs, int numDrawSurfs ) {
-	modelTrace_t mt;
-	idVec3 start, end;
-	
-	if ( !r_showSurfaceInfo.GetBool() ) {
-		return;
-	}
-
-	// start far enough away that we don't hit the player model
-	start = tr.primaryView->renderView.vieworg + tr.primaryView->renderView.viewaxis[0] * 16;
-	end = start + tr.primaryView->renderView.viewaxis[0] * 1000.0f;
-	if ( !tr.primaryWorld->Trace( mt, start, end, 0.0f, false ) ) {
-		return;
-	}
-
-	qglDisable( GL_TEXTURE_2D );
-
-	GL_Color( 1, 1, 1 );
-
-	static float scale = -1;
-	static float bias = -2;
-
-	GL_PolygonOffset( scale, bias );
-	GL_State( GLS_DEPTHFUNC_ALWAYS | GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET );
-
-	idVec3	trans[3];
-	float	matrix[16];
-
-	// transform the object verts into global space
-	R_AxisToModelMatrix( mt.entity->axis, mt.entity->origin, matrix );
-
-	tr.primaryWorld->DrawText( mt.entity->hModel->Name(), mt.point + tr.primaryView->renderView.viewaxis[2] * 12,
-		0.35f, colorRed, tr.primaryView->renderView.viewaxis );
-	tr.primaryWorld->DrawText( mt.material->GetName(), mt.point, 
-		0.35f, colorBlue, tr.primaryView->renderView.viewaxis );
-}
-
-/*
-=====================
-RB_ShowViewEntitys
-
-Debugging tool
-=====================
-*/
-static void RB_ShowViewEntitys( viewEntity_t *vModels ) {
-	if ( !r_showViewEntitys.GetBool() ) {
-		return;
-	}
-	if ( r_showViewEntitys.GetInteger() >= 2 ) {
-		common->Printf( "view entities: " );
-		for ( const viewEntity_t * vModel = vModels; vModel; vModel = vModel->next ) {
-			if ( vModel->entityDef->IsDirectlyVisible() ) {
-				common->Printf( "<%i> ", vModel->entityDef->index );
-			} else {
-				common->Printf( "%i ", vModel->entityDef->index );
-			}
-		}
-		common->Printf( "\n" );
-	}
-
-	renderProgManager.BindShader_Color();
-
-	GL_Color( 1, 1, 1 );
-	GL_State( GLS_DEPTHFUNC_ALWAYS | GLS_POLYMODE_LINE );
-	GL_Cull( CT_TWO_SIDED );
-
-	for ( const viewEntity_t * vModel = vModels; vModel; vModel = vModel->next ) {
-		idBounds	b;
-
-		qglLoadMatrixf( vModel->modelViewMatrix );
-
-		const idRenderEntityLocal * edef = vModel->entityDef;
-		if ( !edef ) {
-			continue;
-		}
-
-		// draw the model bounds in white if directly visible,
-		// or, blue if it is only-for-sahdow
-		idVec4	color;
-		if ( edef->IsDirectlyVisible() ) {
-			color.Set( 1, 1, 1, 1 );
-		} else {
-			color.Set( 0, 0, 1, 1 );
-		}
-		GL_Color( color[0], color[1], color[2] );
-		RB_DrawBounds( edef->localReferenceBounds );
-
-		// transform the upper bounds corner into global space
-		if ( r_showViewEntitys.GetInteger() >= 2 ) {
-			idVec3 corner;
-			R_LocalPointToGlobal( vModel->modelMatrix, edef->localReferenceBounds[1], corner );
-
-			tr.primaryWorld->DrawText( 
-				va( "%i:%s", edef->index, edef->parms.hModel->Name() ), 
-				corner,
-				0.25f, color, 
-				tr.primaryView->renderView.viewaxis );
-		}
-
-		// draw the actual bounds in yellow if different
-		if ( r_showViewEntitys.GetInteger() >= 3 ) {
-			GL_Color( 1, 1, 0 );
-			// FIXME: cannot instantiate a dynamic model from the renderer back-end
-			idRenderModel *model = R_EntityDefDynamicModel( vModel->entityDef );
-			if ( !model ) {
-				continue;	// particles won't instantiate without a current view
-			}
-			b = model->Bounds( &vModel->entityDef->parms );
-			if ( b != vModel->entityDef->localReferenceBounds ) {
-				RB_DrawBounds( b );
-			}
-		}
-	}
-}
-
-/*
-=====================
-RB_ShowNormals
-
-Debugging tool
-=====================
-*/
-static void RB_ShowNormals( drawSurf_t **drawSurfs, int numDrawSurfs ) {
-	int			i, j;
-	drawSurf_t	*drawSurf;
-	idVec3		end;
-	const srfTriangles_t	*tri;
-	float		size;
-	bool		showNumbers;
-	idVec3		pos;
-
-	if ( r_showNormals.GetFloat() == 0.0f ) {
-		return;
-	}
-
-	if ( !r_debugLineDepthTest.GetBool() ) {
-		GL_State( GLS_POLYMODE_LINE | GLS_DEPTHFUNC_ALWAYS );
-	} else {
-		GL_State( GLS_POLYMODE_LINE );
-	}
-
-	size = r_showNormals.GetFloat();
-	if ( size < 0.0f ) {
-		size = -size;
-		showNumbers = true;
-	} else {
-		showNumbers = false;
-	}
-
-	for ( i = 0; i < numDrawSurfs; i++ ) {
-		drawSurf = drawSurfs[i];
-
-		RB_SimpleSurfaceSetup( drawSurf );
-
-		tri = drawSurf->frontEndGeo;
-		if ( !tri->verts ) {
-			continue;
-		}
-
-		qglBegin( GL_LINES );
-		for ( j = 0; j < tri->numVerts; j++ ) {
-			const idVec3 normal = tri->verts[j].GetNormal();
-			const idVec3 tangent = tri->verts[j].GetTangent();
-			const idVec3 bitangent = tri->verts[j].GetBiTangent();
-			GL_Color( 0, 0, 1 );
-			qglVertex3fv( tri->verts[j].xyz.ToFloatPtr() );
-			VectorMA( tri->verts[j].xyz, size, normal, end );
-			qglVertex3fv( end.ToFloatPtr() );
-
-			GL_Color( 1, 0, 0 );
-			qglVertex3fv( tri->verts[j].xyz.ToFloatPtr() );
-			VectorMA( tri->verts[j].xyz, size, tangent, end );
-			qglVertex3fv( end.ToFloatPtr() );
-
-			GL_Color( 0, 1, 0 );
-			qglVertex3fv( tri->verts[j].xyz.ToFloatPtr() );
-			VectorMA( tri->verts[j].xyz, size, bitangent, end );
-			qglVertex3fv( end.ToFloatPtr() );
-		}
-		qglEnd();
-	}
-
-	if ( showNumbers ) {
-		RB_SimpleWorldSetup();
-		for ( i = 0; i < numDrawSurfs; i++ ) {
-			drawSurf = drawSurfs[i];
-			tri = drawSurf->frontEndGeo;
-			if ( !tri->verts ) {
-				continue;
-			}
-			
-			for ( j = 0; j < tri->numVerts; j++ ) {
-				const idVec3 normal = tri->verts[j].GetNormal();
-				const idVec3 tangent = tri->verts[j].GetTangent();
-				R_LocalPointToGlobal( drawSurf->space->modelMatrix, tri->verts[j].xyz + tangent + normal * 0.2f, pos );
-				RB_DrawText( va( "%d", j ), pos, 0.01f, colorWhite, backEnd.viewDef->renderView.viewaxis, 1 );
-			}
-
-			for ( j = 0; j < tri->numIndexes; j += 3 ) {
-				const idVec3 normal = tri->verts[ tri->indexes[ j + 0 ] ].GetNormal();
-				R_LocalPointToGlobal( drawSurf->space->modelMatrix, ( tri->verts[ tri->indexes[ j + 0 ] ].xyz + tri->verts[ tri->indexes[ j + 1 ] ].xyz + tri->verts[ tri->indexes[ j + 2 ] ].xyz ) * ( 1.0f / 3.0f ) + normal * 0.2f, pos );
-				RB_DrawText( va( "%d", j / 3 ), pos, 0.01f, colorCyan, backEnd.viewDef->renderView.viewaxis, 1 );
-			}
-		}
 	}
 }
 
@@ -663,10 +373,10 @@ static void RB_ShowLights() {
 	}
 
 	GL_State( GLS_DEFAULT );
+	RB_ResetViewScissor();
 
-	// we use the 'vLight->invProjectMVPMatrix'
-	qglMatrixMode( GL_PROJECTION );
-	qglLoadIdentity(); 
+	// the volumes are drawn with 'vLight->inverseBaseLightProject'
+	backEnd.currentSpace = NULL;
 
 	renderProgManager.BindShader_Color();
 
@@ -702,33 +412,6 @@ static void RB_ShowLights() {
 	}
 
 	common->Printf( " = %i total\n", count );
-
-	// set back the default projection matrix
-	qglMatrixMode( GL_PROJECTION );
-	qglLoadMatrixf( backEnd.viewDef->projectionMatrix );
-	qglMatrixMode( GL_MODELVIEW );
-	qglLoadIdentity();
-}
-
-/*
-=====================
-RB_ShowPortals
-
-Debugging tool, won't work correctly with SMP or when mirrors are present
-=====================
-*/
-static void RB_ShowPortals() {
-	if ( !r_showPortals.GetBool() ) {
-		return;
-	}
-
-	// all portals are expressed in world coordinates
-	RB_SimpleWorldSetup();
-
-	renderProgManager.BindShader_Color();
-	GL_State( GLS_DEPTHFUNC_ALWAYS );
-
-	((idRenderWorldLocal *)backEnd.viewDef->renderWorld)->ShowPortals();
 }
 
 /*
@@ -812,18 +495,18 @@ float RB_DrawTextLength( const char *text, float scale, int len ) {
 			spacing = simplex[charIndex][1];
 			index = 2;
 
-			while( index - 2 < num ) {   
-				if ( simplex[charIndex][index] < 0) {  
+			while( index - 2 < num ) {
+				if ( simplex[charIndex][index] < 0) {
 					index++;
-					continue; 
-				} 
+					continue;
+				}
 				index += 2;
-				if ( simplex[charIndex][index] < 0) {  
+				if ( simplex[charIndex][index] < 0) {
 					index++;
-					continue; 
-				} 
-			}   
-			textLen += spacing * scale;  
+					continue;
+				}
+			}
+			textLen += spacing * scale;
 		}
 	}
 	return textLen;
@@ -831,25 +514,20 @@ float RB_DrawTextLength( const char *text, float scale, int len ) {
 
 /*
 ================
-RB_DrawText
+RB_TextStrokes
 
+  Calls stroke( p1, p2 ) for every line of the text in the simplex font.
   oriented on the viewaxis
   align can be 0-left, 1-center (default), 2-right
 ================
 */
-static void RB_DrawText( const char *text, const idVec3 &origin, float scale, const idVec4 &color, const idMat3 &viewAxis, const int align ) {
-	renderProgManager.BindShader_Color();
-
-
-
+template< typename _stroke_ >
+static void RB_TextStrokes( const char *text, const idVec3 &origin, float scale, const idMat3 &viewAxis, const int align, _stroke_ && stroke ) {
 	int i, j, len, num, index, charIndex, line;
 	float textLen = 1.0f, spacing = 1.0f;
 	idVec3 org, p1, p2;
 
 	if ( text && *text ) {
-		qglBegin( GL_LINES );
-		qglColor3fv( color.ToFloatPtr() );
-
 		if ( text[0] == '\n' ) {
 			line = 1;
 		} else {
@@ -888,9 +566,9 @@ static void RB_DrawText( const char *text, const idVec3 &origin, float scale, co
 			index = 2;
 
 			while( index - 2 < num ) {
-				if ( simplex[charIndex][index] < 0) {  
+				if ( simplex[charIndex][index] < 0) {
 					index++;
-					continue; 
+					continue;
 				}
 				p1 = org + scale * simplex[charIndex][index] * -viewAxis[1] + scale * simplex[charIndex][index+1] * viewAxis[2];
 				index += 2;
@@ -900,53 +578,9 @@ static void RB_DrawText( const char *text, const idVec3 &origin, float scale, co
 				}
 				p2 = org + scale * simplex[charIndex][index] * -viewAxis[1] + scale * simplex[charIndex][index+1] * viewAxis[2];
 
-				qglVertex3fv( p1.ToFloatPtr() );
-				qglVertex3fv( p2.ToFloatPtr() );
+				stroke( p1, p2 );
 			}
 			org -= viewAxis[1] * ( spacing * scale );
-		}
-
-		qglEnd();
-	}
-}
-
-/*
-================
-RB_ShowDebugText
-================
-*/
-void RB_ShowDebugText() {
-	int			i;
-	debugText_t	*text;
-
-	if ( !rb_numDebugText ) {
-		return;
-	}
-
-	// all lines are expressed in world coordinates
-	RB_SimpleWorldSetup();
-
-	if ( !r_debugLineDepthTest.GetBool() ) {
-		GL_State( GLS_POLYMODE_LINE | GLS_DEPTHFUNC_ALWAYS );
-	} else {
-		GL_State( GLS_POLYMODE_LINE );
-	}
-
-	text = rb_debugText;
-	for ( i = 0; i < rb_numDebugText; i++, text++ ) {
-		if ( !text->depthTest ) {
-			RB_DrawText( text->text, text->origin, text->scale, text->color, text->viewAxis, text->align );
-		}
-	}
-
-	if ( !r_debugLineDepthTest.GetBool() ) {
-		GL_State( GLS_POLYMODE_LINE );
-	}
-
-	text = rb_debugText;
-	for ( i = 0; i < rb_numDebugText; i++, text++ ) {
-		if ( text->depthTest ) {
-			RB_DrawText( text->text, text->origin, text->scale, text->color, text->viewAxis, text->align );
 		}
 	}
 }
@@ -1002,60 +636,6 @@ void RB_AddDebugLine( const idVec4 &color, const idVec3 &start, const idVec3 &en
 
 /*
 ================
-RB_ShowDebugLines
-================
-*/
-void RB_ShowDebugLines() {
-	int			i;
-	debugLine_t	*line;
-
-	if ( !rb_numDebugLines ) {
-		return;
-	}
-
-	// all lines are expressed in world coordinates
-	RB_SimpleWorldSetup();
-
-	if ( !r_debugLineDepthTest.GetBool() ) {
-		GL_State( GLS_POLYMODE_LINE | GLS_DEPTHFUNC_ALWAYS );
-	} else {
-		GL_State( GLS_POLYMODE_LINE );
-	}
-
-	qglBegin( GL_LINES );
-
-	line = rb_debugLines;
-	for ( i = 0; i < rb_numDebugLines; i++, line++ ) {
-		if ( !line->depthTest ) {
-			qglColor3fv( line->rgb.ToFloatPtr() );
-			qglVertex3fv( line->start.ToFloatPtr() );
-			qglVertex3fv( line->end.ToFloatPtr() );
-		}
-	}
-	qglEnd();
-
-	if ( !r_debugLineDepthTest.GetBool() ) {
-		GL_State( GLS_POLYMODE_LINE );
-	}
-
-	qglBegin( GL_LINES );
-
-	line = rb_debugLines;
-	for ( i = 0; i < rb_numDebugLines; i++, line++ ) {
-		if ( line->depthTest ) {
-			qglColor4fv( line->rgb.ToFloatPtr() );
-			qglVertex3fv( line->start.ToFloatPtr() );
-			qglVertex3fv( line->end.ToFloatPtr() );
-		}
-	}
-
-	qglEnd();
-
-	GL_State( GLS_DEFAULT );
-}
-
-/*
-================
 RB_ClearDebugPolygons
 ================
 */
@@ -1104,53 +684,488 @@ void RB_AddDebugPolygon( const idVec4 &color, const idWinding &winding, const in
 }
 
 /*
+===============================================================================
+
+	Lines of one frame, added by the front end (game thread, outside jobs)
+
+===============================================================================
+*/
+
+/*
 ================
-RB_ShowDebugPolygons
+R_AddFrameDebugLine
+
+Drawn on top of the scene unless r_debugLineDepthTest is set, like a debug line without depth test.
 ================
 */
-void RB_ShowDebugPolygons() {
-	int				i, j;
-	debugPolygon_t	*poly;
+void R_AddFrameDebugLine( const idVec4 & color, const idVec3 & start, const idVec3 & end ) {
+	debugLine_t & line = rb_frameDebugLines.Alloc();
+	line.rgb = color;
+	line.start = start;
+	line.end = end;
+	line.depthTest = false;
+	line.lifeTime = 0;
+}
 
-	if ( !rb_numDebugPolygons ) {
+/*
+================
+R_AddFrameDebugText
+================
+*/
+void R_AddFrameDebugText( const char * text, const idVec3 & origin, float scale, const idVec4 & color, const idMat3 & viewAxis, const int align ) {
+	RB_TextStrokes( text, origin, scale, viewAxis, align, [&color]( const idVec3 & p1, const idVec3 & p2 ) {
+		R_AddFrameDebugLine( color, p1, p2 );
+	} );
+}
+
+/*
+================
+R_AddFrameDebugBounds
+
+The edges of a box in the space of modelMatrix.
+================
+*/
+static void R_AddFrameDebugBounds( const idVec4 & color, const idBounds & bounds, const float modelMatrix[16] ) {
+	if ( bounds.IsCleared() ) {
 		return;
 	}
 
-	// all lines are expressed in world coordinates
-	RB_SimpleWorldSetup();
+	idVec3 v[8];
+	for ( int i = 0; i < 8; i++ ) {
+		const idVec3 local( bounds[(i^(i>>1))&1][0], bounds[(i>>1)&1][1], bounds[(i>>2)&1][2] );
+		R_LocalPointToGlobal( modelMatrix, local, v[i] );
+	}
+	for ( int i = 0; i < 4; i++ ) {
+		R_AddFrameDebugLine( color, v[i], v[(i+1)&3] );
+		R_AddFrameDebugLine( color, v[4+i], v[4+((i+1)&3)] );
+		R_AddFrameDebugLine( color, v[i], v[4+i] );
+	}
+}
 
-	qglDisable( GL_TEXTURE_2D );
+/*
+=====================
+R_ShowSurfaceInfo
 
-	if ( r_debugPolygonFilled.GetBool() ) {
-		GL_State( GLS_POLYGON_OFFSET | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHMASK );
-		GL_PolygonOffset( -1, -2 );
-	} else {
-		GL_State( GLS_POLYGON_OFFSET | GLS_POLYMODE_LINE );
-		GL_PolygonOffset( -1, -2 );
+Debugging tool
+=====================
+*/
+static void R_ShowSurfaceInfo( const viewDef_t * viewDef ) {
+	if ( !r_showSurfaceInfo.GetBool() ) {
+		return;
 	}
 
-	poly = rb_debugPolygons;
-	for ( i = 0; i < rb_numDebugPolygons; i++, poly++ ) {
-//		if ( !poly->depthTest ) {
+	const renderView_t & renderView = viewDef->renderView;
 
-			qglColor4fv( poly->rgb.ToFloatPtr() );
+	// start far enough away that we don't hit the player model
+	modelTrace_t mt;
+	const idVec3 start = renderView.vieworg + renderView.viewaxis[0] * 16;
+	const idVec3 end = start + renderView.viewaxis[0] * 1000.0f;
+	if ( !viewDef->renderWorld->Trace( mt, start, end, 0.0f, false ) ) {
+		return;
+	}
 
-			qglBegin( GL_POLYGON );
+	if ( mt.entity != NULL && mt.entity->hModel != NULL ) {
+		R_AddFrameDebugText( mt.entity->hModel->Name(), mt.point + renderView.viewaxis[2] * 12,
+			0.35f, colorRed, renderView.viewaxis, 1 );
+	}
+	if ( mt.material != NULL ) {
+		R_AddFrameDebugText( mt.material->GetName(), mt.point,
+			0.35f, colorBlue, renderView.viewaxis, 1 );
+	}
+}
 
-			for ( j = 0; j < poly->winding.GetNumPoints(); j++) {
-				qglVertex3fv( poly->winding[j].ToFloatPtr() );
+/*
+=====================
+R_ShowViewEntitys
+
+Debugging tool
+=====================
+*/
+static void R_ShowViewEntitys( const viewDef_t * viewDef ) {
+	if ( !r_showViewEntitys.GetBool() ) {
+		return;
+	}
+	if ( r_showViewEntitys.GetInteger() >= 2 ) {
+		common->Printf( "view entities: " );
+		for ( const viewEntity_t * vModel = viewDef->viewEntitys; vModel; vModel = vModel->next ) {
+			if ( vModel->entityDef == NULL ) {
+				continue;	// the space of a gui
+			}
+			if ( vModel->entityDef->IsDirectlyVisible() ) {
+				common->Printf( "<%i> ", vModel->entityDef->index );
+			} else {
+				common->Printf( "%i ", vModel->entityDef->index );
+			}
+		}
+		common->Printf( "\n" );
+	}
+
+	for ( const viewEntity_t * vModel = viewDef->viewEntitys; vModel; vModel = vModel->next ) {
+		idRenderEntityLocal * edef = vModel->entityDef;
+		if ( !edef ) {
+			continue;
+		}
+
+		// draw the model bounds in white if directly visible,
+		// or, blue if it is only-for-sahdow
+		const idVec4 & color = edef->IsDirectlyVisible() ? colorWhite : colorBlue;
+		R_AddFrameDebugBounds( color, edef->localReferenceBounds, vModel->modelMatrix );
+
+		// transform the upper bounds corner into global space
+		if ( r_showViewEntitys.GetInteger() >= 2 ) {
+			idVec3 corner;
+			R_LocalPointToGlobal( vModel->modelMatrix, edef->localReferenceBounds[1], corner );
+
+			// a def drawn through its callback has no model of its own
+			R_AddFrameDebugText(
+				va( "%i:%s", edef->index, ( edef->parms.hModel != NULL ) ? edef->parms.hModel->Name() : "<callback>" ),
+				corner,
+				0.25f, color,
+				viewDef->renderView.viewaxis, 1 );
+		}
+
+		// draw the actual bounds in yellow if different
+		if ( r_showViewEntitys.GetInteger() >= 3 ) {
+			idRenderModel *model = R_EntityDefDynamicModel( edef );
+			if ( !model ) {
+				continue;	// particles won't instantiate without a current view
+			}
+			const idBounds b = model->Bounds( &edef->parms );
+			if ( b != edef->localReferenceBounds ) {
+				R_AddFrameDebugBounds( colorYellow, b, vModel->modelMatrix );
+			}
+		}
+	}
+}
+
+/*
+=====================
+R_ShowNormals
+
+Debugging tool
+=====================
+*/
+static void R_ShowNormals( const viewDef_t * viewDef ) {
+	if ( r_showNormals.GetFloat() == 0.0f ) {
+		return;
+	}
+
+	float size = r_showNormals.GetFloat();
+	bool showNumbers = false;
+	if ( size < 0.0f ) {
+		size = -size;
+		showNumbers = true;
+	}
+
+	for ( int i = 0; i < viewDef->numDrawSurfs; i++ ) {
+		const drawSurf_t * drawSurf = viewDef->drawSurfs[i];
+		const srfTriangles_t * tri = drawSurf->frontEndGeo;
+		if ( tri == NULL || tri->verts == NULL ) {
+			continue;
+		}
+		const float * modelMatrix = drawSurf->space->modelMatrix;
+
+		for ( int j = 0; j < tri->numVerts; j++ ) {
+			const idVec3 & xyz = tri->verts[j].xyz;
+			const idVec3 normal = tri->verts[j].GetNormal();
+			const idVec3 tangent = tri->verts[j].GetTangent();
+			const idVec3 bitangent = tri->verts[j].GetBiTangent();
+
+			idVec3 start, end;
+			R_LocalPointToGlobal( modelMatrix, xyz, start );
+
+			R_LocalPointToGlobal( modelMatrix, xyz + size * normal, end );
+			R_AddFrameDebugLine( colorBlue, start, end );
+
+			R_LocalPointToGlobal( modelMatrix, xyz + size * tangent, end );
+			R_AddFrameDebugLine( colorRed, start, end );
+
+			R_LocalPointToGlobal( modelMatrix, xyz + size * bitangent, end );
+			R_AddFrameDebugLine( colorGreen, start, end );
+		}
+
+		if ( showNumbers ) {
+			idVec3 pos;
+			for ( int j = 0; j < tri->numVerts; j++ ) {
+				const idVec3 normal = tri->verts[j].GetNormal();
+				const idVec3 tangent = tri->verts[j].GetTangent();
+				R_LocalPointToGlobal( modelMatrix, tri->verts[j].xyz + tangent + normal * 0.2f, pos );
+				R_AddFrameDebugText( va( "%d", j ), pos, 0.01f, colorWhite, viewDef->renderView.viewaxis, 1 );
 			}
 
-			qglEnd();
-//		}
+			for ( int j = 0; j < tri->numIndexes; j += 3 ) {
+				const idVec3 normal = tri->verts[ tri->indexes[ j + 0 ] ].GetNormal();
+				R_LocalPointToGlobal( modelMatrix, ( tri->verts[ tri->indexes[ j + 0 ] ].xyz + tri->verts[ tri->indexes[ j + 1 ] ].xyz + tri->verts[ tri->indexes[ j + 2 ] ].xyz ) * ( 1.0f / 3.0f ) + normal * 0.2f, pos );
+				R_AddFrameDebugText( va( "%d", j / 3 ), pos, 0.01f, colorCyan, viewDef->renderView.viewaxis, 1 );
+			}
+		}
+	}
+}
+
+/*
+=====================
+R_AddViewDebugTools
+
+The tools that only add lines and text. R_RenderView calls it for the main view, after the
+draw surfaces are sorted and before a subview changes tr.viewCount.
+=====================
+*/
+void R_AddViewDebugTools( const viewDef_t * viewDef ) {
+	if ( viewDef->isSubview ) {
+		return;
+	}
+	if ( r_showPortals.GetBool() ) {
+		static_cast<idRenderWorldLocal *>( viewDef->renderWorld )->ShowPortals();
+	}
+	R_ShowSurfaceInfo( viewDef );
+	R_ShowNormals( viewDef );
+	R_ShowViewEntitys( viewDef );
+}
+
+/*
+===============================================================================
+
+	The snapshot: stores -> vertex cache -> backEnd.debugBatches
+
+===============================================================================
+*/
+
+// indexes are 16 bit, so a batch ends at this many vertices
+static const int MAX_DEBUG_BATCH_VERTS = 65536;
+static const int INDEXES_PER_CACHE_BLOCK = INDEX_CACHE_ALIGN / static_cast<int>( sizeof( triIndex_t ) );
+static_assert( sizeof( idDrawVert ) % VERTEX_CACHE_ALIGN == 0 );
+
+class idDebugBatchBuilder {
+public:
+	void	Begin( primitive_t topology, uint64 stateBits );
+	void	Line( const idVec3 & start, const idVec3 & end, dword color );
+	void	Polygon( const idWinding & winding, dword color );
+	void	Flush();
+	void	FreeMemory() { verts.Clear(); indexes.Clear(); }
+
+private:
+	int		AddVert( const idVec3 & xyz, dword color );
+
+	idList<idDrawVert>	verts { 8192 };
+	idList<triIndex_t>	indexes { 8192 };
+	primitive_t			topology = primitive_t::LINES;
+	uint64				stateBits = 0;
+};
+
+static idDebugBatchBuilder rb_debugBatchBuilder;
+
+/*
+================
+idDebugBatchBuilder::Begin
+
+Geometry with the same topology and state as the batch before joins it.
+================
+*/
+void idDebugBatchBuilder::Begin( primitive_t topology_, uint64 stateBits_ ) {
+	if ( topology != topology_ || stateBits != stateBits_ ) {
+		Flush();
+		topology = topology_;
+		stateBits = stateBits_;
+	}
+}
+
+/*
+================
+idDebugBatchBuilder::AddVert
+================
+*/
+int idDebugBatchBuilder::AddVert( const idVec3 & xyz, dword color ) {
+	idDrawVert & vert = verts.Alloc();
+	vert.Clear();
+	vert.xyz = xyz;
+	vert.SetColor( color );
+	return verts.Num() - 1;
+}
+
+/*
+================
+idDebugBatchBuilder::Line
+================
+*/
+void idDebugBatchBuilder::Line( const idVec3 & start, const idVec3 & end, dword color ) {
+	if ( verts.Num() + 2 > MAX_DEBUG_BATCH_VERTS ) {
+		Flush();
+	}
+	indexes.Append( static_cast<triIndex_t>( AddVert( start, color ) ) );
+	indexes.Append( static_cast<triIndex_t>( AddVert( end, color ) ) );
+}
+
+/*
+================
+idDebugBatchBuilder::Polygon
+
+A triangle fan, or the outline when the batch is made of lines.
+================
+*/
+void idDebugBatchBuilder::Polygon( const idWinding & winding, dword color ) {
+	const int numPoints = winding.GetNumPoints();
+	if ( topology == primitive_t::LINES ) {
+		for ( int i = 0; i < numPoints && numPoints >= 2; i++ ) {
+			Line( winding[i].ToVec3(), winding[( i + 1 ) % numPoints].ToVec3(), color );
+		}
+		return;
+	}
+	if ( numPoints < 3 || numPoints > MAX_DEBUG_BATCH_VERTS ) {
+		return;
+	}
+	if ( verts.Num() + numPoints > MAX_DEBUG_BATCH_VERTS ) {
+		Flush();
+	}
+	const int first = verts.Num();
+	for ( int i = 0; i < numPoints; i++ ) {
+		AddVert( winding[i].ToVec3(), color );
+	}
+	for ( int i = 2; i < numPoints; i++ ) {
+		indexes.Append( static_cast<triIndex_t>( first ) );
+		indexes.Append( static_cast<triIndex_t>( first + i - 1 ) );
+		indexes.Append( static_cast<triIndex_t>( first + i ) );
+	}
+}
+
+/*
+================
+idDebugBatchBuilder::Flush
+
+Copies the batch into the frame set of the vertex cache. A batch that does not fit any more is
+dropped: running out of the cache is an error for the scene, not for a debug tool.
+================
+*/
+void idDebugBatchBuilder::Flush() {
+	const int numIndexes = indexes.Num();
+	if ( numIndexes > 0 && backEnd.numDebugBatches < MAX_DEBUG_BATCHES ) {
+		// the cache copies whole 16 byte blocks
+		while ( ( indexes.Num() % INDEXES_PER_CACHE_BLOCK ) != 0 ) {
+			indexes.Append( 0 );
+		}
+		const int vertBytes = verts.Num() * static_cast<int>( sizeof( idDrawVert ) );
+		const int indexBytes = indexes.Num() * static_cast<int>( sizeof( triIndex_t ) );
+
+		geoBufferSet_t & frameSet = vertexCache.frameData[vertexCache.listNum];
+		if ( frameSet.vertexMemUsed.GetValue() + vertBytes <= frameSet.vertexBuffer.GetSize() &&
+				frameSet.indexMemUsed.GetValue() + indexBytes <= frameSet.indexBuffer.GetSize() ) {
+			debugBatch_t & batch = backEnd.debugBatches[backEnd.numDebugBatches++];
+			batch.vertexCache = vertexCache.AllocVertex( verts.Ptr(), vertBytes );
+			batch.indexCache = vertexCache.AllocIndex( indexes.Ptr(), indexBytes );
+			batch.numIndexes = numIndexes;
+			batch.topology = topology;
+			batch.stateBits = stateBits;
+		}
+	}
+	verts.SetNum( 0 );
+	indexes.SetNum( 0 );
+}
+
+/*
+================
+RB_SnapshotDebugGeometry
+
+Main thread, at the frame sync point before vertexCache.BeginBackEnd(): the game thread is parked,
+so the stores are whole. With empty stores this is four compares.
+================
+*/
+void RB_SnapshotDebugGeometry() {
+	backEnd.numDebugBatches = 0;
+
+	if ( rb_numDebugLines == 0 && rb_numDebugText == 0 && rb_numDebugPolygons == 0 && rb_frameDebugLines.Num() == 0 ) {
+		return;
 	}
 
-	GL_State( GLS_DEFAULT );
+	idDebugBatchBuilder & builder = rb_debugBatchBuilder;
 
+	// lines are drawn as lines, so GLS_POLYMODE_LINE is not part of their state
+	const uint64 onTopBits = r_debugLineDepthTest.GetBool() ? GLS_DEFAULT : GLS_DEPTHFUNC_ALWAYS;
+	const uint64 depthTestBits = GLS_DEFAULT;
+
+	// lines without the depth test are opaque whatever their alpha says
+	const auto opaque = []( const idVec4 & rgb ) { return PackColor( idVec4( rgb.x, rgb.y, rgb.z, 1.0f ) ); };
+
+	for ( int pass = 0; pass < 2; pass++ ) {
+		const bool depthTest = ( pass == 1 );
+		builder.Begin( primitive_t::LINES, depthTest ? depthTestBits : onTopBits );
+
+		const debugLine_t * line = rb_debugLines;
+		for ( int i = 0; i < rb_numDebugLines; i++, line++ ) {
+			if ( line->depthTest == depthTest ) {
+				builder.Line( line->start, line->end, depthTest ? PackColor( line->rgb ) : opaque( line->rgb ) );
+			}
+		}
+		if ( !depthTest ) {
+			for ( int i = 0; i < rb_frameDebugLines.Num(); i++ ) {
+				const debugLine_t & frameLine = rb_frameDebugLines[i];
+				builder.Line( frameLine.start, frameLine.end, opaque( frameLine.rgb ) );
+			}
+		}
+	}
+	rb_frameDebugLines.SetNum( 0 );
+
+	for ( int pass = 0; pass < 2; pass++ ) {
+		const bool depthTest = ( pass == 1 );
+		builder.Begin( primitive_t::LINES, depthTest ? depthTestBits : onTopBits );
+
+		const debugText_t * text = rb_debugText;
+		for ( int i = 0; i < rb_numDebugText; i++, text++ ) {
+			if ( text->depthTest == depthTest ) {
+				const dword color = opaque( text->color );
+				RB_TextStrokes( text->text, text->origin, text->scale, text->viewAxis, text->align, [&builder, color]( const idVec3 & p1, const idVec3 & p2 ) {
+					builder.Line( p1, p2, color );
+				} );
+			}
+		}
+	}
+
+	// polygon offset does not move lines, so the outlines are plain depth tested lines
 	if ( r_debugPolygonFilled.GetBool() ) {
-		qglDisable( GL_POLYGON_OFFSET_FILL );
+		builder.Begin( primitive_t::TRIANGLES, GLS_POLYGON_OFFSET | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHMASK );
 	} else {
-		qglDisable( GL_POLYGON_OFFSET_LINE );
+		builder.Begin( primitive_t::LINES, depthTestBits );
+	}
+	const debugPolygon_t * poly = rb_debugPolygons;
+	for ( int i = 0; i < rb_numDebugPolygons; i++, poly++ ) {
+		builder.Polygon( poly->winding, PackColor( poly->rgb ) );
+	}
+
+	builder.Flush();
+}
+
+/*
+================
+RB_DrawDebugBatches
+
+The debug lines, text and polygons of the frame, all in world space.
+================
+*/
+static void RB_DrawDebugBatches() {
+	if ( backEnd.numDebugBatches == 0 ) {
+		return;
+	}
+
+	RB_ResetViewScissor();
+
+	RB_SetMVP( backEnd.viewDef->worldSpace.mvp );
+	backEnd.currentSpace = &backEnd.viewDef->worldSpace;
+
+	GL_Cull( CT_TWO_SIDED );
+	GL_Color( 1.0f, 1.0f, 1.0f, 1.0f );
+	RB_SetTextureColorParms( true );
+	renderProgManager.BindShader_TextureVertexColor();
+
+	GL_PolygonOffset( -1.0f, -2.0f );
+
+	for ( int i = 0; i < backEnd.numDebugBatches; i++ ) {
+		const debugBatch_t & batch = backEnd.debugBatches[i];
+
+		GL_State( batch.stateBits );
+
+		drawSurf_t surf = {};
+		surf.ambientCache = batch.vertexCache;
+		surf.indexCache = batch.indexCache;
+		surf.numIndexes = batch.numIndexes;
+		RB_DrawElementsWithCounters( &surf, batch.topology );
 	}
 
 	GL_State( GLS_DEFAULT );
@@ -1166,23 +1181,19 @@ void RB_ShowCenterOfProjection() {
 		return;
 	}
 
+	GL_State( GLS_DEFAULT );
+
 	const int w = backEnd.viewDef->scissor.GetWidth();
 	const int h = backEnd.viewDef->scissor.GetHeight();
-	qglClearColor( 1, 0, 0, 1 );
 	for ( float f = 0.0f ; f <= 1.0f ; f += 0.125f ) {
-		qglScissor( w * f - 1 , 0, 3, h );
-		qglClear( GL_COLOR_BUFFER_BIT );
-		qglScissor( 0, h * f - 1 , w, 3 );
-		qglClear( GL_COLOR_BUFFER_BIT );
+		RB_ClearRect( static_cast<int>( w * f - 1 ), 0, 3, h, colorRed );
+		RB_ClearRect( 0, static_cast<int>( h * f - 1 ), w, 3, colorRed );
 	}
-	qglClearColor( 0, 1, 0, 1 );
 	float f = 0.5f;
-	qglScissor( w * f - 1 , 0, 3, h );
-	qglClear( GL_COLOR_BUFFER_BIT );
-	qglScissor( 0, h * f - 1 , w, 3 );
-	qglClear( GL_COLOR_BUFFER_BIT );
+	RB_ClearRect( static_cast<int>( w * f - 1 ), 0, 3, h, colorGreen );
+	RB_ClearRect( 0, static_cast<int>( h * f - 1 ), w, 3, colorGreen );
 
-	qglScissor( 0, 0, w, h );
+	RB_RestoreScissor();
 }
 
 /*
@@ -1197,27 +1208,29 @@ void RB_ShowLines() {
 		return;
 	}
 
-	glEnable( GL_SCISSOR_TEST );
+	GL_State( GLS_DEFAULT );
+
+	idVec4 color;
 	if ( backEnd.viewDef->renderView.viewEyeBuffer == 0 ) {
-		glClearColor( 1, 0, 0, 1 );
+		color = colorRed;
 	} else if ( backEnd.viewDef->renderView.viewEyeBuffer == 1 ) {
-		glClearColor( 0, 1, 0, 1 );
+		color = colorGreen;
 	} else {
-		glClearColor( 0, 0, 1, 1 );
+		color = colorBlue;
 	}
 
 	const int start = ( r_showLines.GetInteger() > 2 );	// 1,3 = horizontal, 2,4 = vertical
 	if ( r_showLines.GetInteger() == 1 || r_showLines.GetInteger() == 3 ) {
 		for ( int i = start ; i < tr.GetHeight() ; i+=2 ) {
-			glScissor( 0, i, tr.GetWidth(), 1 );
-			glClear( GL_COLOR_BUFFER_BIT );
+			RB_ClearRect( 0, i, tr.GetWidth(), 1, color );
 		}
 	} else {
 		for ( int i = start ; i < tr.GetWidth() ; i+=2 ) {
-			glScissor( i, 0, 1, tr.GetHeight() );
-			glClear( GL_COLOR_BUFFER_BIT );
+			RB_ClearRect( i, 0, 1, tr.GetHeight(), color );
 		}
 	}
+
+	RB_RestoreScissor();
 }
 
 /*
@@ -1265,6 +1278,7 @@ void RB_TestImage() {
 
 	// Set State
 	GL_State( GLS_DEPTHFUNC_ALWAYS | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+	GL_Cull( CT_TWO_SIDED );
 
 	// Set Parms
 	float texS[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
@@ -1304,10 +1318,7 @@ void RB_TestImage() {
 	float projMatrixTranspose[16];
 	R_MatrixTranspose( finalOrtho, projMatrixTranspose );
 	renderProgManager.SetRenderParms( RENDERPARM_MVPMATRIX_X, projMatrixTranspose, 4 );
-	qglMatrixMode( GL_PROJECTION );
-	qglLoadMatrixf( finalOrtho );
-	qglMatrixMode( GL_MODELVIEW );
-	qglLoadIdentity();
+	backEnd.currentSpace = NULL;
 
 	// Set Color
 	GL_Color( 1, 1, 1, 1 );
@@ -1323,7 +1334,7 @@ void RB_TestImage() {
 		// Set Shader
 		renderProgManager.BindShader_Texture();
 	}
-	
+
 	// Draw!
 	RB_DrawElementsWithCounters( &backEnd.testImageSurface );
 }
@@ -1354,17 +1365,11 @@ void RB_RenderDebugTools( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 
 	RB_ShowLightCount();
 	RB_ShowTris( drawSurfs, numDrawSurfs );
-	RB_ShowSurfaceInfo( drawSurfs, numDrawSurfs );
-	RB_ShowNormals( drawSurfs, numDrawSurfs );
-	RB_ShowViewEntitys( backEnd.viewDef->viewEntitys );
 	RB_ShowLights();
 	RB_TestImage();
-	RB_ShowPortals();
 	RB_ShowCenterOfProjection();
 	RB_ShowLines();
-	RB_ShowDebugLines();
-	RB_ShowDebugText();
-	RB_ShowDebugPolygons();
+	RB_DrawDebugBatches();
 
 	renderLog.CloseMainBlock();
 }
@@ -1378,4 +1383,7 @@ void RB_ShutdownDebugTools() {
 	for ( int i = 0; i < MAX_DEBUG_POLYGONS; i++ ) {
 		rb_debugPolygons[i].winding.Clear();
 	}
+	rb_frameDebugLines.Clear();
+	rb_debugBatchBuilder.FreeMemory();
+	backEnd.numDebugBatches = 0;
 }

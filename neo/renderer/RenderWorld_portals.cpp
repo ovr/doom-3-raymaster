@@ -1016,7 +1016,8 @@ int idRenderWorldLocal::GetPortalState( qhandle_t portal ) {
 =====================
 idRenderWorldLocal::ShowPortals
 
-Debugging tool, won't work correctly with SMP or when mirrors are present
+Debugging tool: adds the portal outlines of the view just flooded as lines of the frame.
+Front end, right after the flood, while the areas still carry tr.viewCount.
 =====================
 */
 void idRenderWorldLocal::ShowPortals() {
@@ -1037,19 +1038,12 @@ void idRenderWorldLocal::ShowPortals() {
 				continue;
 			}
 
-			if ( portalAreas[ p->intoArea ].viewCount != tr.viewCount ) {
-				// red = can't see
-				GL_Color( 1, 0, 0 );
-			} else {
-				// green = see through
-				GL_Color( 0, 1, 0 );
-			}
+			// red = can't see, green = see through
+			const idVec4 & color = ( portalAreas[ p->intoArea ].viewCount != tr.viewCount ) ? colorRed : colorGreen;
 
-			qglBegin( GL_LINE_LOOP );
 			for ( j = 0; j < w->GetNumPoints(); j++ ) {
-				qglVertex3fv( (*w)[j].ToFloatPtr() );
+				R_AddFrameDebugLine( color, (*w)[j].ToVec3(), (*w)[ ( j + 1 ) % w->GetNumPoints() ].ToVec3() );
 			}
-			qglEnd();
 		}
 	}
 }
