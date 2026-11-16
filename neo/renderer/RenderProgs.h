@@ -191,7 +191,8 @@ public:
 	static const int	MAX_GLSL_USER_PARMS = 8;
 	int			GetGLSLCurrentProgram() const { return currentRenderProgram; }
 	void		SetUniformValue( const renderParm_t rp, const float * value );
-	void		CommitUniforms();
+	// the parm table a draw hands to the backend: MAX_RENDER_PARMS vectors
+	const idVec4 *	GetRenderParms() const { return glslUniforms.Ptr(); }
 	int			FindGLSLProgram( const char* name, int vIndex, int fIndex );
 	void		ZeroUniforms();
 

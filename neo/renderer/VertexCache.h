@@ -65,6 +65,9 @@ struct geoBufferSet_t {
 	byte *					mappedVertexBase;
 	byte *					mappedIndexBase;
 	byte *					mappedJointBase;
+	int						vertexMapStart;	// the first byte written since MapBuffer: what UnmapBuffer reports
+	int						indexMapStart;
+	int						jointMapStart;
 	idSysInterlockedInteger	indexMemUsed;
 	idSysInterlockedInteger	vertexMemUsed;
 	idSysInterlockedInteger	jointMemUsed;
@@ -140,9 +143,45 @@ public:
 		return ( handle & VERTCACHE_STATIC ) != 0;
 	}
 
-	// vb/ib is a temporary reference -- don't store it
-	bool			GetVertexBuffer( vertCacheHandle_t handle, idVertexBuffer * vb );
-	bool			GetJointBuffer( vertCacheHandle_t handle, idJointBuffer * jb );
+	// The buffer and the byte offset the back end draws a handle from: the static set, or the set
+	// of the frame being drawn. False when the handle is from another frame.
+	bool			ResolveVertex( vertCacheHandle_t handle, bufferHandle_t & buffer, int & offset ) const {
+		offset = (int)( handle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+		if ( CacheIsStatic( handle ) ) {
+			buffer = staticData.vertexBuffer.GetHandle();
+			return true;
+		}
+		if ( !IsDrawnFrame( handle ) ) {
+			return false;
+		}
+		buffer = frameData[drawListNum].vertexBuffer.GetHandle();
+		return true;
+	}
+	bool			ResolveIndex( vertCacheHandle_t handle, bufferHandle_t & buffer, int & offset ) const {
+		offset = (int)( handle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+		if ( CacheIsStatic( handle ) ) {
+			buffer = staticData.indexBuffer.GetHandle();
+			return true;
+		}
+		if ( !IsDrawnFrame( handle ) ) {
+			return false;
+		}
+		buffer = frameData[drawListNum].indexBuffer.GetHandle();
+		return true;
+	}
+	bool			ResolveJoint( vertCacheHandle_t handle, bufferHandle_t & buffer, int & offset, int & numJoints ) const {
+		offset = (int)( handle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+		numJoints = ( (int)( handle >> VERTCACHE_SIZE_SHIFT ) & VERTCACHE_SIZE_MASK ) / static_cast<int>( sizeof( idJointMat ) );
+		if ( CacheIsStatic( handle ) ) {
+			buffer = staticData.jointBuffer.GetHandle();
+			return true;
+		}
+		if ( !IsDrawnFrame( handle ) ) {
+			return false;
+		}
+		buffer = frameData[drawListNum].jointBuffer.GetHandle();
+		return true;
+	}
 
 	void			BeginBackEnd();
 
@@ -161,6 +200,13 @@ public:
 
 	// Try to make room for <bytes> bytes
 	vertCacheHandle_t	ActuallyAlloc( geoBufferSet_t & vcs, const void * data, int bytes, cacheType_t type );
+
+private:
+	// the back end draws the frame before the one being written
+	bool			IsDrawnFrame( const vertCacheHandle_t handle ) const {
+		const uint64 frameNum = (int)( handle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
+		return frameNum == ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK );
+	}
 };
 
 // platform specific code to memcpy into vertex buffers efficiently

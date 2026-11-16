@@ -36,6 +36,7 @@ If you have questions concerning this license or the applicable additional terms
 
 	Private to renderer/OpenGL/: shared code reaches it only through renderBackend.
 	A method whose body has not moved here yet stops with a fatal error.
+	A bufferHandle_t, textureHandle_t, shaderHandle_t or programHandle_t is a pointer to a record below.
 
 ===============================================================================
 */
@@ -113,7 +114,7 @@ struct glTexture_t {
 	idImageOpts			opts;				// the backend's copy: a copy from the output changes its size
 #ifdef _DEBUG
 	idStr				name;
-	int					boundInFrame;		// the frame of the last API_BindTexture
+	int					drawnInFrame;		// the frame of the last draw whose program samples it
 #endif
 };
 
@@ -138,6 +139,13 @@ struct glProgram_t {
 	GLint				fragmentUniformArray;
 	shaderStageInfo_t	vertexInfo;				// copies: a stage can be destroyed before its program
 	shaderStageInfo_t	fragmentInfo;
+#ifdef _DEBUG
+	programInfo_t		info;					// what CreateProgram returned, for the draw checks
+	idStr				name;
+	uint16				warnedSamplers;			// slots and vertex layouts already reported, bit per each
+	uint8				warnedLayouts;
+	bool				warnedJoints;
+#endif
 };
 
 ID_INLINE glShaderStage_t * GL_ShaderStage( shaderHandle_t shader ) {
@@ -145,6 +153,20 @@ ID_INLINE glShaderStage_t * GL_ShaderStage( shaderHandle_t shader ) {
 }
 ID_INLINE glProgram_t * GL_Program( programHandle_t program ) {
 	return reinterpret_cast<glProgram_t *>( static_cast<uintptr_t>( program ) );
+}
+
+// What a bufferHandle_t points at.
+struct glBuffer_t {
+	GLuint				bufferObject;
+	GLenum				target;				// GL_ARRAY_BUFFER_ARB, GL_ELEMENT_ARRAY_BUFFER_ARB or GL_UNIFORM_BUFFER
+	int					size;				// bytes
+};
+
+ID_INLINE glBuffer_t * GL_Buffer( bufferHandle_t buffer ) {
+	return reinterpret_cast<glBuffer_t *>( static_cast<uintptr_t>( buffer ) );
+}
+ID_INLINE bufferHandle_t GL_BufferHandle( glBuffer_t * buffer ) {
+	return static_cast<bufferHandle_t>( reinterpret_cast<uintptr_t>( buffer ) );
 }
 
 // gl_Extensions.cpp: loads the qgl* extension pointers, fills the flags of glContext and creates global_vao
@@ -184,8 +206,6 @@ public:
 	programHandle_t		CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * debugName, programInfo_t & info ) override;
 	void				DestroyShaderStage( shaderHandle_t shader ) override;
 	void				DestroyProgram( programHandle_t program ) override;
-	// Sends the parms both stages of the program read to the program GL has in use.
-	void				CommitParms( programHandle_t program, const idVec4 * parms );
 
 	void				WriteTimestamp( int set, int index ) override;
 	bool				TimestampReady( int set, int index ) override;
@@ -210,8 +230,26 @@ protected:
 	void				API_DrawIndexed( const drawCall_t & dc ) override;
 
 private:
+	// Sends the parms both stages of the program read to the program GL has in use.
+	void				CommitParms( programHandle_t program, const idVec4 * parms );
+
+	// what API_DrawIndexed left bound, so that a repeat is skipped; reset by API_SetDefaultState
+	vertexLayoutType_t	currentVertexLayout = LAYOUT_UNKNOWN;
+	bufferHandle_t		currentVertexBuffer = bufferHandle_t::NONE;
+	bufferHandle_t		currentIndexBuffer = bufferHandle_t::NONE;
+
 	int					debugFrame = 0;				// Debug: counts API_SetDefaultState, one per frame (per eye in stereo)
-	int					debugUploadsAfterBind = 0;	// Debug: uploads into a texture the frame had bound already (rule R4)
+	int					debugUploadsAfterDraw = 0;	// Debug: uploads into a texture the frame had drawn with already (rule R4)
+#ifdef _DEBUG
+	void				DebugCheckDraw( const drawCall_t & dc );
+
+	// the packed parms of the last draw that sent them, for the reuseParms promise (rule R7)
+	idVec4				debugLastParms[2][MAX_RENDER_PARMS];
+	int					debugLastNumParms[2] = {};
+	int					debugParmsReuseBroken = 0;
+	programHandle_t		debugLastProgram = programHandle_t::NONE;
+	uint32				debugTexturesBound = 0;		// bit slot * 2 + kind: API_BindTexture since API_SetDefaultState
+#endif
 };
 
 #endif /* !__GL_BACKEND_H__ */

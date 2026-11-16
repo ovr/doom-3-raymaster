@@ -154,9 +154,14 @@ void idRenderBackendGL::API_SetDefaultState() {
 	qglClearDepth( 1.0f );
 
 	// make sure our GL state vector is set correctly
-	// the latch is already reset; glState keeps the buffer caches that have not moved yet
-	memset( &backEnd.glState, 0, sizeof( backEnd.glState ) );
+	// the latch is already reset
+	currentVertexLayout = LAYOUT_UNKNOWN;
+	currentVertexBuffer = bufferHandle_t::NONE;
+	currentIndexBuffer = bufferHandle_t::NONE;
 	debugFrame++;
+#ifdef _DEBUG
+	debugTexturesBound = 0;
+#endif
 	API_State( 0, ~0ull );
 
 	// These are changed by GL_Cull

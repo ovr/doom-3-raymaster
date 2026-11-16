@@ -1209,6 +1209,14 @@ programHandle_t idRenderBackendGL::CreateProgram( shaderHandle_t vertex, shaderH
 		}
 	}
 
+#ifdef _DEBUG
+	prog->info = info;
+	prog->name = debugName;
+	prog->warnedSamplers = 0;
+	prog->warnedLayouts = 0;
+	prog->warnedJoints = false;
+#endif
+
 	return static_cast<programHandle_t>( reinterpret_cast<uintptr_t>( prog ) );
 }
 
@@ -1262,19 +1270,3 @@ void idRenderBackendGL::CommitParms( programHandle_t program, const idVec4 * par
 	}
 }
 
-/*
-================================================================================================
-idRenderProgManager::CommitUnforms
-
-Lives here until the draw goes through DrawIndexed, which commits the parms itself. It follows
-the program index of the manager, not the latch: Unbind does not change that index.
-================================================================================================
-*/
-void idRenderProgManager::CommitUniforms() {
-	const programHandle_t program = glslPrograms[GetGLSLCurrentProgram()].handle;
-	if ( program == programHandle_t::NONE ) {
-		// its link failed: nothing was sent for such a program before either
-		return;
-	}
-	static_cast<idRenderBackendGL *>( renderBackend )->CommitParms( program, glslUniforms.Ptr() );
-}

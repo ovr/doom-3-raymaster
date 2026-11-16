@@ -102,17 +102,8 @@ class idFile;
 
 const float	MAX_ENTITY_COORDINATE = 64000.0f;
 
-#if 1
-
+// the render backends draw with this index type
 typedef unsigned short triIndex_t;
-#define GL_INDEX_TYPE		GL_UNSIGNED_SHORT
-
-#else
-
-typedef unsigned int triIndex_t;
-#define GL_INDEX_TYPE		GL_UNSIGNED_INT
-
-#endif
 
 // if writing to write-combined memroy, always write indexes as pairs for 32 bit writes
 ID_INLINE void WriteIndexPair( triIndex_t * dest, const triIndex_t a, const triIndex_t b ) {

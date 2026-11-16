@@ -632,12 +632,6 @@ struct performanceCounters_t {
 };
 
 
-struct glstate_t {
-	vertexLayoutType_t	vertexLayout;
-	unsigned int		currentVertexBuffer;
-	unsigned int		currentIndexBuffer;
-};
-
 struct backEndCounters_t {
 	int		c_surfaces;
 	int		c_drawElements;
@@ -660,7 +654,6 @@ struct backEndState_t {
 
 	const viewEntity_t *currentSpace;			// for detecting when a matrix must change
 	idScreenRect		currentScissor;			// for scissor clipping, local inside renderView viewport
-	glstate_t			glState;				// for OpenGL state deltas
 
 	bool				currentRenderCopied;	// true if any material has already referenced _currentRender
 
@@ -1215,7 +1208,7 @@ struct deformInfo_t {
 	int					numSilEdges;			// number of silhouette edges
 	silEdge_t *			silEdges;				// silhouette edges
 
-	vertCacheHandle_t	staticIndexCache;		// GL_INDEX_TYPE
+	vertCacheHandle_t	staticIndexCache;		// triIndex_t
 	vertCacheHandle_t	staticAmbientCache;		// idDrawVert
 	vertCacheHandle_t	staticShadowCache;		// idShadowCacheSkinned
 };
@@ -1264,7 +1257,7 @@ TR_BACKEND_DRAW
 ============================================================
 */
 
-void RB_DrawElementsWithCounters( const drawSurf_t *surf );
+void RB_DrawElementsWithCounters( const drawSurf_t *surf, primitive_t topology = primitive_t::TRIANGLES );
 void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye );
 void RB_DrawView( const void *data, const int stereoEye );
 void RB_CopyRender( const void *data );

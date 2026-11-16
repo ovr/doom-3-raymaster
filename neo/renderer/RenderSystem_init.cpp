@@ -1511,8 +1511,6 @@ void idRenderSystemLocal::Shutdown() {
 	// free frame memory
 	R_ShutdownFrameData();
 
-	UnbindBufferObjects();
-
 	// free the vertex cache, which should have nothing allocated now
 	vertexCache.Shutdown();
 
