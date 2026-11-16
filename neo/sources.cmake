@@ -301,8 +301,6 @@ set(DOOMEXE_SOURCES
 	framework/UsercmdGen.cpp
 	framework/VisualDemo.cpp
 	framework/Zip.cpp
-	renderer/AutoRender.cpp
-	renderer/AutoRenderBink.cpp
 	renderer/BinaryImage.cpp
 	renderer/BufferObject.cpp
 	renderer/Cinematic.cpp

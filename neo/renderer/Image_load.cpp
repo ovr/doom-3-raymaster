@@ -190,7 +190,7 @@ void idImage::GenerateImage( const byte *pic, int width, int height, textureFilt
 	for ( int i = 0; i < im.NumImages(); i++ ) {
 		const bimageImage_t & img = im.GetImageHeader( i );
 		const byte * data = im.GetImageData( i );
-		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
+		SubImageUpload( img.level, img.destZ, img.width, img.height, data );
 	}
 }
 
@@ -231,7 +231,7 @@ void idImage::GenerateCubeImage( const byte *pic[6], int size, textureFilter_t f
 	for ( int i = 0; i < im.NumImages(); i++ ) {
 		const bimageImage_t & img = im.GetImageHeader( i );
 		const byte * data = im.GetImageData( i );
-		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
+		SubImageUpload( img.level, img.destZ, img.width, img.height, data );
 	}
 }
 
@@ -263,7 +263,7 @@ Absolutely every image goes through this path
 On exit, the idImage will have a valid OpenGL texture number that can be bound
 ===============
 */
-void idImage::ActuallyLoadImage( bool fromBackEnd ) {
+void idImage::ActuallyLoadImage() {
 
 	// if we don't have a rendering context yet, just return
 	if ( !R_IsInitialized() ) {
@@ -399,7 +399,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 				idTempArray<byte> clear( opts.width * opts.height * 4 );
 				memset( clear.Ptr(), 0, clear.Size() );
 				for ( int level = 0; level < opts.numLevels; level++ ) {
-					SubImageUpload( level, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr() );
+					SubImageUpload( level, 0, opts.width >> level, opts.height >> level, clear.Ptr() );
 				}
 
 				return;
@@ -422,7 +422,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	for ( int i = 0; i < im.NumImages(); i++ ) {
 		const bimageImage_t & img = im.GetImageHeader( i );
 		const byte * data = im.GetImageData( i );
-		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
+		SubImageUpload( img.level, img.destZ, img.width, img.height, data );
 	}
 }
 
@@ -440,7 +440,7 @@ void idImage::Bind() {
 	// load the image if necessary (FIXME: not SMP safe!)
 	if ( !IsLoaded() ) {
 		// load the image on demand here, which isn't our normal game operating mode
-		ActuallyLoadImage( true );
+		ActuallyLoadImage();
 	}
 
 	const int texUnit = backEnd.glState.currenttmu;
@@ -459,18 +459,6 @@ void idImage::Bind() {
 		}
 	}
 
-}
-
-/*
-================
-MakePowerOfTwo
-================
-*/
-int MakePowerOfTwo( int num ) {
-	int	pot;
-	for ( pot = 1; pot < num; pot <<= 1 ) {
-	}
-	return pot;
 }
 
 /*
@@ -517,47 +505,20 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 /*
 =============
 RB_UploadScratchImage
-
-if rows = cols * 6, assume it is a cube map animation
 =============
 */
 void idImage::UploadScratch( const byte * data, int cols, int rows ) {
-
-	// if rows = cols * 6, assume it is a cube map animation
-	if ( rows == cols * 6 ) {
-		rows /= 6;
-		const byte * pic[6];
-		for ( int i = 0; i < 6; i++ ) {
-			pic[i] = data + cols * rows * 4 * i;
-		}
-
-		if ( opts.textureType != TT_CUBIC || usage != TD_LOOKUP_TABLE_RGBA ) {
-			GenerateCubeImage( pic, cols, TF_LINEAR, TD_LOOKUP_TABLE_RGBA );
-			return;
-		}
-		if ( opts.width != cols || opts.height != rows ) {
-			opts.width = cols;
-			opts.height = rows;
-			AllocImage();
-		}
-		SetSamplerState( TF_LINEAR, TR_CLAMP );
-		for ( int i = 0; i < 6; i++ ) {
-			SubImageUpload( 0, 0, 0, i, opts.width, opts.height, pic[i] );
-		}
-
-	} else {
-		if ( opts.textureType != TT_2D || usage != TD_LOOKUP_TABLE_RGBA ) {
-			GenerateImage( data, cols, rows, TF_LINEAR, TR_REPEAT, TD_LOOKUP_TABLE_RGBA );
-			return;
-		}
-		if ( opts.width != cols || opts.height != rows ) {
-			opts.width = cols;
-			opts.height = rows;
-			AllocImage();
-		}
-		SetSamplerState( TF_LINEAR, TR_REPEAT );
-		SubImageUpload( 0, 0, 0, 0, opts.width, opts.height, data );
+	if ( opts.textureType != TT_2D || usage != TD_LOOKUP_TABLE_RGBA ) {
+		GenerateImage( data, cols, rows, TF_LINEAR, TR_REPEAT, TD_LOOKUP_TABLE_RGBA );
+		return;
 	}
+	if ( opts.width != cols || opts.height != rows ) {
+		opts.width = cols;
+		opts.height = rows;
+		AllocImage();
+	}
+	SetSamplerState( TF_LINEAR, TR_REPEAT );
+	SubImageUpload( 0, 0, opts.width, opts.height, data );
 }
 
 /*
@@ -696,7 +657,7 @@ void idImage::Reload( bool force ) {
 	PurgeImage();
 
 	// Load is from the front end, so the back end must be synced
-	ActuallyLoadImage( false );
+	ActuallyLoadImage();
 }
 
 /*

@@ -71,42 +71,6 @@ bool QGL_Init( const char *dllname );
 void QGL_Shutdown();
 
 
-/*
-========================
-GLimp_TestSwapBuffers
-========================
-*/
-void GLimp_TestSwapBuffers( const idCmdArgs &args ) {
-	idLib::Printf( "GLimp_TimeSwapBuffers\n" );
-	static const int MAX_FRAMES = 5;
-	uint64	timestamps[MAX_FRAMES];
-	qglDisable( GL_SCISSOR_TEST );
-
-	int frameMilliseconds = 16;
-	for ( int swapInterval = 2 ; swapInterval >= -1 ; swapInterval-- ) {
-		wglSwapIntervalEXT( swapInterval );
-		for ( int i = 0 ; i < MAX_FRAMES ; i++ ) {
-			if ( swapInterval == -1 ) {
-				Sys_Sleep( frameMilliseconds );
-			}
-			if ( i & 1 ) {
-				qglClearColor( 0, 1, 0, 1 );
-			} else {
-				qglClearColor( 1, 0, 0, 1 );
-			}
-			qglClear( GL_COLOR_BUFFER_BIT );
-			qwglSwapBuffers( win32.hDC );
-			qglFinish();
-			timestamps[i] = Sys_Microseconds();
-		}
-
-		idLib::Printf( "\nswapinterval %i\n", swapInterval );
-		for ( int i = 1 ; i < MAX_FRAMES ; i++ ) {
-			idLib::Printf( "%i microseconds\n", (int)(timestamps[i] - timestamps[i-1]) );
-		}
-	}
-}
-
 // last gamma ramp set by the renderer, re-applied after alt-tab
 static unsigned short	s_gameGamma[3][256];
 static bool				s_gameGammaValid = false;
@@ -341,14 +305,6 @@ static void GLW_GetWGLExtensionsWithFakeWindow() {
 }
 
 //=============================================================================
-
-/*
-====================
-GLW_WM_CREATE
-====================
-*/
-void GLW_WM_CREATE( HWND hWnd ) {
-}
 
 /*
 ========================
@@ -1252,10 +1208,7 @@ parameters and try again.
 ===================
 */
 bool GLimp_Init( glimpParms_t parms ) {
-	const char	*driverName;
 	HDC		hDC;
-
-	cmdSystem->AddCommand( "testSwapBuffers", GLimp_TestSwapBuffers, CMD_FL_SYSTEM, "Times swapbuffer options" );
 
 	GLW_ResolveBorderlessParms( parms );
 
@@ -1284,13 +1237,8 @@ bool GLimp_Init( glimpParms_t parms ) {
 
 	// this will load the dll and set all our qgl* function pointers,
 	// but doesn't create a window
-
-	// r_glDriver is only intended for using instrumented OpenGL
-	// dlls.  Normal users should never have to use it, and it is
-	// not archived.
-	driverName = r_glDriver.GetString()[0] ? r_glDriver.GetString() : "opengl32";
-	if ( !QGL_Init( driverName ) ) {
-		common->Printf( "^3GLimp_Init() could not load r_glDriver \"%s\"^0\n", driverName );
+	if ( !QGL_Init( "opengl32" ) ) {
+		common->Printf( "^3GLimp_Init() could not load opengl32^0\n" );
 		return false;
 	}
 
@@ -1345,9 +1293,6 @@ bool GLimp_Init( glimpParms_t parms ) {
 
 	// wglSwapinterval, etc
 	GLW_CheckWGLExtensions( win32.hDC );
-
-	// check logging
-	GLimp_EnableLogging( ( r_logFile.GetInteger() != 0 ) );
 
 	return true;
 }
@@ -1515,13 +1460,6 @@ void GLimp_Shutdown() {
 		win32.cdsFullscreen = 0;
 	}
 
-	// close the thread so the handle doesn't dangle
-	if ( win32.renderThreadHandle ) {
-		common->Printf( "...closing smp thread\n" );
-		CloseHandle( win32.renderThreadHandle );
-		win32.renderThreadHandle = NULL;
-	}
-
 	// restore gamma
 	GLimp_RestoreGamma();
 
@@ -1555,188 +1493,6 @@ void GLimp_SwapBuffers() {
 	}
 
 	qwglSwapBuffers( win32.hDC );
-}
-
-/*
-===========================================================
-
-SMP acceleration
-
-===========================================================
-*/
-
-/*
-===================
-GLimp_ActivateContext
-===================
-*/
-void GLimp_ActivateContext() {
-	if ( !qwglMakeCurrent( win32.hDC, win32.hGLRC ) ) {
-		win32.wglErrors++;
-	}
-}
-
-/*
-===================
-GLimp_DeactivateContext
-===================
-*/
-void GLimp_DeactivateContext() {
-	qglFinish();
-	if ( !qwglMakeCurrent( win32.hDC, NULL ) ) {
-		win32.wglErrors++;
-	}
-}
-
-/*
-===================
-GLimp_RenderThreadWrapper
-===================
-*/
-static void GLimp_RenderThreadWrapper() {
-	win32.glimpRenderThread();
-
-	// unbind the context before we die
-	qwglMakeCurrent( win32.hDC, NULL );
-}
-
-/*
-=======================
-GLimp_SpawnRenderThread
-
-Returns false if the system only has a single processor
-=======================
-*/
-bool GLimp_SpawnRenderThread( void (*function)() ) {
-	SYSTEM_INFO info;
-
-	// check number of processors
-	GetSystemInfo( &info );
-	if ( info.dwNumberOfProcessors < 2 ) {
-		return false;
-	}
-	
-	// create the IPC elements
-	win32.renderCommandsEvent = CreateEvent( NULL, TRUE, FALSE, NULL );
-	win32.renderCompletedEvent = CreateEvent( NULL, TRUE, FALSE, NULL );
-	win32.renderActiveEvent = CreateEvent( NULL, TRUE, FALSE, NULL );
-
-	win32.glimpRenderThread = function;
-
-	win32.renderThreadHandle = CreateThread(
-	   NULL,	// LPSECURITY_ATTRIBUTES lpsa,
-	   0,		// DWORD cbStack,
-	   (LPTHREAD_START_ROUTINE)GLimp_RenderThreadWrapper,	// LPTHREAD_START_ROUTINE lpStartAddr,
-	   0,			// LPVOID lpvThreadParm,
-	   0,			//   DWORD fdwCreate,
-	   &win32.renderThreadId );
-
-	if ( !win32.renderThreadHandle ) {
-		common->Error( "GLimp_SpawnRenderThread: failed" );
-	}
-
-	SetThreadPriority( win32.renderThreadHandle, THREAD_PRIORITY_ABOVE_NORMAL );
-#if 0
-	// make sure they always run on different processors
-	SetThreadAffinityMask( GetCurrentThread, 1 );
-	SetThreadAffinityMask( win32.renderThreadHandle, 2 );
-#endif
-
-	return true;
-}
-
-
-//#define	DEBUG_PRINTS
-
-/*
-===================
-GLimp_BackEndSleep
-===================
-*/
-void *GLimp_BackEndSleep() {
-	void	*data;
-
-#ifdef DEBUG_PRINTS
-OutputDebugString( "-->GLimp_BackEndSleep\n" );
-#endif
-	ResetEvent( win32.renderActiveEvent );
-
-	// after this, the front end can exit GLimp_FrontEndSleep
-	SetEvent( win32.renderCompletedEvent );
-
-	WaitForSingleObject( win32.renderCommandsEvent, INFINITE );
-
-	ResetEvent( win32.renderCompletedEvent );
-	ResetEvent( win32.renderCommandsEvent );
-
-	data = win32.smpData;
-
-	// after this, the main thread can exit GLimp_WakeRenderer
-	SetEvent( win32.renderActiveEvent );
-
-#ifdef DEBUG_PRINTS
-OutputDebugString( "<--GLimp_BackEndSleep\n" );
-#endif
-	return data;
-}
-
-/*
-===================
-GLimp_FrontEndSleep
-===================
-*/
-void GLimp_FrontEndSleep() {
-#ifdef DEBUG_PRINTS
-OutputDebugString( "-->GLimp_FrontEndSleep\n" );
-#endif
-	WaitForSingleObject( win32.renderCompletedEvent, INFINITE );
-
-#ifdef DEBUG_PRINTS
-OutputDebugString( "<--GLimp_FrontEndSleep\n" );
-#endif
-}
-
-volatile bool	renderThreadActive;
-
-/*
-===================
-GLimp_WakeBackEnd
-===================
-*/
-void GLimp_WakeBackEnd( void *data ) {
-	int		r;
-
-#ifdef DEBUG_PRINTS
-OutputDebugString( "-->GLimp_WakeBackEnd\n" );
-#endif
-	win32.smpData = data;
-
-	if ( renderThreadActive ) {
-		common->FatalError( "GLimp_WakeBackEnd: already active" );
-	}
-
-	r = WaitForSingleObject( win32.renderActiveEvent, 0 );
-	if ( r == WAIT_OBJECT_0 ) {
-		common->FatalError( "GLimp_WakeBackEnd: already signaled" );
-	}
-
-	r = WaitForSingleObject( win32.renderCommandsEvent, 0 );
-	if ( r == WAIT_OBJECT_0 ) {
-		common->FatalError( "GLimp_WakeBackEnd: commands already signaled" );
-	}
-
-	// after this, the renderer can continue through GLimp_RendererSleep
-	SetEvent( win32.renderCommandsEvent );
-
-	r = WaitForSingleObject( win32.renderActiveEvent, 5000 );
-
-	if ( r == WAIT_TIMEOUT ) {
-		common->FatalError( "GLimp_WakeBackEnd: WAIT_TIMEOUT" );
-	}
-
-#ifdef DEBUG_PRINTS
-OutputDebugString( "<--GLimp_WakeBackEnd\n" );
-#endif
 }
 
 /*

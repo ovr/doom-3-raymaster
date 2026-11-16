@@ -275,9 +275,6 @@ static void R_CheckCvars() {
 			qglDisable( GL_MULTISAMPLE_ARB );
 		}
 	}
-
-	// check for changes to logging state
-	GLimp_EnableLogging( r_logFile.GetInteger() != 0 );
 }
 
 /*
@@ -803,7 +800,6 @@ const emptyCommand_t * idRenderSystemLocal::SwapCommandBuffers_FinishCommandBuff
 
 	setBufferCommand_t * cmd2 = (setBufferCommand_t *)R_GetCommandBuffer( sizeof( *cmd2 ) );
 	cmd2->commandId = RC_SET_BUFFER;
-	cmd2->buffer = (int)GL_BACK;
 
 	// the old command buffer can now be rendered, while the new one can
 	// be built in parallel
@@ -968,45 +964,6 @@ void idRenderSystemLocal::CaptureRenderToImage( const char *imageName, bool clea
 	cmd->clearColorAfterCopy = clearColorAfterCopy;
 
 	guiModel->Clear();
-}
-
-/*
-==============
-idRenderSystemLocal::CaptureRenderToFile
-==============
-*/
-void idRenderSystemLocal::CaptureRenderToFile( const char *fileName, bool fixAlpha ) {
-	if ( !R_IsInitialized() ) {
-		return;
-	}
-
-	idScreenRect & rc = renderCrops[currentRenderCrop];
-
-	guiModel->EmitFullScreen();
-	guiModel->Clear();
-	RenderCommandBuffers( frameData->cmdHead );
-
-	qglReadBuffer( GL_BACK );
-
-	// include extra space for OpenGL padding to word boundaries
-	int	c = ( rc.GetWidth() + 3 ) * rc.GetHeight();
-	byte *data = (byte *)R_StaticAlloc( c * 3 );
-	
-	qglReadPixels( rc.x1, rc.y1, rc.GetWidth(), rc.GetHeight(), GL_RGB, GL_UNSIGNED_BYTE, data ); 
-
-	byte *data2 = (byte *)R_StaticAlloc( c * 4 );
-
-	for ( int i = 0 ; i < c ; i++ ) {
-		data2[ i * 4 ] = data[ i * 3 ];
-		data2[ i * 4 + 1 ] = data[ i * 3 + 1 ];
-		data2[ i * 4 + 2 ] = data[ i * 3 + 2 ];
-		data2[ i * 4 + 3 ] = 0xff;
-	}
-
-	R_WriteTGA( fileName, data2, rc.GetWidth(), rc.GetHeight(), true );
-
-	R_StaticFree( data );
-	R_StaticFree( data2 );
 }
 
 

@@ -77,7 +77,7 @@ target_link_libraries(Doom3BFG PRIVATE
 	external
 	doomclassic
 	timidity
-	xaudio2 xinput dbghelp dinput8 dsound dxguid glu32 iphlpapi
+	xaudio2 xinput dbghelp dinput8 dsound dxguid iphlpapi
 	odbc32 odbccp32 opengl32 winmm wsock32
 )
 target_link_options(Doom3BFG PRIVATE

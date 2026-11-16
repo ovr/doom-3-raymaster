@@ -39,7 +39,6 @@ If you have questions concerning this license or the applicable additional terms
 class idIndexBuffer;
 
 enum bufferMapType_t {
-	BM_READ,			// map for reading
 	BM_WRITE			// map for writing
 };
 
@@ -58,15 +57,11 @@ public:
 						~idVertexBuffer();
 
 	// Allocate or free the buffer.
-	bool				AllocBufferObject( const void * data, int allocSize );
+	bool				AllocBufferObject( int allocSize );
 	void				FreeBufferObject();
 
 	// Make this buffer a reference to another buffer.
-	void				Reference( const idVertexBuffer & other );
 	void				Reference( const idVertexBuffer & other, int refOffset, int refSize );
-
-	// Copies data to the buffer. 'size' may be less than the originally allocated size.
-	void				Update( const void * data, int updateSize ) const;
 
 	void *				MapBuffer( bufferMapType_t mapType ) const;
 	idDrawVert *		MapVertexBuffer( bufferMapType_t mapType ) const { return static_cast< idDrawVert * >( MapBuffer( mapType ) ); }
@@ -107,15 +102,11 @@ public:
 						~idIndexBuffer();
 
 	// Allocate or free the buffer.
-	bool				AllocBufferObject( const void * data, int allocSize );
+	bool				AllocBufferObject( int allocSize );
 	void				FreeBufferObject();
 
 	// Make this buffer a reference to another buffer.
-	void				Reference( const idIndexBuffer & other );
 	void				Reference( const idIndexBuffer & other, int refOffset, int refSize );
-
-	// Copies data to the buffer. 'size' may be less than the originally allocated size.
-	void				Update( const void * data, int updateSize ) const;
 
 	void *				MapBuffer( bufferMapType_t mapType ) const;
 	triIndex_t *		MapIndexBuffer( bufferMapType_t mapType ) const { return static_cast< triIndex_t * >( MapBuffer( mapType ) ); }
@@ -160,15 +151,11 @@ public:
 						~idJointBuffer();
 
 	// Allocate or free the buffer.
-	bool				AllocBufferObject( const float * joints, int numAllocJoints );
+	bool				AllocBufferObject( int numAllocJoints );
 	void				FreeBufferObject();
 
 	// Make this buffer a reference to another buffer.
-	void				Reference( const idJointBuffer & other );
 	void				Reference( const idJointBuffer & other, int jointRefOffset, int numRefJoints );
-
-	// Copies data to the buffer. 'numJoints' may be less than the originally allocated size.
-	void				Update( const float * joints, int numUpdateJoints ) const;
 
 	float *				MapBuffer( bufferMapType_t mapType ) const;
 	void				UnmapBuffer() const;
@@ -178,8 +165,6 @@ public:
 	int					GetAllocedSize() const { return ( numJoints & ~MAPPED_FLAG ) * 3 * 4 * sizeof( float ); }
 	void *				GetAPIObject() const { return apiObject; }
 	int					GetOffset() const { return ( offsetInOtherBuffer & ~OWNS_BUFFER_FLAG ); }
-
-	void				Swap( idJointBuffer & other );
 
 private:
 	int					numJoints;
