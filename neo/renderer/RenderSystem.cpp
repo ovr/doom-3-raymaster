@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../idlib/precompiled.h"
 
 #include "tr_local.h"
+#include "OpenGL/gl_Backend.h"	// glContext, until R_CheckCvars sets its options through the backend
 
 idRenderSystemLocal	tr;
 idRenderSystem * renderSystem = &tr;
@@ -124,7 +125,7 @@ void idRenderSystemLocal::RenderCommandBuffers( const emptyCommand_t * const cmd
 	// r_skipRender is usually more usefull, because it will still
 	// draw 2D graphics
 	if ( !r_skipBackEnd.GetBool() ) {
-		if ( glConfig.timerQueryAvailable ) {
+		if ( renderBackend->Caps().gpuTimer ) {
 			if ( tr.timerQueryId == 0 ) {
 				qglGenQueriesARB( 1, & tr.timerQueryId );
 			}
@@ -246,7 +247,7 @@ static void R_CheckCvars() {
 	extern idCVar r_useSeamlessCubeMap;
 	if ( r_useSeamlessCubeMap.IsModified() ) {
 		r_useSeamlessCubeMap.ClearModified();
-		if ( glConfig.seamlessCubeMapAvailable ) {
+		if ( glContext.seamlessCubeMapAvailable ) {
 			if ( r_useSeamlessCubeMap.GetBool() ) {
 				qglEnable( GL_TEXTURE_CUBE_MAP_SEAMLESS );
 			} else {
@@ -258,7 +259,7 @@ static void R_CheckCvars() {
 	extern idCVar r_useSRGB;
 	if ( r_useSRGB.IsModified() ) {
 		r_useSRGB.ClearModified();
-		if ( glConfig.sRGBFramebufferAvailable ) {
+		if ( glContext.sRGBFramebufferAvailable ) {
 			if ( r_useSRGB.GetBool() ) {
 				qglEnable( GL_FRAMEBUFFER_SRGB );
 			} else {
@@ -687,7 +688,7 @@ void idRenderSystemLocal::SwapCommandBuffers_FinishRendering(
 
 	// read back the start and end timer queries from the previous frame
 	uint64 drawingTimeNanoseconds = 0;
-	if ( glConfig.timerQueryAvailable ) {
+	if ( renderBackend->Caps().gpuTimer ) {
 		if ( tr.timerQueryId != 0 ) {
 			qglGetQueryObjectui64vEXT( tr.timerQueryId, GL_QUERY_RESULT, &drawingTimeNanoseconds );
 		}

@@ -457,7 +457,7 @@ void R_SetupDrawSurfJoints( drawSurf_t * drawSurf, const srfTriangles_t * tri, c
 
 	// 0 = changed since the upload (InstantiateDynamicModel); CacheIsCurrent takes it for frame 0 of the 15-bit counter
 	if ( model->jointsInvertedBuffer == 0 || !vertexCache.CacheIsCurrent( model->jointsInvertedBuffer ) ) {
-		const int alignment = glConfig.uniformBufferOffsetAlignment;
+		const int alignment = renderBackend->Caps().uniformBufferOffsetAlignment;
 		model->jointsInvertedBuffer = vertexCache.AllocJoint( model->jointsInverted, ALIGN( model->numInvertedJoints * sizeof( idJointMat ), alignment ) );
 	}
 	drawSurf->jointCache = model->jointsInvertedBuffer;

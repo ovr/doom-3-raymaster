@@ -40,6 +40,71 @@ If you have questions concerning this license or the applicable additional terms
 ===============================================================================
 */
 
+enum graphicsVendor_t {
+	VENDOR_NVIDIA,
+	VENDOR_AMD,
+	VENDOR_INTEL
+};
+
+// What the OpenGL context can do, for OpenGL code only: shared code reads renderBackend->Caps().
+// Constant between idRenderBackendGL::Init and Shutdown.
+struct glContext_t {
+	const char *		renderer_string;
+	const char *		vendor_string;
+	const char *		version_string;
+	const char *		extensions_string;
+	const char *		wgl_extensions_string;
+	const char *		shading_language_string;
+
+	float				glVersion;				// atof( version_string )
+	graphicsVendor_t	vendor;
+
+	int					maxTextureSize;			// queried from GL
+	int					maxTextureCoords;
+	int					maxTextureImageUnits;
+	int					uniformBufferOffsetAlignment;
+	float				maxTextureAnisotropy;
+
+	int					colorBits;
+	int					depthBits;
+	int					stencilBits;
+
+	bool				multitextureAvailable;
+	bool				directStateAccess;
+	bool				textureCompressionAvailable;
+	bool				anisotropicFilterAvailable;
+	bool				textureLODBiasAvailable;
+	bool				seamlessCubeMapAvailable;
+	bool				sRGBFramebufferAvailable;
+	bool				vertexBufferObjectAvailable;
+	bool				mapBufferRangeAvailable;
+	bool				vertexArrayObjectAvailable;
+	bool				drawElementsBaseVertexAvailable;
+	bool				fragmentProgramAvailable;
+	bool				glslAvailable;
+	bool				uniformBufferAvailable;
+	bool				twoSidedStencilAvailable;
+	bool				depthBoundsTestAvailable;
+	bool				syncAvailable;
+	bool				timerQueryAvailable;
+	bool				timestampQueryAvailable;	// glQueryCounter( GL_TIMESTAMP ), GL_ARB_timer_query only
+	bool				occlusionQueryAvailable;
+	bool				debugOutputAvailable;
+	bool				debugGroupsAvailable;		// glPushDebugGroup, GL_KHR_debug
+	bool				swapControlTearAvailable;
+
+	bool				isStereoPixelFormat;
+	bool				stereoPixelFormatAvailable;
+	int					multisamples;
+
+	GLuint				global_vao;
+};
+
+extern glContext_t		glContext;
+
+// gl_Extensions.cpp: loads the qgl* extension pointers, fills the flags of glContext and creates global_vao
+void					R_CheckPortableExtensions();
+
 class idRenderBackendGL final : public idRenderBackend {
 public:
 						idRenderBackendGL();

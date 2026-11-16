@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../idlib/precompiled.h"
 
 #include "tr_local.h"
+#include "OpenGL/gl_Backend.h"	// glContext.global_vao, until the bind moves into the backend
 
 idCVar r_drawEyeColor( "r_drawEyeColor", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a colored box, red = left eye, blue = right eye, grey = non-stereo" );
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 - 5, log2 of the number of motion blur samples" );
@@ -174,7 +175,7 @@ void RB_DrawElementsWithCounters( const drawSurf_t *surf ) {
 			idLib::Warning( "RB_DrawElementsWithCounters, jointBuffer == NULL" );
 			return;
 		}
-		assert( ( jointBuffer.GetOffset() & ( glConfig.uniformBufferOffsetAlignment - 1 ) ) == 0 );
+		assert( ( jointBuffer.GetOffset() & ( renderBackend->Caps().uniformBufferOffsetAlignment - 1 ) ) == 0 );
 
 		const GLuint ubo = reinterpret_cast< GLuint >( jointBuffer.GetAPIObject() );
 		qglBindBufferRange( GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetNumJoints() * sizeof( idJointMat ) );
@@ -1469,7 +1470,7 @@ static void RB_StencilShadowPass( const drawSurf_t *drawSurfs, const viewLight_t
 				idLib::Warning( "RB_DrawElementsWithCounters, jointBuffer == NULL" );
 				continue;
 			}
-			assert( ( jointBuffer.GetOffset() & ( glConfig.uniformBufferOffsetAlignment - 1 ) ) == 0 );
+			assert( ( jointBuffer.GetOffset() & ( renderBackend->Caps().uniformBufferOffsetAlignment - 1 ) ) == 0 );
 
 			const GLuint ubo = reinterpret_cast< GLuint >( jointBuffer.GetAPIObject() );
 			qglBindBufferRange( GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetNumJoints() * sizeof( idJointMat ) );
@@ -2435,7 +2436,7 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 	renderLog.CloseMainBlock();
 
 	// bind one global Vertex Array Object (VAO)
-	qglBindVertexArray( glConfig.global_vao );
+	qglBindVertexArray( glContext.global_vao );
 
 	//------------------------------------
 	// sets variables that can be used by all programs

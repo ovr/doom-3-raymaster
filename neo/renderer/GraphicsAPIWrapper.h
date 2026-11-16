@@ -28,6 +28,8 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __GRAPHICSAPIWRAPPER_H__
 #define __GRAPHICSAPIWRAPPER_H__
 
+#include "RenderBackend.h"
+
 /*
 ================================================================================================
 
@@ -78,6 +80,6 @@ void			GL_Color( float * color );
 void			GL_Color( float r, float g, float b );
 void			GL_Color( float r, float g, float b, float a );
 
-void			GL_CheckErrors();
+ID_INLINE void	GL_CheckErrors() { renderBackend->CheckErrors(); }
 
 #endif // !__GRAPHICSAPIWRAPPER_H__

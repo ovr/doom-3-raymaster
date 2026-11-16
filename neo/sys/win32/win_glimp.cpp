@@ -54,6 +54,8 @@ struct glwState_t {
 
 	bool			fakeClassRegistered;
 
+	glContextInfo_t	info;			// handed to the OpenGL backend by GLimp_CreateContext
+
 	// WGL_ARB_extensions_string
 	PFNWGLGETEXTENSIONSSTRINGARBPROC		wglGetExtensionsStringARB;
 
@@ -96,7 +98,7 @@ GLimp_HasWGLExtension
 ========================
 */
 bool GLimp_HasWGLExtension( const char * name ) {
-	return glConfig.wgl_extensions_string != nullptr && strstr( glConfig.wgl_extensions_string, name ) != nullptr;
+	return glw.info.wglExtensions != nullptr && strstr( glw.info.wglExtensions, name ) != nullptr;
 }
 
 /*
@@ -180,9 +182,9 @@ static void GLW_CheckWGLExtensions( HDC hDC ) {
 	glw.wglGetExtensionsStringARB = (PFNWGLGETEXTENSIONSSTRINGARBPROC)
 							  GLimp_ExtensionPointer("wglGetExtensionsStringARB");
 	if ( glw.wglGetExtensionsStringARB ) {
-		glConfig.wgl_extensions_string = (const char *) glw.wglGetExtensionsStringARB(hDC);
+		glw.info.wglExtensions = (const char *) glw.wglGetExtensionsStringARB(hDC);
 	} else {
-		glConfig.wgl_extensions_string = "";
+		glw.info.wglExtensions = "";
 	}
 
 	// WGL_EXT_swap_control
@@ -190,7 +192,7 @@ static void GLW_CheckWGLExtensions( HDC hDC ) {
 	r_swapInterval.SetModified();	// force a set next frame
 
 	// WGL_EXT_swap_control_tear
-	glConfig.swapControlTearAvailable = R_CheckWinExtension( "WGL_EXT_swap_control_tear" );
+	glw.info.swapControlTearAvailable = R_CheckWinExtension( "WGL_EXT_swap_control_tear" );
 
 	// WGL_ARB_pixel_format
 	glw.wglGetPixelFormatAttribivARB = (PFNWGLGETPIXELFORMATATTRIBIVARBPROC)GLimp_ExtensionPointer("wglGetPixelFormatAttribivARB");
@@ -422,13 +424,13 @@ static bool GLW_InitDriver( const glContextParms_t & parms ) {
 
 	// get the full info
 	DescribePixelFormat( glw.hDC, glw.pixelformat, sizeof( glw.pfd ), &glw.pfd );
-	glConfig.colorBits = glw.pfd.cColorBits;
-	glConfig.depthBits = glw.pfd.cDepthBits;
-	glConfig.stencilBits = glw.pfd.cStencilBits;
+	glw.info.colorBits = glw.pfd.cColorBits;
+	glw.info.depthBits = glw.pfd.cDepthBits;
+	glw.info.stencilBits = glw.pfd.cStencilBits;
 
 	// XP seems to set this incorrectly
-	if ( !glConfig.stencilBits ) {
-		glConfig.stencilBits = 8;
+	if ( !glw.info.stencilBits ) {
+		glw.info.stencilBits = 8;
 	}
 
 	// the same SetPixelFormat is used either way
@@ -471,7 +473,7 @@ If there is any failure, the renderer will revert back to safe
 parameters and try again.
 ===================
 */
-bool GLimp_CreateContext( const glContextParms_t & parms ) {
+bool GLimp_CreateContext( const glContextParms_t & parms, glContextInfo_t & info ) {
 	common->Printf( "Initializing OpenGL subsystem with multisamples:%i stereo:%i\n", parms.multiSamples, parms.stereo );
 
 	glw.hWnd = static_cast<HWND>( parms.nativeWindow );
@@ -500,9 +502,9 @@ bool GLimp_CreateContext( const glContextParms_t & parms ) {
 	// Check to see if we can get a stereo pixel format, even if we aren't going to use it,
 	// so the menu option can be
 	if ( GLW_ChoosePixelFormat( glw.hDC, parms.multiSamples, true ) != -1 ) {
-		glConfig.stereoPixelFormatAvailable = true;
+		glw.info.stereoPixelFormatAvailable = true;
 	} else {
-		glConfig.stereoPixelFormatAvailable = false;
+		glw.info.stereoPixelFormatAvailable = false;
 	}
 
 	if ( !GLW_InitDriver( parms ) ) {
@@ -510,12 +512,10 @@ bool GLimp_CreateContext( const glContextParms_t & parms ) {
 		return false;
 	}
 
-	glConfig.isStereoPixelFormat = parms.stereo;
-	glConfig.multisamples = parms.multiSamples;
-
 	// wglSwapinterval, etc
 	GLW_CheckWGLExtensions( glw.hDC );
 
+	info = glw.info;
 	return true;
 }
 
@@ -580,7 +580,7 @@ void GLimp_SwapBuffers() {
 
 		int interval = 0;
 		if ( r_swapInterval.GetInteger() == 1 ) {
-			interval = ( glConfig.swapControlTearAvailable ) ? -1 : 1;
+			interval = ( glw.info.swapControlTearAvailable ) ? -1 : 1;
 		} else if ( r_swapInterval.GetInteger() == 2 ) {
 			interval = 1;
 		}
