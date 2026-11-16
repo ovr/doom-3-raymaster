@@ -39,7 +39,7 @@ function Get-MainCheckout {
 	return $repoRoot
 }
 
-if ( -not $BuildDir ) { $BuildDir = Join-Path $repoRoot 'build\vs2022-win32\bin\Release' }
+if ( -not $BuildDir ) { $BuildDir = Join-Path $repoRoot 'build\vs2022-x64\bin\Release' }
 if ( -not $GameDir ) { $GameDir = Join-Path ( Get-MainCheckout ) 'testing_1' }
 if ( -not $SavePath ) { $SavePath = Join-Path $repoRoot 'build\vdemo-save' }
 if ( -not [System.IO.Path]::IsPathRooted( $OutDir ) ) { $OutDir = Join-Path ( Get-Location ) $OutDir }

@@ -4,18 +4,18 @@ This file provides guidance to AI coding agents (Claude Code, Codex, etc.) when 
 
 `AGENTS_LOCAL.md` exists in the repository root, read it as well: it holds local, machine-specific instructions and is not committed (git-ignored).
 
-DOOM 3 BFG Edition (id Tech 4, GPL) ported to a CMake build on modern Windows. Only 32-bit MSVC (Win32/x86) builds are supported. You need VS2022 or its Build Tools, the Windows 10 SDK, and XAudio2 2.9 (Windows 10+). The legacy DirectX SDK is not used.
+DOOM 3 BFG Edition (id Tech 4, GPL) ported to a CMake build on modern Windows. Only 64-bit MSVC (x64) builds are supported; the x86 build was dropped. You need VS2022 or its Build Tools, the Windows 10 SDK, and XAudio2 2.9 (Windows 10+). The legacy DirectX SDK is not used.
 
 ## Build
 
 ```
-cmake --preset vs2022-win32          # configure (VS 2022 generator, Win32)
+cmake --preset vs2022-x64            # configure (VS 2022 generator, x64)
 cmake --build --preset release       # also: debug, retail
 ```
 
 - zlib is a git submodule in `third_party/zlib` (upstream madler/zlib at a release tag), compiled into the `external` target from its `.c` files. After cloning run `git submodule update --init`, or configure stops with that hint.
-- The output is `build\vs2022-win32\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-win32` can also be opened in Visual Studio.
-- For Ninja, run these from an "x86 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x86`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
+- The output is `build\vs2022-x64\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-x64` can also be opened in Visual Studio.
+- For Ninja, run these from an "x64 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x64`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
 - `Retail` is `Release` plus `ID_RETAIL`.
 - The language is **C++23**. The root `CMakeLists.txt` sets `CMAKE_CXX_STANDARD 23` and pins `/std:c++23preview` (CMake would otherwise pick `/std:c++latest`), plus `/Zc:__cplusplus`. You need MSVC 19.43 (VS 2022 17.13) or newer.
 - C++20 and later imply the `/permissive-` conformance mode. That means:
@@ -26,7 +26,7 @@ cmake --build --preset release       # also: debug, retail
 - `doomclassic` and `timidity` keep `/Zc:strictStrings-`, because the 1993 C code passes literals as `char *` everywhere.
 - Build all three configs after language-level changes. `Debug` and `Retail` compile code that `Release` doesn't (`assert` bodies, `#ifndef ID_RETAIL`).
 - Engine code builds at /W4. `-DD3BFG_WARNINGS_AS_ERRORS=ON` adds /WX.
-- The Bink videos play through FFmpeg (optional). `tools\ffmpeg\build-ffmpeg-win32.cmd` builds a minimal 32-bit LGPL FFmpeg 7.1 into `external\ffmpeg-win32` (gitignored; needs MSYS2 in `C:\msys64` with `pacman -S make diffutils`), then re-run the configure. CMake finds it there (`-DD3BFG_FFMPEG_ROOT=<dir>` to point elsewhere), defines `USE_FFMPEG` and copies `avformat-61.dll`, `avcodec-61.dll` and `avutil-59.dll` next to the exe. Copy them into the game install with the exe. Without FFmpeg, or without the DLLs at runtime (they are delay-loaded), the videos stay black.
+- The Bink videos play through FFmpeg (optional). `tools\ffmpeg\build-ffmpeg-x64.cmd` builds a minimal 64-bit LGPL FFmpeg 7.1 into `external\ffmpeg-x64` (gitignored; needs MSYS2 in `C:\msys64` with `pacman -S make diffutils`), then re-run the configure. CMake finds it there (`-DD3BFG_FFMPEG_ROOT=<dir>` to point elsewhere), defines `USE_FFMPEG` and copies `avformat-61.dll`, `avcodec-61.dll` and `avutil-59.dll` next to the exe. Copy them into the game install with the exe. Without FFmpeg, or without the DLLs at runtime (they are delay-loaded), the videos stay black.
 
 ## Tests
 
@@ -34,9 +34,9 @@ cmake --build --preset release       # also: debug, retail
 
 ```
 cmake --build --preset release --target idlibTests
-ctest --test-dir build/vs2022-win32 -C Release
-build/vs2022-win32/bin/Release/idlibTests.exe LCP_Symmetric   # one test (substring filter), or "all"
-build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/DAZ
+ctest --test-dir build/vs2022-x64 -C Release
+build/vs2022-x64/bin/Release/idlibTests.exe LCP_Symmetric   # one test (substring filter), or "all"
+build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DAZ
 ```
 
 - Run the tests in `Release`. Some tests feed out-of-range inputs on purpose. In `Debug`, those trip `assert`, and `AssertFailed` calls `common->Warning` on the NULL stub `common`, so the test crashes.
@@ -70,7 +70,7 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 - Parallel work goes through `idParallelJobList` (`idlib/ParallelJobList.h`).
 - `common->Printf` from non-main threads is queued and flushed by the main thread.
 
-**SIMD paths are disabled.** The `ID_WIN_X86_SSE*`/`ID_WIN_X86_MMX*` defines are commented out in `neo/idlib/sys/sys_defines.h`, so idLib's `#ifdef ID_WIN_X86_SSE*_INTRIN` branches (LCP, MatX, etc.) compile to their generic C++ fallbacks. The shipped game used SSE, so these generic paths are barely tested and have hidden real bugs. For example, a wrong unrolled loop in `DotProduct_SIMD` in `idlib/math/Lcp.cpp` produced NaN ragdolls, and NaN bounds then made every collision query test the whole world. `idSIMD_SSE` in `Simd_SSE.cpp` still uses intrinsics unconditionally.
+**SIMD paths are disabled.** `neo/idlib/sys/sys_defines.h` doesn't define `ID_WIN_X86_SSE*_INTRIN`, so idLib's `#ifdef ID_WIN_X86_SSE*_INTRIN` branches (LCP, MatX, etc.) compile to their generic C++ fallbacks. The shipped game used SSE, so these generic paths are barely tested and have hidden real bugs. For example, a wrong unrolled loop in `DotProduct_SIMD` in `idlib/math/Lcp.cpp` produced NaN ragdolls, and NaN bounds then made every collision query test the whole world. `idSIMD_SSE` in `Simd_SSE.cpp` still uses intrinsics unconditionally.
 
 **Physics notes.**
 - `idPhysics_AF` (`d3xp/physics/Physics_AF.cpp`) builds row-padded `idMatX` systems with `MATX_ALLOCA`, whose padding is uninitialized, and solves them with `idLCP`.

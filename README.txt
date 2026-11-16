@@ -21,25 +21,25 @@ Note that Doom 3 BFG Edition is available from the Steam store at
 http://store.steampowered.com/app/208200/
 
 
-Compiling on win32:
--------------------
+Compiling on Windows:
+---------------------
 
 The build uses CMake (3.21 or newer) and Microsoft Visual Studio 2022
 (the free Build Tools are enough) with the Windows 10 (or newer) SDK.
-Only 32-bit (Win32) builds are supported. The legacy DirectX SDK is not
+Only 64-bit (x64) builds are supported. The legacy DirectX SDK is not
 needed: audio uses XAudio2 2.9, so the game requires Windows 10 or newer.
 
 Configure and build from the repository root:
 
-	cmake --preset vs2022-win32
+	cmake --preset vs2022-x64
 	cmake --build --preset release      (or: debug, retail)
 
-The executable is placed in build\vs2022-win32\bin\<Configuration>\Doom3BFG.exe.
-build\vs2022-win32\Doom3BFG.sln can be opened in Visual Studio.
+The executable is placed in build\vs2022-x64\bin\<Configuration>\Doom3BFG.exe.
+build\vs2022-x64\Doom3BFG.sln can be opened in Visual Studio.
 
-For Ninja, run from an "x86 Native Tools Command Prompt for VS 2022":
+For Ninja, run from an "x64 Native Tools Command Prompt for VS 2022":
 
-	cmake --preset ninja-x86
+	cmake --preset ninja-x64
 	cmake --build --preset ninja-release
 
 Options: -DD3BFG_WARNINGS_AS_ERRORS=ON enables /WX for the engine code.

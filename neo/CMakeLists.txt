@@ -82,7 +82,6 @@ target_link_libraries(Doom3BFG PRIVATE
 )
 target_link_options(Doom3BFG PRIVATE
 	/STACK:16777216,16777216
-	/LARGEADDRESSAWARE
 	/DEBUG
 	$<$<CONFIG:Debug>:/MAP>
 	$<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
@@ -90,9 +89,9 @@ target_link_options(Doom3BFG PRIVATE
 set_target_properties(Doom3BFG PROPERTIES FOLDER "neo")
 set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT Doom3BFG)
 
-# FFmpeg (optional, tools/ffmpeg/build-ffmpeg-win32.cmd) plays the Bink videos, without it they
+# FFmpeg (optional, tools/ffmpeg/build-ffmpeg-x64.cmd) plays the Bink videos, without it they
 # stay black. The DLLs are delay-loaded and copied next to the exe, which starts without them.
-set(D3BFG_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-win32" CACHE PATH
+set(D3BFG_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-x64" CACHE PATH
 	"FFmpeg for the Bink videos (include/, bin/*.dll, bin/ or lib/*.lib); empty or missing disables them")
 
 set(D3BFG_FFMPEG_FOUND OFF)
@@ -135,7 +134,7 @@ if(D3BFG_FFMPEG_FOUND)
 	)
 else()
 	message(STATUS "FFmpeg not found in '${D3BFG_FFMPEG_ROOT}': Bink videos off "
-		"(build it with tools/ffmpeg/build-ffmpeg-win32.cmd or set D3BFG_FFMPEG_ROOT)")
+		"(build it with tools/ffmpeg/build-ffmpeg-x64.cmd or set D3BFG_FFMPEG_ROOT)")
 endif()
 
 # ---------------------------------------------------------------------------
