@@ -130,13 +130,17 @@ ID_INLINE void idInterpreter::PopParms( int numParms ) {
 	localstackUsed -= numParms;
 }
 
+// Push stores one int: an entity number for PUSH_ENT/OBJ/OBJENT and EnterObjectFunction, a float's
+// or boolean's bits, or a third of a vector. The compiler sizes those args with the type sizes.
+static_assert( SCRIPT_ENTITY_SIZE == sizeof( int ) && sizeof( float ) == sizeof( int ) && sizeof( idVec3 ) == 3 * sizeof( int ) );
+
 /*
 ====================
 idInterpreter::Push
 ====================
 */
 ID_INLINE void idInterpreter::Push( int value ) {
-	if ( localstackUsed + sizeof( int ) > LOCALSTACK_SIZE ) {
+	if ( localstackUsed + static_cast<int>( sizeof( int ) ) > LOCALSTACK_SIZE ) {
 		Error( "Push: locals stack overflow\n" );
 	}
 	*( int * )&localstack[ localstackUsed ]	= value;

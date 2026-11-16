@@ -279,7 +279,8 @@ bool idInterpreter::GetRegisterValue( const char *name, idStr &out, int scopeDep
 		}
 
 		field = scope->TypeDef()->GetParmType( reg.ptrOffset )->FieldType();
-		obj   = *reinterpret_cast<const idScriptObject **>( &localstack[ callStack[ callStackDepth ].stackbase ] );
+		// 'self' is the first parm, stored as an entity number
+		obj   = GetScriptObject( *reinterpret_cast<const int *>( &localstack[ callStack[ callStackDepth ].stackbase ] ) );
 		if ( !field || !obj ) {
 			return false;
 		}
@@ -691,7 +692,7 @@ void idInterpreter::CallEvent( const function_t *func, int argsize ) {
 	varEval_t			var;
 	int 				pos;
 	int 				start;
-	int					data[ D_EVENT_MAXARGS ];
+	eventArg_t			data[ D_EVENT_MAXARGS ];
 	const idEventDef	*evdef;
 	const char			*format;
 
@@ -751,37 +752,39 @@ void idInterpreter::CallEvent( const function_t *func, int argsize ) {
 		switch( format[ i ] ) {
 		case D_EVENT_INTEGER :
 			var.intPtr = ( int * )&localstack[ start + pos ];
-			data[ i ] = int( *var.floatPtr );
+			data[ i ] = static_cast<int>( *var.floatPtr );
 			break;
 
 		case D_EVENT_FLOAT :
 			var.intPtr = ( int * )&localstack[ start + pos ];
-			( *( float * )&data[ i ] ) = *var.floatPtr;
+			data[ i ] = EventArgFromFloat( *var.floatPtr );
 			break;
 
 		case D_EVENT_VECTOR :
 			var.intPtr = ( int * )&localstack[ start + pos ];
-			( *( idVec3 ** )&data[ i ] ) = var.vectorPtr;
+			data[ i ] = reinterpret_cast<eventArg_t>( var.vectorPtr );
 			break;
 
 		case D_EVENT_STRING :
-			( *( const char ** )&data[ i ] ) = ( char * )&localstack[ start + pos ];
+			data[ i ] = reinterpret_cast<eventArg_t>( &localstack[ start + pos ] );
 			break;
 
-		case D_EVENT_ENTITY :
+		case D_EVENT_ENTITY : {
 			var.intPtr = ( int * )&localstack[ start + pos ];
-			( *( idEntity ** )&data[ i ] ) = GetEntity( *var.entityNumberPtr );
-			if ( !( *( idEntity ** )&data[ i ] ) ) {
+			idEntity *ent = GetEntity( *var.entityNumberPtr );
+			if ( !ent ) {
 				Warning( "Entity not found for event '%s'. Terminating thread.", evdef->GetName() );
 				threadDying = true;
 				PopParms( argsize );
 				return;
 			}
+			data[ i ] = reinterpret_cast<eventArg_t>( ent );
 			break;
+		}
 
 		case D_EVENT_ENTITY_NULL :
 			var.intPtr = ( int * )&localstack[ start + pos ];
-			( *( idEntity ** )&data[ i ] ) = GetEntity( *var.entityNumberPtr );
+			data[ i ] = reinterpret_cast<eventArg_t>( GetEntity( *var.entityNumberPtr ) );
 			break;
 
 		case D_EVENT_TRACE :
@@ -863,7 +866,7 @@ void idInterpreter::CallSysEvent( const function_t *func, int argsize ) {
 	varEval_t			source;
 	int 				pos;
 	int 				start;
-	int					data[ D_EVENT_MAXARGS ];
+	eventArg_t			data[ D_EVENT_MAXARGS ];
 	const idEventDef	*evdef;
 	const char			*format;
 
@@ -882,37 +885,39 @@ void idInterpreter::CallSysEvent( const function_t *func, int argsize ) {
 		switch( format[ i ] ) {
 		case D_EVENT_INTEGER :
 			source.intPtr = ( int * )&localstack[ start + pos ];
-			*( int * )&data[ i ] = int( *source.floatPtr );
+			data[ i ] = static_cast<int>( *source.floatPtr );
 			break;
 
 		case D_EVENT_FLOAT :
 			source.intPtr = ( int * )&localstack[ start + pos ];
-			*( float * )&data[ i ] = *source.floatPtr;
+			data[ i ] = EventArgFromFloat( *source.floatPtr );
 			break;
 
 		case D_EVENT_VECTOR :
 			source.intPtr = ( int * )&localstack[ start + pos ];
-			*( idVec3 ** )&data[ i ] = source.vectorPtr;
+			data[ i ] = reinterpret_cast<eventArg_t>( source.vectorPtr );
 			break;
 
 		case D_EVENT_STRING :
-			*( const char ** )&data[ i ] = ( char * )&localstack[ start + pos ];
+			data[ i ] = reinterpret_cast<eventArg_t>( &localstack[ start + pos ] );
 			break;
 
-		case D_EVENT_ENTITY :
+		case D_EVENT_ENTITY : {
 			source.intPtr = ( int * )&localstack[ start + pos ];
-			*( idEntity ** )&data[ i ] = GetEntity( *source.entityNumberPtr );
-			if ( !*( idEntity ** )&data[ i ] ) {
+			idEntity *ent = GetEntity( *source.entityNumberPtr );
+			if ( !ent ) {
 				Warning( "Entity not found for event '%s'. Terminating thread.", evdef->GetName() );
 				threadDying = true;
 				PopParms( argsize );
 				return;
 			}
+			data[ i ] = reinterpret_cast<eventArg_t>( ent );
 			break;
+		}
 
 		case D_EVENT_ENTITY_NULL :
 			source.intPtr = ( int * )&localstack[ start + pos ];
-			*( idEntity ** )&data[ i ] = GetEntity( *source.entityNumberPtr );
+			data[ i ] = reinterpret_cast<eventArg_t>( GetEntity( *source.entityNumberPtr ) );
 			break;
 
 		case D_EVENT_TRACE :

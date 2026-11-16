@@ -1518,10 +1518,14 @@ idVarDef *idCompiler::GetExpression( int priority ) {
 			// if last statement is an indirect, change it to an address of
 			if ( gameLocal.program.NumStatements() > 0 ) {
 				statement_t &statement = gameLocal.program.GetStatement( gameLocal.program.NumStatements() - 1 );
-				if ( ( statement.op >= OP_INDIRECT_F ) && ( statement.op < OP_ADDRESS ) ) {
+				if ( ( statement.op >= OP_INDIRECT_F ) && ( statement.op < OP_ADDRESS ) && ( statement.c == e ) ) {
+					// the indirect's result slot is sized for the field, the address needs a pointer slot
 					statement.op = OP_ADDRESS;
 					type_pointer.SetPointerType( e->TypeDef() );
-					e->SetTypeDef( &type_pointer );
+					e->numUsers = 2;	// unused now, free for reuse
+					e = gameLocal.program.FindFreeResultDef( &type_pointer, RESULT_STRING, scope, statement.a, statement.b );
+					e->numUsers = 1;
+					statement.c = e;
 				}
 			}
 
@@ -2332,7 +2336,7 @@ void idCompiler::ParseVariableDef( idTypeDef *type, const char *name ) {
 		}
 	} else if ( type->Inherits( &type_object ) ) {
 		if ( scope->Type() != ev_function ) {
-			def->SetObject( NULL );
+			def->SetNullObject();
 		}
 	}
 }
@@ -2422,7 +2426,7 @@ void idCompiler::ParseEventDef( idTypeDef *returnType, const char *name ) {
 	ExpectToken( "(" );
 
 	format = ev->GetArgFormat();
-	num = strlen( format );
+	num = ev->GetNumArgs();
 	for( i = 0; i < num; i++ ) {
 		expectedType = GetTypeForEventArg( format[ i ] );
 		if ( expectedType == NULL || ( expectedType == &type_void ) ) {
@@ -2589,7 +2593,7 @@ void idCompiler::CompileFile( const char *text, const char *filename, bool toCon
 	memset( &immediate, 0, sizeof( immediate ) );
 
 	parser.SetFlags( LEXFL_ALLOWMULTICHARLITERALS );
-	parser.LoadMemory( text, strlen( text ), filename );
+	parser.LoadMemory( text, idStr::Length( text ), filename );
 	parserPtr = &parser;
 
 	// unread tokens to include script defines
