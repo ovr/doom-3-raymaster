@@ -158,7 +158,6 @@ void idRenderBackendGL::API_SetDefaultState() {
 	currentVertexLayout = LAYOUT_UNKNOWN;
 	currentVertexBuffer = bufferHandle_t::NONE;
 	currentIndexBuffer = bufferHandle_t::NONE;
-	debugFrame++;
 #ifdef _DEBUG
 	debugTexturesBound = 0;
 #endif

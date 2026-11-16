@@ -35,7 +35,6 @@ If you have questions concerning this license or the applicable additional terms
 	idRenderBackendGL: the OpenGL implementation of idRenderBackend.
 
 	Private to renderer/OpenGL/: shared code reaches it only through renderBackend.
-	A method whose body has not moved here yet stops with a fatal error.
 	A bufferHandle_t, textureHandle_t, shaderHandle_t or programHandle_t is a pointer to a record below.
 
 ===============================================================================
@@ -238,7 +237,15 @@ private:
 	bufferHandle_t		currentVertexBuffer = bufferHandle_t::NONE;
 	bufferHandle_t		currentIndexBuffer = bufferHandle_t::NONE;
 
-	int					debugFrame = 0;				// Debug: counts API_SetDefaultState, one per frame (per eye in stereo)
+	GLuint				timerQueryId = 0;			// the GL_TIME_ELAPSED_EXT query around a frame
+	idList<GLuint>		timestampQueries[TIMESTAMP_SETS];	// r_pix: slot index of a set is its query
+
+	int					swapIndex = 0;				// 0 or 1 into renderSync
+	GLsync				renderSync[2] = {};
+	presentMode_t		swapMode = presentMode_t::IMMEDIATE;	// what the swap interval was set from
+	bool				swapModeSet = false;
+
+	int					debugFrame = 0;				// Debug: counts BeginFrame
 	int					debugUploadsAfterDraw = 0;	// Debug: uploads into a texture the frame had drawn with already (rule R4)
 #ifdef _DEBUG
 	void				DebugCheckDraw( const drawCall_t & dc );

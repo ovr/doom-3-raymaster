@@ -66,7 +66,7 @@ enum renderLogMainBlock_t {
 /*
 ================================================
 GPU / CPU time per render pass and KHR_debug groups (r_pix), see RenderLog.cpp.
-These only touch GL on the render backend thread.
+These only call renderBackend on the render backend thread.
 ================================================
 */
 void	PC_BeginFrame();
@@ -76,9 +76,9 @@ void	PC_EndMainBlock();
 void	PC_BeginNamedEvent( const char * name );
 void	PC_EndNamedEvent();
 // after the swap of the previous frame, while the game thread is idle
-void	PC_FinishRendering( uint64 gpuTotalNanoseconds );
+void	PC_FinishRendering( uint64 gpuTotalMicroseconds );
 int		PC_GetPassTimings( std::span<renderPassTiming_t> passes );
-// frees the GL queries while the context still exists
+// frees the timestamps of the backend while its device still exists
 void	PC_Shutdown();
 
 // these are used to make sure each Indent() is properly paired with an Outdent()

@@ -346,7 +346,7 @@ void idRenderBackendGL::UploadTexture( textureHandle_t texture, int mipLevel, in
 
 #ifdef _DEBUG
 	// rule R4: an upload into a texture this frame has already drawn with breaks the pass of a pipeline backend
-	if ( tex->drawnInFrame == debugFrame && debugUploadsAfterDraw++ == 0 ) {
+	if ( inFrame && tex->drawnInFrame == debugFrame && debugUploadsAfterDraw++ == 0 ) {
 		common->Printf( "idRenderBackendGL::UploadTexture: an upload into '%s', which this frame has drawn with already\n", tex->name.c_str() );
 	}
 #endif

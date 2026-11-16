@@ -121,7 +121,7 @@ public:
 	void	EndMainBlock();
 	void	BeginNamedEvent( const char * name );
 	void	EndNamedEvent();
-	void	FinishRendering( uint64 gpuTotalNanoseconds );
+	void	FinishRendering( uint64 gpuTotalMicroseconds );
 	int		GetPassTimings( std::span<renderPassTiming_t> passes ) const;
 	void	Shutdown();
 
@@ -129,7 +129,7 @@ private:
 	static constexpr int	TIMING			= BIT( 0 );	// r_pix 1
 	static constexpr int	DEBUG_GROUPS	= BIT( 1 );	// r_pix 2
 
-	static constexpr int	QUERY_FRAMES	= 4;		// frames of timestamps in flight
+	static constexpr int	QUERY_FRAMES	= TIMESTAMP_SETS;	// frames of timestamps in flight
 	static constexpr int	MAX_BLOCKS		= 1024;		// timed main blocks in a frame, the frame itself included
 	static constexpr int	MAX_DEPTH		= 32;		// nesting of the timed main blocks
 	static constexpr int	MAX_GROUP_DEPTH	= 48;		// nesting of the debug groups, GL guarantees 64
@@ -142,8 +142,8 @@ private:
 		uint64					cpuMicroSec;
 	};
 
+	// the timestamps of blocks[i] are slots 2 * i and 2 * i + 1 of the backend's set of this frame
 	struct frame_t {
-		std::vector<GLuint>		queries;		// the timestamps of blocks[i] are queries[2 * i] and [2 * i + 1]
 		std::vector<block_t>	blocks;			// blocks[0] is the whole frame
 		int						numUntimed = 0;	// main blocks over MAX_BLOCKS or MAX_DEPTH
 		bool					pending = false;// the timestamps are issued and not read back yet
@@ -168,7 +168,7 @@ private:
 	void	PushGroup( const char * name );
 	void	PopGroup();
 	void	FetchResults();
-	void	ReadFrame( const frame_t & frame );
+	void	ReadFrame( int set );
 	void	PublishPeriod();
 	void	PrintPeriod( int periodMsec ) const;
 	void	ResetPeriod();
@@ -183,7 +183,9 @@ private:
 	std::array<int, MAX_DEPTH>		openBlocks = {};		// indexes into the blocks of the frame, -1 = not timed
 	int								blockDepth = 0;
 	int								groupDepth = 0;
-	int								maxGroupDepth = 0;		// 0 until GL is asked
+	int								maxGroupDepth = 0;		// 0 until the caps are read
+	bool							timestampsWritten = false;	// the backend holds timestamp slots of ours
+	std::vector<uint64>				timestamps;				// scratch of ReadFrame
 
 	// the report period, main thread only
 	std::array<passStats_t, MRB_MAX>	periodPasses;
@@ -264,10 +266,7 @@ void idRenderPassTimer::BeginFrame() {
 	}
 
 	if ( ( flags & DEBUG_GROUPS ) != 0 && maxGroupDepth == 0 ) {
-		GLint maxStackDepth = 0;
-		qglGetIntegerv( GL_MAX_DEBUG_GROUP_STACK_DEPTH, &maxStackDepth );
-		// the default group takes the first level of the stack
-		maxGroupDepth = idMath::ClampInt( 1, MAX_GROUP_DEPTH, maxStackDepth - 1 );
+		maxGroupDepth = idMath::ClampInt( 1, MAX_GROUP_DEPTH, renderBackend->Caps().maxDebugGroupDepth );
 	}
 
 	backendThread = Sys_GetCurrentThreadID();
@@ -393,14 +392,8 @@ void idRenderPassTimer::OpenTimedBlock( const renderLogMainBlock_t pass ) {
 	int index = -1;
 	if ( blockDepth < MAX_DEPTH && frame.blocks.size() < MAX_BLOCKS ) {
 		index = static_cast<int>( frame.blocks.size() );
-		const size_t numQueries = frame.blocks.size() * 2 + 2;
-		if ( frame.queries.size() < numQueries ) {
-			// grow in steps, so a frame like the last one creates no queries
-			const size_t oldSize = frame.queries.size();
-			frame.queries.resize( Min( Max3( numQueries, oldSize * 2, size_t( 128 ) ), size_t( MAX_BLOCKS * 2 ) ) );
-			qglGenQueriesARB( static_cast<GLsizei>( frame.queries.size() - oldSize ), frame.queries.data() + oldSize );
-		}
-		qglQueryCounter( frame.queries[index * 2], GL_TIMESTAMP );
+		renderBackend->WriteTimestamp( currentFrame, index * 2 );
+		timestampsWritten = true;
 		frame.blocks.push_back( { pass, blockDepth, Sys_Microseconds(), 0 } );
 	} else {
 		frame.numUntimed++;
@@ -429,19 +422,19 @@ void idRenderPassTimer::CloseTimedBlock() {
 	frame_t & frame = frames[currentFrame];
 	block_t & block = frame.blocks[index];
 	block.cpuMicroSec = Sys_Microseconds() - block.cpuStart;
-	qglQueryCounter( frame.queries[index * 2 + 1], GL_TIMESTAMP );
+	renderBackend->WriteTimestamp( currentFrame, index * 2 + 1 );
 }
 
 /*
 ========================
 idRenderPassTimer::PushGroup
 
-Past the depth GL allows the group is only counted, so the pops stay balanced.
+Past the depth the backend allows the group is only counted, so the pops stay balanced.
 ========================
 */
 void idRenderPassTimer::PushGroup( const char * name ) {
 	if ( groupDepth < maxGroupDepth ) {
-		qglPushDebugGroup( GL_DEBUG_SOURCE_APPLICATION, 0, -1, ( name != nullptr && name[0] != '\0' ) ? name : "?" );
+		renderBackend->PushDebugGroup( ( name != nullptr && name[0] != '\0' ) ? name : "?" );
 	}
 	groupDepth++;
 }
@@ -459,7 +452,7 @@ void idRenderPassTimer::PopGroup() {
 	}
 	groupDepth--;
 	if ( groupDepth < maxGroupDepth ) {
-		qglPopDebugGroup();
+		renderBackend->PopDebugGroup();
 	}
 }
 
@@ -472,17 +465,16 @@ Reads back the query sets the GPU has finished, oldest first. Never waits for th
 */
 void idRenderPassTimer::FetchResults() {
 	for ( int i = 0; i < QUERY_FRAMES; i++ ) {
-		frame_t & frame = frames[( currentFrame + i ) % QUERY_FRAMES];
+		const int set = ( currentFrame + i ) % QUERY_FRAMES;
+		frame_t & frame = frames[set];
 		if ( !frame.pending ) {
 			continue;
 		}
 		// the end of the whole frame is the last timestamp of the set
-		GLuint available = GL_FALSE;
-		qglGetQueryObjectuivARB( frame.queries[1], GL_QUERY_RESULT_AVAILABLE, &available );
-		if ( available == GL_FALSE ) {
+		if ( !renderBackend->TimestampReady( set, 1 ) ) {
 			break;	// the newer sets aren't done either
 		}
-		ReadFrame( frame );
+		ReadFrame( set );
 		frame.pending = false;
 	}
 }
@@ -492,7 +484,11 @@ void idRenderPassTimer::FetchResults() {
 idRenderPassTimer::ReadFrame
 ========================
 */
-void idRenderPassTimer::ReadFrame( const frame_t & frame ) {
+void idRenderPassTimer::ReadFrame( const int set ) {
+	const frame_t & frame = frames[set];
+	timestamps.resize( frame.blocks.size() * 2 );
+	renderBackend->ReadTimestamps( set, static_cast<int>( timestamps.size() ), timestamps.data() );
+
 	std::array<double, MRB_MAX> gpuMs = {};
 	std::array<double, MRB_MAX> cpuMs = {};
 	std::array<int, MRB_MAX> count = {};
@@ -503,10 +499,8 @@ void idRenderPassTimer::ReadFrame( const frame_t & frame ) {
 
 	for ( size_t i = 0; i < frame.blocks.size(); i++ ) {
 		const block_t & block = frame.blocks[i];
-		uint64 begin = 0;
-		uint64 end = 0;
-		qglGetQueryObjectui64vEXT( frame.queries[i * 2], GL_QUERY_RESULT, &begin );
-		qglGetQueryObjectui64vEXT( frame.queries[i * 2 + 1], GL_QUERY_RESULT, &end );
+		const uint64 begin = timestamps[i * 2];
+		const uint64 end = timestamps[i * 2 + 1];
 		const double blockGpuMs = ( end > begin ) ? ( end - begin ) * 1.0e-6 : 0.0;
 		const double blockCpuMs = block.cpuMicroSec * 1.0e-3;
 
@@ -537,10 +531,9 @@ idRenderPassTimer::FinishRendering
 Called after the swap of the previous frame, while the game thread is idle.
 ========================
 */
-void idRenderPassTimer::FinishRendering( const uint64 gpuTotalNanoseconds ) {
+void idRenderPassTimer::FinishRendering( const uint64 gpuTotalMicroseconds ) {
 	if ( ( r_pix.GetInteger() & TIMING ) == 0 || !renderBackend->Caps().timestamps ) {
-		const bool hasQueries = std::ranges::any_of( frames, []( const frame_t & frame ) { return !frame.queries.empty(); } );
-		if ( periodStarted || hasQueries ) {
+		if ( periodStarted || timestampsWritten ) {
 			// r_pix 1 was turned off: give the queries back
 			FreeQueries();
 			ResetPeriod();
@@ -552,7 +545,7 @@ void idRenderPassTimer::FinishRendering( const uint64 gpuTotalNanoseconds ) {
 
 	FetchResults();
 
-	const double timeElapsedMs = gpuTotalNanoseconds * 1.0e-6;
+	const double timeElapsedMs = gpuTotalMicroseconds * 1.0e-3;
 	timeElapsedSum += timeElapsedMs;
 	timeElapsedMax = Max( timeElapsedMax, timeElapsedMs );
 	timeElapsedFrames++;
@@ -670,10 +663,11 @@ void idRenderPassTimer::FreeQueries() {
 	if ( ( frameFlags & TIMING ) != 0 ) {
 		AbortFrame();
 	}
+	if ( timestampsWritten && renderBackend != nullptr ) {
+		renderBackend->FreeTimestamps();
+	}
+	timestampsWritten = false;
 	for ( frame_t & frame : frames ) {
-		if ( !frame.queries.empty() ) {
-			qglDeleteQueriesARB( static_cast<GLsizei>( frame.queries.size() ), frame.queries.data() );
-		}
 		frame = {};
 	}
 	currentFrame = 0;
@@ -737,8 +731,8 @@ void PC_EndNamedEvent() {
 	renderPassTimer.EndNamedEvent();
 }
 
-void PC_FinishRendering( const uint64 gpuTotalNanoseconds ) {
-	renderPassTimer.FinishRendering( gpuTotalNanoseconds );
+void PC_FinishRendering( const uint64 gpuTotalMicroseconds ) {
+	renderPassTimer.FinishRendering( gpuTotalMicroseconds );
 }
 
 int PC_GetPassTimings( std::span<renderPassTiming_t> passes ) {

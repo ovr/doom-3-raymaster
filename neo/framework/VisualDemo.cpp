@@ -40,6 +40,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <vector>
 
 #include "VisualDemo.h"
+#include "../renderer/RenderBackend.h"
 
 /*
 ===============================================================================
@@ -699,12 +700,7 @@ void idVisualDemoLocal::WriteFrame( const frameTag_t & tag ) {
 	job->width = width;
 	job->height = height;
 	job->pixels.resize( static_cast<size_t>( width ) * height * 3 );
-	GLint packAlignment = 4;
-	qglGetIntegerv( GL_PACK_ALIGNMENT, &packAlignment );
-	qglPixelStorei( GL_PACK_ALIGNMENT, 1 );
-	qglReadBuffer( GL_BACK );
-	qglReadPixels( 0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, job->pixels.data() );
-	qglPixelStorei( GL_PACK_ALIGNMENT, packAlignment );
+	renderBackend->ReadOutputPixels( 0, 0, width, height, job->pixels.data() );
 
 	encoder.Submit( job.get() );
 	encoding.push_back( std::move( job ) );
