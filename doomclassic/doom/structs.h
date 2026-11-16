@@ -90,6 +90,7 @@ typedef struct tagMUSheader_t {
 	WORD    dummy;
 	//// variable-length part starts here
 } MUSheader_t ;
+static_assert( sizeof( MUSheader_t ) == 16 );
 typedef struct tagMidiHeaderChunk_t {
 	char name[4];
 	int  length;
@@ -210,38 +211,38 @@ typedef enum
 } load_e;
 // m_menu.structs end // 
 //  m_misc.structs begin // 
+// An int setting (location) or a string one (charLocation), never both. They used to share
+// unions, so writing the int default into a string slot left half a pointer on x64.
 struct default_t
 {
-    char*	name;
-	union {
-		int *			location;
-		const char * *	charLocation;
-	};
-	union {
-		int				defaultvalue;
-		const char *	charDefault;
-	};
-    int		scantranslate;		// PC scan code hack
-    int		untranslated;		// lousy hack
+	const char *	name = nullptr;
+	int *			location = nullptr;
+	const char * *	charLocation = nullptr;
+	int				defaultvalue = 0;
+	const char *	charDefault = nullptr;
+	int				scantranslate = 0;		// PC scan code hack
+	int				untranslated = 0;		// lousy hack
 
-	default_t( ) :
-		name( NULL ),
-		location( NULL ),
-		defaultvalue( 0 ),
-		scantranslate( 0 ),
-		untranslated( 0 ) {
-	}
+	default_t() = default;
 
-	default_t( char * name_, int * location_, int defaultvalue_ ) :
+	default_t( const char * name_, int * location_, int defaultvalue_ ) :
 		name( name_ ),
 		location( location_ ),
 		defaultvalue( defaultvalue_ ) {
 	}
 
-	default_t( char * name_, const char * * charLocation_, const char * charDefault_ ) :
+	default_t( const char * name_, const char * * charLocation_, const char * charDefault_ ) :
 		name( name_ ),
 		charLocation( charLocation_ ),
 		charDefault( charDefault_ ) {
+	}
+
+	void SetToDefault() const {
+		if ( charLocation != nullptr ) {
+			*charLocation = charDefault;
+		} else if ( location != nullptr ) {
+			*location = defaultvalue;
+		}
 	}
 };
 typedef struct
@@ -342,16 +343,19 @@ typedef struct
     short	stepdir;
     short	colormap;
 } mappatch_t;
+static_assert( sizeof( mappatch_t ) == 10 );
+// Laid over TEXTURE1/2 lump data, so the layout must match the file on every target.
 typedef struct
 {
     char		name[8];
-    int			masked;	
+    int			masked;
     short		width;
     short		height;
-    void		**columndirectory;	// OBSOLETE
+    int			columndirectory;	// OBSOLETE, 4 bytes of padding in the file
     short		patchcount;
     mappatch_t	patches[1];
 } maptexture_t;
+static_assert( offsetof( maptexture_t, patchcount ) == 20 && offsetof( maptexture_t, patches ) == 22 );
 typedef struct
 {
     // Block origin (allways UL),
@@ -482,6 +486,7 @@ typedef struct
     memblock_t	blocklist;
     
     memblock_t*	rover;
-    
+
 } memzone_t;
+static_assert( sizeof( memzone_t ) % ZONE_ALIGN == 0 );
 // z_zone.structs end // 

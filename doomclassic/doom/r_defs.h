@@ -287,6 +287,7 @@ typedef struct
     byte		topdelta;	// -1 is the last post in a column
     byte		length; 	// length data bytes follows
 } post_t;
+static_assert( sizeof( post_t ) == 2 );
 
 // postColumn_t is a list of 0 or more post_t, (byte)-1 terminated
 typedef post_t	postColumn_t;
@@ -362,6 +363,7 @@ struct patch_t
     int			columnofs[8];	// only [width] used
     // the [0] is &columnofs[width] 
 };
+static_assert( offsetof( patch_t, columnofs ) == 8 && sizeof( patch_t::columnofs[0] ) == 4 );
 
 
 

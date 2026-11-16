@@ -412,7 +412,7 @@ EV_VerticalDoor
 	
     // if the sector has an active thinker, use it
     sec = ::g->sides[ line->sidenum[side^1]] .sector;
-    secnum = sec-::g->sectors;
+    secnum = static_cast< int >( sec-::g->sectors );
 
     if (sec->specialdata)
     {

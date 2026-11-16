@@ -52,18 +52,19 @@ static size_t local_buffer_cur = 0;
 large multiples, so it's simpler to have two roomy ints */
 static  int32_t sample_increment, sample_correction; /*samples per MIDI delta-t*/
 
+// Returns the number of whole items read; MIDI chunks and items are far below 2 GB.
 static  int32_t read_local(void* buffer, size_t len, size_t count)
 {
 	if (fp && len > 0) {
-		return (int32_t)fp->Read(buffer, len * count ) / len;
+		return static_cast< int32_t >( fp->Read(buffer, static_cast< int >( len * count ) ) / static_cast< int >( len ) );
 	} else if( local_buffer != NULL ) {
 		if (len * count + local_buffer_cur > local_buffer_length) {
 			memcpy(buffer, &local_buffer[local_buffer_cur], local_buffer_length - local_buffer_cur);
-			return(int32_t)(local_buffer_length - local_buffer_cur)/len;
+			return static_cast< int32_t >( (local_buffer_length - local_buffer_cur)/len );
 		} else {
 			memcpy(buffer, &local_buffer[local_buffer_cur], len * count);
 			local_buffer_cur += len * count;
-			return(count);
+			return static_cast< int32_t >( count );
 		}
 	}
 

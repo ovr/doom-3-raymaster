@@ -308,8 +308,8 @@ P_CheckSight
     // First check for trivial rejection.
 
     // Determine subsector entries in REJECT table.
-    s1 = (t1->subsector->sector - ::g->sectors);
-    s2 = (t2->subsector->sector - ::g->sectors);
+    s1 = static_cast< int >( t1->subsector->sector - ::g->sectors );
+    s2 = static_cast< int >( t2->subsector->sector - ::g->sectors );
     pnum = s1*::g->numsectors + s2;
     bytenum = pnum>>3;
     bitnum = 1 << (pnum&7);

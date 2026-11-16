@@ -130,7 +130,7 @@ int G_CmdChecksum (ticcmd_t* cmd)
 	int		i;
 	int		sum = 0; 
 
-	for (i=0 ; i< sizeof(*cmd)/4 - 1 ; i++) 
+	for (i=0 ; i< static_cast< int >( sizeof(*cmd)/4 ) - 1 ; i++) 
 		sum += ((int *)cmd)[i]; 
 
 	return sum; 
@@ -1042,7 +1042,7 @@ void G_DeathMatchSpawnPlayer (int playernum)
 	int             i,j; 
 	int				selections; 
 
-	selections = ::g->deathmatch_p - ::g->deathmatchstarts; 
+	selections = static_cast< int >( ::g->deathmatch_p - ::g->deathmatchstarts ); 
 	if (selections < 4) 
 		I_Error ("Only %i ::g->deathmatch spots, 4 required", selections); 
 
@@ -1381,6 +1381,12 @@ void G_DoWorldDone (void)
 //
 void R_ExecuteSetViewSize (void);
 
+// Saves hold memcpy'd structs in the x64 layout, so the suffix turns the old 32-bit saves away.
+static void G_SaveVersion( char ( &version )[VERSIONSIZE] )
+{
+	memset( version, 0, sizeof( version ) );
+	idStr::snPrintf( version, sizeof( version ), "version %i x64", VERSION );
+}
 
 void G_LoadGame (char* name) 
 { 
@@ -1398,7 +1404,7 @@ qboolean G_DoLoadGame ()
 
 	::g->gameaction = ga_nothing; 
 
-	M_ReadFile (::g->savename, &::g->savebuffer); 
+	const int saveLength = M_ReadFile (::g->savename, &::g->savebuffer); 
 
 	waitingForWipe = true;
 
@@ -1415,11 +1421,11 @@ qboolean G_DoLoadGame ()
 	::g->save_p = ::g->savebuffer + SAVESTRINGSIZE;
 
 	// skip the description field 
-	memset (vcheck,0,sizeof(vcheck)); 
-	sprintf (vcheck,"version %i",VERSION); 
-	if (strcmp ((char *)::g->save_p, vcheck)) {
+	G_SaveVersion( vcheck );
+	if ( saveLength < SAVESTRINGSIZE + VERSIONSIZE || memcmp( ::g->save_p, vcheck, VERSIONSIZE ) != 0 ) {
 		loadingGame = false;
 		waitingForWipe = false;
+		Z_Free( ::g->savebuffer );
 
 		return FALSE;				// bad version
 	}
@@ -1446,9 +1452,6 @@ qboolean G_DoLoadGame ()
 	P_UnArchivePlayers (); 
 	P_UnArchiveWorld (); 
 	P_UnArchiveThinkers ();
-
-	// specials are archived with thinkers
-	//P_UnArchiveSpecials (); 
 
 	if (*::g->save_p != 0x1d) 
 		I_Error ("Bad savegame");
@@ -1514,8 +1517,7 @@ qboolean G_DoSaveGame (void)
 	memcpy (::g->save_p, description, SAVESTRINGSIZE); 
 	::g->save_p += SAVESTRINGSIZE; 
 
-	memset (name2,0,sizeof(name2)); 
-	sprintf (name2,"version %i",VERSION); 
+	G_SaveVersion( name2 );
 	memcpy (::g->save_p, name2, VERSIONSIZE); 
 	::g->save_p += VERSIONSIZE; 
 
@@ -1536,12 +1538,9 @@ qboolean G_DoSaveGame (void)
 	P_ArchiveWorld (); 
 	P_ArchiveThinkers ();
 
-	// specials are archived with thinkers
-	//P_ArchiveSpecials (); 
-
 	*::g->save_p++ = 0x1d;		// ::g->consistancy marker 
 
-	length = ::g->save_p - ::g->savebuffer; 
+	length = static_cast< int >( ::g->save_p - ::g->savebuffer ); 
 	if (length > SAVEGAMESIZE) 
 		I_Error ("Savegame buffer overrun");
 

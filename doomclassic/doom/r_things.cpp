@@ -174,7 +174,7 @@ void R_InitSpriteDefs (const char* const* namelist)
     while (*check != NULL)
 	check++;
 
-    ::g->numsprites = check-namelist;
+    ::g->numsprites = static_cast< int >( check-namelist );
 	
     if (!::g->numsprites)
 	return;
@@ -772,7 +772,7 @@ void R_SortVisSprites (void)
     vissprite_t		unsorted;
     fixed_t		bestscale;
 
-    count = ::g->vissprite_p - ::g->vissprites;
+    count = static_cast< int >( ::g->vissprite_p - ::g->vissprites );
 	
     unsorted.next = unsorted.prev = &unsorted;
 

@@ -377,7 +377,7 @@ int W_CheckNumForName (const char* name)
 		if ( *(int *)lump_p->name == v1
 			&& *(int *)&lump_p->name[4] == v2)
 		{
-			return lump_p - lumpinfo;
+			return static_cast< int >( lump_p - lumpinfo );
 		}
     }
 

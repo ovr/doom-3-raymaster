@@ -46,6 +46,7 @@ typedef struct
     int			infotableofs;
     
 } wadinfo_t;
+static_assert( sizeof( wadinfo_t ) == 12 );
 
 
 typedef struct
@@ -55,6 +56,7 @@ typedef struct
     char		name[8];
     
 } filelump_t;
+static_assert( sizeof( filelump_t ) == 16 );
 
 //
 // WADFILE I/O related stuff.

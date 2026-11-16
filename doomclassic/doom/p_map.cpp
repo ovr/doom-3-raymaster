@@ -499,7 +499,7 @@ P_TryMove
 			if (side != oldside)
 			{
 			if (ld->special)
-				P_CrossSpecialLine (ld-::g->lines, oldside, thing);
+				P_CrossSpecialLine (static_cast< int >( ld-::g->lines ), oldside, thing);
 			}
 		}
     }
