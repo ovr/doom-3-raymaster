@@ -1,6 +1,5 @@
 {
   "files": {
-    "neo/idlib/precompiled.h": 1,
-    "neo/renderer/RenderSystem_init.cpp": 5
+    "neo/idlib/precompiled.h": 1
   }
 }

@@ -593,13 +593,14 @@ Used to allow the rendering of an image larger than the actual window by
 tiling it into window-sized chunks and rendering each chunk separately
 
 If ref isn't specified, the full session UpdateScreen will be done.
+
+Each tile is read from the output right after it was rendered, before it is presented.
 ====================
 */
 void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref = NULL ) {
-	// include extra space for OpenGL padding to word boundaries
-	int sysWidth = renderSystem->GetWidth();
-	int sysHeight = renderSystem->GetHeight();
-	byte * temp = (byte *)R_StaticAlloc( (sysWidth+3) * sysHeight * 3 );
+	const int sysWidth = renderSystem->GetWidth();
+	const int sysHeight = renderSystem->GetHeight();
+	byte * temp = (byte *)R_StaticAlloc( sysWidth * sysHeight * 3 );
 
 	// disable scissor, so we don't need to adjust all those rects
 	r_useScissor.SetBool( false );
@@ -632,10 +633,9 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 				h = height - yo;
 			}
 
-			qglReadBuffer( GL_FRONT );
-			qglReadPixels( 0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, temp ); 
+			renderBackend->ReadOutputPixels( 0, 0, w, h, temp );
 
-			int	row = ( w * 3 + 3 ) & ~3;		// OpenGL pads to dword boundaries
+			const int row = w * 3;		// tightly packed rows, bottom row first
 
 			for ( int y = 0 ; y < h ; y++ ) {
 				memcpy( buffer + ( ( yo + y )* width + xo ) * 3,
@@ -698,7 +698,7 @@ void idRenderSystemLocal::TakeScreenshot( int width, int height, const char *fil
 		r_jitter.SetBool( false );
 	}
 
-	// fill in the header (this is vertically flipped, which qglReadPixels emits)
+	// fill in the header (this is vertically flipped, which ReadOutputPixels emits)
 	buffer[2] = 2;		// uncompressed type
 	buffer[12] = width & 255;
 	buffer[13] = width >> 8;
