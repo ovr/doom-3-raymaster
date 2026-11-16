@@ -28,10 +28,10 @@ along with Doom 3 BFG Edition Source Code.  If not, see <http://www.gnu.org/lice
 	Sampling profiler
 
 	A background thread periodically suspends the registered thread (the game thread),
-	captures its call stack by walking the frame pointer chain (the release build keeps
-	frame pointers, /Oy-) and resumes it. The report printed by profileReport (and at
-	shutdown) lists the functions with the most samples, both self and inclusive, and
-	the most common call paths.
+	captures its call stack by unwinding it with the x64 unwind data (.pdata) of the
+	loaded modules and resumes it. The report printed by profileReport (and at shutdown)
+	lists the functions with the most samples, both self and inclusive, and the most
+	common call paths.
 
 	sys_profile 1		start sampling as soon as the game thread runs
 	profileStart		start sampling
@@ -47,6 +47,7 @@ along with Doom 3 BFG Edition Source Code.  If not, see <http://www.gnu.org/lice
 #include <windows.h>
 #include <dbghelp.h>
 #include <mmsystem.h>
+#include <psapi.h>
 
 #include <string>
 #include <vector>
@@ -62,12 +63,25 @@ static const int	PROFILE_MAX_SAMPLES		= 400000;	// ~6.5 minutes at 1 kHz
 
 struct profileSample_t {
 	int			numFrames;
-	DWORD		frames[PROFILE_MAX_FRAMES];
+	DWORD64		frames[PROFILE_MAX_FRAMES];
 };
+
+// the unwind tables of a loaded module, cached while the target thread runs
+struct profileModule_t {
+	DWORD64						base;
+	DWORD64						end;
+	const RUNTIME_FUNCTION *	functions;
+	DWORD						numFunctions;
+};
+
+static const int			PROFILE_MAX_MODULES		= 512;
+static const int			PROFILE_MODULES_REFRESH	= 1000;		// ms
 
 static HANDLE				profileTargetThread = NULL;
 static DWORD				profileTargetThreadId = 0;
-static DWORD				profileTargetStackBase = 0;
+static DWORD64				profileTargetStackBase = 0;
+static profileModule_t		profileModules[PROFILE_MAX_MODULES];
+static int					profileNumModules = 0;
 static HANDLE				profileSamplerThread = NULL;
 static volatile LONG		profileRunning = 0;
 static profileSample_t *	profileSamples = NULL;
@@ -76,35 +90,94 @@ static volatile LONG		profileNumBusy = 0;
 static int					profileStartTime = 0;
 static int					profileStopTime = 0;
 
+// Caches the .pdata of every loaded module. RtlLookupFunctionEntry can take the loader
+// lock that the suspended thread may hold, so the sampler looks entries up itself.
+static void Profile_RefreshModules() {
+	HMODULE modules[PROFILE_MAX_MODULES];
+	DWORD bytes = 0;
+	if ( !EnumProcessModules( GetCurrentProcess(), modules, sizeof( modules ), &bytes ) ) {
+		return;
+	}
+	const int count = Min( static_cast<int>( bytes / sizeof( HMODULE ) ), PROFILE_MAX_MODULES );
+	int numModules = 0;
+	for ( int i = 0; i < count; i++ ) {
+		const auto base = reinterpret_cast<const BYTE *>( modules[i] );
+		const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER *>( base );
+		const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS64 *>( base + dos->e_lfanew );
+		const IMAGE_DATA_DIRECTORY & pdata = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+		if ( pdata.VirtualAddress == 0 || pdata.Size < sizeof( RUNTIME_FUNCTION ) ) {
+			continue;
+		}
+		profileModule_t & module = profileModules[numModules++];
+		module.base = reinterpret_cast<DWORD64>( base );
+		module.end = module.base + nt->OptionalHeader.SizeOfImage;
+		module.functions = reinterpret_cast<const RUNTIME_FUNCTION *>( base + pdata.VirtualAddress );
+		module.numFunctions = pdata.Size / sizeof( RUNTIME_FUNCTION );
+	}
+	std::sort( profileModules, profileModules + numModules, []( const profileModule_t & a, const profileModule_t & b ) { return a.base < b.base; } );
+	profileNumModules = numModules;
+}
+
+// binary search of the cached unwind tables, NULL for leaf functions and unknown code
+static const RUNTIME_FUNCTION * Profile_LookupFunction( DWORD64 pc, DWORD64 & imageBase ) {
+	const profileModule_t * modulesBegin = profileModules;
+	const profileModule_t * modulesEnd = modulesBegin + profileNumModules;
+	const profileModule_t * module = std::upper_bound( modulesBegin, modulesEnd, pc, []( DWORD64 value, const profileModule_t & m ) { return value < m.base; } );
+	if ( module == modulesBegin ) {
+		return NULL;
+	}
+	module--;
+	if ( pc >= module->end ) {
+		return NULL;
+	}
+	imageBase = module->base;
+	const DWORD rva = static_cast<DWORD>( pc - module->base );
+	const RUNTIME_FUNCTION * functionsEnd = module->functions + module->numFunctions;
+	const RUNTIME_FUNCTION * function = std::upper_bound( module->functions, functionsEnd, rva, []( DWORD value, const RUNTIME_FUNCTION & f ) { return value < f.BeginAddress; } );
+	if ( function == module->functions ) {
+		return NULL;
+	}
+	function--;
+	if ( rva >= function->EndAddress ) {
+		return NULL;
+	}
+	// an indirect entry points at the primary entry of the function
+	if ( function->UnwindData & 1 ) {
+		function = reinterpret_cast<const RUNTIME_FUNCTION *>( module->base + function->UnwindData - 1 );
+	}
+	return function;
+}
+
 /*
 ========================
 Profile_CaptureStack
 
-Walks the frame pointer chain of the suspended thread. Must not allocate,
-the suspended thread may hold the heap lock.
+Unwinds the suspended thread. Must not allocate or lock, the suspended thread may
+hold the heap or the loader lock.
 ========================
 */
-static int Profile_CaptureStack( const CONTEXT & ctx, DWORD * frames ) {
+static int Profile_CaptureStack( const CONTEXT & threadContext, DWORD64 * frames ) {
+	CONTEXT ctx = threadContext;
 	int numFrames = 0;
-	frames[numFrames++] = ctx.Eip;
-
-	DWORD ebp = ctx.Ebp;
-	const DWORD esp = ctx.Esp;
 	__try {
-		while ( numFrames < PROFILE_MAX_FRAMES ) {
-			if ( ebp < esp || ebp + 8 > profileTargetStackBase || ( ebp & 3 ) != 0 ) {
+		while ( numFrames < PROFILE_MAX_FRAMES && ctx.Rip != 0 ) {
+			frames[numFrames++] = ctx.Rip;
+
+			const DWORD64 rsp = ctx.Rsp;
+			DWORD64 imageBase = 0;
+			const RUNTIME_FUNCTION * function = Profile_LookupFunction( ctx.Rip, imageBase );
+			if ( function == NULL ) {
+				// a leaf function doesn't touch the stack, its return address is on top
+				ctx.Rip = *reinterpret_cast<const DWORD64 *>( ctx.Rsp );
+				ctx.Rsp += 8;
+			} else {
+				void * handlerData = NULL;
+				DWORD64 establisherFrame = 0;
+				RtlVirtualUnwind( UNW_FLAG_NHANDLER, imageBase, ctx.Rip, const_cast<PRUNTIME_FUNCTION>( function ), &ctx, &handlerData, &establisherFrame, NULL );
+			}
+			if ( ctx.Rsp <= rsp || ctx.Rsp >= profileTargetStackBase ) {
 				break;
 			}
-			const DWORD nextEbp = ( (const DWORD *)ebp )[0];
-			const DWORD retAddr = ( (const DWORD *)ebp )[1];
-			if ( retAddr == 0 ) {
-				break;
-			}
-			frames[numFrames++] = retAddr;
-			if ( nextEbp <= ebp ) {
-				break;
-			}
-			ebp = nextEbp;
 		}
 	} __except ( EXCEPTION_EXECUTE_HANDLER ) {
 	}
@@ -118,11 +191,17 @@ Profile_SamplerThread
 */
 static DWORD WINAPI Profile_SamplerThread( LPVOID ) {
 	timeBeginPeriod( 1 );
+	int modulesTime = 0;
 	while ( profileRunning ) {
 		Sleep( 1 );
 
 		if ( profileTargetThread == NULL || profileNumSamples >= PROFILE_MAX_SAMPLES ) {
 			continue;
+		}
+		const int now = Sys_Milliseconds();
+		if ( now - modulesTime >= PROFILE_MODULES_REFRESH ) {
+			Profile_RefreshModules();
+			modulesTime = now;
 		}
 		if ( SuspendThread( profileTargetThread ) == (DWORD)-1 ) {
 			continue;
@@ -211,7 +290,7 @@ void Sys_ProfilerRegisterThread() {
 		THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0 );
 
 	const NT_TIB * tib = (const NT_TIB *)NtCurrentTeb();
-	profileTargetStackBase = (DWORD)tib->StackBase;
+	profileTargetStackBase = reinterpret_cast<DWORD64>( tib->StackBase );
 	profileTargetThreadId = threadId;
 	profileTargetThread = thread;
 
@@ -248,7 +327,7 @@ public:
 	}
 
 	// returns the function name for an address, "module!0xoffset" if there are no symbols
-	const std::string & Name( DWORD addr ) {
+	const std::string & Name( DWORD64 addr ) {
 		auto it = cache.find( addr );
 		if ( it != cache.end() ) {
 			return it->second;
@@ -256,13 +335,13 @@ public:
 
 		std::string name;
 		MEMORY_BASIC_INFORMATION mbi;
-		if ( VirtualQuery( (void *)addr, &mbi, sizeof( mbi ) ) == 0 || mbi.AllocationBase == NULL ) {
+		if ( VirtualQuery( reinterpret_cast<void *>( addr ), &mbi, sizeof( mbi ) ) == 0 || mbi.AllocationBase == NULL ) {
 			name = "???";
 		} else {
-			const DWORD base = (DWORD)mbi.AllocationBase;
+			const DWORD64 base = reinterpret_cast<DWORD64>( mbi.AllocationBase );
 			char modulePath[MAX_PATH];
 			modulePath[0] = 0;
-			GetModuleFileNameA( (HMODULE)base, modulePath, sizeof( modulePath ) );
+			GetModuleFileNameA( reinterpret_cast<HMODULE>( base ), modulePath, sizeof( modulePath ) );
 			const char * moduleName = strrchr( modulePath, '\\' );
 			moduleName = ( moduleName != NULL ) ? moduleName + 1 : modulePath;
 
@@ -290,10 +369,10 @@ public:
 				const DWORD error = GetLastError();
 				if ( initialized && !reportedFailure && idStr::Icmp( moduleName, "Doom3BFG.exe" ) == 0 ) {
 					reportedFailure = true;
-					idLib::Printf( "profiler: SymFromAddr( 0x%x ) failed (error %u)\n", addr, error );
+					idLib::Printf( "profiler: SymFromAddr( 0x%llx ) failed (error %u)\n", addr, error );
 				}
 				char buffer[MAX_PATH + 32];
-				idStr::snPrintf( buffer, sizeof( buffer ), "%s!0x%x", moduleName, addr - base );
+				idStr::snPrintf( buffer, sizeof( buffer ), "%s!0x%llx", moduleName, addr - base );
 				name = buffer;
 			}
 		}
@@ -304,8 +383,8 @@ private:
 	HANDLE									process;
 	bool									initialized;
 	bool									reportedFailure;
-	std::unordered_map< DWORD, std::string >	cache;
-	std::unordered_set< DWORD >				loadedModules;
+	std::unordered_map< DWORD64, std::string >	cache;
+	std::unordered_set< DWORD64 >				loadedModules;
 };
 
 /*
@@ -329,7 +408,7 @@ static void Profile_Report() {
 		std::vector< const std::string * > & stack = stacks[i];
 		stack.reserve( sample.numFrames );
 		for ( int f = 0; f < sample.numFrames; f++ ) {
-			const DWORD addr = ( f == 0 ) ? sample.frames[f] : sample.frames[f] - 1;	// return address -> call site
+			const DWORD64 addr = ( f == 0 ) ? sample.frames[f] : sample.frames[f] - 1;	// return address -> call site
 			stack.push_back( &symbols.Name( addr ) );
 		}
 	}

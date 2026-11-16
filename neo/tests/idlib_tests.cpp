@@ -1476,12 +1476,13 @@ TEST( Heap_NewDelete ) {
 		CHECK( ThrowsBadAlloc( [&] { delete[] new int[hugeCount]; } ), "new int[SIZE_MAX / 2] didn't throw" );
 		CHECK( ThrowsBadAlloc( [] { ::operator delete( ::operator new( SIZE_MAX ) ); } ), "operator new( SIZE_MAX ) didn't throw" );
 		CHECK( ThrowsBadAlloc( [] { ::operator delete( ::operator new( SIZE_MAX - 3, TAG_TEMP ) ); } ), "tagged operator new( SIZE_MAX - 3 ) didn't throw" );
-		// a real out of memory: no 3.75 GB hole in a 32-bit address space
-		CHECK( ThrowsBadAlloc( [] { ::operator delete[]( ::operator new[]( 0xF0000000u ) ); } ), "operator new[]( 3.75 GB ) didn't throw" );
+		// a real out of memory: no 1 EB hole in the 128 TB x64 user address space
+		constexpr size_t oneExabyte = size_t( 1 ) << 60;
+		CHECK( ThrowsBadAlloc( [] { ::operator delete[]( ::operator new[]( oneExabyte ) ); } ), "operator new[]( 1 EB ) didn't throw" );
 		CHECK( ThrowsBadAlloc( [] { ::operator delete( ::operator new( SIZE_MAX - 3, std::align_val_t{ 64 } ), std::align_val_t{ 64 } ); } ), "aligned operator new( SIZE_MAX - 3 ) didn't throw" );
 
 		CHECK( ::operator new( SIZE_MAX, std::nothrow ) == nullptr, "nothrow operator new( SIZE_MAX )" );
-		CHECK( ::operator new[]( 0xF0000000u, std::nothrow ) == nullptr, "nothrow operator new[]( 3.75 GB )" );
+		CHECK( ::operator new[]( oneExabyte, std::nothrow ) == nullptr, "nothrow operator new[]( 1 EB )" );
 		CHECK( ::operator new( SIZE_MAX, std::align_val_t{ 128 }, std::nothrow ) == nullptr, "nothrow aligned operator new( SIZE_MAX )" );
 		CHECK( new ( std::nothrow ) int[hugeCount] == nullptr, "new ( std::nothrow ) int[SIZE_MAX / 2]" );
 
@@ -1514,7 +1515,7 @@ int main( int argc, char **argv ) {
 	genericProcessor = new idSIMD_Generic;
 	genericProcessor->cpuid = CPUID_GENERIC;
 	sseProcessor = new idSIMD_SSE;
-	sseProcessor->cpuid = (cpuid_t)( CPUID_MMX | CPUID_SSE | CPUID_SSE2 );
+	sseProcessor->cpuid = (cpuid_t)( CPUID_SSE | CPUID_SSE2 );
 	SIMDProcessor = sseProcessor;		// same as the game on any x86 CPU of the last 20 years
 
 	// the game threads run with flush-to-zero and denormals-are-zero

@@ -66,7 +66,7 @@ void idSIMD::InitProcessor( const char *module, bool forceGeneric ) {
 	} else {
 
 		if ( processor == NULL ) {
-			if ( ( cpuid & CPUID_MMX ) && ( cpuid & CPUID_SSE ) ) {
+			if ( cpuid & CPUID_SSE ) {
 				processor = new (TAG_MATH) idSIMD_SSE;
 			} else {
 				processor = generic;
@@ -128,27 +128,17 @@ long baseClocks = 0;
 
 #define TIME_TYPE int
 
-#pragma warning(disable : 4731)     // frame pointer register 'ebx' modified by inline assembly code
+// cpuid serializes, so the measured code can't move across the time stamps
+static TIME_TYPE ReadTimeStamp() {
+	int regs[4];
+	__cpuid( regs, 0 );
+	const TIME_TYPE ticks = static_cast<TIME_TYPE>( __rdtsc() );
+	__cpuid( regs, 0 );
+	return ticks;
+}
 
-long saved_ebx = 0;
-
-#define StartRecordTime( start )			\
-	__asm mov saved_ebx, ebx				\
-	__asm xor eax, eax						\
-	__asm cpuid								\
-	__asm rdtsc								\
-	__asm mov start, eax					\
-	__asm xor eax, eax						\
-	__asm cpuid
-
-#define StopRecordTime( end )				\
-	__asm xor eax, eax						\
-	__asm cpuid								\
-	__asm rdtsc								\
-	__asm mov end, eax						\
-	__asm mov ebx, saved_ebx				\
-	__asm xor eax, eax						\
-	__asm cpuid
+#define StartRecordTime( start )	start = ReadTimeStamp()
+#define StopRecordTime( end )		end = ReadTimeStamp()
 
 
 #define GetBest( start, end, best )			\
@@ -1227,13 +1217,13 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 		argString.Replace( " ", "" );
 
 		if ( idStr::Icmp( argString, "SSE" ) == 0 ) {
-			if ( !( cpuid & CPUID_MMX ) || !( cpuid & CPUID_SSE ) ) {
-				common->Printf( "CPU does not support MMX & SSE\n" );
+			if ( !( cpuid & CPUID_SSE ) ) {
+				common->Printf( "CPU does not support SSE\n" );
 				return;
 			}
 			p_simd = new (TAG_MATH) idSIMD_SSE;
 		} else {
-			common->Printf( "invalid argument, use: MMX, 3DNow, SSE, SSE2, SSE3, AltiVec\n" );
+			common->Printf( "invalid argument, use: SSE\n" );
 			return;
 		}
 	}

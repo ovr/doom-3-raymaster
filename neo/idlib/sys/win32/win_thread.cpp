@@ -33,32 +33,11 @@ If you have questions concerning this license or the applicable additional terms
 ================================================================================================
 */
 
-#define MS_VC_EXCEPTION 0x406D1388
-
-typedef struct tagTHREADNAME_INFO {
-	DWORD dwType;		// Must be 0x1000.
-	LPCSTR szName;		// Pointer to name (in user addr space).
-	DWORD dwThreadID;	// Thread ID (-1=caller thread).
-	DWORD dwFlags;		// Reserved for future use, must be zero.
-} THREADNAME_INFO;
-/*
-========================
-Sys_SetThreadName
-========================
-*/
-void Sys_SetThreadName( DWORD threadID, const char * name ) {
-	THREADNAME_INFO info;
-	info.dwType = 0x1000;
-	info.szName = name;
-	info.dwThreadID = threadID;
-	info.dwFlags = 0;
-
-	__try {
-		RaiseException( MS_VC_EXCEPTION, 0, sizeof(info)/sizeof(DWORD), (const ULONG_PTR *)&info );
-	}
-	// this much is just to keep /analyze quiet
-	__except( GetExceptionCode() == MS_VC_EXCEPTION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH ) {
-		info.dwFlags = 0;
+// The name shows in debuggers, profilers and crash dumps (SetThreadDescription, Windows 10 1607+).
+static void Sys_SetThreadName( HANDLE thread, const char *name ) {
+	wchar_t wideName[256];
+	if ( MultiByteToWideChar( CP_UTF8, 0, name, -1, wideName, static_cast<int>( std::size( wideName ) ) ) > 0 ) {
+		SetThreadDescription( thread, wideName );
 	}
 }
 
@@ -68,7 +47,7 @@ Sys_SetCurrentThreadName
 ========================
 */
 void Sys_SetCurrentThreadName( const char * name ) {
-	Sys_SetThreadName( GetCurrentThreadId(), name );
+	Sys_SetThreadName( GetCurrentThread(), name );
 }
 
 /*
@@ -103,10 +82,10 @@ uintptr_t Sys_CreateThread( xthread_t function, void *parms, xthreadPriority pri
 									flags,
 									&threadId);
 	if ( handle == 0 ) {
-		idLib::common->FatalError( "CreateThread error: %i", GetLastError() );
+		idLib::common->FatalError( "CreateThread error: %lu", GetLastError() );
 		return (uintptr_t)0;
 	}
-	Sys_SetThreadName( threadId, name );
+	Sys_SetThreadName( handle, name );
 	if ( priority == THREAD_HIGHEST ) {
 		SetThreadPriority( (HANDLE)handle, THREAD_PRIORITY_HIGHEST );		//  we better sleep enough to do this
 	} else if ( priority == THREAD_ABOVE_NORMAL ) {

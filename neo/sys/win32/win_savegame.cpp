@@ -167,7 +167,7 @@ int idSaveGameThread::Save() {
 
 			blockForIO_t block;
 			while ( inputFile->NextWriteBlock( & block ) ) {
-				if ( (size_t)outputFile->Write( block.data, block.bytes ) != block.bytes ) {
+				if ( (size_t)outputFile->Write( block.data, static_cast<int>( block.bytes ) ) != block.bytes ) {
 					idLib::Warning( "[%s]: Write failed. Error = %08x", __FUNCTION__, GetLastError() );
 					file->error = true;
 					callback->errorCode = SAVEGAME_E_INSUFFICIENT_ROOM;
@@ -278,7 +278,7 @@ int idSaveGameThread::Load() {
 			size_t lastReadBytes = 0;
 			blockForIO_t block;
 			while ( outputFile->NextReadBlock( &block, lastReadBytes ) && !callback->cancelled ) {
-				lastReadBytes = inputFile->Read( block.data, block.bytes );
+				lastReadBytes = inputFile->Read( block.data, static_cast<int>( block.bytes ) );
 				if ( lastReadBytes != block.bytes ) {
 					// Notify end-of-file to the save game file which will cause all reads on the
 					// other end of the pipeline to return zero bytes after the pipeline is drained.
@@ -303,7 +303,7 @@ int idSaveGameThread::Load() {
 
 			file->SetLength( size );
 
-			size_t sizeRead = inputFile->Read( (void *)file->GetDataPtr(), size );
+			size_t sizeRead = inputFile->Read( (void *)file->GetDataPtr(), static_cast<int>( size ) );
 			if ( sizeRead != size ) {
 				file->error = true;
 				callback->errorCode = SAVEGAME_E_CORRUPTED;
