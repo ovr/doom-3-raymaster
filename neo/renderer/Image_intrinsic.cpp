@@ -131,6 +131,12 @@ static void R_RGBA8Image( idImage *image ) {
 	image->GenerateImage( (byte *)data, DEFAULT_SIZE, DEFAULT_SIZE, TF_DEFAULT, TR_REPEAT, TD_LOOKUP_TABLE_RGBA );
 }
 
+// an image the frame is copied into: every target of CaptureRenderToImage and of a subview
+static void R_ColorCopyImage( idImage *image ) {
+	image->SetRole( textureRole_t::COLOR_COPY );
+	R_RGBA8Image( image );
+}
+
 static void R_DepthImage( idImage *image ) {
 	byte	data[DEFAULT_SIZE][DEFAULT_SIZE][4];
 
@@ -140,6 +146,7 @@ static void R_DepthImage( idImage *image ) {
 	data[0][0][2] = 48;
 	data[0][0][3] = 96;
 
+	image->SetRole( textureRole_t::DEPTH_COPY );
 	image->GenerateImage( (byte *)data, DEFAULT_SIZE, DEFAULT_SIZE, TF_NEAREST, TR_CLAMP, TD_DEPTH );
 }
 
@@ -411,11 +418,11 @@ void idImageManager::CreateIntrinsicImages() {
 	noFalloffImage = ImageFromFunction( "_noFalloff", R_CreateNoFalloffImage );
 	ImageFromFunction( "_quadratic", R_QuadraticImage );
 
-	// scratchImage is used for screen wipes/doublevision etc..
-	scratchImage = ImageFromFunction("_scratch", R_RGBA8Image );
-	scratchImage2 = ImageFromFunction("_scratch2", R_RGBA8Image );
-	accumImage = ImageFromFunction("_accum", R_RGBA8Image );
-	currentRenderImage = ImageFromFunction("_currentRender", R_RGBA8Image );
+	// the scratch images are the copy targets of the remote, mirror and xray subviews
+	scratchImage = ImageFromFunction("_scratch", R_ColorCopyImage );
+	scratchImage2 = ImageFromFunction("_scratch2", R_ColorCopyImage );
+	accumImage = ImageFromFunction("_accum", R_ColorCopyImage );
+	currentRenderImage = ImageFromFunction("_currentRender", R_ColorCopyImage );
 	currentDepthImage = ImageFromFunction("_currentDepth", R_DepthImage );
 
 	// save a copy of this for material comparison, because currentRenderImage may get

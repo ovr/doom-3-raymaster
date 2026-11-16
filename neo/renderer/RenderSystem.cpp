@@ -238,8 +238,7 @@ static void R_CheckCvars() {
 		r_lodBias.ClearModified();
 		for ( int i = 0 ; i < globalImages->images.Num() ; i++ ) {
 			if ( globalImages->images[i] ) {
-				globalImages->images[i]->Bind( 0 );
-				globalImages->images[i]->SetTexParameters();
+				globalImages->images[i]->UpdateSampler();
 			}
 		}
 	}
@@ -951,6 +950,7 @@ void idRenderSystemLocal::CaptureRenderToImage( const char *imageName, bool clea
 	idImage	* image = globalImages->GetImage( imageName );
 	if ( image == NULL ) {
 		image = globalImages->AllocImage( imageName );
+		image->SetRole( textureRole_t::COLOR_COPY );
 	}
 
 	idScreenRect & rc = renderCrops[currentRenderCrop];

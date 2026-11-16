@@ -632,17 +632,7 @@ struct performanceCounters_t {
 };
 
 
-struct tmu_t {
-	unsigned int	current2DMap;
-	unsigned int	currentCubeMap;
-};
-
-
-const int MAX_MULTITEXTURE_UNITS =	8;
-
 struct glstate_t {
-	tmu_t				tmu[MAX_MULTITEXTURE_UNITS];
-
 	vertexLayoutType_t	vertexLayout;
 	unsigned int		currentVertexBuffer;
 	unsigned int		currentIndexBuffer;

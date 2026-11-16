@@ -30,7 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 /*
 ================================================================================================
-Contains the Image implementation for OpenGL.
+The textures of the OpenGL backend.
 ================================================================================================
 */
 
@@ -38,298 +38,209 @@ Contains the Image implementation for OpenGL.
 #include "gl_Backend.h"
 
 /*
-========================
-idImage::SubImageUpload
-========================
+================================================================================================
+
+	A texture handle is a glTexture_t pointer.
+
+	Creating, uploading, copying and changing the sampler bind the texture with glBindTexture on
+	the unit GL has active, behind the back of the slots of the latch. Frames depend on what that
+	leaves bound, so these binds stay exactly where they were.
+
+================================================================================================
 */
-void idImage::SubImageUpload( int mipLevel, int z, int width, int height, const void * pic, int pixelPitch ) const {
-	assert( mipLevel >= 0 && width >= 0 && height >= 0 && mipLevel < opts.numLevels );
 
-	int compressedSize = 0;
+static const GLuint TEXTURE_NOT_LOADED = 0xFFFFFFFF;
 
-	if ( IsCompressed() ) {
-		// compressed size may be larger than the dimensions due to padding to quads
-		int quadW = ( width + 3 ) & ~3;
-		int quadH = ( height + 3 ) & ~3;
-		compressedSize = quadW * quadH * BitsForFormat( opts.format ) / 8;
-
-		// upload the non-aligned value, OpenGL understands that there
-		// will be padding
-		if ( width > opts.width ) {
-			width = opts.width;
-		}
-		if ( height > opts.height ) {
-			height = opts.height;
-		}
-	} else {
-		assert( width <= opts.width && height <= opts.height );
-	}
-
-	int target;
-	int uploadTarget;
-	if ( opts.textureType == TT_2D ) {
-		target = GL_TEXTURE_2D;
-		uploadTarget = GL_TEXTURE_2D;
-	} else if ( opts.textureType == TT_CUBIC ) {
-		target = GL_TEXTURE_CUBE_MAP_EXT;
-		uploadTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + z;
-	} else {
-		assert( !"invalid opts.textureType" );
-		target = GL_TEXTURE_2D;
-		uploadTarget = GL_TEXTURE_2D;
-	}
-
-	qglBindTexture( target, texnum );
-
-	if ( pixelPitch != 0 ) {
-		qglPixelStorei( GL_UNPACK_ROW_LENGTH, pixelPitch );
-	}
-	if ( opts.format == FMT_RGB565 ) {
-		glPixelStorei( GL_UNPACK_SWAP_BYTES, GL_TRUE );
-	}
-#ifdef DEBUG
-	GL_CheckErrors();
-#endif
-	if ( IsCompressed() ) {
-		qglCompressedTexSubImage2DARB( uploadTarget, mipLevel, 0, 0, width, height, internalFormat, compressedSize, pic );
-	} else {
-
-		// make sure the pixel store alignment is correct so that lower mips get created
-		// properly for odd shaped textures - this fixes the mip mapping issues with
-		// fonts
-		int unpackAlignment = width * BitsForFormat( (textureFormat_t)opts.format ) / 8;
-		if ( ( unpackAlignment & 3 ) == 0 ) {
-			qglPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
-		} else {
-			qglPixelStorei( GL_UNPACK_ALIGNMENT, 1 );
-		}
-
-		qglTexSubImage2D( uploadTarget, mipLevel, 0, 0, width, height, dataFormat, dataType, pic );
-	}
-#ifdef DEBUG
-	GL_CheckErrors();
-#endif
-	if ( opts.format == FMT_RGB565 ) {
-		glPixelStorei( GL_UNPACK_SWAP_BYTES, GL_FALSE );
-	}
-	if ( pixelPitch != 0 ) {
-		qglPixelStorei( GL_UNPACK_ROW_LENGTH, 0 );
-	}
+static bool GL_IsCompressed( const idImageOpts & opts ) {
+	return ( opts.format == FMT_DXT1 || opts.format == FMT_DXT5 );
 }
 
 /*
 ========================
-idImage::SetTexParameters
+GL_SetTexParameters
+
+The texture is bound on the active unit.
 ========================
 */
-void idImage::SetTexParameters() {
-	int target = GL_TEXTURE_2D;
-	switch ( opts.textureType ) {
-		case TT_2D:
-			target = GL_TEXTURE_2D;
-			break;
-		case TT_CUBIC:
-			target = GL_TEXTURE_CUBE_MAP_EXT;
-			break;
-		default:
-			idLib::FatalError( "%s: bad texture type %d", GetName(), opts.textureType );
-			return;
-	}
-
+static void GL_SetTexParameters( const glTexture_t & tex, const samplerDesc_t & sampler ) {
 	// ALPHA, LUMINANCE, LUMINANCE_ALPHA, and INTENSITY have been removed
 	// in OpenGL 3.2. In order to mimic those modes, we use the swizzle operators
-	if ( opts.colorFormat == CFM_GREEN_ALPHA ) {
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_GREEN );
-	} else if ( opts.format == FMT_LUM8 ) {
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_ONE );
-	} else if ( opts.format == FMT_L8A8 ) {
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_GREEN );
-	} else if ( opts.format == FMT_ALPHA ) {
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_RED );
-	} else if ( opts.format == FMT_INT8 ) {
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_RED );
+	if ( tex.opts.colorFormat == CFM_GREEN_ALPHA ) {
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_R, GL_ONE );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_G, GL_ONE );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_B, GL_ONE );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_A, GL_GREEN );
+	} else if ( tex.opts.format == FMT_LUM8 ) {
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_R, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_G, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_B, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_A, GL_ONE );
+	} else if ( tex.opts.format == FMT_L8A8 ) {
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_R, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_G, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_B, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_A, GL_GREEN );
+	} else if ( tex.opts.format == FMT_ALPHA ) {
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_R, GL_ONE );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_G, GL_ONE );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_B, GL_ONE );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_A, GL_RED );
+	} else if ( tex.opts.format == FMT_INT8 ) {
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_R, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_G, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_B, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_A, GL_RED );
 	} else {
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_RED );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_GREEN );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_BLUE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_ALPHA );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_R, GL_RED );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_G, GL_GREEN );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_B, GL_BLUE );
+		qglTexParameteri( tex.target, GL_TEXTURE_SWIZZLE_A, GL_ALPHA );
 	}
 
-	switch( filter ) {
-		case TF_DEFAULT:
-			if ( r_useTrilinearFiltering.GetBool() ) {
-				qglTexParameterf( target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR );
-			} else {
-				qglTexParameterf( target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST );
-			}
-			qglTexParameterf( target, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+	switch ( sampler.filter ) {
+		case samplerFilter_t::LINEAR_MIP_LINEAR:
+			qglTexParameterf( tex.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR );
+			qglTexParameterf( tex.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 			break;
-		case TF_LINEAR:
-			qglTexParameterf( target, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-			qglTexParameterf( target, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+		case samplerFilter_t::LINEAR_MIP_NEAREST:
+			qglTexParameterf( tex.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST );
+			qglTexParameterf( tex.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 			break;
-		case TF_NEAREST:
-			qglTexParameterf( target, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-			qglTexParameterf( target, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+		case samplerFilter_t::LINEAR:
+			qglTexParameterf( tex.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+			qglTexParameterf( tex.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 			break;
-		default:
-			common->FatalError( "%s: bad texture filter %d", GetName(), filter );
+		case samplerFilter_t::NEAREST:
+			qglTexParameterf( tex.target, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+			qglTexParameterf( tex.target, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+			break;
 	}
 
 	if ( glContext.anisotropicFilterAvailable ) {
-		// only do aniso filtering on mip mapped images
-		if ( filter == TF_DEFAULT ) {
-			int aniso = r_maxAnisotropicFiltering.GetInteger();
-			if ( aniso > glContext.maxTextureAnisotropy ) {
-				aniso = glContext.maxTextureAnisotropy;
-			}
-			if ( aniso < 0 ) {
-				aniso = 0;
-			}
-			qglTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, aniso );
-		} else {
-			qglTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1 );
-		}
+		qglTexParameterf( tex.target, GL_TEXTURE_MAX_ANISOTROPY_EXT, sampler.maxAnisotropy );
 	}
-	if ( glContext.textureLODBiasAvailable && ( usage != TD_FONT ) ) {
-		// use a blurring LOD bias in combination with high anisotropy to fix our aliasing grate textures...
-		qglTexParameterf(target, GL_TEXTURE_LOD_BIAS_EXT, r_lodBias.GetFloat() );
+	if ( glContext.textureLODBiasAvailable ) {
+		qglTexParameterf( tex.target, GL_TEXTURE_LOD_BIAS_EXT, sampler.lodBias );
 	}
 
 	// set the wrap/clamp modes
-	switch( repeat ) {
-		case TR_REPEAT:
-			qglTexParameterf( target, GL_TEXTURE_WRAP_S, GL_REPEAT );
-			qglTexParameterf( target, GL_TEXTURE_WRAP_T, GL_REPEAT );
+	switch ( sampler.address ) {
+		case samplerAddress_t::REPEAT:
+			qglTexParameterf( tex.target, GL_TEXTURE_WRAP_S, GL_REPEAT );
+			qglTexParameterf( tex.target, GL_TEXTURE_WRAP_T, GL_REPEAT );
 			break;
-		case TR_CLAMP_TO_ZERO: {
+		case samplerAddress_t::BORDER_BLACK: {
 			float color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-			qglTexParameterfv(target, GL_TEXTURE_BORDER_COLOR, color );
-			qglTexParameterf( target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
-			qglTexParameterf( target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
+			qglTexParameterfv( tex.target, GL_TEXTURE_BORDER_COLOR, color );
+			qglTexParameterf( tex.target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
+			qglTexParameterf( tex.target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
 			}
 			break;
-		case TR_CLAMP_TO_ZERO_ALPHA: {
+		case samplerAddress_t::BORDER_TRANSPARENT: {
 			float color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			qglTexParameterfv(target, GL_TEXTURE_BORDER_COLOR, color );
-			qglTexParameterf( target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
-			qglTexParameterf( target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
+			qglTexParameterfv( tex.target, GL_TEXTURE_BORDER_COLOR, color );
+			qglTexParameterf( tex.target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
+			qglTexParameterf( tex.target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
 			}
 			break;
-		case TR_CLAMP:
-			qglTexParameterf( target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			qglTexParameterf( target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+		case samplerAddress_t::CLAMP:
+			qglTexParameterf( tex.target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			qglTexParameterf( tex.target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 			break;
-		default:
-			common->FatalError( "%s: bad texture repeat %d", GetName(), repeat );
 	}
 }
 
 /*
 ========================
-idImage::AllocImage
+idRenderBackendGL::CreateTexture
 
-Every image will pass through this function. Allocates all the necessary MipMap levels for the 
-Image, but doesn't put anything in them.
-
-This should not be done during normal game-play, if you can avoid it.
+Allocates all the necessary MipMap levels for the texture, but doesn't put anything in them.
+OpenGL does not need the role: any texture can be the target of glCopyTexImage2D.
 ========================
 */
-void idImage::AllocImage() {
+textureHandle_t idRenderBackendGL::CreateTexture( const idImageOpts & opts, [[maybe_unused]] textureRole_t role, const samplerDesc_t & sampler, const char * debugName ) {
 	GL_CheckErrors();
-	PurgeImage();
 
-	switch ( opts.format ) {
+	auto tex = std::make_unique<glTexture_t>();
+	tex->texnum = TEXTURE_NOT_LOADED;
+	tex->target = GL_TEXTURE_2D;
+	tex->internalFormat = 0;
+	tex->dataFormat = 0;
+	tex->dataType = 0;
+	tex->opts = opts;
+#ifdef _DEBUG
+	tex->name = debugName;
+	tex->boundInFrame = -1;
+#endif
+
+	switch ( tex->opts.format ) {
 	case FMT_RGBA8:
-		internalFormat = GL_RGBA8;
-		dataFormat = GL_RGBA;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_RGBA8;
+		tex->dataFormat = GL_RGBA;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_XRGB8:
-		internalFormat = GL_RGB;
-		dataFormat = GL_RGBA;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_RGB;
+		tex->dataFormat = GL_RGBA;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_RGB565:
-		internalFormat = GL_RGB;
-		dataFormat = GL_RGB;
-		dataType = GL_UNSIGNED_SHORT_5_6_5;
+		tex->internalFormat = GL_RGB;
+		tex->dataFormat = GL_RGB;
+		tex->dataType = GL_UNSIGNED_SHORT_5_6_5;
 		break;
 	case FMT_ALPHA:
-		internalFormat = GL_R8;
-		dataFormat = GL_RED;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_R8;
+		tex->dataFormat = GL_RED;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_L8A8:
-		internalFormat = GL_RG8;
-		dataFormat = GL_RG;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_RG8;
+		tex->dataFormat = GL_RG;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_LUM8:
-		internalFormat = GL_R8;
-		dataFormat = GL_RED;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_R8;
+		tex->dataFormat = GL_RED;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_INT8:
-		internalFormat = GL_R8;
-		dataFormat = GL_RED;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_R8;
+		tex->dataFormat = GL_RED;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_DXT1:
-		internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
-		dataFormat = GL_RGBA;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+		tex->dataFormat = GL_RGBA;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_DXT5:
-		internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
-		dataFormat = GL_RGBA;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+		tex->dataFormat = GL_RGBA;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_DEPTH:
-		internalFormat = GL_DEPTH_COMPONENT;
-		dataFormat = GL_DEPTH_COMPONENT;
-		dataType = GL_UNSIGNED_BYTE;
+		tex->internalFormat = GL_DEPTH_COMPONENT;
+		tex->dataFormat = GL_DEPTH_COMPONENT;
+		tex->dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_X16:
-		internalFormat = GL_INTENSITY16;
-		dataFormat = GL_LUMINANCE;
-		dataType = GL_UNSIGNED_SHORT;
+		tex->internalFormat = GL_INTENSITY16;
+		tex->dataFormat = GL_LUMINANCE;
+		tex->dataType = GL_UNSIGNED_SHORT;
 		break;
 	case FMT_Y16_X16:
-		internalFormat = GL_LUMINANCE16_ALPHA16;
-		dataFormat = GL_LUMINANCE_ALPHA;
-		dataType = GL_UNSIGNED_SHORT;
+		tex->internalFormat = GL_LUMINANCE16_ALPHA16;
+		tex->dataFormat = GL_LUMINANCE_ALPHA;
+		tex->dataType = GL_UNSIGNED_SHORT;
 		break;
 	default:
-		idLib::Error( "Unhandled image format %d in %s\n", opts.format, GetName() );
-	}
-
-	// if we don't have a rendering context, just return after we
-	// have filled in the parms.  We must have the values set, or
-	// an image match from a shader before OpenGL starts would miss
-	// the generated texture
-	if ( !R_IsInitialized() ) {
-		return;
+		idLib::Error( "Unhandled image format %d in %s\n", tex->opts.format, debugName );
 	}
 
 	// generate the texture number
-	qglGenTextures( 1, (GLuint *)&texnum );
-	assert( texnum != TEXTURE_NOT_LOADED );
+	qglGenTextures( 1, &tex->texnum );
+	assert( tex->texnum != TEXTURE_NOT_LOADED );
 
 	//----------------------------------------------------
 	// allocate all the mip levels with NULL data
@@ -338,34 +249,34 @@ void idImage::AllocImage() {
 	int numSides;
 	int target;
 	int uploadTarget;
-	if ( opts.textureType == TT_2D ) {
+	if ( tex->opts.textureType == TT_2D ) {
 		target = uploadTarget = GL_TEXTURE_2D;
 		numSides = 1;
-	} else if ( opts.textureType == TT_CUBIC ) {
+	} else if ( tex->opts.textureType == TT_CUBIC ) {
 		target = GL_TEXTURE_CUBE_MAP_EXT;
 		uploadTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT;
 		numSides = 6;
 	} else {
-		assert( !"opts.textureType" );
+		assert( !"tex->opts.textureType" );
 		target = uploadTarget = GL_TEXTURE_2D;
 		numSides = 1;
 	}
 
-	qglBindTexture( target, texnum );
+	qglBindTexture( target, tex->texnum );
 
 	for ( int side = 0; side < numSides; side++ ) {
-		int w = opts.width;
-		int h = opts.height;
-		if ( opts.textureType == TT_CUBIC ) {
+		int w = tex->opts.width;
+		int h = tex->opts.height;
+		if ( tex->opts.textureType == TT_CUBIC ) {
 			h = w;
 		}
-		for ( int level = 0; level < opts.numLevels; level++ ) {
+		for ( int level = 0; level < tex->opts.numLevels; level++ ) {
 
 			// clear out any previous error
 			GL_CheckErrors();
 
-			if ( IsCompressed() ) {
-				int compressedSize = ( ((w+3)/4) * ((h+3)/4) * int64( 16 ) * BitsForFormat( opts.format ) ) / 8;
+			if ( GL_IsCompressed( tex->opts ) ) {
+				int compressedSize = ( ((w+3)/4) * ((h+3)/4) * int64( 16 ) * BitsForFormat( tex->opts.format ) ) / 8;
 
 				// Even though the OpenGL specification allows the 'data' pointer to be NULL, for some
 				// drivers we actually need to upload data to get it to allocate the texture.
@@ -376,12 +287,12 @@ void idImage::AllocImage() {
 				// with the exact size otherwise large image allocation (for instance for physical page textures)
 				// may fail on Vista 32-bit.
 				void * data = HeapAlloc( GetProcessHeap(), 0, compressedSize );
-				qglCompressedTexImage2DARB( uploadTarget+side, level, internalFormat, w, h, 0, compressedSize, data );
+				qglCompressedTexImage2DARB( uploadTarget+side, level, tex->internalFormat, w, h, 0, compressedSize, data );
 				if ( data != NULL ) {
 					HeapFree( GetProcessHeap(), 0, data );
 				}
 			} else {
-				qglTexImage2D( uploadTarget + side, level, internalFormat, w, h, 0, dataFormat, dataType, NULL );
+				qglTexImage2D( uploadTarget + side, level, tex->internalFormat, w, h, 0, tex->dataFormat, tex->dataType, NULL );
 			}
 
 			GL_CheckErrors();
@@ -391,43 +302,189 @@ void idImage::AllocImage() {
 		}
 	}
 
-	qglTexParameteri( target, GL_TEXTURE_MAX_LEVEL, opts.numLevels - 1 );
+	qglTexParameteri( target, GL_TEXTURE_MAX_LEVEL, tex->opts.numLevels - 1 );
 
 	// see if we messed anything up
 	GL_CheckErrors();
 
-	SetTexParameters();
+	if ( tex->opts.textureType != TT_2D && tex->opts.textureType != TT_CUBIC ) {
+		idLib::FatalError( "%s: bad texture type %d", debugName, tex->opts.textureType );
+	}
+	tex->target = target;
+	GL_SetTexParameters( *tex, sampler );
 
 	GL_CheckErrors();
+
+	// without a context there is no name: the image stays unloaded
+	if ( tex->texnum == TEXTURE_NOT_LOADED ) {
+		return textureHandle_t::NONE;
+	}
+	return GL_TextureHandle( tex.release() );
 }
 
 /*
 ========================
-idImage::PurgeImage
+idRenderBackendGL::API_DestroyTexture
 ========================
 */
-void idImage::PurgeImage() {
-	if ( texnum != TEXTURE_NOT_LOADED ) {
-		qglDeleteTextures( 1, (GLuint *)&texnum );	// this should be the ONLY place it is ever called!
-		texnum = TEXTURE_NOT_LOADED;
-	}
-	// clear all the current binding caches, so the next bind will do a real one
-	for ( int i = 0 ; i < MAX_MULTITEXTURE_UNITS ; i++ ) {
-		backEnd.glState.tmu[i].current2DMap = TEXTURE_NOT_LOADED;
-		backEnd.glState.tmu[i].currentCubeMap = TEXTURE_NOT_LOADED;
-	}
-}
-
-/*
-========================
-idImage::Resize
-========================
-*/
-void idImage::Resize( int width, int height ) {
-	if ( opts.width == width && opts.height == height ) {
+void idRenderBackendGL::API_DestroyTexture( textureHandle_t texture ) {
+	glTexture_t * tex = GL_Texture( texture );
+	if ( tex == nullptr ) {
 		return;
 	}
-	opts.width = width;
-	opts.height = height;
-	AllocImage();
+	qglDeleteTextures( 1, &tex->texnum );	// this should be the ONLY place it is ever called!
+	delete tex;
+}
+
+/*
+========================
+idRenderBackendGL::UploadTexture
+========================
+*/
+void idRenderBackendGL::UploadTexture( textureHandle_t texture, int mipLevel, int face, int width, int height, const void * pic, int pixelPitch ) {
+	const glTexture_t * tex = GL_Texture( texture );
+
+#ifdef _DEBUG
+	// rule R4: an upload into a texture this frame has already bound breaks the pass of a pipeline backend
+	if ( tex->boundInFrame == debugFrame && debugUploadsAfterBind++ == 0 ) {
+		common->Printf( "idRenderBackendGL::UploadTexture: an upload into '%s', which this frame has bound already\n", tex->name.c_str() );
+	}
+#endif
+
+	int compressedSize = 0;
+
+	if ( GL_IsCompressed( tex->opts ) ) {
+		// compressed size may be larger than the dimensions due to padding to quads
+		int quadW = ( width + 3 ) & ~3;
+		int quadH = ( height + 3 ) & ~3;
+		compressedSize = quadW * quadH * BitsForFormat( tex->opts.format ) / 8;
+
+		// upload the non-aligned value, OpenGL understands that there
+		// will be padding
+		if ( width > tex->opts.width ) {
+			width = tex->opts.width;
+		}
+		if ( height > tex->opts.height ) {
+			height = tex->opts.height;
+		}
+	} else {
+		assert( width <= tex->opts.width && height <= tex->opts.height );
+	}
+
+	int target;
+	int uploadTarget;
+	if ( tex->opts.textureType == TT_2D ) {
+		target = GL_TEXTURE_2D;
+		uploadTarget = GL_TEXTURE_2D;
+	} else if ( tex->opts.textureType == TT_CUBIC ) {
+		target = GL_TEXTURE_CUBE_MAP_EXT;
+		uploadTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + face;
+	} else {
+		assert( !"invalid tex->opts.textureType" );
+		target = GL_TEXTURE_2D;
+		uploadTarget = GL_TEXTURE_2D;
+	}
+
+	qglBindTexture( target, tex->texnum );
+
+	if ( pixelPitch != 0 ) {
+		qglPixelStorei( GL_UNPACK_ROW_LENGTH, pixelPitch );
+	}
+	if ( tex->opts.format == FMT_RGB565 ) {
+		glPixelStorei( GL_UNPACK_SWAP_BYTES, GL_TRUE );
+	}
+#ifdef DEBUG
+	GL_CheckErrors();
+#endif
+	if ( GL_IsCompressed( tex->opts ) ) {
+		qglCompressedTexSubImage2DARB( uploadTarget, mipLevel, 0, 0, width, height, tex->internalFormat, compressedSize, pic );
+	} else {
+
+		// make sure the pixel store alignment is correct so that lower mips get created
+		// properly for odd shaped textures - this fixes the mip mapping issues with
+		// fonts
+		int unpackAlignment = width * BitsForFormat( (textureFormat_t)tex->opts.format ) / 8;
+		if ( ( unpackAlignment & 3 ) == 0 ) {
+			qglPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
+		} else {
+			qglPixelStorei( GL_UNPACK_ALIGNMENT, 1 );
+		}
+
+		qglTexSubImage2D( uploadTarget, mipLevel, 0, 0, width, height, tex->dataFormat, tex->dataType, pic );
+	}
+#ifdef DEBUG
+	GL_CheckErrors();
+#endif
+	if ( tex->opts.format == FMT_RGB565 ) {
+		glPixelStorei( GL_UNPACK_SWAP_BYTES, GL_FALSE );
+	}
+	if ( pixelPitch != 0 ) {
+		qglPixelStorei( GL_UNPACK_ROW_LENGTH, 0 );
+	}
+}
+
+/*
+========================
+idRenderBackendGL::SetTextureSampler
+========================
+*/
+void idRenderBackendGL::SetTextureSampler( textureHandle_t texture, const samplerDesc_t & sampler ) {
+	const glTexture_t * tex = GL_Texture( texture );
+	qglBindTexture( tex->target, tex->texnum );
+	GL_SetTexParameters( *tex, sampler );
+}
+
+/*
+========================
+idRenderBackendGL::CopyOutputToTexture
+========================
+*/
+void idRenderBackendGL::CopyOutputToTexture( textureHandle_t texture, int x, int y, int imageWidth, int imageHeight ) {
+	glTexture_t * tex = GL_Texture( texture );
+
+	qglBindTexture( tex->target, tex->texnum );
+
+	qglReadBuffer( GL_BACK );
+
+	tex->opts.width = imageWidth;
+	tex->opts.height = imageHeight;
+	qglCopyTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA8, x, y, imageWidth, imageHeight, 0 );
+
+	// these shouldn't be necessary if the image was initialized properly
+	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+
+	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+}
+
+/*
+========================
+idRenderBackendGL::CopyDepthToTexture
+========================
+*/
+void idRenderBackendGL::CopyDepthToTexture( textureHandle_t texture, int x, int y, int imageWidth, int imageHeight ) {
+	glTexture_t * tex = GL_Texture( texture );
+
+	qglBindTexture( tex->target, tex->texnum );
+
+	tex->opts.width = imageWidth;
+	tex->opts.height = imageHeight;
+	qglCopyTexImage2D( GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, x, y, imageWidth, imageHeight, 0 );
+}
+
+/*
+========================
+idRenderBackendGL::API_BindTexture
+========================
+*/
+void idRenderBackendGL::API_BindTexture( int slot, textureKind_t kind, textureHandle_t texture ) {
+	glTexture_t * tex = GL_Texture( texture );
+	const GLenum target = ( kind == textureKind_t::TEX_CUBE ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D;
+	qglBindMultiTextureEXT( GL_TEXTURE0_ARB + slot, target, ( tex != nullptr ) ? tex->texnum : 0 );
+#ifdef _DEBUG
+	if ( tex != nullptr ) {
+		tex->boundInFrame = debugFrame;
+	}
+#endif
 }

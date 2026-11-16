@@ -144,6 +144,108 @@ ID_INLINE void idImage::DeriveOpts() {
 
 /*
 ========================
+R_ImageBackendCallable
+
+The render backend belongs to the main thread. Image code that runs on another thread (the game
+thread parsing a material) never reached OpenGL either: its calls had no context and did nothing.
+========================
+*/
+static bool R_ImageBackendCallable( [[maybe_unused]] const char * imageName ) {
+	if ( renderBackend == nullptr ) {
+		return false;
+	}
+	if ( renderBackend->IsOwnerThread() ) {
+		return true;
+	}
+#ifdef _DEBUG
+	// reported at 1, 2, 4, 8, ... so that a log shows whether it happens and how often
+	static idSysInterlockedInteger skipped;
+	const int count = skipped.Increment();
+	if ( ( count & ( count - 1 ) ) == 0 ) {
+		common->Warning( "idImage: %d render backend calls skipped off the main thread, the last for '%s'", count, imageName );
+	}
+#endif
+	return false;
+}
+
+/*
+========================
+idImage::ResolveSampler
+========================
+*/
+samplerDesc_t idImage::ResolveSampler() const {
+	samplerDesc_t sampler = {};
+
+	switch ( filter ) {
+		case TF_DEFAULT:
+			sampler.filter = r_useTrilinearFiltering.GetBool() ? samplerFilter_t::LINEAR_MIP_LINEAR : samplerFilter_t::LINEAR_MIP_NEAREST;
+			break;
+		case TF_LINEAR:
+			sampler.filter = samplerFilter_t::LINEAR;
+			break;
+		case TF_NEAREST:
+			sampler.filter = samplerFilter_t::NEAREST;
+			break;
+		default:
+			common->FatalError( "%s: bad texture filter %d", GetName(), filter );
+	}
+
+	// only do aniso filtering on mip mapped images
+	sampler.maxAnisotropy = 1.0f;
+	if ( filter == TF_DEFAULT ) {
+		const int maxAniso = static_cast<int>( renderBackend->Caps().maxAnisotropy );
+		sampler.maxAnisotropy = static_cast<float>( Max( 1, Min( r_maxAnisotropicFiltering.GetInteger(), maxAniso ) ) );
+	}
+
+	// use a blurring LOD bias in combination with high anisotropy to fix our aliasing grate textures...
+	sampler.lodBias = ( usage != TD_FONT ) ? r_lodBias.GetFloat() : 0.0f;
+
+	// set the wrap/clamp modes
+	switch ( repeat ) {
+		case TR_REPEAT:
+			sampler.address = samplerAddress_t::REPEAT;
+			break;
+		case TR_CLAMP_TO_ZERO:
+			sampler.address = samplerAddress_t::BORDER_BLACK;
+			break;
+		case TR_CLAMP_TO_ZERO_ALPHA:
+			sampler.address = samplerAddress_t::BORDER_TRANSPARENT;
+			break;
+		case TR_CLAMP:
+			sampler.address = samplerAddress_t::CLAMP;
+			break;
+		default:
+			common->FatalError( "%s: bad texture repeat %d", GetName(), repeat );
+	}
+	return sampler;
+}
+
+/*
+========================
+idImage::AllocImage
+
+Every image will pass through this function. Allocates all the necessary MipMap levels for the
+Image, but doesn't put anything in them.
+
+This should not be done during normal game-play, if you can avoid it.
+========================
+*/
+void idImage::AllocImage() {
+	PurgeImage();
+
+	// if we don't have a rendering context, just return after we
+	// have filled in the parms.  We must have the values set, or
+	// an image match from a shader before the render starts would miss
+	// the generated texture
+	if ( !R_IsInitialized() || !R_ImageBackendCallable( GetName() ) ) {
+		return;
+	}
+
+	handle = renderBackend->CreateTexture( opts, role, ResolveSampler(), GetName() );
+}
+
+/*
+========================
 idImage::AllocImage
 ========================
 */
@@ -153,6 +255,53 @@ void idImage::AllocImage( const idImageOpts &imgOpts, textureFilter_t tf, textur
 	opts = imgOpts;
 	DeriveOpts();
 	AllocImage();
+}
+
+/*
+========================
+idImage::PurgeImage
+========================
+*/
+void idImage::PurgeImage() {
+	if ( !R_ImageBackendCallable( GetName() ) ) {
+		// off the main thread the texture leaks, as its OpenGL name did
+		handle = textureHandle_t::NONE;
+		return;
+	}
+	if ( handle != textureHandle_t::NONE ) {
+		renderBackend->DestroyTexture( handle );
+		handle = textureHandle_t::NONE;
+	}
+	// clear all the current binding caches, so the next bind will do a real one
+	renderBackend->ForgetTextureBindings();
+}
+
+/*
+========================
+idImage::Resize
+========================
+*/
+void idImage::Resize( int width, int height ) {
+	if ( opts.width == width && opts.height == height ) {
+		return;
+	}
+	opts.width = width;
+	opts.height = height;
+	AllocImage();
+}
+
+/*
+========================
+idImage::SubImageUpload
+========================
+*/
+void idImage::SubImageUpload( int mipLevel, int z, int width, int height, const void * pic, int pixelPitch ) const {
+	assert( mipLevel >= 0 && width >= 0 && height >= 0 && mipLevel < opts.numLevels );
+
+	if ( handle == textureHandle_t::NONE || !R_ImageBackendCallable( GetName() ) ) {
+		return;
+	}
+	renderBackend->UploadTexture( handle, mipLevel, z, width, height, pic, pixelPitch );
 }
 
 /*
@@ -260,7 +409,7 @@ name contains GetName() upon entry
 ActuallyLoadImage
 
 Absolutely every image goes through this path
-On exit, the idImage will have a valid OpenGL texture number that can be bound
+On exit, the idImage will have a texture of the render backend that can be bound
 ===============
 */
 void idImage::ActuallyLoadImage() {
@@ -430,7 +579,7 @@ void idImage::ActuallyLoadImage() {
 ==============
 Bind
 
-Automatically enables 2D mapping or cube mapping if needed
+Binds as a 2D or as a cube texture; a slot keeps one of each
 ==============
 */
 void idImage::Bind( int slot ) {
@@ -443,22 +592,19 @@ void idImage::Bind( int slot ) {
 		ActuallyLoadImage();
 	}
 
-	assert( slot >= 0 && slot < MAX_MULTITEXTURE_UNITS );
+	assert( slot >= 0 && slot < MAX_TEXTURE_SLOTS );
 
-	tmu_t * tmu = &backEnd.glState.tmu[slot];
-	// bind the texture
-	if ( opts.textureType == TT_2D ) {
-		if ( tmu->current2DMap != texnum ) {
-			tmu->current2DMap = texnum;
-			qglBindMultiTextureEXT( GL_TEXTURE0_ARB + slot, GL_TEXTURE_2D, texnum );
-		}
-	} else if ( opts.textureType == TT_CUBIC ) {
-		if ( tmu->currentCubeMap != texnum ) {
-			tmu->currentCubeMap = texnum;
-			qglBindMultiTextureEXT( GL_TEXTURE0_ARB + slot, GL_TEXTURE_CUBE_MAP_EXT, texnum );
-		}
+	// an image that could not be loaded leaves the slot as it is
+	if ( handle == textureHandle_t::NONE ) {
+		return;
 	}
 
+	// bind the texture
+	if ( opts.textureType == TT_2D ) {
+		renderBackend->BindTexture( slot, textureKind_t::TEX_2D, handle );
+	} else if ( opts.textureType == TT_CUBIC ) {
+		renderBackend->BindTexture( slot, textureKind_t::TEX_CUBE, handle );
+	}
 }
 
 /*
@@ -467,22 +613,13 @@ CopyFramebuffer
 ====================
 */
 void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
+	assert( role == textureRole_t::COLOR_COPY );
 
-
-	qglBindTexture( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
-
-	qglReadBuffer( GL_BACK );
-
+	if ( handle != textureHandle_t::NONE ) {
+		renderBackend->CopyOutputToTexture( handle, x, y, imageWidth, imageHeight );
+	}
 	opts.width = imageWidth;
 	opts.height = imageHeight;
-	qglCopyTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA8, x, y, imageWidth, imageHeight, 0 );
-
-	// these shouldn't be necessary if the image was initialized properly
-	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-
-	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 
 	backEnd.pc.c_copyFrameBuffer++;
 }
@@ -493,11 +630,13 @@ CopyDepthbuffer
 ====================
 */
 void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
-	qglBindTexture( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
+	assert( role == textureRole_t::DEPTH_COPY );
 
+	if ( handle != textureHandle_t::NONE ) {
+		renderBackend->CopyDepthToTexture( handle, x, y, imageWidth, imageHeight );
+	}
 	opts.width = imageWidth;
 	opts.height = imageHeight;
-	qglCopyTexImage2D( GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, x, y, imageWidth, imageHeight, 0 );
 
 	backEnd.pc.c_copyFrameBuffer++;
 }
@@ -671,6 +810,23 @@ void idImage::SetSamplerState( textureFilter_t tf, textureRepeat_t tr ) {
 	}
 	filter = tf;
 	repeat = tr;
-	qglBindTexture( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
-	SetTexParameters();
+	if ( handle != textureHandle_t::NONE && R_ImageBackendCallable( GetName() ) ) {
+		renderBackend->SetTextureSampler( handle, ResolveSampler() );
+	}
+}
+
+/*
+========================
+idImage::UpdateSampler
+
+Does not go through Bind: the backend reaches the texture without the slots of the latch.
+========================
+*/
+void idImage::UpdateSampler() {
+	if ( !IsLoaded() ) {
+		ActuallyLoadImage();
+	}
+	if ( handle != textureHandle_t::NONE ) {
+		renderBackend->SetTextureSampler( handle, ResolveSampler() );
+	}
 }
