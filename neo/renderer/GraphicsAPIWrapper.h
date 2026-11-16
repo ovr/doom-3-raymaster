@@ -62,20 +62,22 @@ class idDeclRenderProg;
 ================================================================================================
 */
 
-void			GL_SetDefaultState();
-void			GL_State( uint64 stateVector, bool forceGlState = false );
-uint64			GL_GetCurrentState();
-uint64			GL_GetCurrentStateMinusStencil();
-void			GL_Cull( int cullType );
-void			GL_Scissor( int x /* left*/, int y /* bottom */, int w, int h );
-void			GL_Viewport( int x /* left */, int y /* bottom */, int w, int h );
+// forwarders to the latch of renderBackend; the names stay until the passes are renamed in one commit
+ID_INLINE void	GL_SetDefaultState() { renderBackend->SetDefaultState(); }
+ID_INLINE void	GL_State( uint64 stateVector ) { renderBackend->State( stateVector ); }
+ID_INLINE uint64	GL_GetCurrentState() { return renderBackend->GetStateBits(); }
+ID_INLINE void	GL_Cull( int cullType ) { renderBackend->Cull( cullType ); }
+ID_INLINE void	GL_Scissor( int x /* left*/, int y /* bottom */, int w, int h ) { renderBackend->Scissor( x, y, w, h ); }
+ID_INLINE void	GL_Viewport( int x /* left */, int y /* bottom */, int w, int h ) { renderBackend->Viewport( x, y, w, h ); }
 ID_INLINE void	GL_Scissor( const idScreenRect & rect ) { GL_Scissor( rect.x1, rect.y1, rect.x2 - rect.x1 + 1, rect.y2 - rect.y1 + 1 ); }
 ID_INLINE void	GL_Viewport( const idScreenRect & rect ) { GL_Viewport( rect.x1, rect.y1, rect.x2 - rect.x1 + 1, rect.y2 - rect.y1 + 1 ); }
 ID_INLINE void	GL_ViewportAndScissor( int x, int y, int w, int h ) { GL_Viewport( x, y, w, h ); GL_Scissor( x, y, w, h ); }
 ID_INLINE void	GL_ViewportAndScissor( const idScreenRect& rect ) { GL_Viewport( rect ); GL_Scissor( rect ); }
-void			GL_Clear( bool color, bool depth, bool stencil, byte stencilValue, float r, float g, float b, float a );
-void			GL_PolygonOffset( float scale, float bias );
-void			GL_DepthBoundsTest( const float zmin, const float zmax );
+ID_INLINE void	GL_Clear( bool color, bool depth, bool stencil, byte stencilValue, float r, float g, float b, float a ) { renderBackend->Clear( color, depth, stencil, stencilValue, r, g, b, a ); }
+ID_INLINE void	GL_PolygonOffset( float scale, float bias ) { renderBackend->PolygonOffset( scale, bias ); }
+ID_INLINE void	GL_DepthBoundsTest( const float zmin, const float zmax ) { renderBackend->DepthBoundsTest( zmin, zmax ); }
+
+// tr_backend_draw.cpp: the colour render parm, clamped to 0 .. 1
 void			GL_Color( float * color );
 void			GL_Color( float r, float g, float b );
 void			GL_Color( float r, float g, float b, float a );

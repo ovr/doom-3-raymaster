@@ -154,6 +154,8 @@ public:
 	void					SetViewMirror( bool isMirror );
 	// Face culling for the draws that follow: CT_FRONT_SIDED, CT_BACK_SIDED, CT_TWO_SIDED.
 	void					Cull( int cullType );
+	// The latched culling, CULL_UNSET before the first Cull() of a view: for code that changes it and puts it back.
+	int						GetCull() const { return latch.cull; }
 	// Depth offset = scale * slope + bias * (smallest depth step of the target); used while GLS_POLYGON_OFFSET is set.
 	void					PolygonOffset( float scale, float bias );
 	// Depth bounds test in window depth; ( 0, 0 ) turns it off; ignored without caps.depthBoundsTest or when zmin > zmax.

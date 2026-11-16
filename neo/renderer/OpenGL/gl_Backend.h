@@ -149,7 +149,7 @@ public:
 
 protected:
 	void				API_SetDefaultState() override;
-	void				API_State( uint64 stateBits, uint64 changedBits ) override;
+	void				API_State( uint64 stateBits, uint64 diff ) override;
 	void				API_BeginView() override;
 	void				API_Cull( int cullType, int previousCullType ) override;
 	void				API_PolygonOffset( float scale, float bias ) override;

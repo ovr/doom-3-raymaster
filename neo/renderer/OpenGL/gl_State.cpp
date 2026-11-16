@@ -34,83 +34,81 @@ If you have questions concerning this license or the applicable additional terms
 
 /*
 ====================
-GL_Cull
+idRenderBackendGL::API_Cull
 
 This handles the flipping needed when the view being
 rendered is a mirored view.
+After SetViewMirror the previous type is CULL_UNSET, and GL_CULL_FACE is not turned back on
+if a two-sided pass turned it off: frames depend on that.
 ====================
 */
-void GL_Cull( int cullType ) {
-	if ( backEnd.glState.faceCulling == cullType ) {
-		return;
-	}
-
+void idRenderBackendGL::API_Cull( int cullType, int previousCullType ) {
 	if ( cullType == CT_TWO_SIDED ) {
 		qglDisable( GL_CULL_FACE );
 	} else  {
-		if ( backEnd.glState.faceCulling == CT_TWO_SIDED ) {
+		if ( previousCullType == CT_TWO_SIDED ) {
 			qglEnable( GL_CULL_FACE );
 		}
 
 		if ( cullType == CT_BACK_SIDED ) {
-			if ( backEnd.viewDef->isMirror ) {
+			if ( latch.viewIsMirror ) {
 				qglCullFace( GL_FRONT );
 			} else {
 				qglCullFace( GL_BACK );
 			}
 		} else {
-			if ( backEnd.viewDef->isMirror ) {
+			if ( latch.viewIsMirror ) {
 				qglCullFace( GL_BACK );
 			} else {
 				qglCullFace( GL_FRONT );
 			}
 		}
 	}
-
-	backEnd.glState.faceCulling = cullType;
 }
 
 /*
 ====================
-GL_Scissor
+idRenderBackendGL::API_BeginView
 ====================
 */
-void GL_Scissor( int x /* left*/, int y /* bottom */, int w, int h ) {
-	qglScissor( x, y, w, h );
+void idRenderBackendGL::API_BeginView() {
+	// bind one global Vertex Array Object (VAO)
+	qglBindVertexArray( glContext.global_vao );
 }
 
 /*
 ====================
-GL_Viewport
+idRenderBackendGL::API_Scissor
 ====================
 */
-void GL_Viewport( int x /* left */, int y /* bottom */, int w, int h ) {
-	qglViewport( x, y, w, h );
+void idRenderBackendGL::API_Scissor( const renderRect_t & rect ) {
+	qglScissor( rect.x, rect.y, rect.width, rect.height );
 }
 
 /*
 ====================
-GL_PolygonOffset
+idRenderBackendGL::API_Viewport
 ====================
 */
-void GL_PolygonOffset( float scale, float bias ) {
-	backEnd.glState.polyOfsScale = scale;
-	backEnd.glState.polyOfsBias = bias;
-	if ( backEnd.glState.glStateBits & GLS_POLYGON_OFFSET ) {
-		qglPolygonOffset( scale, bias );
-	}
+void idRenderBackendGL::API_Viewport( const renderRect_t & rect ) {
+	qglViewport( rect.x, rect.y, rect.width, rect.height );
+}
+
+/*
+====================
+idRenderBackendGL::API_PolygonOffset
+====================
+*/
+void idRenderBackendGL::API_PolygonOffset( float scale, float bias ) {
+	qglPolygonOffset( scale, bias );
 }
 
 /*
 ========================
-GL_DepthBoundsTest
+idRenderBackendGL::API_DepthBoundsTest
 ========================
 */
-void GL_DepthBoundsTest( const float zmin, const float zmax ) {
-	if ( !glContext.depthBoundsTestAvailable || zmin > zmax ) {
-		return;
-	}
-
+void idRenderBackendGL::API_DepthBoundsTest( float zmin, float zmax ) {
 	if ( zmin == 0.0f && zmax == 0.0f ) {
 		qglDisable( GL_DEPTH_BOUNDS_TEST_EXT );
 	} else {
@@ -120,56 +118,23 @@ void GL_DepthBoundsTest( const float zmin, const float zmax ) {
 }
 
 /*
-====================
-GL_Color
-====================
-*/
-void GL_Color( float * color ) {
-	if ( color == NULL ) {
-		return;
-	}
-	GL_Color( color[0], color[1], color[2], color[3] );
-}
-
-/*
-====================
-GL_Color
-====================
-*/
-void GL_Color( float r, float g, float b ) {
-	GL_Color( r, g, b, 1.0f );
-}
-
-/*
-====================
-GL_Color
-====================
-*/
-void GL_Color( float r, float g, float b, float a ) {
-	float parm[4];
-	parm[0] = idMath::ClampFloat( 0.0f, 1.0f, r );
-	parm[1] = idMath::ClampFloat( 0.0f, 1.0f, g );
-	parm[2] = idMath::ClampFloat( 0.0f, 1.0f, b );
-	parm[3] = idMath::ClampFloat( 0.0f, 1.0f, a );
-	renderProgManager.SetRenderParm( RENDERPARM_COLOR, parm );
-}
-
-/*
 ========================
-GL_Clear
+idRenderBackendGL::API_Clear
+
+GL clears inside its own scissor and through its own write masks: the rectangle and the mask are not read.
 ========================
 */
-void GL_Clear( bool color, bool depth, bool stencil, byte stencilValue, float r, float g, float b, float a ) {
+void idRenderBackendGL::API_Clear( const clearDesc_t & clear ) {
 	int clearFlags = 0;
-	if ( color ) {
-		qglClearColor( r, g, b, a );
+	if ( clear.color ) {
+		qglClearColor( clear.rgba[0], clear.rgba[1], clear.rgba[2], clear.rgba[3] );
 		clearFlags |= GL_COLOR_BUFFER_BIT;
 	}
-	if ( depth ) {
+	if ( clear.depth ) {
 		clearFlags |= GL_DEPTH_BUFFER_BIT;
 	}
-	if ( stencil ) {
-		qglClearStencil( stencilValue );
+	if ( clear.stencil ) {
+		qglClearStencil( clear.stencilValue );
 		clearFlags |= GL_STENCIL_BUFFER_BIT;
 	}
 	qglClear( clearFlags );
@@ -177,20 +142,21 @@ void GL_Clear( bool color, bool depth, bool stencil, byte stencilValue, float r,
 
 /*
 ========================
-GL_SetDefaultState
+idRenderBackendGL::API_SetDefaultState
 
 This should initialize all GL state that any part of the entire program
 may touch, including the editor.
 ========================
 */
-void GL_SetDefaultState() {
+void idRenderBackendGL::API_SetDefaultState() {
 	RENDERLOG_PRINTF( "--- GL_SetDefaultState ---\n" );
 
 	qglClearDepth( 1.0f );
 
 	// make sure our GL state vector is set correctly
+	// the latch is already reset; glState keeps the texture and buffer caches that have not moved yet
 	memset( &backEnd.glState, 0, sizeof( backEnd.glState ) );
-	GL_State( 0, true );
+	API_State( 0, ~0ull );
 
 	// These are changed by GL_Cull
 	qglCullFace( GL_FRONT_AND_BACK );
@@ -221,26 +187,18 @@ void GL_SetDefaultState() {
 
 /*
 ====================
-GL_State
+idRenderBackendGL::API_State
 
 This routine is responsible for setting the most commonly changed state
+diff is every bit with r_useStateCaching 0 and from API_SetDefaultState: everything is set
+all the time then, so we can see if our delta checking is screwing up
 ====================
 */
-void GL_State( uint64 stateBits, bool forceGlState ) {
-	uint64 diff = stateBits ^ backEnd.glState.glStateBits;
-
+void idRenderBackendGL::API_State( uint64 stateBits, uint64 diff ) {
 	// One-sided KEEP, KEEP, INCR over a latched shadow preset used to issue nothing and keep the two-sided
 	// ops; now it would replace them. Only the shadow pass sends these ops, and it carries the preset on.
-	assert( !r_useStateCaching.GetBool() || forceGlState || !GLS_IsStencilShadowOps( backEnd.glState.glStateBits )
+	assert( diff == ~0ull || !GLS_IsStencilShadowOps( stateBits ^ diff )
 		|| ( stateBits & GLS_STENCIL_OP_BITS ) != ( GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR ) );
-
-	if ( !r_useStateCaching.GetBool() || forceGlState ) {
-		// make sure everything is set all the time, so we
-		// can see if our delta checking is screwing up
-		diff = 0xFFFFFFFFFFFFFFFF;
-	} else if ( diff == 0 ) {
-		return;
-	}
 
 	//
 	// check depthFunc bits
@@ -336,7 +294,7 @@ void GL_State( uint64 stateBits, bool forceGlState ) {
 	//
 	if ( diff & GLS_POLYGON_OFFSET ) {
 		if ( stateBits & GLS_POLYGON_OFFSET ) {
-			qglPolygonOffset( backEnd.glState.polyOfsScale, backEnd.glState.polyOfsBias );
+			qglPolygonOffset( latch.polyOfsScale, latch.polyOfsBias );
 			qglEnable( GL_POLYGON_OFFSET_FILL );
 			qglEnable( GL_POLYGON_OFFSET_LINE );
 		} else {
@@ -423,24 +381,4 @@ void GL_State( uint64 stateBits, bool forceGlState ) {
 			setStencilOps( GL_FRONT_AND_BACK, stateBits );
 		}
 	}
-
-	backEnd.glState.glStateBits = stateBits;
-}
-
-/*
-=================
-GL_GetCurrentState
-=================
-*/
-uint64 GL_GetCurrentState() {
-	return backEnd.glState.glStateBits;
-}
-
-/*
-========================
-GL_GetCurrentStateMinusStencil
-========================
-*/
-uint64 GL_GetCurrentStateMinusStencil() {
-	return GL_GetCurrentState() & ~(GLS_STENCIL_OP_BITS|GLS_STENCIL_FUNC_BITS|GLS_STENCIL_FUNC_REF_BITS|GLS_STENCIL_FUNC_MASK_BITS);
 }
