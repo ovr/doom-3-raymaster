@@ -247,7 +247,12 @@ This routine is responsible for setting the most commonly changed state
 */
 void GL_State( uint64 stateBits, bool forceGlState ) {
 	uint64 diff = stateBits ^ backEnd.glState.glStateBits;
-	
+
+	// One-sided KEEP, KEEP, INCR over a latched shadow preset used to issue nothing and keep the two-sided
+	// ops; now it would replace them. Only the shadow pass sends these ops, and it carries the preset on.
+	assert( !r_useStateCaching.GetBool() || forceGlState || !GLS_IsStencilShadowOps( backEnd.glState.glStateBits )
+		|| ( stateBits & GLS_STENCIL_OP_BITS ) != ( GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR ) );
+
 	if ( !r_useStateCaching.GetBool() || forceGlState ) {
 		// make sure everything is set all the time, so we
 		// can see if our delta checking is screwing up
@@ -362,8 +367,9 @@ void GL_State( uint64 stateBits, bool forceGlState ) {
 	//
 	// stencil
 	//
-	if ( diff & ( GLS_STENCIL_FUNC_BITS | GLS_STENCIL_OP_BITS ) ) {
-		if ( ( stateBits & ( GLS_STENCIL_FUNC_BITS | GLS_STENCIL_OP_BITS ) ) != 0 ) {
+	// the test is on when the function or the front ops are set; the back ops alone never turn it on
+	if ( diff & ( GLS_STENCIL_FUNC_BITS | GLS_STENCIL_FRONT_OP_BITS ) ) {
+		if ( ( stateBits & ( GLS_STENCIL_FUNC_BITS | GLS_STENCIL_FRONT_OP_BITS ) ) != 0 ) {
 			qglEnable( GL_STENCIL_TEST );
 		} else {
 			qglDisable( GL_STENCIL_TEST );
@@ -386,42 +392,55 @@ void GL_State( uint64 stateBits, bool forceGlState ) {
 		}
 		qglStencilFunc( func, ref, mask );
 	}
-	if ( diff & ( GLS_STENCIL_OP_FAIL_BITS | GLS_STENCIL_OP_ZFAIL_BITS | GLS_STENCIL_OP_PASS_BITS ) ) {
-		GLenum sFail = 0;
-		GLenum zFail = 0;
-		GLenum pass = 0;
+	if ( diff & GLS_STENCIL_OP_BITS ) {
+		// the ops of one face, from bits in the front-face position
+		const auto setStencilOps = []( GLenum face, uint64 ops ) {
+			GLenum sFail = 0;
+			GLenum zFail = 0;
+			GLenum pass = 0;
 
-		switch ( stateBits & GLS_STENCIL_OP_FAIL_BITS ) {
-			case GLS_STENCIL_OP_FAIL_KEEP:		sFail = GL_KEEP; break;
-			case GLS_STENCIL_OP_FAIL_ZERO:		sFail = GL_ZERO; break;
-			case GLS_STENCIL_OP_FAIL_REPLACE:	sFail = GL_REPLACE; break;
-			case GLS_STENCIL_OP_FAIL_INCR:		sFail = GL_INCR; break;
-			case GLS_STENCIL_OP_FAIL_DECR:		sFail = GL_DECR; break;
-			case GLS_STENCIL_OP_FAIL_INVERT:	sFail = GL_INVERT; break;
-			case GLS_STENCIL_OP_FAIL_INCR_WRAP: sFail = GL_INCR_WRAP; break;
-			case GLS_STENCIL_OP_FAIL_DECR_WRAP: sFail = GL_DECR_WRAP; break;
+			switch ( ops & GLS_STENCIL_OP_FAIL_BITS ) {
+				case GLS_STENCIL_OP_FAIL_KEEP:		sFail = GL_KEEP; break;
+				case GLS_STENCIL_OP_FAIL_ZERO:		sFail = GL_ZERO; break;
+				case GLS_STENCIL_OP_FAIL_REPLACE:	sFail = GL_REPLACE; break;
+				case GLS_STENCIL_OP_FAIL_INCR:		sFail = GL_INCR; break;
+				case GLS_STENCIL_OP_FAIL_DECR:		sFail = GL_DECR; break;
+				case GLS_STENCIL_OP_FAIL_INVERT:	sFail = GL_INVERT; break;
+				case GLS_STENCIL_OP_FAIL_INCR_WRAP: sFail = GL_INCR_WRAP; break;
+				case GLS_STENCIL_OP_FAIL_DECR_WRAP: sFail = GL_DECR_WRAP; break;
+			}
+			switch ( ops & GLS_STENCIL_OP_ZFAIL_BITS ) {
+				case GLS_STENCIL_OP_ZFAIL_KEEP:		zFail = GL_KEEP; break;
+				case GLS_STENCIL_OP_ZFAIL_ZERO:		zFail = GL_ZERO; break;
+				case GLS_STENCIL_OP_ZFAIL_REPLACE:	zFail = GL_REPLACE; break;
+				case GLS_STENCIL_OP_ZFAIL_INCR:		zFail = GL_INCR; break;
+				case GLS_STENCIL_OP_ZFAIL_DECR:		zFail = GL_DECR; break;
+				case GLS_STENCIL_OP_ZFAIL_INVERT:	zFail = GL_INVERT; break;
+				case GLS_STENCIL_OP_ZFAIL_INCR_WRAP:zFail = GL_INCR_WRAP; break;
+				case GLS_STENCIL_OP_ZFAIL_DECR_WRAP:zFail = GL_DECR_WRAP; break;
+			}
+			switch ( ops & GLS_STENCIL_OP_PASS_BITS ) {
+				case GLS_STENCIL_OP_PASS_KEEP:		pass = GL_KEEP; break;
+				case GLS_STENCIL_OP_PASS_ZERO:		pass = GL_ZERO; break;
+				case GLS_STENCIL_OP_PASS_REPLACE:	pass = GL_REPLACE; break;
+				case GLS_STENCIL_OP_PASS_INCR:		pass = GL_INCR; break;
+				case GLS_STENCIL_OP_PASS_DECR:		pass = GL_DECR; break;
+				case GLS_STENCIL_OP_PASS_INVERT:	pass = GL_INVERT; break;
+				case GLS_STENCIL_OP_PASS_INCR_WRAP:	pass = GL_INCR_WRAP; break;
+				case GLS_STENCIL_OP_PASS_DECR_WRAP:	pass = GL_DECR_WRAP; break;
+			}
+			if ( face == GL_FRONT_AND_BACK ) {
+				qglStencilOp( sFail, zFail, pass );
+			} else {
+				qglStencilOpSeparate( face, sFail, zFail, pass );
+			}
+		};
+		if ( stateBits & GLS_SEPARATE_STENCIL ) {
+			setStencilOps( GL_FRONT, stateBits );
+			setStencilOps( GL_BACK, stateBits >> GLS_STENCIL_BACK_OP_SHIFT );
+		} else {
+			setStencilOps( GL_FRONT_AND_BACK, stateBits );
 		}
-		switch ( stateBits & GLS_STENCIL_OP_ZFAIL_BITS ) {
-			case GLS_STENCIL_OP_ZFAIL_KEEP:		zFail = GL_KEEP; break;
-			case GLS_STENCIL_OP_ZFAIL_ZERO:		zFail = GL_ZERO; break;
-			case GLS_STENCIL_OP_ZFAIL_REPLACE:	zFail = GL_REPLACE; break;
-			case GLS_STENCIL_OP_ZFAIL_INCR:		zFail = GL_INCR; break;
-			case GLS_STENCIL_OP_ZFAIL_DECR:		zFail = GL_DECR; break;
-			case GLS_STENCIL_OP_ZFAIL_INVERT:	zFail = GL_INVERT; break;
-			case GLS_STENCIL_OP_ZFAIL_INCR_WRAP:zFail = GL_INCR_WRAP; break;
-			case GLS_STENCIL_OP_ZFAIL_DECR_WRAP:zFail = GL_DECR_WRAP; break;
-		}
-		switch ( stateBits & GLS_STENCIL_OP_PASS_BITS ) {
-			case GLS_STENCIL_OP_PASS_KEEP:		pass = GL_KEEP; break;
-			case GLS_STENCIL_OP_PASS_ZERO:		pass = GL_ZERO; break;
-			case GLS_STENCIL_OP_PASS_REPLACE:	pass = GL_REPLACE; break;
-			case GLS_STENCIL_OP_PASS_INCR:		pass = GL_INCR; break;
-			case GLS_STENCIL_OP_PASS_DECR:		pass = GL_DECR; break;
-			case GLS_STENCIL_OP_PASS_INVERT:	pass = GL_INVERT; break;
-			case GLS_STENCIL_OP_PASS_INCR_WRAP:	pass = GL_INCR_WRAP; break;
-			case GLS_STENCIL_OP_PASS_DECR_WRAP:	pass = GL_DECR_WRAP; break;
-		}
-		qglStencilOp( sFail, zFail, pass );
 	}
 
 	backEnd.glState.glStateBits = stateBits;

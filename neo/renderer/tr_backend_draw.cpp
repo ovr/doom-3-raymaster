@@ -1348,11 +1348,14 @@ static void RB_StencilShadowPass( const drawSurf_t *drawSurfs, const viewLight_t
 
 	GL_PolygonOffset( r_shadowPolygonFactor.GetFloat(), -r_shadowPolygonOffset.GetFloat() );
 
-	// the actual stencil func will be set in the draw code, but we need to make sure it isn't
-	// disabled here, and that the value will get reset for the interactions without looking
-	// like a no-change-required
-	GL_State( glState | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR | 
-		GLS_STENCIL_MAKE_REF( STENCIL_SHADOW_TEST_VALUE ) | GLS_STENCIL_MAKE_MASK( STENCIL_SHADOW_MASK_VALUE ) | GLS_POLYGON_OFFSET );
+	// The pass starts with one-sided KEEP, KEEP, INCR; the surfaces below set their own two-sided ops.
+	// Z-fail without the preload draws with whatever ops are set, so a shadow preset left by the
+	// pass before is carried on: with state caching that request never reached GL.
+	const uint64 latchedOps = GL_GetCurrentState() & GLS_STENCIL_OP_BITS;
+	const bool carryOps = r_useStateCaching.GetBool() && GLS_IsStencilShadowOps( latchedOps );
+	const uint64 passOps = carryOps ? latchedOps : ( GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR );
+	const uint64 passBits = glState | GLS_STENCIL_MAKE_REF( STENCIL_SHADOW_TEST_VALUE ) | GLS_STENCIL_MAKE_MASK( STENCIL_SHADOW_MASK_VALUE ) | GLS_POLYGON_OFFSET;
+	GL_State( passBits | passOps );
 
 	// Two Sided Stencil reduces two draw calls to one for slightly faster shadows
 	GL_Cull( CT_TWO_SIDED );
@@ -1442,14 +1445,13 @@ static void RB_StencilShadowPass( const drawSurf_t *drawSurfs, const viewLight_t
 
 		if ( renderZPass ) {
 			// Z-pass
-			qglStencilOpSeparate( GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR );
-			qglStencilOpSeparate( GL_BACK, GL_KEEP, GL_KEEP, GL_DECR );
+			GL_State( passBits | GLS_STENCIL_SHADOW_ZPASS );
 		} else if ( r_useStencilShadowPreload.GetBool() ) {
 			// preload + Z-pass
-			qglStencilOpSeparate( GL_FRONT, GL_KEEP, GL_DECR, GL_DECR );
-			qglStencilOpSeparate( GL_BACK, GL_KEEP, GL_INCR, GL_INCR );
+			GL_State( passBits | GLS_STENCIL_SHADOW_PRELOAD );
 		} else {
-			// Z-fail
+			// Z-fail: the ops the last surface or the start of the pass left
+			GL_State( passBits | ( GL_GetCurrentState() & GLS_STENCIL_OP_BITS ) );
 		}
 
 
@@ -1554,8 +1556,7 @@ static void RB_StencilShadowPass( const drawSurf_t *drawSurfs, const viewLight_t
 
 		if ( !renderZPass && r_useStencilShadowPreload.GetBool() ) {
 			// render again with Z-pass
-			qglStencilOpSeparate( GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR );
-			qglStencilOpSeparate( GL_BACK, GL_KEEP, GL_KEEP, GL_DECR );
+			GL_State( passBits | GLS_STENCIL_SHADOW_ZPASS );
 
 			if ( drawSurf->jointCache ) {
 				qglDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, (triIndex_t *)indexOffset, vertOffset / sizeof ( idShadowVertSkinned ) );
@@ -1609,7 +1610,8 @@ static void RB_StencilSelectLight( const viewLight_t * vLight ) {
 	GL_DepthBoundsTest( vLight->scissorRect.zmin, vLight->scissorRect.zmax );
 
 
-	GL_State( GLS_COLORMASK | GLS_ALPHAMASK | GLS_DEPTHMASK | GLS_DEPTHFUNC_LESS | GLS_STENCIL_FUNC_ALWAYS | GLS_STENCIL_MAKE_REF( STENCIL_SHADOW_TEST_VALUE ) | GLS_STENCIL_MAKE_MASK( STENCIL_SHADOW_MASK_VALUE ) );
+	// two-sided stencil test
+	GL_State( GLS_COLORMASK | GLS_ALPHAMASK | GLS_DEPTHMASK | GLS_DEPTHFUNC_LESS | GLS_STENCIL_FUNC_ALWAYS | GLS_STENCIL_MAKE_REF( STENCIL_SHADOW_TEST_VALUE ) | GLS_STENCIL_MAKE_MASK( STENCIL_SHADOW_MASK_VALUE ) | GLS_STENCIL_LIGHT_SELECT );
 	GL_Cull( CT_TWO_SIDED );
 
 	renderProgManager.BindShader_Depth();
@@ -1618,10 +1620,6 @@ static void RB_StencilSelectLight( const viewLight_t * vLight ) {
 	idRenderMatrix invProjectMVPMatrix;
 	idRenderMatrix::Multiply( backEnd.viewDef->worldSpace.mvp, vLight->inverseBaseLightProject, invProjectMVPMatrix );
 	RB_SetMVP( invProjectMVPMatrix );
-
-	// two-sided stencil test
-	qglStencilOpSeparate( GL_FRONT, GL_KEEP, GL_REPLACE, GL_ZERO );
-	qglStencilOpSeparate( GL_BACK, GL_KEEP, GL_ZERO, GL_REPLACE );
 
 	RB_DrawElementsWithCounters( &backEnd.zeroOneCubeSurface );
 
