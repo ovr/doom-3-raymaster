@@ -343,7 +343,7 @@ static void RB_BindVariableStageImage( const textureStage_t *texture, const floa
 		cinData_t cin;
 
 		if ( r_skipDynamicTextures.GetBool() ) {
-			globalImages->defaultImage->Bind();
+			globalImages->defaultImage->Bind( 0 );
 			return;
 		}
 
@@ -352,14 +352,11 @@ static void RB_BindVariableStageImage( const textureStage_t *texture, const floa
 		// for cinematics going at a lower framerate than the renderer.
 		cin = texture->cinematic->ImageForTime( backEnd.viewDef->renderView.time[0] + idMath::Ftoi( 1000.0f * backEnd.viewDef->renderView.shaderParms[11] ) );
 		if ( cin.imageY != NULL ) {
-			GL_SelectTexture( 0 );
-			cin.imageY->Bind();
-			GL_SelectTexture( 1 );
-			cin.imageCr->Bind();
-			GL_SelectTexture( 2 );
-			cin.imageCb->Bind();
+			cin.imageY->Bind( 0 );
+			cin.imageCr->Bind( 1 );
+			cin.imageCb->Bind( 2 );
 		} else {
-			globalImages->blackImage->Bind();
+			globalImages->blackImage->Bind( 0 );
 			// because the shaders may have already been set - we need to make sure we are not using a bink shader which would 
 			// display incorrectly.  We may want to get rid of RB_BindVariableStageImage and inline the code so that the
 			// SWF GUI case is handled better, too
@@ -368,7 +365,7 @@ static void RB_BindVariableStageImage( const textureStage_t *texture, const floa
 	} else {
 		// FIXME: see why image is invalid
 		if ( texture->image != NULL ) {
-			texture->image->Bind();
+			texture->image->Bind( 0 );
 		}
 	}
 }
@@ -391,9 +388,7 @@ static void RB_PrepareStageTexturing( const shaderStage_t * pStage,  const drawS
 		const shaderStage_t *bumpStage = surf->material->GetBumpStage();
 		if ( bumpStage != NULL ) {
 			// per-pixel reflection mapping with bump mapping
-			GL_SelectTexture( 1 );
-			bumpStage->texture.image->Bind();
-			GL_SelectTexture( 0 );
+			bumpStage->texture.image->Bind( 1 );
 
 			RENDERLOG_PRINTF( "TexGen: TG_REFLECT_CUBE: Bumpy Environment\n" );
 			if ( surf->jointCache ) {
@@ -528,23 +523,7 @@ RB_FinishStageTexturing
 */
 static void RB_FinishStageTexturing( const shaderStage_t *pStage, const drawSurf_t *surf ) {
 
-	if ( pStage->texture.cinematic ) {
-		// unbind the extra bink textures
-		GL_SelectTexture( 1 );
-		GL_SelectTexture( 2 );
-		GL_SelectTexture( 0 );
-	}
-
 	if ( pStage->texture.texgen == TG_REFLECT_CUBE ) {
-		// see if there is also a bump map specified
-		const shaderStage_t *bumpStage = surf->material->GetBumpStage();
-		if ( bumpStage != NULL ) {
-			// per-pixel reflection mapping with bump mapping
-			GL_SelectTexture( 1 );
-			GL_SelectTexture( 0 );
-		} else {
-			// per-pixel reflection mapping without bump mapping
-		}
 		renderProgManager.Unbind();
 	}
 }
@@ -679,8 +658,7 @@ static void RB_FillDepthBufferGeneric( const drawSurf_t * const * drawSurfs, int
 				RB_SetVertexColorParms( SVC_IGNORE );
 
 				// bind the texture
-				GL_SelectTexture( 0 );
-				pStage->texture.image->Bind();
+				pStage->texture.image->Bind( 0 );
 
 				// set texture matrix and texGens
 				RB_PrepareStageTexturing( pStage, drawSurf );
@@ -949,16 +927,13 @@ static void RB_DrawSingleInteraction( drawInteraction_t * din ) {
 	SetFragmentParm( RENDERPARM_SPECULARMODIFIER, din->specularColor.ToFloatPtr() );
 
 	// texture 0 will be the per-surface bump map
- 	GL_SelectTexture( INTERACTION_TEXUNIT_BUMP );
-	din->bumpImage->Bind();
+	din->bumpImage->Bind( INTERACTION_TEXUNIT_BUMP );
 
 	// texture 3 is the per-surface diffuse map
-	GL_SelectTexture( INTERACTION_TEXUNIT_DIFFUSE );
-	din->diffuseImage->Bind();
+	din->diffuseImage->Bind( INTERACTION_TEXUNIT_DIFFUSE );
 
 	// texture 4 is the per-surface specular map
-	GL_SelectTexture( INTERACTION_TEXUNIT_SPECULAR );
-	din->specularImage->Bind();
+	din->specularImage->Bind( INTERACTION_TEXUNIT_SPECULAR );
 
 	RB_DrawElementsWithCounters( din->surf );
 }
@@ -1091,12 +1066,10 @@ static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t
 		}
 
 		// texture 1 will be the light falloff texture
-		GL_SelectTexture( INTERACTION_TEXUNIT_FALLOFF );
-		vLight->falloffImage->Bind();
+		vLight->falloffImage->Bind( INTERACTION_TEXUNIT_FALLOFF );
 
 		// texture 2 will be the light projection texture
-		GL_SelectTexture( INTERACTION_TEXUNIT_PROJECTION );
-		lightStage->texture.image->Bind();
+		lightStage->texture.image->Bind( INTERACTION_TEXUNIT_PROJECTION );
 
 		// force the light textures to not use anisotropic filtering, which is wasted on them
 		// all of the texture sampler parms should be constant for all interactions, only
@@ -1190,16 +1163,13 @@ static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t
 				renderLog.OpenBlock( surf->material->GetName() );
 
 				// texture 0 will be the per-surface bump map
-				GL_SelectTexture( INTERACTION_TEXUNIT_BUMP );
-				surfaceShader->GetFastPathBumpImage()->Bind();
+				surfaceShader->GetFastPathBumpImage()->Bind( INTERACTION_TEXUNIT_BUMP );
 
 				// texture 3 is the per-surface diffuse map
-				GL_SelectTexture( INTERACTION_TEXUNIT_DIFFUSE );
-				surfaceShader->GetFastPathDiffuseImage()->Bind();
+				surfaceShader->GetFastPathDiffuseImage()->Bind( INTERACTION_TEXUNIT_DIFFUSE );
 
 				// texture 4 is the per-surface specular map
-				GL_SelectTexture( INTERACTION_TEXUNIT_SPECULAR );
-				surfaceShader->GetFastPathSpecularImage()->Bind();
+				surfaceShader->GetFastPathSpecularImage()->Bind( INTERACTION_TEXUNIT_SPECULAR );
 
 				RB_DrawElementsWithCounters( surf );
 
@@ -1325,8 +1295,6 @@ static void RB_StencilShadowPass( const drawSurf_t *drawSurfs, const viewLight_t
 	RENDERLOG_PRINTF( "---------- RB_StencilShadowPass ----------\n" );
 
 	renderProgManager.BindShader_Shadow();
-
-	GL_SelectTexture( 0 );
 
 	uint64 glState = 0;
 
@@ -1656,9 +1624,6 @@ static void RB_DrawInteractions() {
 	renderLog.OpenMainBlock( MRB_DRAW_INTERACTIONS );
 	renderLog.OpenBlock( "RB_DrawInteractions" );
 
-	GL_SelectTexture( 0 );
-
-
 	const bool useLightDepthBounds = r_useLightDepthBounds.GetBool();
 
 	//
@@ -1779,12 +1744,6 @@ static void RB_DrawInteractions() {
 	// disable stencil shadow test
 	GL_State( GLS_DEFAULT );
 
-	// unbind texture units
-	for ( int i = 0; i < 5; i++ ) {
-		GL_SelectTexture( i );
-	}
-	GL_SelectTexture( 0 );
-
 	// reset depth bounds
 	if ( useLightDepthBounds ) {
 		GL_DepthBoundsTest( 0.0f, 0.0f );
@@ -1820,10 +1779,6 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 	}
 
 	renderLog.OpenBlock( "RB_DrawShaderPasses" );
-
-	GL_SelectTexture( 1 );
-
-	GL_SelectTexture( 0 );
 
 	backEnd.currentSpace = (const viewEntity_t *)1;	// using NULL makes /analyze think surf->space needs to be checked...
 	float currentGuiStereoOffset = 0.0f;
@@ -1992,21 +1947,12 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 				for ( int j = 0; j < newStage->numFragmentProgramImages; j++ ) {
 					idImage * image = newStage->fragmentProgramImages[j];
 					if ( image != NULL ) {
-						GL_SelectTexture( j );
-						image->Bind();
+						image->Bind( j );
 					}
 				}
 
 				// draw it
 				RB_DrawElementsWithCounters( surf );
-
-				// unbind texture units
-				for ( int j = 0; j < newStage->numFragmentProgramImages; j++ ) {
-					idImage * image = newStage->fragmentProgramImages[j];
-					if ( image != NULL ) {
-						GL_SelectTexture( j );
-					}
-				}
 
 				// clear rpEnableSkinning if it was set
 				if ( surf->jointCache && renderProgManager.ShaderHasOptionalSkinning() ) {
@@ -2014,7 +1960,6 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 					SetVertexParm( RENDERPARM_ENABLE_SKINNING, skinningParm.ToFloatPtr() );
 				}
 
-				GL_SelectTexture( 0 );
 				renderProgManager.Unbind();
 
 				renderLog.CloseBlock();
@@ -2201,11 +2146,7 @@ static void RB_BlendLight( const drawSurf_t *drawSurfs, const drawSurf_t *drawSu
 	const float	* regs = vLight->shaderRegisters;
 
 	// texture 1 will get the falloff texture
-	GL_SelectTexture( 1 );
-	vLight->falloffImage->Bind();
-
-	// texture 0 will get the projected texture
-	GL_SelectTexture( 0 );
+	vLight->falloffImage->Bind( 1 );
 
 	renderProgManager.BindShader_BlendLight();
 
@@ -2218,8 +2159,8 @@ static void RB_BlendLight( const drawSurf_t *drawSurfs, const drawSurf_t *drawSu
 
 		GL_State( GLS_DEPTHMASK | stage->drawStateBits | GLS_DEPTHFUNC_EQUAL );
 
-		GL_SelectTexture( 0 );
-		stage->texture.image->Bind();
+		// texture 0 will get the projected texture
+		stage->texture.image->Bind( 0 );
 
 		if ( stage->texture.hasMatrix ) {
 			RB_LoadShaderTextureMatrix( regs, &stage->texture );
@@ -2236,10 +2177,6 @@ static void RB_BlendLight( const drawSurf_t *drawSurfs, const drawSurf_t *drawSu
 		RB_T_BlendLight( drawSurfs, vLight );
 		RB_T_BlendLight( drawSurfs2, vLight );
 	}
-
-	GL_SelectTexture( 1 );
-
-	GL_SelectTexture( 0 );
 
 	renderProgManager.Unbind();
 	renderLog.CloseBlock();
@@ -2344,12 +2281,10 @@ static void RB_FogPass( const drawSurf_t * drawSurfs,  const drawSurf_t * drawSu
 	}
 
 	// texture 0 is the falloff image
-	GL_SelectTexture( 0 );
-	globalImages->fogImage->Bind();
+	globalImages->fogImage->Bind( 0 );
 
 	// texture 1 is the entering plane fade correction
-	GL_SelectTexture( 1 );
-	globalImages->fogEnterImage->Bind();
+	globalImages->fogEnterImage->Bind( 1 );
 
 	// S is based on the view origin
 	const float s = vLight->fogPlane.Distance( backEnd.viewDef->renderView.vieworg );
@@ -2397,10 +2332,6 @@ static void RB_FogPass( const drawSurf_t * drawSurfs,  const drawSurf_t * drawSu
 	RB_T_BasicFog( &backEnd.zeroOneCubeSurface, fogPlanes, &vLight->inverseBaseLightProject );
 
 	GL_Cull( CT_FRONT_SIDED );
-
-	GL_SelectTexture( 1 );
-
-	GL_SelectTexture( 0 );
 
 	renderProgManager.Unbind();
 
@@ -2594,8 +2525,6 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 
 		RENDERLOG_PRINTF( "Resolve to %i x %i buffer\n", w, h );
 
-		GL_SelectTexture( 0 );
-
 		// resolve the screen
 		renderLog.OpenMainBlock( MRB_CAPTURE_COLORBUFFER );
 		globalImages->currentRenderImage->CopyFramebuffer( x, y, w, h );
@@ -2665,8 +2594,7 @@ void RB_MotionBlur() {
 	GL_State( GLS_COLORMASK | GLS_DEPTHMASK );
 	qglClear( GL_COLOR_BUFFER_BIT );
 	GL_Color( 0, 0, 0, 0 );
-	GL_SelectTexture( 0 );
-	globalImages->blackImage->Bind();
+	globalImages->blackImage->Bind( 0 );
 	backEnd.currentSpace = NULL;
 
 	drawSurf_t **drawSurfs = (drawSurf_t **)&backEnd.viewDef->drawSurfs[0];
@@ -2730,10 +2658,8 @@ void RB_MotionBlur() {
 	idVec4 samples( (float)( 1 << r_motionBlur.GetInteger() ) );
 	SetFragmentParm( RENDERPARM_OVERBRIGHT, samples.ToFloatPtr() );
 
-	GL_SelectTexture( 0 );
-	globalImages->currentRenderImage->Bind();
-	GL_SelectTexture( 1 );
-	globalImages->currentDepthImage->Bind();
+	globalImages->currentRenderImage->Bind( 0 );
+	globalImages->currentDepthImage->Bind( 1 );
 
 	RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 	GL_CheckErrors();
@@ -2860,8 +2786,7 @@ void RB_PostProcess( const void * data ) {
 	GL_Viewport( 0, 0, screenWidth, screenHeight );
 	GL_Scissor( 0, 0, screenWidth, screenHeight );
 
-	GL_SelectTexture( 0 );
-	globalImages->currentRenderImage->Bind();
+	globalImages->currentRenderImage->Bind( 0 );
 	renderProgManager.BindShader_PostProcess();
 
 	// Draw

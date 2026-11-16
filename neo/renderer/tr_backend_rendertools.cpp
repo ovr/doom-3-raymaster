@@ -256,7 +256,7 @@ static void RB_ShowLightCount() {
 		GL_State( GLS_DEPTHFUNC_EQUAL | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR );
 	}
 
-	globalImages->defaultImage->Bind();
+	globalImages->defaultImage->Bind( 0 );
 
 	for ( vLight = backEnd.viewDef->viewLights; vLight; vLight = vLight->next ) {
 		for ( i = 0; i < 2; i++ ) {
@@ -1314,16 +1314,12 @@ void RB_TestImage() {
 
 	// Bind the Texture
 	if ( ( imageCr != NULL ) && ( imageCb != NULL ) ) {
-		GL_SelectTexture( 0 );
-		image->Bind();
-		GL_SelectTexture( 1 );
-		imageCr->Bind();
-		GL_SelectTexture( 2 );
-		imageCb->Bind();
+		image->Bind( 0 );
+		imageCr->Bind( 1 );
+		imageCb->Bind( 2 );
 		renderProgManager.BindShader_Bink();
 	} else {
-		GL_SelectTexture( 0 );
-		image->Bind();
+		image->Bind( 0 );
 		// Set Shader
 		renderProgManager.BindShader_Texture();
 	}

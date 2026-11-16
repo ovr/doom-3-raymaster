@@ -322,33 +322,25 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 	switch( renderSystem->GetStereo3DMode() ) {
 	case STEREO3D_QUAD_BUFFER:
 		glDrawBuffer( GL_BACK_RIGHT );
-		GL_SelectTexture( 0 );
-		stereoRenderImages[1]->Bind();
-		GL_SelectTexture( 1 );
-		stereoRenderImages[0]->Bind();
+		stereoRenderImages[1]->Bind( 0 );
+		stereoRenderImages[0]->Bind( 1 );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
 		glDrawBuffer( GL_BACK_LEFT );
-		GL_SelectTexture( 1 );
-		stereoRenderImages[1]->Bind();
-		GL_SelectTexture( 0 );
-		stereoRenderImages[0]->Bind();
+		stereoRenderImages[1]->Bind( 1 );
+		stereoRenderImages[0]->Bind( 0 );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
 		break;
 	case STEREO3D_HDMI_720:
 		// HDMI 720P 3D
-		GL_SelectTexture( 0 );
-		stereoRenderImages[1]->Bind();
-		GL_SelectTexture( 1 );
-		stereoRenderImages[0]->Bind();
+		stereoRenderImages[1]->Bind( 0 );
+		stereoRenderImages[0]->Bind( 1 );
 		GL_ViewportAndScissor( 0, 0, 1280, 720 );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
-		GL_SelectTexture( 0 );
-		stereoRenderImages[0]->Bind();
-		GL_SelectTexture( 1 );
-		stereoRenderImages[1]->Bind();
+		stereoRenderImages[0]->Bind( 0 );
+		stereoRenderImages[1]->Bind( 1 );
 		GL_ViewportAndScissor( 0, 750, 1280, 720 );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
@@ -388,8 +380,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 			// don't use GL_Color(), because we don't want to clamp
 			renderProgManager.SetRenderParm( RENDERPARM_COLOR, color.ToFloatPtr() );
 
-			GL_SelectTexture( 0 );
-			stereoRenderImages[0]->Bind();
+			stereoRenderImages[0]->Bind( 0 );
 			qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
 			qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
 			RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
@@ -403,8 +394,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 				pixelDimensions, pixelDimensions );
 			glScissor ( glConfig.nativeScreenWidth >> 1, 0, glConfig.nativeScreenWidth >> 1, glConfig.nativeScreenHeight );
 
-			GL_SelectTexture( 0 );
-			stereoRenderImages[1]->Bind();
+			stereoRenderImages[1]->Bind( 0 );
 			qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
 			qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
 			RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
@@ -413,46 +403,36 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		// a non-warped side-by-side-uncompressed (dual input cable) is rendered
 		// just like STEREO3D_SIDE_BY_SIDE_COMPRESSED, so fall through.
 	case STEREO3D_SIDE_BY_SIDE_COMPRESSED:
-		GL_SelectTexture( 0 );
-		stereoRenderImages[0]->Bind();
-		GL_SelectTexture( 1 );
-		stereoRenderImages[1]->Bind();
+		stereoRenderImages[0]->Bind( 0 );
+		stereoRenderImages[1]->Bind( 1 );
 		GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
-		GL_SelectTexture( 0 );
-		stereoRenderImages[1]->Bind();
-		GL_SelectTexture( 1 );
-		stereoRenderImages[0]->Bind();
+		stereoRenderImages[1]->Bind( 0 );
+		stereoRenderImages[0]->Bind( 1 );
 		GL_ViewportAndScissor( renderSystem->GetWidth(), 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 		break;
 
 	case STEREO3D_TOP_AND_BOTTOM_COMPRESSED:
-		GL_SelectTexture( 1 );
-		stereoRenderImages[0]->Bind();
-		GL_SelectTexture( 0 );
-		stereoRenderImages[1]->Bind();
+		stereoRenderImages[0]->Bind( 1 );
+		stereoRenderImages[1]->Bind( 0 );
 		GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
-		GL_SelectTexture( 1 );
-		stereoRenderImages[1]->Bind();
-		GL_SelectTexture( 0 );
-		stereoRenderImages[0]->Bind();
+		stereoRenderImages[1]->Bind( 1 );
+		stereoRenderImages[0]->Bind( 0 );
 		GL_ViewportAndScissor( 0, renderSystem->GetHeight(), renderSystem->GetWidth(), renderSystem->GetHeight() );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 		break;
 
 	case STEREO3D_INTERLACED:
 		// every other scanline
-		GL_SelectTexture( 0 );
-		stereoRenderImages[0]->Bind();
+		stereoRenderImages[0]->Bind( 0 );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 
-		GL_SelectTexture( 1 );
-		stereoRenderImages[1]->Bind();
+		stereoRenderImages[1]->Bind( 1 );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 
@@ -460,11 +440,11 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		renderProgManager.BindShader_StereoInterlace();
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
-		GL_SelectTexture( 0 );
+		// both pairs reach the unit GL has active: the unit selects that stood here never
+		// issued glActiveTexture, so one eye's image may stay GL_NEAREST
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 
-		GL_SelectTexture( 1 );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 

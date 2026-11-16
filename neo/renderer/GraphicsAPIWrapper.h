@@ -77,7 +77,6 @@ void			GL_DepthBoundsTest( const float zmin, const float zmax );
 void			GL_Color( float * color );
 void			GL_Color( float r, float g, float b );
 void			GL_Color( float r, float g, float b, float a );
-void			GL_SelectTexture( int unit );
 
 void			GL_CheckErrors();
 

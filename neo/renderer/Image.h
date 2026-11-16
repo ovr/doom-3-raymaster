@@ -71,17 +71,17 @@ public:
 
 	const char *	GetName() const { return imgName; }
 
-	// Makes this image active on the current GL texture unit.
+	// Makes this image active on the given texture unit.
 	// automatically enables or disables cube mapping
 	// May perform file loading if the image was not preloaded.
-	void		Bind();
+	void		Bind( int slot );
 
 	// Should be called at least once
 	void		SetSamplerState( textureFilter_t tf, textureRepeat_t tr );
 
 	// used by callback functions to specify the actual data
 	// data goes from the bottom to the top line of the image, as OpenGL expects it
-	// These perform an implicit Bind() on the current texture unit
+	// These bind the image on the texture unit GL has active
 	// FIXME: should we implement cinematics this way, instead of with explicit calls?
 	void		GenerateImage( const byte *pic, int width, int height, 
 					   textureFilter_t filter, textureRepeat_t repeat, textureUsage_t usage );
