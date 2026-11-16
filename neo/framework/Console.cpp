@@ -757,7 +757,7 @@ void idConsoleLocal::Dump( const char *fileName ) {
 		buffer[x+1] = '\r';
 		buffer[x+2] = '\n';
 		buffer[x+3] = 0;
-		f->Write( buffer, strlen( buffer ) );
+		f->Write( buffer, idStr::Length( buffer ) );
 	}
 
 	fileSystem->CloseFile( f );
@@ -1199,7 +1199,7 @@ void idConsoleLocal::DrawInput() {
 	y = vislines - ( SMALLCHAR_HEIGHT * 2 );
 
 	if ( consoleField.GetAutoCompleteLength() != 0 ) {
-		autoCompleteLength = strlen( consoleField.GetBuffer() ) - consoleField.GetAutoCompleteLength();
+		autoCompleteLength = idStr::Length( consoleField.GetBuffer() ) - consoleField.GetAutoCompleteLength();
 
 		if ( autoCompleteLength > 0 ) {
 			renderSystem->DrawFilled( idVec4( 0.8f, 0.2f, 0.2f, 0.45f ),

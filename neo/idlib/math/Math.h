@@ -623,19 +623,8 @@ idMath::SinCos
 ========================
 */
 ID_INLINE void idMath::SinCos( float a, float &s, float &c ) {
-#if defined( ID_WIN_X86_ASM )
-	_asm {
-		fld		a
-		fsincos
-		mov		ecx, c
-		mov		edx, s
-		fstp	dword ptr [ecx]
-		fstp	dword ptr [edx]
-	}
-#else
 	s = sinf( a );
 	c = cosf( a );
-#endif
 }
 
 /*

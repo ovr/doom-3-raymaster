@@ -189,11 +189,11 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 			sprintf( msg, "[%i]", t );
 		}
 	} 
-	timeLength = strlen( msg );
+	timeLength = idStr::Length( msg );
 	// don't overflow
 	if ( idStr::vsnPrintf( msg+timeLength, MAX_PRINT_MSG_SIZE-timeLength-1, fmt, args ) < 0 ) {
 		msg[sizeof(msg)-2] = '\n'; msg[sizeof(msg)-1] = '\0'; // avoid output garbling
-		Sys_Printf( "idCommon::VPrintf: truncated to %d characters\n", strlen(msg)-1 );
+		Sys_Printf( "idCommon::VPrintf: truncated to %d characters\n", idStr::Length( msg ) - 1 );
 	}
 
 	if ( rd_buffer ) {
@@ -282,7 +282,7 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 		if ( logFile ) {
 			// WriteFile hands the text to the OS right away, so the log survives a game crash.
 			// FlushFileBuffers waits for the disk, milliseconds per print, so only logFile 2 does it
-			logFile->Write( msg, strlen( msg ) );
+			logFile->Write( msg, idStr::Length( msg ) );
 			if ( com_logFile.GetInteger() > 1 ) {
 				logFile->Flush();
 			}

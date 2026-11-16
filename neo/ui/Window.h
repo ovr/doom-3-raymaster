@@ -104,10 +104,13 @@ typedef enum {
 	WEXP_REG_NUM_PREDEFINED
 } wexpRegister_t;
 
-typedef struct {
-	wexpOpType_t opType;	
-	int	a, b, c, d;
-} wexpOp_t;
+// a is a register or table index, or for the WOP_TYPE_VAR* ops the idWinVar * (with b == -2 a
+// new[]'d var name that FixupParms resolves)
+struct wexpOp_t {
+	wexpOpType_t opType;
+	intptr_t a;
+	int	b, c, d;
+};
 
 struct idRegEntry {
 	const char *name;
@@ -347,7 +350,7 @@ protected:
 
 	int ExpressionTemporary();
 	wexpOp_t *ExpressionOp();
-	int EmitOp( int a, int b, wexpOpType_t opType, wexpOp_t **opp = NULL );
+	int EmitOp( intptr_t a, int b, wexpOpType_t opType, wexpOp_t **opp = NULL );
 	int ParseEmitOp( idTokenParser *src, int a, wexpOpType_t opType, int priority, wexpOp_t **opp = NULL );
 	int ParseTerm( idTokenParser *src, idWinVar *var = NULL, int component = 0 );
 	int ParseExpressionPriority( idTokenParser *src, int priority, idWinVar *var = NULL, int component = 0 );

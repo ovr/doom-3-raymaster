@@ -122,7 +122,7 @@ int idRenderModelStatic::Memory() const {
 
 	totalBytes += sizeof( *this );
 	totalBytes += name.DynamicMemoryUsed();
-	totalBytes += surfaces.MemoryUsed();
+	totalBytes += static_cast<int>( surfaces.MemoryUsed() );
 
 	for ( int j = 0; j < NumSurfaces(); j++ ) {
 		const modelSurface_t	*surf = Surface( j );
@@ -2325,8 +2325,12 @@ void idRenderModelStatic::ReadFromDemoFile( class idDemoFile *f ) {
 		
 		f->ReadInt( tri->numIndexes );
 		R_AllocStaticTriSurfIndexes( tri, tri->numIndexes );
-		for ( j = 0; j < tri->numIndexes; ++j )
-			f->ReadInt( (int&)tri->indexes[j] );
+		// 4 bytes per 16-bit index; id read them through an int &, writing 2 bytes past the last one
+		for ( j = 0; j < tri->numIndexes; ++j ) {
+			int index = 0;
+			f->ReadInt( index );
+			tri->indexes[j] = static_cast<triIndex_t>( index );
+		}
 		
 		f->ReadInt( tri->numVerts );
 		R_AllocStaticTriSurfVerts( tri, tri->numVerts );
@@ -2376,7 +2380,7 @@ void idRenderModelStatic::WriteToDemoFile( class idDemoFile *f ) {
 		srfTriangles_t *tri = surf->geometry;
 		f->WriteInt( tri->numIndexes );
 		for ( j = 0; j < tri->numIndexes; ++j )
-			f->WriteInt( (int&)tri->indexes[j] );
+			f->WriteInt( tri->indexes[j] );
 		f->WriteInt( tri->numVerts );
 		for ( j = 0; j < tri->numVerts; ++j ) {
 			f->WriteVec3( tri->verts[j].xyz );

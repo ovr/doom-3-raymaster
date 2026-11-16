@@ -484,7 +484,7 @@ float RB_DrawTextLength( const char *text, float scale, int len ) {
 
 	if ( text && *text ) {
 		if ( !len ) {
-			len = strlen(text);
+			len = idStr::Length(text);
 		}
 		for ( i = 0; i < len; i++ ) {
 			charIndex = text[i] - 32;
@@ -534,7 +534,7 @@ static void RB_TextStrokes( const char *text, const idVec3 &origin, float scale,
 			line = 0;
 		}
 
-		len = strlen( text );
+		len = idStr::Length( text );
 		for ( i = 0; i < len; i++ ) {
 
 			if ( i == 0 || text[i] == '\n' ) {

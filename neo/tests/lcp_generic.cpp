@@ -6,8 +6,8 @@
 	The classes are renamed to idLCP_Generic, idLCP_Square_Generic and
 	idLCP_Symmetric_Generic.
 
-	NOTE: the ID_WIN_X86_SSE* defines are currently commented out in
-	idlib/sys/sys_defines.h, so the engine itself already runs the plain C++
+	NOTE: idlib/sys/sys_defines.h does not define ID_WIN_X86_SSE_INTRIN or
+	ID_WIN_X86_SSE2_INTRIN, so the engine itself already runs the plain C++
 	paths and both copies are the same code. The comparison becomes useful
 	again when the SSE paths are enabled.
 
@@ -18,9 +18,7 @@
 #include "../idlib/precompiled.h"
 
 #undef ID_WIN_X86_SSE_INTRIN
-#undef ID_WIN_X86_SSE_ASM
 #undef ID_WIN_X86_SSE2_INTRIN
-#undef ID_WIN_X86_SSE2_ASM
 
 #undef __MATH_LCP_H__
 #define idLCP				idLCP_Generic

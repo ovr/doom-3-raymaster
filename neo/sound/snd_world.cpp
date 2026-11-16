@@ -782,11 +782,12 @@ void idSoundWorldLocal::ProcessDemoCommand( idDemoFile * readDemo ) {
 	}
 
 	int index;
-	soundDemoCommand_t	dc;
+	int command;
 
-	if ( !readDemo->ReadInt( (int&)dc ) ) {
+	if ( !readDemo->ReadInt( command ) ) {
 		return;
 	}
+	const soundDemoCommand_t dc = static_cast<soundDemoCommand_t>( command );
 
 	switch( dc ) {
 	case SCMD_STATE:

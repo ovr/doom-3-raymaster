@@ -259,7 +259,7 @@ void idVertexCache::BeginBackEnd() {
 	mostUsedJoint = Max( mostUsedJoint, frameData[listNum].jointMemUsed.GetValue() );
 
 	if ( r_showVertexCache.GetBool() ) {
-		idLib::Printf( "%08d: %d allocations, %dkB vertex, %dkB index, %kB joint : %dkB vertex, %dkB index, %kB joint\n", 
+		idLib::Printf( "%08d: %d allocations, %dkB vertex, %dkB index, %dkB joint : %dkB vertex, %dkB index, %dkB joint\n", 
 			currentFrame, frameData[listNum].allocations,
 			frameData[listNum].vertexMemUsed.GetValue() / 1024,
 			frameData[listNum].indexMemUsed.GetValue() / 1024,

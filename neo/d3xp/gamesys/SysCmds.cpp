@@ -2256,7 +2256,7 @@ void Cmd_SetActorState_f( const idCmdArgs &args ) {
 #if 0
 // not used
 static void ArgCompletion_DefFile( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "def/", true, ".def", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "def/", true, { ".def" } );
 }
 #endif
 

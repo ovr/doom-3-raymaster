@@ -298,10 +298,16 @@ void idCollisionModelManagerLocal::FreeBrushReference( cm_brushRef_t *bref ) {
 idCollisionModelManagerLocal::FreePolygon
 ================
 */
+template< typename block_t >
+static bool CM_InBlock( const block_t *block, const void *record ) {
+	const byte *p = static_cast<const byte *>( record );
+	return block != nullptr && p >= reinterpret_cast<const byte *>( block + 1 ) && p < block->next;
+}
+
 void idCollisionModelManagerLocal::FreePolygon( cm_model_t *model, cm_polygon_t *poly ) {
 	model->numPolygons--;
-	model->polygonMemory -= sizeof( cm_polygon_t ) + ( poly->numEdges - 1 ) * sizeof( poly->edges[0] );
-	if ( model->polygonBlock == NULL ) {
+	model->polygonMemory -= CM_PolygonSize( poly->numEdges );
+	if ( !CM_InBlock( model->polygonBlock, poly ) ) {
 		Mem_Free( poly );
 	}
 }
@@ -313,8 +319,8 @@ idCollisionModelManagerLocal::FreeBrush
 */
 void idCollisionModelManagerLocal::FreeBrush( cm_model_t *model, cm_brush_t *brush ) {
 	model->numBrushes--;
-	model->brushMemory -= sizeof( cm_brush_t ) + ( brush->numPlanes - 1 ) * sizeof( brush->planes[0] );
-	if ( model->brushBlock == NULL ) {
+	model->brushMemory -= CM_BrushSize( brush->numPlanes );
+	if ( !CM_InBlock( model->brushBlock, brush ) ) {
 		Mem_Free( brush );
 	}
 }
@@ -662,9 +668,8 @@ idCollisionModelManagerLocal::AllocPolygon
 */
 cm_polygon_t *idCollisionModelManagerLocal::AllocPolygon( cm_model_t *model, int numEdges ) {
 	cm_polygon_t *poly;
-	int size;
+	const int size = CM_PolygonSize( numEdges );
 
-	size = sizeof( cm_polygon_t ) + ( numEdges - 1 ) * sizeof( poly->edges[0] );
 	model->numPolygons++;
 	model->polygonMemory += size;
 	if ( model->polygonBlock && model->polygonBlock->bytesRemaining >= size ) {
@@ -684,9 +689,8 @@ idCollisionModelManagerLocal::AllocBrush
 */
 cm_brush_t *idCollisionModelManagerLocal::AllocBrush( cm_model_t *model, int numPlanes ) {
 	cm_brush_t *brush;
-	int size;
+	const int size = CM_BrushSize( numPlanes );
 
-	size = sizeof( cm_brush_t ) + ( numPlanes - 1 ) * sizeof( brush->planes[0] );
 	model->numBrushes++;
 	model->brushMemory += size;
 	if ( model->brushBlock && model->brushBlock->bytesRemaining >= size ) {
@@ -3026,15 +3030,11 @@ cm_model_t * idCollisionModelManagerLocal::LoadBinaryModelFromFile( idFile *file
 		file->ReadBig( model->edges[i].normal );
 	}
 
-	file->ReadBig( model->polygonMemory );
-	model->polygonBlock = (cm_polygonBlock_t *) Mem_ClearedAlloc( sizeof( cm_polygonBlock_t ) + model->polygonMemory, TAG_COLLISION );
-	model->polygonBlock->bytesRemaining = model->polygonMemory;
-	model->polygonBlock->next = ( (byte *) model->polygonBlock ) + sizeof( cm_polygonBlock_t );
-
-	file->ReadBig( model->brushMemory );
-	model->brushBlock = (cm_brushBlock_t *) Mem_ClearedAlloc( sizeof( cm_brushBlock_t ) + model->brushMemory, TAG_COLLISION );
-	model->brushBlock->bytesRemaining = model->brushMemory;
-	model->brushBlock->next = ( (byte *) model->brushBlock ) + sizeof( cm_brushBlock_t );
+	// byte counts of 32-bit records, the blocks are sized from the records below
+	int storedPolygonMemory = 0;
+	int storedBrushMemory = 0;
+	file->ReadBig( storedPolygonMemory );
+	file->ReadBig( storedBrushMemory );
 
 	int numMaterials = 0;
 	file->ReadBig( numMaterials );
@@ -3054,6 +3054,37 @@ cm_model_t * idCollisionModelManagerLocal::LoadBinaryModelFromFile( idFile *file
 	idList< cm_brush_t * > brushes;
 	polys.SetNum( model->numPolygons );
 	brushes.SetNum( model->numBrushes );
+
+	// on disk: material index and edge/plane count, then the fields read below
+	constexpr int polygonFieldBytes = sizeof( idBounds ) + 2 * sizeof( int ) + sizeof( idPlane );
+	constexpr int brushFieldBytes = sizeof( idBounds ) + 3 * sizeof( int );
+	const int recordsStart = file->Tell();
+	int polygonBytes = 0;
+	for ( int i = 0; i < polys.Num(); i++ ) {
+		int counts[2] = {};
+		file->ReadBigArray( counts, 2 );
+		polygonBytes += CM_PolygonSize( counts[1] );
+		file->Seek( polygonFieldBytes + counts[1] * static_cast<int>( sizeof( int ) ), FS_SEEK_CUR );
+	}
+	int brushBytes = 0;
+	for ( int i = 0; i < brushes.Num(); i++ ) {
+		int counts[2] = {};
+		file->ReadBigArray( counts, 2 );
+		brushBytes += CM_BrushSize( counts[1] );
+		file->Seek( brushFieldBytes + counts[1] * static_cast<int>( sizeof( idPlane ) ), FS_SEEK_CUR );
+	}
+	file->Seek( recordsStart, FS_SEEK_SET );
+
+	model->polygonBlock = (cm_polygonBlock_t *) Mem_ClearedAlloc( sizeof( cm_polygonBlock_t ) + polygonBytes, TAG_COLLISION );
+	model->polygonBlock->bytesRemaining = polygonBytes;
+	model->polygonBlock->next = reinterpret_cast<byte *>( model->polygonBlock + 1 );
+	model->brushBlock = (cm_brushBlock_t *) Mem_ClearedAlloc( sizeof( cm_brushBlock_t ) + brushBytes, TAG_COLLISION );
+	model->brushBlock->bytesRemaining = brushBytes;
+	model->brushBlock->next = reinterpret_cast<byte *>( model->brushBlock + 1 );
+	// AllocPolygon and AllocBrush count the records and their memory again
+	model->numPolygons = model->polygonMemory = 0;
+	model->numBrushes = model->brushMemory = 0;
+
 	for ( int i = 0; i < polys.Num(); i++ ) {
 		int materialIndex = 0;
 		file->ReadBig( materialIndex );
@@ -3517,13 +3548,13 @@ idCollisionModelManagerLocal::PrintModelInfo
 ==================
 */
 void idCollisionModelManagerLocal::PrintModelInfo( const cm_model_t *model ) {
-	common->Printf( "%6i vertices (%i KB)\n", model->numVertices, (model->numVertices * sizeof(cm_vertex_t))>>10 );
-	common->Printf( "%6i edges (%i KB)\n", model->numEdges, (model->numEdges * sizeof(cm_edge_t))>>10 );
+	common->Printf( "%6i vertices (%i KB)\n", model->numVertices, static_cast<int>( ( model->numVertices * sizeof( cm_vertex_t ) ) >> 10 ) );
+	common->Printf( "%6i edges (%i KB)\n", model->numEdges, static_cast<int>( ( model->numEdges * sizeof( cm_edge_t ) ) >> 10 ) );
 	common->Printf( "%6i polygons (%i KB)\n", model->numPolygons, model->polygonMemory>>10 );
 	common->Printf( "%6i brushes (%i KB)\n", model->numBrushes, model->brushMemory>>10 );
-	common->Printf( "%6i nodes (%i KB)\n", model->numNodes, (model->numNodes * sizeof(cm_node_t))>>10 );
-	common->Printf( "%6i polygon refs (%i KB)\n", model->numPolygonRefs, (model->numPolygonRefs * sizeof(cm_polygonRef_t))>>10 );
-	common->Printf( "%6i brush refs (%i KB)\n", model->numBrushRefs, (model->numBrushRefs * sizeof(cm_brushRef_t))>>10 );
+	common->Printf( "%6i nodes (%i KB)\n", model->numNodes, static_cast<int>( ( model->numNodes * sizeof( cm_node_t ) ) >> 10 ) );
+	common->Printf( "%6i polygon refs (%i KB)\n", model->numPolygonRefs, static_cast<int>( ( model->numPolygonRefs * sizeof( cm_polygonRef_t ) ) >> 10 ) );
+	common->Printf( "%6i brush refs (%i KB)\n", model->numBrushRefs, static_cast<int>( ( model->numBrushRefs * sizeof( cm_brushRef_t ) ) >> 10 ) );
 	common->Printf( "%6i internal edges\n", model->numInternalEdges );
 	common->Printf( "%6i sharp edges\n", model->numSharpEdges );
 	common->Printf( "%6i contained polygons removed\n", model->numRemovedPolys );
@@ -3838,16 +3869,36 @@ bool idCollisionModelManagerLocal::GetModelEdge( cmHandle_t model, int edgeNum, 
 idCollisionModelManagerLocal::GetModelPolygon
 ===================
 */
+static const cm_polygon_t *CM_FindPolygonFeature_r( const cm_node_t *node, const int feature ) {
+	for ( ; node != nullptr; node = node->children[1] ) {
+		for ( const cm_polygonRef_t *pref = node->polygons; pref != nullptr; pref = pref->next ) {
+			if ( CM_PolygonFeature( pref->p ) == feature ) {
+				return pref->p;
+			}
+		}
+		if ( node->planeType == -1 ) {
+			break;
+		}
+		if ( const cm_polygon_t *p = CM_FindPolygonFeature_r( node->children[0], feature ) ) {
+			return p;
+		}
+	}
+	return nullptr;
+}
+
 bool idCollisionModelManagerLocal::GetModelPolygon( cmHandle_t model, int polygonNum, idFixedWinding &winding ) const {
 	int i, edgeNum;
-	cm_polygon_t *poly;
 
 	if ( model < 0 || model > MAX_SUBMODELS || model >= numModels || !models[model] ) {
 		common->Printf( "idCollisionModelManagerLocal::GetModelPolygon: invalid model handle\n" );
 		return false;
 	}
 
-	poly = *reinterpret_cast<cm_polygon_t **>(&polygonNum);
+	// polygonNum is a CM_PolygonFeature; a debug-only lookup that walks the whole tree
+	const cm_polygon_t *poly = CM_FindPolygonFeature_r( models[model]->node, polygonNum );
+	if ( poly == nullptr ) {
+		return false;
+	}
 	winding.Clear();
 	for ( i = 0; i < poly->numEdges; i++ ) {
 		edgeNum = poly->edges[i];

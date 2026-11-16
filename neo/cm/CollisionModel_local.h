@@ -142,6 +142,23 @@ typedef struct cm_brush_s {
 	idPlane					planes[1];			// variable sized
 } cm_brush_t;
 
+// Loaded models pack their polygons and brushes into one block each. The sizes are rounded up to
+// 8 bytes so the material pointer of every record stays aligned. The polygonMemory/brushMemory
+// counts in .cm/.bcm files were computed with 32-bit structs, so they never size these blocks.
+ID_INLINE int CM_PolygonSize( int numEdges ) {
+	return ( static_cast<int>( sizeof( cm_polygon_t ) ) + ( numEdges - 1 ) * static_cast<int>( sizeof( int ) ) + 7 ) & ~7;
+}
+ID_INLINE int CM_BrushSize( int numPlanes ) {
+	return ( static_cast<int>( sizeof( cm_brush_t ) ) + ( numPlanes - 1 ) * static_cast<int>( sizeof( idPlane ) ) + 7 ) & ~7;
+}
+static_assert( sizeof( cm_polygonBlock_t ) % 8 == 0 && sizeof( cm_brushBlock_t ) % 8 == 0 );
+
+// contactInfo_t::modelFeature names a polygon by the low 32 bits of its address, and
+// GetModelPolygon looks the polygon up in the model, so a stale value draws nothing.
+ID_INLINE int CM_PolygonFeature( const cm_polygon_t *p ) {
+	return static_cast<int>( static_cast<uint32>( reinterpret_cast<uintptr_t>( p ) ) );
+}
+
 typedef struct cm_brushRef_s {
 	cm_brush_t *			b;					// pointer to brush
 	struct cm_brushRef_s *	next;				// next brush in chain

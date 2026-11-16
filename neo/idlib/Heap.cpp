@@ -106,11 +106,11 @@ void * NewAllocNoThrow( const size_t size, const size_t alignment ) noexcept {
 Mem_Alloc16
 ==================
 */
-void * Mem_Alloc16( const int size, const memTag_t tag ) {
-	if ( size <= 0 ) {
+void * Mem_Alloc16( const size_t size, const memTag_t tag ) {
+	if ( size == 0 ) {
 		return nullptr;
 	}
-	return AlignedAlloc( static_cast<size_t>( size ), MEM_ALIGNMENT );
+	return AlignedAlloc( size, MEM_ALIGNMENT );
 }
 
 /*
@@ -128,7 +128,7 @@ void Mem_Free16( void *ptr ) {
 /*
 ===============================================================================
 The replaceable global operator new and delete, see Heap.h. The std::align_val_t forms
-(types aligned to more than 8 on x86) raise the alignment to the type's.
+(types aligned to more than 16 on x64) raise the alignment to the type's.
 ===============================================================================
 */
 
@@ -221,9 +221,11 @@ void operator delete[]( void * ptr, memTag_t ) noexcept {
 Mem_ClearedAlloc
 ==================
 */
-void * Mem_ClearedAlloc( const int size, const memTag_t tag ) {
+void * Mem_ClearedAlloc( const size_t size, const memTag_t tag ) {
 	void * mem = Mem_Alloc( size, tag );
-	SIMDProcessor->Memset( mem, 0, size );
+	if ( mem != nullptr ) {
+		memset( mem, 0, size );
+	}
 	return mem;
 }
 

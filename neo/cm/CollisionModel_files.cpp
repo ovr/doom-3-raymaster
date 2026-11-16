@@ -89,7 +89,7 @@ int idCollisionModelManagerLocal::CountPolygonMemory( cm_node_t *node ) const {
 		}
 		p->checkcount = checkCount;
 
-		memory += sizeof( cm_polygon_t ) + ( p->numEdges - 1 ) * sizeof( p->edges[0] );
+		memory += CM_PolygonSize( p->numEdges );
 	}
 	if ( node->planeType != -1 ) {
 		memory += CountPolygonMemory( node->children[0] );
@@ -147,7 +147,7 @@ int idCollisionModelManagerLocal::CountBrushMemory( cm_node_t *node ) const {
 		}
 		b->checkcount = checkCount;
 
-		memory += sizeof( cm_brush_t ) + ( b->numPlanes - 1 ) * sizeof( b->planes[0] );
+		memory += CM_BrushSize( b->numPlanes );
 	}
 	if ( node->planeType != -1 ) {
 		memory += CountBrushMemory( node->children[0] );
@@ -399,11 +399,9 @@ void idCollisionModelManagerLocal::ParsePolygons( idLexer *src, cm_model_t *mode
 	idVec3 normal;
 	idToken token;
 
-	if ( src->CheckTokenType( TT_NUMBER, 0, &token ) ) {
-		model->polygonBlock = (cm_polygonBlock_t *) Mem_ClearedAlloc( sizeof( cm_polygonBlock_t ) + token.GetIntValue(), TAG_COLLISION );
-		model->polygonBlock->bytesRemaining = token.GetIntValue();
-		model->polygonBlock->next = ( (byte *) model->polygonBlock ) + sizeof( cm_polygonBlock_t );
-	}
+	// The optional polygonMemory counts 32-bit records and the text has no polygon count, so the
+	// polygons are allocated one by one, as in a model built from a map.
+	src->CheckTokenType( TT_NUMBER, 0, &token );
 
 	src->ExpectTokenString( "{" );
 	while ( !src->CheckTokenString( "}" ) ) {
@@ -442,11 +440,8 @@ void idCollisionModelManagerLocal::ParseBrushes( idLexer *src, cm_model_t *model
 	idVec3 normal;
 	idToken token;
 
-	if ( src->CheckTokenType( TT_NUMBER, 0, &token ) ) {
-		model->brushBlock = (cm_brushBlock_t *) Mem_ClearedAlloc( sizeof( cm_brushBlock_t ) + token.GetIntValue(), TAG_COLLISION );
-		model->brushBlock->bytesRemaining = token.GetIntValue();
-		model->brushBlock->next = ( (byte *) model->brushBlock ) + sizeof( cm_brushBlock_t );
-	}
+	// the optional brushMemory counts 32-bit records, see ParsePolygons
+	src->CheckTokenType( TT_NUMBER, 0, &token );
 
 	src->ExpectTokenString( "{" );
 	while ( !src->CheckTokenString( "}" ) ) {

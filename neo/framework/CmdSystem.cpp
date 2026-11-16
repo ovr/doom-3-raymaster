@@ -74,7 +74,7 @@ public:
 	virtual void			BufferCommandText( cmdExecution_t exec, const char *text );
 	virtual void			ExecuteCommandBuffer();
 
-	virtual void			ArgCompletion_FolderExtension( const idCmdArgs &args, void(*callback)( const char *s ), const char *folder, bool stripFolder, ... );
+	void					ArgCompletion_FolderExtension( const idCmdArgs &args, void(*callback)( const char *s ), const char *folder, bool stripFolder, std::initializer_list<const char *> extensions ) override;
 	virtual void			ArgCompletion_DeclName( const idCmdArgs &args, void(*callback)( const char *s ), int type );
 
 	virtual void			BufferCommandArgs( cmdExecution_t exec, const idCmdArgs &args );
@@ -545,7 +545,7 @@ void idCmdSystemLocal::InsertCommandText( const char *text ) {
 	int		len;
 	int		i;
 
-	len = strlen( text ) + 1;
+	len = idStr::Length( text ) + 1;
 	if ( len + textLength > (int)sizeof( textBuf ) ) {
 		common->Printf( "idCmdSystemLocal::InsertText: buffer overflow\n" );
 		return;
@@ -575,7 +575,7 @@ Adds command text at the end of the buffer, does NOT add a final \n
 void idCmdSystemLocal::AppendCommandText( const char *text ) {
 	int l;
 	
-	l = strlen( text );
+	l = idStr::Length( text );
 
 	if ( textLength + l >= (int)sizeof( textBuf ) ) {
 		common->Printf( "idCmdSystemLocal::AppendText: buffer overflow\n" );
@@ -698,11 +698,9 @@ void idCmdSystemLocal::ExecuteCommandBuffer() {
 idCmdSystemLocal::ArgCompletion_FolderExtension
 ============
 */
-void idCmdSystemLocal::ArgCompletion_FolderExtension( const idCmdArgs &args, void(*callback)( const char *s ), const char *folder, bool stripFolder, ... ) {
+void idCmdSystemLocal::ArgCompletion_FolderExtension( const idCmdArgs &args, void(*callback)( const char *s ), const char *folder, bool stripFolder, std::initializer_list<const char *> extensions ) {
 	int i;
 	idStr string;
-	const char *extension;
-	va_list argPtr;
 
 	string = args.Argv( 0 );
 	string += " ";
@@ -737,8 +735,7 @@ void idCmdSystemLocal::ArgCompletion_FolderExtension( const idCmdArgs &args, voi
 		fileSystem->FreeFileList( names );
 
 		// list files
-		va_start( argPtr, stripFolder );
-		for ( extension = va_arg( argPtr, const char * ); extension; extension = va_arg( argPtr, const char * ) ) {
+		for ( const char *extension : extensions ) {
 			names = fileSystem->ListFiles( path, extension, true, true );
 			for ( i = 0; i < names->GetNumFiles(); i++ ) {
 				idStr name = names->GetFile( i );
@@ -752,7 +749,6 @@ void idCmdSystemLocal::ArgCompletion_FolderExtension( const idCmdArgs &args, voi
 			}
 			fileSystem->FreeFileList( names );
 		}
-		va_end( argPtr );
 	}
 	for ( i = 0; i < completionParms.Num(); i++ ) {
 		callback( completionParms[i] );

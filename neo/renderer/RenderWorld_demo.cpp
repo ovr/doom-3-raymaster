@@ -40,6 +40,18 @@ typedef struct {
 	char	mapname[256];
 } demoHeader_t;
 
+// Pointers go to demos as a 4-byte flag that is nonzero when the pointer is set, and the reader
+// resolves them by name or index. Older demos stored the 32-bit pointer value there.
+static void WriteDemoPointer( idDemoFile *demo, const void *pointer ) {
+	demo->WriteInt( pointer != nullptr ? 1 : 0 );
+}
+
+static bool ReadDemoPointer( idDemoFile *demo ) {
+	int present = 0;
+	demo->ReadInt( present );
+	return present != 0;
+}
+
 
 /*
 ==============
@@ -89,13 +101,14 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		return false;
 	}
 
-	demoCommand_t	dc;
+	int				command;
 	qhandle_t		h;
 
-	if ( !readDemo->ReadInt( (int&)dc ) ) {
+	if ( !readDemo->ReadInt( command ) ) {
 		// a demoShot may not have an endFrame, but it is still valid
 		return false;
 	}
+	const demoCommand_t dc = static_cast<demoCommand_t>( command );
 
 	switch( dc ) {
 	case DC_LOADMAP:
@@ -137,12 +150,15 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		for ( int i = 0; i < MAX_GLOBAL_SHADER_PARMS; i++ )
 			readDemo->ReadFloat( renderView->shaderParms[i] );
 
-		if ( !readDemo->ReadInt( (int&)renderView->globalMaterial ) ) {
+		// the demo has no name for the global material
+		int globalMaterial;
+		if ( !readDemo->ReadInt( globalMaterial ) ) {
 			 return false;
 		 }
+		renderView->globalMaterial = nullptr;
 												 
 		if ( r_showDemo.GetBool() ) {
-			common->Printf( "DC_RENDERVIEW: %i\n", renderView->time );
+			common->Printf( "DC_RENDERVIEW: %i\n", renderView->time[1] );
 		}
 
 		// possibly change the time offset if this is from a new map
@@ -347,10 +363,10 @@ void	idRenderWorldLocal::WriteRenderView( const renderView_t *renderView ) {
 	common->WriteDemo()->WriteInt( renderView->time[1] );
 	for ( i = 0; i < MAX_GLOBAL_SHADER_PARMS; i++ )
 		common->WriteDemo()->WriteFloat( renderView->shaderParms[i] );
-	common->WriteDemo()->WriteInt( (int&)renderView->globalMaterial );
+	WriteDemoPointer( common->WriteDemo(), renderView->globalMaterial );
 	
 	if ( r_showDemo.GetBool() ) {
-		common->Printf( "write DC_RENDERVIEW: %i\n", renderView->time );
+		common->Printf( "write DC_RENDERVIEW: %i\n", renderView->time[1] );
 	}
 }
 
@@ -430,12 +446,12 @@ void	idRenderWorldLocal::WriteRenderLight( qhandle_t handle, const renderLight_t
 	common->WriteDemo()->WriteVec3( light->up );
 	common->WriteDemo()->WriteVec3( light->start );
 	common->WriteDemo()->WriteVec3( light->end );
-	common->WriteDemo()->WriteInt( (int&)light->prelightModel );
+	WriteDemoPointer( common->WriteDemo(), light->prelightModel );
 	common->WriteDemo()->WriteInt( light->lightId );
-	common->WriteDemo()->WriteInt( (int&)light->shader );
+	WriteDemoPointer( common->WriteDemo(), light->shader );
 	for ( int i = 0; i < MAX_ENTITY_SHADER_PARMS; i++)
 		common->WriteDemo()->WriteFloat( light->shaderParms[i] );
-	common->WriteDemo()->WriteInt( (int&)light->referenceSound );
+	WriteDemoPointer( common->WriteDemo(), light->referenceSound );
 
 	if ( light->prelightModel ) {
 		common->WriteDemo()->WriteHashString( light->prelightModel->Name() );
@@ -459,7 +475,7 @@ ReadRenderLight
 ================
 */
 void	idRenderWorldLocal::ReadRenderLight( ) {
-	renderLight_t	light;
+	renderLight_t	light = {};
 	int				index;
 
 	common->ReadDemo()->ReadInt( index );
@@ -482,19 +498,19 @@ void	idRenderWorldLocal::ReadRenderLight( ) {
 	common->ReadDemo()->ReadVec3( light.up );
 	common->ReadDemo()->ReadVec3( light.start );
 	common->ReadDemo()->ReadVec3( light.end );
-	common->ReadDemo()->ReadInt( (int&)light.prelightModel );
+	const bool hasPrelightModel = ReadDemoPointer( common->ReadDemo() );
 	common->ReadDemo()->ReadInt( light.lightId );
-	common->ReadDemo()->ReadInt( (int&)light.shader );
+	const bool hasShader = ReadDemoPointer( common->ReadDemo() );
 	for ( int i = 0; i < MAX_ENTITY_SHADER_PARMS; i++)
 		common->ReadDemo()->ReadFloat( light.shaderParms[i] );
-	common->ReadDemo()->ReadInt( (int&)light.referenceSound );
-	if ( light.prelightModel ) {
+	const bool hasReferenceSound = ReadDemoPointer( common->ReadDemo() );
+	if ( hasPrelightModel ) {
 		light.prelightModel = renderModelManager->FindModel( common->ReadDemo()->ReadHashString() );
 	}
-	if ( light.shader ) {
+	if ( hasShader ) {
 		light.shader = declManager->FindMaterial( common->ReadDemo()->ReadHashString() );
 	}
-	if ( light.referenceSound ) {
+	if ( hasReferenceSound ) {
 		int	index;
 		common->ReadDemo()->ReadInt( index );
 		light.referenceSound = common->SW()->EmitterForIndex( index );
@@ -526,30 +542,30 @@ void	idRenderWorldLocal::WriteRenderEntity( qhandle_t handle, const renderEntity
 	common->WriteDemo()->WriteInt( DC_UPDATE_ENTITYDEF );
 	common->WriteDemo()->WriteInt( handle );
 	
-	common->WriteDemo()->WriteInt( (int&)ent->hModel );
+	WriteDemoPointer( common->WriteDemo(), ent->hModel );
 	common->WriteDemo()->WriteInt( ent->entityNum );
 	common->WriteDemo()->WriteInt( ent->bodyId );
 	common->WriteDemo()->WriteVec3( ent->bounds[0] );
 	common->WriteDemo()->WriteVec3( ent->bounds[1] );
-	common->WriteDemo()->WriteInt( (int&)ent->callback );
-	common->WriteDemo()->WriteInt( (int&)ent->callbackData );
+	WriteDemoPointer( common->WriteDemo(), reinterpret_cast<const void *>( ent->callback ) );
+	WriteDemoPointer( common->WriteDemo(), ent->callbackData );
 	common->WriteDemo()->WriteInt( ent->suppressSurfaceInViewID );
 	common->WriteDemo()->WriteInt( ent->suppressShadowInViewID );
 	common->WriteDemo()->WriteInt( ent->suppressShadowInLightID );
 	common->WriteDemo()->WriteInt( ent->allowSurfaceInViewID );
 	common->WriteDemo()->WriteVec3( ent->origin );
 	common->WriteDemo()->WriteMat3( ent->axis );
-	common->WriteDemo()->WriteInt( (int&)ent->customShader );
-	common->WriteDemo()->WriteInt( (int&)ent->referenceShader );
-	common->WriteDemo()->WriteInt( (int&)ent->customSkin );
-	common->WriteDemo()->WriteInt( (int&)ent->referenceSound );
+	WriteDemoPointer( common->WriteDemo(), ent->customShader );
+	WriteDemoPointer( common->WriteDemo(), ent->referenceShader );
+	WriteDemoPointer( common->WriteDemo(), ent->customSkin );
+	WriteDemoPointer( common->WriteDemo(), ent->referenceSound );
 	for ( int i = 0; i < MAX_ENTITY_SHADER_PARMS; i++ )
 		common->WriteDemo()->WriteFloat( ent->shaderParms[i] );
 	for ( int i = 0; i < MAX_RENDERENTITY_GUI; i++ )
-		common->WriteDemo()->WriteInt( (int&)ent->gui[i] );
-	common->WriteDemo()->WriteInt( (int&)ent->remoteRenderView );
+		WriteDemoPointer( common->WriteDemo(), ent->gui[i] );
+	WriteDemoPointer( common->WriteDemo(), ent->remoteRenderView );
 	common->WriteDemo()->WriteInt( ent->numJoints );
-	common->WriteDemo()->WriteInt( (int&)ent->joints );
+	WriteDemoPointer( common->WriteDemo(), ent->joints );
 	common->WriteDemo()->WriteFloat( ent->modelDepthHack );
 	common->WriteDemo()->WriteBool( ent->noSelfShadow );
 	common->WriteDemo()->WriteBool( ent->noShadow );
@@ -617,7 +633,7 @@ ReadRenderEntity
 ================
 */
 void	idRenderWorldLocal::ReadRenderEntity() {
-	renderEntity_t		ent;
+	renderEntity_t		ent = {};
 	int				index, i;
 
 	common->ReadDemo()->ReadInt( index );
@@ -625,52 +641,53 @@ void	idRenderWorldLocal::ReadRenderEntity() {
 		common->Error( "ReadRenderEntity: index < 0" );
 	}
 
-	common->ReadDemo()->ReadInt( (int&)ent.hModel );
+	// the callback, its data, the remote view and the joint pointer are not restored
+	const bool hasModel = ReadDemoPointer( common->ReadDemo() );
 	common->ReadDemo()->ReadInt( ent.entityNum );
 	common->ReadDemo()->ReadInt( ent.bodyId );
 	common->ReadDemo()->ReadVec3( ent.bounds[0] );
 	common->ReadDemo()->ReadVec3( ent.bounds[1] );
-	common->ReadDemo()->ReadInt( (int&)ent.callback );
-	common->ReadDemo()->ReadInt( (int&)ent.callbackData );
+	ReadDemoPointer( common->ReadDemo() );
+	ReadDemoPointer( common->ReadDemo() );
 	common->ReadDemo()->ReadInt( ent.suppressSurfaceInViewID );
 	common->ReadDemo()->ReadInt( ent.suppressShadowInViewID );
 	common->ReadDemo()->ReadInt( ent.suppressShadowInLightID );
 	common->ReadDemo()->ReadInt( ent.allowSurfaceInViewID );
 	common->ReadDemo()->ReadVec3( ent.origin );
 	common->ReadDemo()->ReadMat3( ent.axis );
-	common->ReadDemo()->ReadInt( (int&)ent.customShader );
-	common->ReadDemo()->ReadInt( (int&)ent.referenceShader );
-	common->ReadDemo()->ReadInt( (int&)ent.customSkin );
-	common->ReadDemo()->ReadInt( (int&)ent.referenceSound );
+	const bool hasCustomShader = ReadDemoPointer( common->ReadDemo() );
+	const bool hasReferenceShader = ReadDemoPointer( common->ReadDemo() );
+	const bool hasCustomSkin = ReadDemoPointer( common->ReadDemo() );
+	const bool hasReferenceSound = ReadDemoPointer( common->ReadDemo() );
 	for ( i = 0; i < MAX_ENTITY_SHADER_PARMS; i++ ) {
 		common->ReadDemo()->ReadFloat( ent.shaderParms[i] );
 	}
+	bool hasGui[MAX_RENDERENTITY_GUI];
 	for ( i = 0; i < MAX_RENDERENTITY_GUI; i++ ) {
-		common->ReadDemo()->ReadInt( (int&)ent.gui[i] );
+		hasGui[i] = ReadDemoPointer( common->ReadDemo() );
 	}
-	common->ReadDemo()->ReadInt( (int&)ent.remoteRenderView );
+	ReadDemoPointer( common->ReadDemo() );
 	common->ReadDemo()->ReadInt( ent.numJoints );
-	common->ReadDemo()->ReadInt( (int&)ent.joints );
+	ReadDemoPointer( common->ReadDemo() );
 	common->ReadDemo()->ReadFloat( ent.modelDepthHack );
 	common->ReadDemo()->ReadBool( ent.noSelfShadow );
 	common->ReadDemo()->ReadBool( ent.noShadow );
 	common->ReadDemo()->ReadBool( ent.noDynamicInteractions );
 	common->ReadDemo()->ReadBool( ent.weaponDepthHack );
 	common->ReadDemo()->ReadInt( ent.forceUpdate );
-	ent.callback = NULL;
-	if ( ent.customShader ) {
+	if ( hasCustomShader ) {
 		ent.customShader = declManager->FindMaterial( common->ReadDemo()->ReadHashString() );
 	}
-	if ( ent.customSkin ) {
+	if ( hasCustomSkin ) {
 		ent.customSkin = declManager->FindSkin( common->ReadDemo()->ReadHashString() );
 	}
-	if ( ent.hModel ) {
+	if ( hasModel ) {
 		ent.hModel = renderModelManager->FindModel( common->ReadDemo()->ReadHashString() );
 	}
-	if ( ent.referenceShader ) {
+	if ( hasReferenceShader ) {
 		ent.referenceShader = declManager->FindMaterial( common->ReadDemo()->ReadHashString() );
 	}
-	if ( ent.referenceSound ) {
+	if ( hasReferenceSound ) {
 		int	index;
 		common->ReadDemo()->ReadInt( index );
 		ent.referenceSound = common->SW()->EmitterForIndex( index );
@@ -686,8 +703,6 @@ void	idRenderWorldLocal::ReadRenderEntity() {
 		SIMD_INIT_LAST_JOINT( ent.joints, ent.numJoints );
 	}
 
-	ent.callbackData = NULL;
-
 	/*
 	if ( ent.decals ) {
 		ent.decals = idRenderModelDecal::Alloc();
@@ -700,7 +715,7 @@ void	idRenderWorldLocal::ReadRenderEntity() {
 	*/
 
 	for ( i = 0; i < MAX_RENDERENTITY_GUI; i++ ) {
-		if ( ent.gui[ i ] ) {
+		if ( hasGui[ i ] ) {
 			ent.gui[ i ] = uiManager->Alloc();
 #ifdef WRITE_GUIS
 			ent.gui[ i ]->ReadFromDemoFile( common->ReadDemo() );

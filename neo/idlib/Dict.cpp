@@ -484,11 +484,11 @@ WriteString
 ================
 */
 static void WriteString( const char *s, idFile *f ) {
-	int	len = strlen( s );
+	int	len = idStr::Length( s );
 	if ( len >= MAX_STRING_CHARS-1 ) {
 		idLib::common->Error( "idDict::WriteToFileHandle: bad string" );
 	}
-	f->Write( s, strlen(s) + 1 );
+	f->Write( s, len + 1 );
 }
 
 /*
@@ -574,7 +574,7 @@ const idKeyValue *idDict::MatchPrefix( const char *prefix, const idKeyValue *las
 	int start;
 
 	assert( prefix );
-	len = strlen( prefix );
+	len = idStr::Length( prefix );
 
 	start = -1;
 	if ( lastMatch ) {
@@ -898,8 +898,8 @@ idDict::ShowMemoryUsage_f
 ================
 */
 void idDict::ShowMemoryUsage_f( const idCmdArgs &args ) {
-	idLib::common->Printf( "%5d KB in %d keys\n", globalKeys.Size() >> 10, globalKeys.Num() );
-	idLib::common->Printf( "%5d KB in %d values\n", globalValues.Size() >> 10, globalValues.Num() );
+	idLib::common->Printf( "%5d KB in %d keys\n", static_cast<int>( globalKeys.Size() >> 10 ), globalKeys.Num() );
+	idLib::common->Printf( "%5d KB in %d values\n", static_cast<int>( globalValues.Size() >> 10 ), globalValues.Num() );
 }
 
 /*

@@ -29,6 +29,8 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __CMDSYSTEM_H__
 #define __CMDSYSTEM_H__
 
+#include <initializer_list>
+
 /*
 ===============================================================================
 
@@ -165,8 +167,8 @@ public:
 						// Normally called once per frame, but may be explicitly invoked.
 	virtual void		ExecuteCommandBuffer() = 0;
 
-						// Base for path/file auto-completion.
-	virtual void		ArgCompletion_FolderExtension( const idCmdArgs &args, void(*callback)( const char *s ), const char *folder, bool stripFolder, ... ) = 0;
+						// Base for path/file auto-completion; "" in extensions lists every file.
+	virtual void		ArgCompletion_FolderExtension( const idCmdArgs &args, void(*callback)( const char *s ), const char *folder, bool stripFolder, std::initializer_list<const char *> extensions ) = 0;
 						// Base for decl name auto-completion.
 	virtual void		ArgCompletion_DeclName( const idCmdArgs &args, void(*callback)( const char *s ), int type ) = 0;
 
@@ -221,39 +223,39 @@ template<int type> ID_INLINE void idCmdSystem::ArgCompletion_Decl( const idCmdAr
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_FileName( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "/", true, "", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "/", true, { "" } );
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_MapName( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "maps/", true, ".map", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "maps/", true, { ".map" } );
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_ModelName( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "models/", false, ".lwo", ".ase", ".md5mesh", ".ma", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "models/", false, { ".lwo", ".ase", ".md5mesh", ".ma" } );
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_SoundName( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "sound/", false, ".wav", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "sound/", false, { ".wav" } );
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_ImageName( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "/", false, ".tga", ".dds", ".jpg", ".pcx", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "/", false, { ".tga", ".dds", ".jpg", ".pcx" } );
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_VideoName( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "/", false, ".bik", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "/", false, { ".bik" } );
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_ConfigName( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "/", true, ".cfg", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "/", true, { ".cfg" } );
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_SaveGame( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "SaveGames/", true, ".save", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "SaveGames/", true, { ".save" } );
 }
 
 ID_INLINE void idCmdSystem::ArgCompletion_DemoName( const idCmdArgs &args, void(*callback)( const char *s ) ) {
-	cmdSystem->ArgCompletion_FolderExtension( args, callback, "demos/", true, ".demo", NULL );
+	cmdSystem->ArgCompletion_FolderExtension( args, callback, "demos/", true, { ".demo" } );
 }
 
 #endif /* !__CMDSYSTEM_H__ */
