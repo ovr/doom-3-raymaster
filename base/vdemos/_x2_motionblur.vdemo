@@ -1,0 +1,4 @@
+# _x2_motionblur: motion blur on 05_weapons
+include 05_weapons
+set rs_forceFractionX 0
+set r_motionBlur 2

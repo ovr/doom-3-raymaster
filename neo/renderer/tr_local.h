@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../idlib/precompiled.h"
 
 #include "GLState.h"
+#include "RenderBackendTypes.h"
 #include "ScreenRect.h"
 #include "ImageOpts.h"
 #include "Image.h"
@@ -641,13 +642,6 @@ struct tmu_t {
 
 
 const int MAX_MULTITEXTURE_UNITS =	8;
-
-enum vertexLayoutType_t {
-	LAYOUT_UNKNOWN = 0,
-	LAYOUT_DRAW_VERT,
-	LAYOUT_DRAW_SHADOW_VERT,
-	LAYOUT_DRAW_SHADOW_VERT_SKINNED
-};
 
 struct glstate_t {
 	tmu_t				tmu[MAX_MULTITEXTURE_UNITS];
@@ -1418,6 +1412,7 @@ void RB_ShutdownDebugTools();
 
 #include "BufferObject.h"
 #include "RenderProgs.h"
+#include "RenderBackend.h"
 #include "RenderWorld_local.h"
 #include "GuiModel.h"
 #include "VertexCache.h"

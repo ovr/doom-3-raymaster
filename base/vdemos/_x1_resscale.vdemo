@@ -1,0 +1,5 @@
+# _x1_resscale: the default path (rs_enable 1) on 01_camera: RB_PostProcess and a _currentRender copy per frame
+include 01_camera
+set rs_enable 1
+set rs_forceFractionX 0.75
+set r_motionBlur 0

@@ -2215,6 +2215,19 @@ void idRenderSystemLocal::Init() {
 
 	R_InitCommands();
 
+	// one backend per run; no path calls it yet
+	renderBackend = idRenderBackendFactory::Create( r_renderApi.GetString() );
+	if ( renderBackend == nullptr ) {
+		idStrList apis;
+		idRenderBackendFactory::ListApis( apis );
+		idStr known;
+		for ( int i = 0; i < apis.Num(); i++ ) {
+			known += ( i > 0 ) ? ", " : "";
+			known += apis[i];
+		}
+		common->FatalError( "r_renderApi \"%s\": no such render backend, the known ones: %s", r_renderApi.GetString(), known.c_str() );
+	}
+
 	guiModel = new (TAG_RENDER) idGuiModel;
 	guiModel->Clear();
 	tr_guiModel = guiModel;	// for DeviceContext fast path
@@ -2294,6 +2307,9 @@ void idRenderSystemLocal::Shutdown() {
 	Clear();
 
 	ShutdownOpenGL();
+
+	delete renderBackend;
+	renderBackend = nullptr;
 }
 
 /*

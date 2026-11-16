@@ -140,6 +140,9 @@ static const uint64 GLS_STENCIL_OP_BITS					= GLS_STENCIL_OP_FAIL_BITS | GLS_STE
 
 static const uint64 GLS_OVERRIDE						= 1ull << 63;		// override the render prog state
 
+// what a pipeline object depends on: everything but the dynamic stencil reference and the front-end flag
+static const uint64 GLS_PIPELINE_BITS					= ~( GLS_STENCIL_FUNC_REF_BITS | GLS_OVERRIDE );
+
 static const uint64 GLS_DEFAULT = 0;
 
 #define STENCIL_SHADOW_TEST_VALUE		128

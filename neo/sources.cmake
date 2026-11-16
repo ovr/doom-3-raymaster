@@ -342,6 +342,8 @@ set(DOOMEXE_SOURCES
 	renderer/OpenGL/gl_backend.cpp
 	renderer/OpenGL/gl_GraphicsAPIWrapper.cpp
 	renderer/OpenGL/gl_image.cpp
+	renderer/OpenGL/gl_RenderBackend.cpp
+	renderer/RenderBackend.cpp
 	renderer/RenderEntity.cpp
 	renderer/RenderLog.cpp
 	renderer/RenderProgs.cpp
