@@ -27,6 +27,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
+#include "qgl.h"
 
 #include "../tr_local.h"
 #include "gl_Backend.h"

@@ -192,7 +192,7 @@ public:
 	int			GetGLSLCurrentProgram() const { return currentRenderProgram; }
 	void		SetUniformValue( const renderParm_t rp, const float * value );
 	// the parm table a draw hands to the backend: MAX_RENDER_PARMS vectors
-	const idVec4 *	GetRenderParms() const { return glslUniforms.Ptr(); }
+	const idVec4 *	GetRenderParms() const { return renderParms.Ptr(); }
 	int			FindGLSLProgram( const char* name, int vIndex, int fIndex );
 	void		ZeroUniforms();
 
@@ -267,8 +267,8 @@ protected:
 		programInfo_t		info = {};
 	};
 	int	currentRenderProgram;
-	idList<renderProg_t, TAG_RENDER> glslPrograms;
-	idStaticList<idVec4, RENDERPARM_USER + MAX_GLSL_USER_PARMS> glslUniforms;
+	idList<renderProg_t, TAG_RENDER> renderProgs;
+	idStaticList<idVec4, RENDERPARM_USER + MAX_GLSL_USER_PARMS> renderParms;
 
 
 	int				currentVertexShader;

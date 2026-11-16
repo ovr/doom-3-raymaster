@@ -31,7 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../idlib/precompiled.h"
 
-#include "GLState.h"
+#include "RenderState.h"
 #include "RenderBackendTypes.h"
 #include "ScreenRect.h"
 #include "ImageOpts.h"
@@ -732,7 +732,7 @@ public:
 
 	virtual void			SetColor( const idVec4 & color );
 	virtual uint32			GetColor();
-	virtual void			SetGLState( const uint64 glState ) ;
+	virtual void			SetRenderState( const uint64 glState ) ;
 	virtual void			DrawFilled( const idVec4 & color, float x, float y, float w, float h );
 	virtual void			DrawStretchPic ( float x, float y, float w, float h, float s1, float t1, float s2, float t2, const idMaterial *material );
 	virtual void			DrawStretchPic( const idVec4 & topLeft, const idVec4 & topRight, const idVec4 & bottomRight, const idVec4 & bottomLeft, const idMaterial * material );
@@ -835,7 +835,7 @@ public:
 
 extern backEndState_t		backEnd;
 extern idRenderSystemLocal	tr;
-extern glconfig_t			glConfig;		// outside of TR since it shouldn't be cleared during ref re-init
+extern screenConfig_t			screenConfig;		// outside of TR since it shouldn't be cleared during ref re-init
 
 //
 // cvars
@@ -1262,6 +1262,11 @@ BACKEND
 
 void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds );
 
+// the colour render parm, clamped to 0 .. 1
+void RB_SetColor( float * color );
+void RB_SetColor( float r, float g, float b );
+void RB_SetColor( float r, float g, float b, float a );
+
 /*
 ============================================================
 
@@ -1308,7 +1313,6 @@ void R_AddViewDebugTools( const viewDef_t * viewDef );
 #include "jobs/prelightshadowvolume/PreLightShadowVolume.h"
 #include "jobs/staticshadowvolume/StaticShadowVolume.h"
 #include "jobs/dynamicshadowvolume/DynamicShadowVolume.h"
-#include "GraphicsAPIWrapper.h"
 #include "GLMatrix.h"
 
 

@@ -291,10 +291,10 @@ uint32 idRenderSystemLocal::GetColor() {
 
 /*
 =============
-idRenderSystemLocal::SetGLState
+idRenderSystemLocal::SetRenderState
 =============
 */
-void idRenderSystemLocal::SetGLState( const uint64 glState ) {
+void idRenderSystemLocal::SetRenderState( const uint64 glState ) {
 	currentGLState = glState;
 }
 
@@ -736,10 +736,10 @@ const emptyCommand_t * idRenderSystemLocal::SwapCommandBuffers_FinishCommandBuff
 
 	// possibly change the stereo3D mode
 	// PC
-	if ( glConfig.nativeScreenWidth == 1280 && glConfig.nativeScreenHeight == 1470 ) {
-		glConfig.stereo3Dmode = STEREO3D_HDMI_720;
+	if ( screenConfig.nativeScreenWidth == 1280 && screenConfig.nativeScreenHeight == 1470 ) {
+		screenConfig.stereo3Dmode = STEREO3D_HDMI_720;
 	} else {
-		glConfig.stereo3Dmode = GetStereoScopicRenderingMode();
+		screenConfig.stereo3Dmode = GetStereoScopicRenderingMode();
 	}
 
 	// prepare the new command buffer

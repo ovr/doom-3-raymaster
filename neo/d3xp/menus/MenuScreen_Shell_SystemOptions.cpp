@@ -600,7 +600,7 @@ idSWFScriptVar idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings
 				if ( fullscreen > 0 && R_GetDesktopResolution( fullscreen - 1, width, height ) ) {
 					return va( "%4i x %4i", width, height );
 				}
-				return va( "%4i x %4i", glConfig.nativeScreenWidth, glConfig.nativeScreenHeight );
+				return va( "%4i x %4i", screenConfig.nativeScreenWidth, screenConfig.nativeScreenHeight );
 			}
 			if ( vidmode < 0 || vidmode >= modeList.Num() ) {
 				return "???";

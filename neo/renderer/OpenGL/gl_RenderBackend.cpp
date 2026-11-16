@@ -28,6 +28,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
+#include "qgl.h"
 
 #include "../tr_local.h"
 #include "gl_Backend.h"
@@ -267,7 +268,7 @@ void idRenderBackendGL::CheckErrors() {
 		}
 
 		if ( !r_ignoreGLErrors.GetBool() ) {
-			common->Printf( "GL_CheckErrors: %s\n", s );
+			common->Printf( "CheckErrors: %s\n", s );
 		}
 	}
 }
@@ -301,8 +302,8 @@ void idRenderBackendGL::PrintInfo() const {
 
 	common->Printf( "\nPIXELFORMAT: color(%d-bits) Z(%d-bit) stencil(%d-bits)\n", glContext.colorBits, glContext.depthBits, glContext.stencilBits );
 	common->Printf( "MODE: %d, %d x %d %s hz:", r_vidMode.GetInteger(), renderSystem->GetWidth(), renderSystem->GetHeight(), fsstrings[r_fullscreen.GetBool()] );
-	if ( glConfig.displayFrequency ) {
-		common->Printf( "%d\n", glConfig.displayFrequency );
+	if ( screenConfig.displayFrequency ) {
+		common->Printf( "%d\n", screenConfig.displayFrequency );
 	} else {
 		common->Printf( "N/A\n" );
 	}
@@ -338,7 +339,7 @@ void idRenderBackendGL::PrintInfo() const {
 	idLib::Printf( "%i multisamples\n", glContext.multisamples );
 
 	common->Printf( "%5.1f cm screen width (%4.1f\" diagonal)\n",
-		glConfig.physicalScreenWidthInCentimeters, glConfig.physicalScreenWidthInCentimeters / 2.54f
+		screenConfig.physicalScreenWidthInCentimeters, screenConfig.physicalScreenWidthInCentimeters / 2.54f
 			* sqrt( (float)(16*16 + 9*9) ) / 16.0f );
 	extern idCVar r_forceScreenWidthCentimeters;
 	if ( r_forceScreenWidthCentimeters.GetFloat() ) {

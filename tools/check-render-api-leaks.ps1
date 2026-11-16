@@ -1,45 +1,37 @@
 <#
 .SYNOPSIS
-Counts the OpenGL names that shared code still uses, per file, and holds them to a budget.
+Fails when shared code uses an OpenGL name.
 
 .DESCRIPTION
 OpenGL belongs to neo/renderer/OpenGL/ and to the WGL part of the platform layer
 (neo/sys/win32/win_glimp.cpp, win_qgl.cpp). Every other .cpp, .h and .inl file under neo/ is
-shared code: there the script counts, outside comments and string literals,
+shared code: there the script looks, outside comments and string literals, for
 
   - qgl* and qwgl* calls and pointers, and gl*( / wgl*( calls,
   - GL_* constants and GL* types (GLuint, GLenum, ...),
   - #include lines of qgl.h, glext.h, wglext.h and gl/gl.h.
 
-The budget file (tools/render-api-leaks.budget.json) holds the count allowed per file. While the
-renderer moves behind idRenderBackend the counts may only fall: the script fails when a file
-has more names than its budget or when a file without a budget has any.
+The precompiled header does not include qgl.h, so a GL type or a qgl call in shared code does not
+compile either. The script also catches what compiles anyway: gl* and wgl* functions that
+windows.h declares, an #include of a GL header, and code inside #if blocks no config builds.
 
-Exit code: 0 when every file is within its budget (or no budget file exists), 1 otherwise.
-
-.PARAMETER Update
-Writes the counts that fell into the budget file (and creates the file when it is missing).
-A count never rises this way: a file over its budget keeps the old number and still fails.
+Exit code: 0 when no shared file has a GL name, 1 otherwise (the names are listed per file).
+ctest runs it as the test renderApiLeaks.
 
 .EXAMPLE
-powershell -NoProfile -File tools\check-render-api-leaks.ps1
-powershell -NoProfile -File tools\check-render-api-leaks.ps1 -Update
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-render-api-leaks.ps1
 #>
 [CmdletBinding()]
-param(
-	[switch] $Update,
-	[string] $Budget
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = ( Resolve-Path ( Join-Path $PSScriptRoot '..' ) ).Path
 $neoRoot = Join-Path $repoRoot 'neo'
-if ( -not $Budget ) { $Budget = Join-Path $PSScriptRoot 'render-api-leaks.budget.json' }
 
 $allowedDirs = @( 'neo/renderer/OpenGL/' )
 $allowedFiles = @( 'neo/sys/win32/win_glimp.cpp', 'neo/sys/win32/win_qgl.cpp' )
 
-# case matters: GL_State and glConfig are the engine's own names
+# case matters: GLS_* and GLimp_* are the engine's own names
 $none = [System.Text.RegularExpressions.RegexOptions]::None
 $comment = '//[^\n]*|/\*[\s\S]*?\*/'
 $literal = '"(?:\\.|[^"\\\n])*"|''(?:\\.|[^''\\\n])*'''
@@ -69,72 +61,23 @@ foreach ( $file in ( $files | Sort-Object FullName ) ) {
 	if ( $text.IndexOf( 'gl', [System.StringComparison]::OrdinalIgnoreCase ) -lt 0 ) { continue }
 	# the includes are counted before the string literals go, the names after
 	$text = $commentOrLiteral.Replace( $text, $dropComments )
-	$count = $includes.Matches( $text ).Count
+	$found = @( $includes.Matches( $text ) | ForEach-Object { $_.Value.Trim() } )
 	$text = $literalOnly.Replace( $text, '""' )
 	foreach ( $name in $names ) {
-		$count += $name.Matches( $text ).Count
+		$found += @( $name.Matches( $text ) | ForEach-Object { $_.Value.TrimEnd( '(', ' ', "`t" ) } )
 	}
-	if ( $count -gt 0 ) { $counts[$relative] = $count }
+	if ( $found.Count -gt 0 ) { $counts[$relative] = $found }
 }
 
-$allowed = $null
-if ( Test-Path $Budget ) {
-	$allowed = @{}
-	$json = Get-Content $Budget -Raw | ConvertFrom-Json
-	foreach ( $property in $json.files.PSObject.Properties ) {
-		$allowed[$property.Name] = [int] $property.Value
-	}
+if ( $counts.Count -eq 0 ) {
+	Write-Host 'no GL names in shared code'
+	exit 0
 }
-
-$rows = @()
-$over = @()
 $total = 0
-$totalAllowed = 0
 foreach ( $relative in $counts.Keys ) {
-	$count = $counts[$relative]
-	$total += $count
-	$row = [ordered] @{ names = $count }
-	if ( $null -ne $allowed ) {
-		if ( $allowed.ContainsKey( $relative ) ) {
-			$row.budget = $allowed[$relative]
-			if ( $count -gt $allowed[$relative] ) { $over += "$relative has $count GL names, its budget is $($allowed[$relative])" }
-		} else {
-			$row.budget = 'none'
-			$over += "$relative has $count GL names and no budget (a new file with GL in it)"
-		}
-	}
-	$row.file = $relative
-	$rows += New-Object psobject -Property $row
+	$found = $counts[$relative]
+	$total += $found.Count
+	Write-Host "GL LEAK: $relative has $( $found.Count ) GL names: $( ( $found | Select-Object -Unique ) -join ', ' )"
 }
-if ( $null -ne $allowed ) {
-	foreach ( $value in $allowed.Values ) { $totalAllowed += $value }
-}
-
-$rows | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
-if ( $null -ne $allowed ) {
-	Write-Host "$total GL names in $( $counts.Count ) shared files, the budget is $totalAllowed in $( $allowed.Count ) files"
-} else {
-	Write-Host "$total GL names in $( $counts.Count ) shared files, no budget file"
-}
-
-if ( $Update ) {
-	# a fallen count replaces the budget, a risen one does not
-	$lines = @()
-	foreach ( $relative in $counts.Keys ) {
-		$value = $counts[$relative]
-		if ( $null -ne $allowed ) {
-			if ( -not $allowed.ContainsKey( $relative ) ) { continue }
-			$value = [Math]::Min( $value, $allowed[$relative] )
-		}
-		$lines += "    `"$relative`": $value"
-	}
-	$text = "{`r`n  `"files`": {`r`n" + ( $lines -join ",`r`n" ) + "`r`n  }`r`n}`r`n"
-	[System.IO.File]::WriteAllText( $Budget, $text, ( New-Object System.Text.UTF8Encoding $false ) )
-	Write-Host "budget written to $Budget"
-}
-
-if ( $over.Count -gt 0 ) {
-	$over | ForEach-Object { Write-Host "OVER BUDGET: $_" }
-	exit 1
-}
-exit 0
+Write-Host "$total GL names in $( $counts.Count ) shared files; GL belongs to neo/renderer/OpenGL/, shared code calls renderBackend"
+exit 1

@@ -37,7 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 idGuiModel * tr_guiModel;
 
 // functions that are not called every frame
-glconfig_t	glConfig;
+screenConfig_t	screenConfig;
 
 idCVar r_debugContext( "r_debugContext", "0", CVAR_RENDERER, "Enable various levels of context debug." );
 idCVar r_skipIntelWorkarounds( "r_skipIntelWorkarounds", "0", CVAR_RENDERER | CVAR_BOOL, "skip workarounds for Intel driver bugs" );
@@ -271,8 +271,8 @@ void R_SetNewMode( const bool fullInit ) {
 			if ( Sys_CreateWindow( parms ) ) {
 				renderBackendInit_t init = {};
 				init.nativeWindow = Sys_GetNativeWindow();
-				init.width = glConfig.nativeScreenWidth;
-				init.height = glConfig.nativeScreenHeight;
+				init.width = screenConfig.nativeScreenWidth;
+				init.height = screenConfig.nativeScreenHeight;
 				init.multiSamples = r_multiSamples.GetInteger();
 				init.stereoPixelFormat = ( i == 0 );	// pass 0 only runs for STEREO3D_QUAD_BUFFER
 				if ( renderBackend->Init( init ) ) {
@@ -285,7 +285,7 @@ void R_SetNewMode( const bool fullInit ) {
 			// just rebuild the window
 			if ( Sys_SetWindowMode( parms ) ) {
 				// it worked
-				renderBackend->ResizeOutput( glConfig.nativeScreenWidth, glConfig.nativeScreenHeight );
+				renderBackend->ResizeOutput( screenConfig.nativeScreenWidth, screenConfig.nativeScreenHeight );
 				break;
 			}
 		}
@@ -1687,7 +1687,7 @@ idRenderSystemLocal::IsFullScreen
 ========================
 */
 bool idRenderSystemLocal::IsFullScreen() const {
-	return glConfig.isFullscreen != 0;
+	return screenConfig.isFullscreen != 0;
 }
 
 /*
@@ -1696,7 +1696,7 @@ idRenderSystemLocal::GetDisplayRefreshRate
 ========================
 */
 int idRenderSystemLocal::GetDisplayRefreshRate() const {
-	return glConfig.displayFrequency;
+	return screenConfig.displayFrequency;
 }
 
 /*
@@ -1705,10 +1705,10 @@ idRenderSystemLocal::GetWidth
 ========================
 */
 int idRenderSystemLocal::GetWidth() const {
-	if ( glConfig.stereo3Dmode == STEREO3D_SIDE_BY_SIDE || glConfig.stereo3Dmode == STEREO3D_SIDE_BY_SIDE_COMPRESSED ) {
-		return glConfig.nativeScreenWidth >> 1;
+	if ( screenConfig.stereo3Dmode == STEREO3D_SIDE_BY_SIDE || screenConfig.stereo3Dmode == STEREO3D_SIDE_BY_SIDE_COMPRESSED ) {
+		return screenConfig.nativeScreenWidth >> 1;
 	}
-	return glConfig.nativeScreenWidth;
+	return screenConfig.nativeScreenWidth;
 }
 
 /*
@@ -1717,18 +1717,18 @@ idRenderSystemLocal::GetHeight
 ========================
 */
 int idRenderSystemLocal::GetHeight() const {
-	if ( glConfig.stereo3Dmode == STEREO3D_HDMI_720 ) {
+	if ( screenConfig.stereo3Dmode == STEREO3D_HDMI_720 ) {
 		return 720;
 	}
 	extern idCVar stereoRender_warp;
-	if ( glConfig.stereo3Dmode == STEREO3D_SIDE_BY_SIDE && stereoRender_warp.GetBool() ) {
+	if ( screenConfig.stereo3Dmode == STEREO3D_SIDE_BY_SIDE && stereoRender_warp.GetBool() ) {
 		// for the Rift, render a square aspect view that will be symetric for the optics
-		return glConfig.nativeScreenWidth >> 1;
+		return screenConfig.nativeScreenWidth >> 1;
 	}
-	if ( glConfig.stereo3Dmode == STEREO3D_INTERLACED || glConfig.stereo3Dmode == STEREO3D_TOP_AND_BOTTOM_COMPRESSED ) {
-		return glConfig.nativeScreenHeight >> 1;
+	if ( screenConfig.stereo3Dmode == STEREO3D_INTERLACED || screenConfig.stereo3Dmode == STEREO3D_TOP_AND_BOTTOM_COMPRESSED ) {
+		return screenConfig.nativeScreenHeight >> 1;
 	}
-	return glConfig.nativeScreenHeight;
+	return screenConfig.nativeScreenHeight;
 }
 
 /*
@@ -1737,7 +1737,7 @@ idRenderSystemLocal::GetStereo3DMode
 ========================
 */
 stereo3DMode_t idRenderSystemLocal::GetStereo3DMode() const {
-	return glConfig.stereo3Dmode;
+	return screenConfig.stereo3Dmode;
 }
 
 /*
@@ -1782,14 +1782,14 @@ idRenderSystemLocal::GetPixelAspect
 ========================
 */
 float idRenderSystemLocal::GetPixelAspect() const {
-	switch( glConfig.stereo3Dmode ) {
+	switch( screenConfig.stereo3Dmode ) {
 	case STEREO3D_SIDE_BY_SIDE_COMPRESSED:
-		return glConfig.pixelAspect * 2.0f;
+		return screenConfig.pixelAspect * 2.0f;
 	case STEREO3D_TOP_AND_BOTTOM_COMPRESSED:
 	case STEREO3D_INTERLACED:
-		return glConfig.pixelAspect * 0.5f;
+		return screenConfig.pixelAspect * 0.5f;
 	default:
-		return glConfig.pixelAspect;
+		return screenConfig.pixelAspect;
 	}
 }
 
@@ -1805,5 +1805,5 @@ float idRenderSystemLocal::GetPhysicalScreenWidthInCentimeters() const {
 	if ( r_forceScreenWidthCentimeters.GetFloat() > 0 ) {
 		return r_forceScreenWidthCentimeters.GetFloat();
 	}
-	return glConfig.physicalScreenWidthInCentimeters;
+	return screenConfig.physicalScreenWidthInCentimeters;
 }

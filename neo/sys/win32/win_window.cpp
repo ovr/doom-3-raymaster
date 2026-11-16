@@ -672,7 +672,7 @@ static bool Win_CreateWindow( windowParms_t parms ) {
 	SetForegroundWindow( win32.hWnd );
 	SetFocus( win32.hWnd );
 
-	glConfig.isFullscreen = parms.fullScreen;
+	screenConfig.isFullscreen = parms.fullScreen;
 
 	return true;
 }
@@ -842,12 +842,12 @@ bool Sys_CreateWindow( const windowParms_t & requestedParms ) {
 	s_lastParmsValid = true;
 	s_fullscreenSuspended = false;
 
-	glConfig.isFullscreen = parms.fullScreen;
-	glConfig.nativeScreenWidth = parms.width;
-	glConfig.nativeScreenHeight = parms.height;
-	glConfig.displayFrequency = Win_GetDisplayFrequency();
+	screenConfig.isFullscreen = parms.fullScreen;
+	screenConfig.nativeScreenWidth = parms.width;
+	screenConfig.nativeScreenHeight = parms.height;
+	screenConfig.displayFrequency = Win_GetDisplayFrequency();
 
-	glConfig.pixelAspect = 1.0f;	// FIXME: some monitor modes may be distorted
+	screenConfig.pixelAspect = 1.0f;	// FIXME: some monitor modes may be distorted
 									// should side-by-side stereo modes be consider aspect 0.5?
 
 	// get the screen size, which may not be reliable...
@@ -856,9 +856,9 @@ bool Sys_CreateWindow( const windowParms_t & requestedParms ) {
 	ReleaseDC( win32.hWnd, hDC );
 
 	if ( mmWide == 0 ) {
-		glConfig.physicalScreenWidthInCentimeters = 100.0f;
+		screenConfig.physicalScreenWidthInCentimeters = 100.0f;
 	} else {
-		glConfig.physicalScreenWidthInCentimeters = 0.1f * mmWide;
+		screenConfig.physicalScreenWidthInCentimeters = 0.1f * mmWide;
 	}
 
 	return true;
@@ -904,13 +904,13 @@ bool Sys_SetWindowMode( const windowParms_t & requestedParms ) {
 	s_lastParmsValid = true;
 	s_fullscreenSuspended = false;
 
-	glConfig.isFullscreen = parms.fullScreen;
-	glConfig.pixelAspect = 1.0f;	// FIXME: some monitor modes may be distorted
+	screenConfig.isFullscreen = parms.fullScreen;
+	screenConfig.pixelAspect = 1.0f;	// FIXME: some monitor modes may be distorted
 
-	glConfig.isFullscreen = parms.fullScreen;
-	glConfig.nativeScreenWidth = parms.width;
-	glConfig.nativeScreenHeight = parms.height;
-	glConfig.displayFrequency = Win_GetDisplayFrequency();
+	screenConfig.isFullscreen = parms.fullScreen;
+	screenConfig.nativeScreenWidth = parms.width;
+	screenConfig.nativeScreenHeight = parms.height;
+	screenConfig.displayFrequency = Win_GetDisplayFrequency();
 
 	return true;
 }

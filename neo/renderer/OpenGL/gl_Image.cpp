@@ -27,6 +27,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
+#include "qgl.h"
 
 /*
 ================================================================================================
@@ -159,7 +160,7 @@ OpenGL does not need the role: any texture can be the target of glCopyTexImage2D
 ========================
 */
 textureHandle_t idRenderBackendGL::CreateTexture( const idImageOpts & opts, [[maybe_unused]] textureRole_t role, const samplerDesc_t & sampler, const char * debugName ) {
-	GL_CheckErrors();
+	renderBackend->CheckErrors();
 
 	auto tex = std::make_unique<glTexture_t>();
 	tex->texnum = TEXTURE_NOT_LOADED;
@@ -273,7 +274,7 @@ textureHandle_t idRenderBackendGL::CreateTexture( const idImageOpts & opts, [[ma
 		for ( int level = 0; level < tex->opts.numLevels; level++ ) {
 
 			// clear out any previous error
-			GL_CheckErrors();
+			renderBackend->CheckErrors();
 
 			if ( GL_IsCompressed( tex->opts ) ) {
 				int compressedSize = ( ((w+3)/4) * ((h+3)/4) * int64( 16 ) * BitsForFormat( tex->opts.format ) ) / 8;
@@ -295,7 +296,7 @@ textureHandle_t idRenderBackendGL::CreateTexture( const idImageOpts & opts, [[ma
 				qglTexImage2D( uploadTarget + side, level, tex->internalFormat, w, h, 0, tex->dataFormat, tex->dataType, NULL );
 			}
 
-			GL_CheckErrors();
+			renderBackend->CheckErrors();
 
 			w = Max( 1, w >> 1 );
 			h = Max( 1, h >> 1 );
@@ -305,7 +306,7 @@ textureHandle_t idRenderBackendGL::CreateTexture( const idImageOpts & opts, [[ma
 	qglTexParameteri( target, GL_TEXTURE_MAX_LEVEL, tex->opts.numLevels - 1 );
 
 	// see if we messed anything up
-	GL_CheckErrors();
+	renderBackend->CheckErrors();
 
 	if ( tex->opts.textureType != TT_2D && tex->opts.textureType != TT_CUBIC ) {
 		idLib::FatalError( "%s: bad texture type %d", debugName, tex->opts.textureType );
@@ -313,7 +314,7 @@ textureHandle_t idRenderBackendGL::CreateTexture( const idImageOpts & opts, [[ma
 	tex->target = target;
 	GL_SetTexParameters( *tex, sampler );
 
-	GL_CheckErrors();
+	renderBackend->CheckErrors();
 
 	// without a context there is no name: the image stays unloaded
 	if ( tex->texnum == TEXTURE_NOT_LOADED ) {
@@ -394,7 +395,7 @@ void idRenderBackendGL::UploadTexture( textureHandle_t texture, int mipLevel, in
 		glPixelStorei( GL_UNPACK_SWAP_BYTES, GL_TRUE );
 	}
 #ifdef DEBUG
-	GL_CheckErrors();
+	renderBackend->CheckErrors();
 #endif
 	if ( GL_IsCompressed( tex->opts ) ) {
 		qglCompressedTexSubImage2DARB( uploadTarget, mipLevel, 0, 0, width, height, tex->internalFormat, compressedSize, pic );
@@ -413,7 +414,7 @@ void idRenderBackendGL::UploadTexture( textureHandle_t texture, int mipLevel, in
 		qglTexSubImage2D( uploadTarget, mipLevel, 0, 0, width, height, tex->dataFormat, tex->dataType, pic );
 	}
 #ifdef DEBUG
-	GL_CheckErrors();
+	renderBackend->CheckErrors();
 #endif
 	if ( tex->opts.format == FMT_RGB565 ) {
 		glPixelStorei( GL_UNPACK_SWAP_BYTES, GL_FALSE );

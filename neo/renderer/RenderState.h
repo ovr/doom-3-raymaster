@@ -26,8 +26,8 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
-#ifndef __GLSTATE_H__
-#define __GLSTATE_H__
+#ifndef __RENDERSTATE_H__
+#define __RENDERSTATE_H__
 
 // one/zero is flipped on src/dest so a gl state of 0 is SRC_ONE,DST_ZERO
 static const uint64 GLS_SRCBLEND_ONE					= 0 << 0;
@@ -157,4 +157,4 @@ static const uint64 GLS_DEFAULT = 0;
 #define STENCIL_SHADOW_TEST_VALUE		128
 #define STENCIL_SHADOW_MASK_VALUE		255
 
-#endif /* !__GLSTATE_H__ */
+#endif /* !__RENDERSTATE_H__ */

@@ -44,6 +44,11 @@ idCVar stereoRender_warpTargetFraction( "stereoRender_warpTargetFraction", "1.0"
 
 void RB_SetMVP( const idRenderMatrix & mvp );
 
+static void RB_ViewportAndScissor( int x, int y, int w, int h ) {
+	renderBackend->Viewport( x, y, w, h );
+	renderBackend->Scissor( x, y, w, h );
+}
+
 /*
 ============================================================================
 
@@ -61,11 +66,11 @@ static void RB_DrawFlickerBox() {
 	if ( !r_drawFlickerBox.GetBool() ) {
 		return;
 	}
-	GL_Scissor( 0, 0, 256, 256 );
+	renderBackend->Scissor( 0, 0, 256, 256 );
 	if ( tr.frameCount & 1 ) {
-		GL_Clear( true, false, false, 0, 1.0f, 0.0f, 0.0f, 1.0f );
+		renderBackend->Clear( true, false, false, 0, 1.0f, 0.0f, 0.0f, 1.0f );
 	} else {
-		GL_Clear( true, false, false, 0, 0.0f, 1.0f, 0.0f, 1.0f );
+		renderBackend->Clear( true, false, false, 0, 0.0f, 1.0f, 0.0f, 1.0f );
 	}
 }
 
@@ -77,7 +82,7 @@ RB_SetBuffer
 static void	RB_SetBuffer() {
 	RENDERLOG_PRINTF( "---------- RB_SetBuffer ----------\n" );
 
-	GL_Scissor( 0, 0, tr.GetWidth(), tr.GetHeight() );
+	renderBackend->Scissor( 0, 0, tr.GetWidth(), tr.GetHeight() );
 
 	// clear screen for debugging
 	// automatically enable this with several other debug tools
@@ -85,11 +90,11 @@ static void	RB_SetBuffer() {
 	if ( r_clear.GetFloat() || idStr::Length( r_clear.GetString() ) != 1 || r_singleArea.GetBool() ) {
 		float c[3];
 		if ( sscanf( r_clear.GetString(), "%f %f %f", &c[0], &c[1], &c[2] ) == 3 ) {
-			GL_Clear( true, false, false, 0, c[0], c[1], c[2], 1.0f );
+			renderBackend->Clear( true, false, false, 0, c[0], c[1], c[2], 1.0f );
 		} else if ( r_clear.GetInteger() == 2 ) {
-			GL_Clear( true, false, false, 0, 0.0f, 0.0f,  0.0f, 1.0f );
+			renderBackend->Clear( true, false, false, 0, 0.0f, 0.0f,  0.0f, 1.0f );
 		} else {
-			GL_Clear( true, false, false, 0, 0.4f, 0.0f, 0.25f, 1.0f );
+			renderBackend->Clear( true, false, false, 0, 0.4f, 0.0f, 0.25f, 1.0f );
 		}
 	}
 }
@@ -171,7 +176,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		const int targetEye = ( stereoEye == 1 ) ? 1 : 0;
 		
 		// Set the back end into a known default state to fix any stale render state issues
-		GL_SetDefaultState();
+		renderBackend->SetDefaultState();
 		renderProgManager.Unbind();
 		renderProgManager.ZeroUniforms();
 
@@ -222,7 +227,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 	// perform the final compositing / warping / deghosting to the actual framebuffer(s)
 	assert( foundEye[0] && foundEye[1] );
 
-	GL_SetDefaultState();
+	renderBackend->SetDefaultState();
 
 	RB_SetMVP( renderMatrix_identity );
 
@@ -234,8 +239,8 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		renderBackend->SelectOutput( outputEye_t::BOTH );
 	}
 
-	GL_State( GLS_DEPTHFUNC_ALWAYS );
-	GL_Cull( CT_TWO_SIDED );
+	renderBackend->State( GLS_DEPTHFUNC_ALWAYS );
+	renderBackend->Cull( CT_TWO_SIDED );
 
 	// We just want to do a quad pass - so make sure we disable any texgen and
 	// set the texture matrix to the identity so we don't get anomalies from 
@@ -250,7 +255,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 	renderProgManager.SetRenderParm( RENDERPARM_TEXGEN_0_ENABLED, texGenEnabled );
 
 	renderProgManager.BindShader_Texture();
-	GL_Color( 1, 1, 1, 1 );
+	RB_SetColor( 1, 1, 1, 1 );
 
 	switch( renderSystem->GetStereo3DMode() ) {
 	case STEREO3D_QUAD_BUFFER:
@@ -269,17 +274,17 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		// HDMI 720P 3D
 		stereoRenderImages[1]->Bind( 0 );
 		stereoRenderImages[0]->Bind( 1 );
-		GL_ViewportAndScissor( 0, 0, 1280, 720 );
+		RB_ViewportAndScissor( 0, 0, 1280, 720 );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
 		stereoRenderImages[0]->Bind( 0 );
 		stereoRenderImages[1]->Bind( 1 );
-		GL_ViewportAndScissor( 0, 750, 1280, 720 );
+		RB_ViewportAndScissor( 0, 750, 1280, 720 );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
 		// force the HDMI 720P 3D guard band to a constant color
-		GL_Scissor( 0, 720, 1280, 30 );
-		GL_Clear( true, false, false, 0, 0.0f, 0.0f, 0.0f, 1.0f );
+		renderBackend->Scissor( 0, 720, 1280, 30 );
+		renderBackend->Clear( true, false, false, 0, 0.0f, 0.0f, 0.0f, 1.0f );
 		break;
 	default:
 	case STEREO3D_SIDE_BY_SIDE:
@@ -293,23 +298,23 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 			// clear the entire screen to black
 			// we could be smart and only clear the areas we aren't going to draw on, but
 			// clears are fast...
-			GL_Scissor( 0, 0, glConfig.nativeScreenWidth, glConfig.nativeScreenHeight );
-			GL_Clear( true, false, false, 0, 0.0f, 0.0f, 0.0f, 0.0f );
+			renderBackend->Scissor( 0, 0, screenConfig.nativeScreenWidth, screenConfig.nativeScreenHeight );
+			renderBackend->Clear( true, false, false, 0, 0.0f, 0.0f, 0.0f, 0.0f );
 
 			// the size of the box that will get the warped pixels
 			// With the 7" displays, this will be less than half the screen width
-			const int pixelDimensions = ( glConfig.nativeScreenWidth >> 1 ) * stereoRender_warpTargetFraction.GetFloat();
+			const int pixelDimensions = ( screenConfig.nativeScreenWidth >> 1 ) * stereoRender_warpTargetFraction.GetFloat();
 
 			// Always scissor to the half-screen boundary, but the viewports
 			// might cross that boundary if the lenses can be adjusted closer
 			// together.
-			GL_Viewport( ( glConfig.nativeScreenWidth >> 1 ) - pixelDimensions,
-				( glConfig.nativeScreenHeight >> 1 ) - ( pixelDimensions >> 1 ),
+			renderBackend->Viewport( ( screenConfig.nativeScreenWidth >> 1 ) - pixelDimensions,
+				( screenConfig.nativeScreenHeight >> 1 ) - ( pixelDimensions >> 1 ),
 				pixelDimensions, pixelDimensions );
-			GL_Scissor( 0, 0, glConfig.nativeScreenWidth >> 1, glConfig.nativeScreenHeight );
+			renderBackend->Scissor( 0, 0, screenConfig.nativeScreenWidth >> 1, screenConfig.nativeScreenHeight );
 
 			idVec4	color( stereoRender_warpCenterX.GetFloat(), stereoRender_warpCenterY.GetFloat(), stereoRender_warpParmZ.GetFloat(), stereoRender_warpParmW.GetFloat() );
-			// don't use GL_Color(), because we don't want to clamp
+			// don't use RB_SetColor(), because we don't want to clamp
 			renderProgManager.SetRenderParm( RENDERPARM_COLOR, color.ToFloatPtr() );
 
 			// outside the eye image the warp reads transparent black
@@ -318,13 +323,13 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 			RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
 			idVec4	color2( stereoRender_warpCenterX.GetFloat(), stereoRender_warpCenterY.GetFloat(), stereoRender_warpParmZ.GetFloat(), stereoRender_warpParmW.GetFloat() );
-			// don't use GL_Color(), because we don't want to clamp
+			// don't use RB_SetColor(), because we don't want to clamp
 			renderProgManager.SetRenderParm( RENDERPARM_COLOR, color2.ToFloatPtr() );
 
-			GL_Viewport( ( glConfig.nativeScreenWidth >> 1 ),
-				( glConfig.nativeScreenHeight >> 1 ) - ( pixelDimensions >> 1 ),
+			renderBackend->Viewport( ( screenConfig.nativeScreenWidth >> 1 ),
+				( screenConfig.nativeScreenHeight >> 1 ) - ( pixelDimensions >> 1 ),
 				pixelDimensions, pixelDimensions );
-			GL_Scissor( glConfig.nativeScreenWidth >> 1, 0, glConfig.nativeScreenWidth >> 1, glConfig.nativeScreenHeight );
+			renderBackend->Scissor( screenConfig.nativeScreenWidth >> 1, 0, screenConfig.nativeScreenWidth >> 1, screenConfig.nativeScreenHeight );
 
 			RB_SetStereoImageSampler( stereoRenderImages[1], TF_LINEAR, TR_CLAMP_TO_ZERO_ALPHA );
 			stereoRenderImages[1]->Bind( 0 );
@@ -336,24 +341,24 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 	case STEREO3D_SIDE_BY_SIDE_COMPRESSED:
 		stereoRenderImages[0]->Bind( 0 );
 		stereoRenderImages[1]->Bind( 1 );
-		GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
+		RB_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
 		stereoRenderImages[1]->Bind( 0 );
 		stereoRenderImages[0]->Bind( 1 );
-		GL_ViewportAndScissor( renderSystem->GetWidth(), 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
+		RB_ViewportAndScissor( renderSystem->GetWidth(), 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 		break;
 
 	case STEREO3D_TOP_AND_BOTTOM_COMPRESSED:
 		stereoRenderImages[0]->Bind( 1 );
 		stereoRenderImages[1]->Bind( 0 );
-		GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
+		RB_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
 		stereoRenderImages[1]->Bind( 1 );
 		stereoRenderImages[0]->Bind( 0 );
-		GL_ViewportAndScissor( 0, renderSystem->GetHeight(), renderSystem->GetWidth(), renderSystem->GetHeight() );
+		RB_ViewportAndScissor( 0, renderSystem->GetHeight(), renderSystem->GetWidth(), renderSystem->GetHeight() );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 		break;
 
@@ -365,7 +370,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		stereoRenderImages[0]->Bind( 0 );
 		stereoRenderImages[1]->Bind( 1 );
 
-		GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight()*2 );
+		RB_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight()*2 );
 		renderProgManager.BindShader_StereoInterlace();
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 
@@ -425,7 +430,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	uint64 backEndStartTime = Sys_Microseconds();
 
 	// needed for editor rendering
-	GL_SetDefaultState();
+	renderBackend->SetDefaultState();
 
 	// If we have a stereo pixel format, this will draw to both
 	// the back left and back right buffers, which will have a
