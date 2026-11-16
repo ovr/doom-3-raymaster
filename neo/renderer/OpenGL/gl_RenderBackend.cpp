@@ -414,44 +414,6 @@ void idRenderBackendGL::UnmapBuffer( bufferHandle_t buffer, int dirtyOffset, int
 
 /*
 ========================
-idRenderBackendGL::CreateShaderStage
-========================
-*/
-shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info ) {
-	NotMigrated( __func__ );
-	return shaderHandle_t::NONE;
-}
-
-/*
-========================
-idRenderBackendGL::CreateProgram
-========================
-*/
-programHandle_t idRenderBackendGL::CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * debugName, programInfo_t & info ) {
-	NotMigrated( __func__ );
-	return programHandle_t::NONE;
-}
-
-/*
-========================
-idRenderBackendGL::DestroyShaderStage
-========================
-*/
-void idRenderBackendGL::DestroyShaderStage( shaderHandle_t shader ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::DestroyProgram
-========================
-*/
-void idRenderBackendGL::DestroyProgram( programHandle_t program ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
 idRenderBackendGL::WriteTimestamp
 ========================
 */
@@ -502,15 +464,6 @@ idRenderBackendGL::PopDebugGroup
 ========================
 */
 void idRenderBackendGL::PopDebugGroup() {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_BindProgram
-========================
-*/
-void idRenderBackendGL::API_BindProgram( programHandle_t program ) {
 	NotMigrated( __func__ );
 }
 

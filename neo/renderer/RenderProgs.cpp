@@ -37,6 +37,32 @@ idRenderProgManager renderProgManager;
 
 /*
 ================================================================================================
+R_ProgBackendCallable
+
+The render backend belongs to the main thread. Programs are loaded there today; a caller on
+another thread never reached OpenGL either, its calls had no context.
+================================================================================================
+*/
+static bool R_ProgBackendCallable( [[maybe_unused]] const char * progName ) {
+	if ( renderBackend == nullptr ) {
+		return false;
+	}
+	if ( renderBackend->IsOwnerThread() ) {
+		return true;
+	}
+#ifdef _DEBUG
+	// reported at 1, 2, 4, 8, ... so that a log shows whether it happens and how often
+	static idSysInterlockedInteger skipped;
+	const int count = skipped.Increment();
+	if ( ( count & ( count - 1 ) ) == 0 ) {
+		common->Warning( "idRenderProgManager: %d render backend calls skipped off the main thread, the last for '%s'", count, progName );
+	}
+#endif
+	return false;
+}
+
+/*
+================================================================================================
 idRenderProgManager::idRenderProgManager()
 ================================================================================================
 */
@@ -173,22 +199,30 @@ idRenderProgManager::KillAllShaders()
 */
 void idRenderProgManager::KillAllShaders() {
 	Unbind();
+	// off the main thread the stages and programs leak, as their OpenGL names did
+	const bool callable = R_ProgBackendCallable( "KillAllShaders" );
 	for ( int i = 0; i < vertexShaders.Num(); i++ ) {
-		if ( vertexShaders[i].progId != INVALID_PROGID ) {
-			qglDeleteShader( vertexShaders[i].progId );
-			vertexShaders[i].progId = INVALID_PROGID;
+		if ( vertexShaders[i].handle != shaderHandle_t::NONE ) {
+			if ( callable ) {
+				renderBackend->DestroyShaderStage( vertexShaders[i].handle );
+			}
+			vertexShaders[i].handle = shaderHandle_t::NONE;
 		}
 	}
 	for ( int i = 0; i < fragmentShaders.Num(); i++ ) {
-		if ( fragmentShaders[i].progId != INVALID_PROGID ) {
-			qglDeleteShader( fragmentShaders[i].progId );
-			fragmentShaders[i].progId = INVALID_PROGID;
+		if ( fragmentShaders[i].handle != shaderHandle_t::NONE ) {
+			if ( callable ) {
+				renderBackend->DestroyShaderStage( fragmentShaders[i].handle );
+			}
+			fragmentShaders[i].handle = shaderHandle_t::NONE;
 		}
 	}
 	for ( int i = 0; i < glslPrograms.Num(); ++i ) {
-		if ( glslPrograms[i].progId != INVALID_PROGID ) {
-			qglDeleteProgram( glslPrograms[i].progId );
-			glslPrograms[i].progId = INVALID_PROGID;
+		if ( glslPrograms[i].handle != programHandle_t::NONE ) {
+			if ( callable ) {
+				renderBackend->DestroyProgram( glslPrograms[i].handle );
+			}
+			glslPrograms[i].handle = programHandle_t::NONE;
 		}
 	}
 }
@@ -261,10 +295,13 @@ idRenderProgManager::LoadVertexShader
 ================================================================================================
 */
 void idRenderProgManager::LoadVertexShader( int index ) {
-	if ( vertexShaders[index].progId != INVALID_PROGID ) {
+	if ( vertexShaders[index].handle != shaderHandle_t::NONE ) {
 		return; // Already loaded
 	}
-	vertexShaders[index].progId = ( GLuint ) LoadGLSLShader( GL_VERTEX_SHADER, vertexShaders[index].name, vertexShaders[index].uniforms );
+	if ( !R_ProgBackendCallable( vertexShaders[index].name ) ) {
+		return;
+	}
+	vertexShaders[index].handle = renderBackend->CreateShaderStage( shaderStageType_t::VERTEX, vertexShaders[index].name, vertexShaders[index].info );
 }
 
 /*
@@ -273,10 +310,64 @@ idRenderProgManager::LoadFragmentShader
 ================================================================================================
 */
 void idRenderProgManager::LoadFragmentShader( int index ) {
-	if ( fragmentShaders[index].progId != INVALID_PROGID ) {
+	if ( fragmentShaders[index].handle != shaderHandle_t::NONE ) {
 		return; // Already loaded
 	}
-	fragmentShaders[index].progId = ( GLuint ) LoadGLSLShader( GL_FRAGMENT_SHADER, fragmentShaders[index].name, fragmentShaders[index].uniforms );
+	if ( !R_ProgBackendCallable( fragmentShaders[index].name ) ) {
+		return;
+	}
+	fragmentShaders[index].handle = renderBackend->CreateShaderStage( shaderStageType_t::FRAGMENT, fragmentShaders[index].name, fragmentShaders[index].info );
+}
+
+/*
+================================================================================================
+idRenderProgManager::FindGLSLProgram
+================================================================================================
+*/
+int	 idRenderProgManager::FindGLSLProgram( const char * name, int vIndex, int fIndex ) {
+
+	for ( int i = 0; i < glslPrograms.Num(); ++i ) {
+		if ( ( glslPrograms[i].vertexShaderIndex == vIndex ) && ( glslPrograms[i].fragmentShaderIndex == fIndex ) ) {
+			LoadGLSLProgram( i, vIndex, fIndex );
+			return i;
+		}
+	}
+
+	renderProg_t program;
+	program.name = name;
+	int index = glslPrograms.Append( program );
+	LoadGLSLProgram( index, vIndex, fIndex );
+	return index;
+}
+
+/*
+================================================================================================
+idRenderProgManager::LoadGLSLProgram
+
+The name and the stage indexes are written only after the backend linked the program. A failed
+link in OpenGL is an error that leaves the entry without them, so no later search finds it.
+================================================================================================
+*/
+void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int vertexShaderIndex, const int fragmentShaderIndex ) {
+	renderProg_t & prog = glslPrograms[programIndex];
+
+	if ( prog.handle != programHandle_t::NONE ) {
+		return; // Already loaded
+	}
+
+	idStr programName = ( vertexShaderIndex >= 0 ) ? vertexShaders[ vertexShaderIndex ].name.c_str() : "<Invalid>";
+	programName.StripFileExtension();
+	if ( !R_ProgBackendCallable( programName ) ) {
+		return;
+	}
+
+	const shaderHandle_t vertex = ( vertexShaderIndex != -1 ) ? vertexShaders[ vertexShaderIndex ].handle : shaderHandle_t::NONE;
+	const shaderHandle_t fragment = ( fragmentShaderIndex != -1 ) ? fragmentShaders[ fragmentShaderIndex ].handle : shaderHandle_t::NONE;
+
+	prog.handle = renderBackend->CreateProgram( vertex, fragment, programName, prog.info );
+	prog.name = programName;
+	prog.fragmentShaderIndex = fragmentShaderIndex;
+	prog.vertexShaderIndex = vertexShaderIndex;
 }
 
 /*
@@ -294,7 +385,10 @@ void idRenderProgManager::BindShader( int vIndex, int fIndex ) {
 	if ( vIndex >= 0 && vIndex < glslPrograms.Num() ) {
 		currentRenderProgram = vIndex;
 		RENDERLOG_PRINTF( "Binding GLSL Program %s\n", glslPrograms[vIndex].name.c_str() );
-		qglUseProgram( glslPrograms[vIndex].progId );
+		// a program without a handle leaves the previous one in use, as binding a bad OpenGL name did
+		if ( glslPrograms[vIndex].handle != programHandle_t::NONE ) {
+			renderBackend->BindProgram( glslPrograms[vIndex].handle );
+		}
 	}
 }
 
@@ -307,7 +401,9 @@ void idRenderProgManager::Unbind() {
 	currentVertexShader = -1;
 	currentFragmentShader = -1;
 
-	qglUseProgram( 0 );
+	if ( R_ProgBackendCallable( "Unbind" ) ) {
+		renderBackend->BindProgram( programHandle_t::NONE );
+	}
 }
 
 /*
@@ -328,5 +424,25 @@ idRenderProgManager::SetRenderParm
 */
 void idRenderProgManager::SetRenderParm( renderParm_t rp, const float * value ) {
 	SetUniformValue( rp, value );
+}
+
+/*
+================================================================================================
+idRenderProgManager::SetUniformValue
+================================================================================================
+*/
+void idRenderProgManager::SetUniformValue( const renderParm_t rp, const float * value ) {
+	for ( int i = 0; i < 4; i++ ) {
+		glslUniforms[rp][i] = value[i];
+	}
+}
+
+/*
+================================================================================================
+idRenderProgManager::ZeroUniforms
+================================================================================================
+*/
+void idRenderProgManager::ZeroUniforms() {
+	memset( glslUniforms.Ptr(), 0, glslUniforms.Allocated() );
 }
 

@@ -118,13 +118,6 @@ enum renderParm_t {
 };
 
 
-struct glslUniformLocation_t {
-	int		parmIndex;
-	GLint	uniformIndex;
-};
-
-
-
 /*
 ================================================================================================
 idRenderProgManager
@@ -196,7 +189,6 @@ public:
 	void	KillAllShaders();
 
 	static const int	MAX_GLSL_USER_PARMS = 8;
-	const char*	GetGLSLParmName( int rp ) const;
 	int			GetGLSLCurrentProgram() const { return currentRenderProgram; }
 	void		SetUniformValue( const renderParm_t rp, const float * value );
 	void		CommitUniforms();
@@ -250,42 +242,31 @@ protected:
 	int builtinShaders[MAX_BUILTINS];
 	void BindShader_Builtin( int i ) { BindShader( builtinShaders[i], builtinShaders[i] ); }
 
-	GLuint	LoadGLSLShader( GLenum target, const char * name, idList<int> & uniforms );
 	void	LoadGLSLProgram( const int programIndex, const int vertexShaderIndex, const int fragmentShaderIndex );
 
-	static const GLuint INVALID_PROGID = 0xFFFFFFFF;
-
+	// a stage or a program of the render backend, with what the backend said it reads
 	struct vertexShader_t {
-					vertexShader_t() : progId( INVALID_PROGID ), usesJoints( false ), optionalSkinning( false ) {}
-		idStr		name;
-		GLuint		progId;
-		bool		usesJoints;
-		bool		optionalSkinning;
-		idList<int>	uniforms;
+		idStr				name;
+		shaderHandle_t		handle = shaderHandle_t::NONE;
+		shaderStageInfo_t	info = {};
+		bool				usesJoints = false;			// from the name lists in Init and FindVertexShader
+		bool				optionalSkinning = false;
 	};
 	struct fragmentShader_t {
-					fragmentShader_t() : progId( INVALID_PROGID ) {}
-		idStr		name;
-		GLuint		progId;
-		idList<int>	uniforms;
+		idStr				name;
+		shaderHandle_t		handle = shaderHandle_t::NONE;
+		shaderStageInfo_t	info = {};
 	};
 
-	struct glslProgram_t {
-		glslProgram_t() :	progId( INVALID_PROGID ),
-							vertexShaderIndex( -1 ),
-							fragmentShaderIndex( -1 ),
-							vertexUniformArray( -1 ),
-							fragmentUniformArray( -1 ) {}
-		idStr		name;
-		GLuint		progId;
-		int			vertexShaderIndex;
-		int			fragmentShaderIndex;
-		GLint		vertexUniformArray;
-		GLint		fragmentUniformArray;
-		idList<glslUniformLocation_t> uniformLocations;
+	struct renderProg_t {
+		idStr				name;
+		programHandle_t		handle = programHandle_t::NONE;
+		int					vertexShaderIndex = -1;
+		int					fragmentShaderIndex = -1;
+		programInfo_t		info = {};
 	};
 	int	currentRenderProgram;
-	idList<glslProgram_t, TAG_RENDER> glslPrograms;
+	idList<renderProg_t, TAG_RENDER> glslPrograms;
 	idStaticList<idVec4, RENDERPARM_USER + MAX_GLSL_USER_PARMS> glslUniforms;
 
 

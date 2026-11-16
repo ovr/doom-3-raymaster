@@ -97,6 +97,8 @@ PFNGLGETPROGRAMIVPROC					qglGetProgramiv;
 PFNGLGETPROGRAMINFOLOGPROC				qglGetProgramInfoLog;
 PFNGLBINDATTRIBLOCATIONPROC				qglBindAttribLocation;
 PFNGLGETUNIFORMLOCATIONPROC				qglGetUniformLocation;
+PFNGLGETACTIVEUNIFORMPROC				qglGetActiveUniform;
+PFNGLGETATTRIBLOCATIONPROC				qglGetAttribLocation;
 PFNGLUNIFORM1IPROC						qglUniform1i;
 PFNGLUNIFORM4FVPROC						qglUniform4fv;
 
@@ -327,6 +329,8 @@ void R_CheckPortableExtensions() {
 		qglGetProgramInfoLog = (PFNGLGETPROGRAMINFOLOGPROC)GLimp_ExtensionPointer( "glGetProgramInfoLog" );
 		qglBindAttribLocation = (PFNGLBINDATTRIBLOCATIONPROC)GLimp_ExtensionPointer( "glBindAttribLocation" );
 		qglGetUniformLocation = (PFNGLGETUNIFORMLOCATIONPROC)GLimp_ExtensionPointer( "glGetUniformLocation" );
+		qglGetActiveUniform = (PFNGLGETACTIVEUNIFORMPROC)GLimp_ExtensionPointer( "glGetActiveUniform" );
+		qglGetAttribLocation = (PFNGLGETATTRIBLOCATIONPROC)GLimp_ExtensionPointer( "glGetAttribLocation" );
 		qglUniform1i = (PFNGLUNIFORM1IPROC)GLimp_ExtensionPointer( "glUniform1i" );
 		qglUniform4fv = (PFNGLUNIFORM4FVPROC)GLimp_ExtensionPointer( "glUniform4fv" );
 	}

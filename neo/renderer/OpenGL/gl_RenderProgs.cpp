@@ -27,12 +27,12 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 #pragma hdrstop
-#include "../idlib/precompiled.h"
+#include "../../idlib/precompiled.h"
 
-#include "tr_local.h"
+#include "../tr_local.h"
+#include "gl_Backend.h"
 
 idCVar r_skipStripDeadCode( "r_skipStripDeadCode", "0", CVAR_BOOL, "Skip stripping dead code" );
-idCVar r_useUniformArrays( "r_useUniformArrays", "1", CVAR_BOOL, "" );
 
 
 #define VERTEX_UNIFORM_ARRAY_NAME				"_va_"
@@ -780,20 +780,18 @@ idStr ConvertCG2GLSL( const idStr & in, const char * name, bool isVertexProgram,
 			continue;
 		}
 
-		if ( r_useUniformArrays.GetBool() ) {
-			// check for uniforms that need to be converted to the array
-			bool isUniform = false;
-			for ( int i = 0; i < uniformList.Num(); i++ ) {
-				if ( token == uniformList[i] ) {
-					program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-					program += va( "%s[%d /* %s */]", uniformArrayName, i, uniformList[i].c_str() );
-					isUniform = true;
-					break;
-				}
+		// check for uniforms that need to be converted to the array
+		bool isUniform = false;
+		for ( int i = 0; i < uniformList.Num(); i++ ) {
+			if ( token == uniformList[i] ) {
+				program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
+				program += va( "%s[%d /* %s */]", uniformArrayName, i, uniformList[i].c_str() );
+				isUniform = true;
+				break;
 			}
-			if ( isUniform ) {
-				continue;
-			}
+		}
+		if ( isUniform ) {
+			continue;
 		}
 
 		// check for input/output parameters
@@ -880,16 +878,7 @@ idStr ConvertCG2GLSL( const idStr & in, const char * name, bool isVertexProgram,
 	}
 
 	if ( uniformList.Num() > 0 ) {
-		if ( r_useUniformArrays.GetBool() ) {
-			out += va( "\nuniform vec4 %s[%d];\n", uniformArrayName, uniformList.Num() );
-		} else {
-			out += "\n";
-			for ( int i = 0; i < uniformList.Num(); i++ ) {
-				out += "uniform vec4 ";
-				out += uniformList[i];
-				out += ";\n";
-			}
-		}
+		out += va( "\nuniform vec4 %s[%d];\n", uniformArrayName, uniformList.Num() );
 	}
 
 	out += program;
@@ -905,10 +894,43 @@ idStr ConvertCG2GLSL( const idStr & in, const char * name, bool isVertexProgram,
 
 /*
 ================================================================================================
-idRenderProgManager::LoadGLSLShader
+GL_RenderParmName
 ================================================================================================
 */
-GLuint idRenderProgManager::LoadGLSLShader( GLenum target, const char * name, idList<int> & uniforms ) {
+static const char * GL_RenderParmName( int rp ) {
+	if ( rp >= RENDERPARM_USER ) {
+		int userParmIndex = rp - RENDERPARM_USER;
+		return va("rpUser%d", userParmIndex );
+	}
+	assert( rp < RENDERPARM_TOTAL );
+	return GLSLParmNames[ rp ];
+}
+
+/*
+================================================================================================
+GL_NewShaderStage
+================================================================================================
+*/
+static shaderHandle_t GL_NewShaderStage( GLuint shader, const char * name, const shaderStageInfo_t & info ) {
+	glShaderStage_t * stage = new glShaderStage_t;
+	stage->shader = shader;
+	stage->info = info;
+	stage->name = name;
+	return static_cast<shaderHandle_t>( reinterpret_cast<uintptr_t>( stage ) );
+}
+
+/*
+================================================================================================
+idRenderBackendGL::CreateShaderStage
+
+Loads renderprogs/glsl/<name>_vertex.glsl or _fragment.glsl with its .uniforms list, converted from
+renderprogs/<name>.vertex or .pixel when those are newer. A stage without a source file is a record
+without a shader, not NONE: shared code never looks for it again and its program fails to link.
+================================================================================================
+*/
+shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info ) {
+	const GLenum target = ( stage == shaderStageType_t::FRAGMENT ) ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER;
+	info.numParms = 0;
 
 	idStr inFile;
 	idStr outFileHLSL;
@@ -947,13 +969,13 @@ GLuint idRenderProgManager::LoadGLSLShader( GLenum target, const char * name, id
 	if ( ( glslFileLength <= 0 ) || ( hlslTimeStamp > glslTimeStamp ) ) {
 		if ( hlslFileLength <= 0 ) {
 			// hlsl file doesn't even exist bail out
-			return false;
+			return GL_NewShaderStage( 0, name, info );
 		}
 
 		void * hlslFileBuffer = NULL;
 		int len = fileSystem->ReadFile( inFile.c_str(), &hlslFileBuffer );
 		if ( len <= 0 ) {
-			return false;
+			return GL_NewShaderStage( 0, name, info );
 		}
 		idStr hlslCode( ( const char* ) hlslFileBuffer );
 		idStr programHLSL = StripDeadCode( hlslCode, inFile );
@@ -961,9 +983,7 @@ GLuint idRenderProgManager::LoadGLSLShader( GLenum target, const char * name, id
 
 		fileSystem->WriteFile( outFileHLSL, programHLSL.c_str(), programHLSL.Length(), "fs_basepath" );
 		fileSystem->WriteFile( outFileGLSL, programGLSL.c_str(), programGLSL.Length(), "fs_basepath" );
-		if ( r_useUniformArrays.GetBool() ) {
-			fileSystem->WriteFile( outFileUniforms, programUniforms.c_str(), programUniforms.Length(), "fs_basepath" );
-		}
+		fileSystem->WriteFile( outFileUniforms, programUniforms.c_str(), programUniforms.Length(), "fs_basepath" );
 	} else {
 		// read in the glsl file
 		void * fileBufferGLSL = NULL;
@@ -974,43 +994,40 @@ GLuint idRenderProgManager::LoadGLSLShader( GLenum target, const char * name, id
 		programGLSL = ( const char * ) fileBufferGLSL;
 		Mem_Free( fileBufferGLSL );
 
-		if ( r_useUniformArrays.GetBool() ) {
-			// read in the uniform file
-			void * fileBufferUniforms = NULL;
-			int lengthUniforms = fileSystem->ReadFile( outFileUniforms.c_str(), &fileBufferUniforms );
-			if ( lengthUniforms <= 0 ) {
-				idLib::Error( "uniform file %s could not be loaded and may be corrupt", outFileUniforms.c_str() );
-			}
-			programUniforms = ( const char* ) fileBufferUniforms;
-			Mem_Free( fileBufferUniforms );
+		// read in the uniform file
+		void * fileBufferUniforms = NULL;
+		int lengthUniforms = fileSystem->ReadFile( outFileUniforms.c_str(), &fileBufferUniforms );
+		if ( lengthUniforms <= 0 ) {
+			idLib::Error( "uniform file %s could not be loaded and may be corrupt", outFileUniforms.c_str() );
 		}
+		programUniforms = ( const char* ) fileBufferUniforms;
+		Mem_Free( fileBufferUniforms );
 	}
 
 	// find the uniforms locations in either the vertex or fragment uniform array
-	if ( r_useUniformArrays.GetBool() ) {
-		uniforms.Clear();
-
-		idLexer src( programUniforms, programUniforms.Length(), "uniforms" );
-		idToken token;
-		while ( src.ReadToken( &token ) ) {
-			int index = -1;
-			for ( int i = 0; i < RENDERPARM_TOTAL && index == -1; i++ ) {
-				const char * parmName = GetGLSLParmName( i );
-				if ( token == parmName ) {
-					index = i;
-				}
+	idLexer src( programUniforms, programUniforms.Length(), "uniforms" );
+	idToken token;
+	while ( src.ReadToken( &token ) ) {
+		int index = -1;
+		for ( int i = 0; i < RENDERPARM_TOTAL && index == -1; i++ ) {
+			const char * parmName = GL_RenderParmName( i );
+			if ( token == parmName ) {
+				index = i;
 			}
-			for ( int i = 0; i < MAX_GLSL_USER_PARMS && index == -1; i++ ) {
-				const char * parmName = GetGLSLParmName( RENDERPARM_USER + i );
-				if ( token == parmName ) {
-					index = RENDERPARM_USER + i;
-				}
-			}
-			if ( index == -1 ) {
-				idLib::Error( "couldn't find uniform %s for %s", token.c_str(), outFileGLSL.c_str() );
-			}
-			uniforms.Append( index );
 		}
+		for ( int i = 0; i < idRenderProgManager::MAX_GLSL_USER_PARMS && index == -1; i++ ) {
+			const char * parmName = GL_RenderParmName( RENDERPARM_USER + i );
+			if ( token == parmName ) {
+				index = RENDERPARM_USER + i;
+			}
+		}
+		if ( index == -1 ) {
+			idLib::Error( "couldn't find uniform %s for %s", token.c_str(), outFileGLSL.c_str() );
+		}
+		if ( info.numParms == MAX_RENDER_PARMS ) {
+			idLib::Error( "more than %d uniforms for %s", MAX_RENDER_PARMS, outFileGLSL.c_str() );
+		}
+		info.parms[info.numParms++] = static_cast<uint8>( index );
 	}
 
 	// create and compile the shader
@@ -1029,7 +1046,7 @@ GLuint idRenderProgManager::LoadGLSLShader( GLenum target, const char * name, id
 			qglGetShaderInfoLog( shader, infologLength, &charsWritten, infoLog.Ptr() );
 
 			// catch the strings the ATI and Intel drivers output on success
-			if ( strstr( infoLog.Ptr(), "successfully compiled to run on hardware" ) != NULL || 
+			if ( strstr( infoLog.Ptr(), "successfully compiled to run on hardware" ) != NULL ||
 					strstr( infoLog.Ptr(), "No errors." ) != NULL ) {
 				//idLib::Printf( "%s program %s from %s compiled to run on hardware\n", typeName, GetName(), GetFileName() );
 			} else {
@@ -1059,126 +1076,50 @@ GLuint idRenderProgManager::LoadGLSLShader( GLenum target, const char * name, id
 		qglGetShaderiv( shader, GL_COMPILE_STATUS, &compiled );
 		if ( compiled == GL_FALSE ) {
 			qglDeleteShader( shader );
-			return INVALID_PROGID;
+			return shaderHandle_t::NONE;
 		}
 	}
 
-	return shader;
-}
-/*
-================================================================================================
-idRenderProgManager::FindGLSLProgram
-================================================================================================
-*/
-int	 idRenderProgManager::FindGLSLProgram( const char * name, int vIndex, int fIndex ) {
-
-	for ( int i = 0; i < glslPrograms.Num(); ++i ) {
-		if ( ( glslPrograms[i].vertexShaderIndex == vIndex ) && ( glslPrograms[i].fragmentShaderIndex == fIndex ) ) {
-			LoadGLSLProgram( i, vIndex, fIndex );
-			return i;
-		}
-	}
-
-	glslProgram_t program;
-	program.name = name;
-	int index = glslPrograms.Append( program );
-	LoadGLSLProgram( index, vIndex, fIndex );
-	return index;
+	return GL_NewShaderStage( shader, name, info );
 }
 
 /*
 ================================================================================================
-idRenderProgManager::GetGLSLParmName
+idRenderBackendGL::DestroyShaderStage
 ================================================================================================
 */
-const char* idRenderProgManager::GetGLSLParmName( int rp ) const {
-	if ( rp >= RENDERPARM_USER ) {
-		int userParmIndex = rp - RENDERPARM_USER;
-		return va("rpUser%d", userParmIndex );
+void idRenderBackendGL::DestroyShaderStage( shaderHandle_t shader ) {
+	glShaderStage_t * stage = GL_ShaderStage( shader );
+	if ( stage == nullptr ) {
+		return;
 	}
-	assert( rp < RENDERPARM_TOTAL );
-	return GLSLParmNames[ rp ];
+	qglDeleteShader( stage->shader );
+	delete stage;
 }
 
 /*
 ================================================================================================
-idRenderProgManager::SetUniformValue
+idRenderBackendGL::CreateProgram
+
+Leaves the new program in use without telling the latch, as the code before it did. A failed
+link is an error: it ends the map load that parsed the material.
 ================================================================================================
 */
-void idRenderProgManager::SetUniformValue( const renderParm_t rp, const float * value ) {
-	for ( int i = 0; i < 4; i++ ) {
-		glslUniforms[rp][i] = value[i];
-	}
-}
-
-/*
-================================================================================================
-idRenderProgManager::CommitUnforms
-================================================================================================
-*/
-void idRenderProgManager::CommitUniforms() {
-	const int progID = GetGLSLCurrentProgram();
-	const glslProgram_t & prog = glslPrograms[progID];
-
-	if ( r_useUniformArrays.GetBool() ) {
-		ALIGNTYPE16 idVec4 localVectors[RENDERPARM_USER + MAX_GLSL_USER_PARMS];
-
-		if ( prog.vertexShaderIndex >= 0 ) {
-			const idList<int> & vertexUniforms = vertexShaders[prog.vertexShaderIndex].uniforms;
-			if ( prog.vertexUniformArray != -1 && vertexUniforms.Num() > 0 ) {
-				for ( int i = 0; i < vertexUniforms.Num(); i++ ) {
-					localVectors[i] = glslUniforms[vertexUniforms[i]];
-				}
-				qglUniform4fv( prog.vertexUniformArray, vertexUniforms.Num(), localVectors->ToFloatPtr() );
-			}
-		}
-
-		if ( prog.fragmentShaderIndex >= 0 ) {
-			const idList<int> & fragmentUniforms = fragmentShaders[prog.fragmentShaderIndex].uniforms;
-			if ( prog.fragmentUniformArray != -1 && fragmentUniforms.Num() > 0 ) {
-				for ( int i = 0; i < fragmentUniforms.Num(); i++ ) {
-					localVectors[i] = glslUniforms[fragmentUniforms[i]];
-				}
-				qglUniform4fv( prog.fragmentUniformArray, fragmentUniforms.Num(), localVectors->ToFloatPtr() );
-			}
-		}
-	} else {
-		for ( int i = 0; i < prog.uniformLocations.Num(); i++ ) {
-			const glslUniformLocation_t & uniformLocation = prog.uniformLocations[i];
-			qglUniform4fv( uniformLocation.uniformIndex, 1, glslUniforms[uniformLocation.parmIndex].ToFloatPtr() );
-		}
-	}
-}
-
-class idSort_QuickUniforms : public idSort_Quick< glslUniformLocation_t, idSort_QuickUniforms > {
-public:
-	int Compare( const glslUniformLocation_t & a, const glslUniformLocation_t & b ) const { return a.uniformIndex - b.uniformIndex; }
-};
-
-/*
-================================================================================================
-idRenderProgManager::LoadGLSLProgram
-================================================================================================
-*/
-void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int vertexShaderIndex, const int fragmentShaderIndex ) {
-	glslProgram_t & prog = glslPrograms[programIndex];
-
-	if ( prog.progId != INVALID_PROGID ) {
-		return; // Already loaded
-	}
-
-	GLuint vertexProgID = ( vertexShaderIndex != -1 ) ? vertexShaders[ vertexShaderIndex ].progId : INVALID_PROGID;
-	GLuint fragmentProgID = ( fragmentShaderIndex != -1 ) ? fragmentShaders[ fragmentShaderIndex ].progId : INVALID_PROGID;
+programHandle_t idRenderBackendGL::CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * debugName, programInfo_t & info ) {
+	const glShaderStage_t * vertexStage = GL_ShaderStage( vertex );
+	const glShaderStage_t * fragmentStage = GL_ShaderStage( fragment );
+	const char * vertexName = ( vertexStage != nullptr ) ? vertexStage->name.c_str() : "<Invalid>";
+	const char * fragmentName = ( fragmentStage != nullptr ) ? fragmentStage->name.c_str() : "<Invalid>";
 
 	const GLuint program = qglCreateProgram();
 	if ( program ) {
 
-		if ( vertexProgID != INVALID_PROGID ) {
-			qglAttachShader( program, vertexProgID );
+		if ( vertexStage != nullptr ) {
+			qglAttachShader( program, vertexStage->shader );
 		}
 
-		if ( fragmentProgID != INVALID_PROGID ) {
-			qglAttachShader( program, fragmentProgID );
+		if ( fragmentStage != nullptr ) {
+			qglAttachShader( program, fragmentStage->shader );
 		}
 
 		// bind vertex attribute locations
@@ -1201,10 +1142,8 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
 			if ( strstr( infoLog, "Vertex shader(s) linked, fragment shader(s) linked." ) != NULL || strstr( infoLog, "No errors." ) != NULL ) {
 				//idLib::Printf( "render prog %s from %s linked\n", GetName(), GetFileName() );
 			} else {
-				idLib::Printf( "While linking GLSL program %d with vertexShader %s and fragmentShader %s\n", 
-					programIndex, 
-					( vertexShaderIndex >= 0 ) ? vertexShaders[vertexShaderIndex].name.c_str() : "<Invalid>", 
-					( fragmentShaderIndex >= 0 ) ? fragmentShaders[ fragmentShaderIndex ].name.c_str() : "<Invalid>" );
+				idLib::Printf( "While linking GLSL program %s with vertexShader %s and fragmentShader %s\n",
+					debugName, vertexName, fragmentName );
 				idLib::Printf( "%s\n", infoLog );
 			}
 
@@ -1216,48 +1155,20 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
 	qglGetProgramiv( program, GL_LINK_STATUS, &linked );
 	if ( linked == GL_FALSE ) {
 		qglDeleteProgram( program );
-		idLib::Error( "While linking GLSL program %d with vertexShader %s and fragmentShader %s\n", 
-			programIndex, 
-			( vertexShaderIndex >= 0 ) ? vertexShaders[vertexShaderIndex].name.c_str() : "<Invalid>", 
-			( fragmentShaderIndex >= 0 ) ? fragmentShaders[ fragmentShaderIndex ].name.c_str() : "<Invalid>" );
-		return;
+		idLib::Error( "While linking GLSL program %s with vertexShader %s and fragmentShader %s\n",
+			debugName, vertexName, fragmentName );
 	}
 
-	if ( r_useUniformArrays.GetBool() ) {
-		prog.vertexUniformArray = qglGetUniformLocation( program, VERTEX_UNIFORM_ARRAY_NAME );
-		prog.fragmentUniformArray = qglGetUniformLocation( program, FRAGMENT_UNIFORM_ARRAY_NAME );
+	glProgram_t * prog = new glProgram_t;
+	prog->progId = program;
+	prog->vertexInfo = ( vertexStage != nullptr ) ? vertexStage->info : shaderStageInfo_t {};
+	prog->fragmentInfo = ( fragmentStage != nullptr ) ? fragmentStage->info : shaderStageInfo_t {};
 
-		assert( prog.vertexUniformArray != -1 || vertexShaderIndex < 0 || vertexShaders[vertexShaderIndex].uniforms.Num() == 0 );
-		assert( prog.fragmentUniformArray != -1 || fragmentShaderIndex < 0 || fragmentShaders[fragmentShaderIndex].uniforms.Num() == 0 );
-	} else {
-		// store the uniform locations after we have linked the GLSL program
-		prog.uniformLocations.Clear();
-		for ( int i = 0; i < RENDERPARM_TOTAL; i++ ) {
-			const char * parmName = GetGLSLParmName( i );
-			GLint loc = qglGetUniformLocation( program, parmName );
-			if ( loc != -1 ) {
-				glslUniformLocation_t uniformLocation;
-				uniformLocation.parmIndex = i;
-				uniformLocation.uniformIndex = loc;
-				prog.uniformLocations.Append( uniformLocation );
-			}
-		}
+	prog->vertexUniformArray = qglGetUniformLocation( program, VERTEX_UNIFORM_ARRAY_NAME );
+	prog->fragmentUniformArray = qglGetUniformLocation( program, FRAGMENT_UNIFORM_ARRAY_NAME );
 
-		// store the USER uniform locations
-		for ( int i = 0; i < MAX_GLSL_USER_PARMS; i++ ) {
-			const char * parmName = GetGLSLParmName( RENDERPARM_USER + i );
-			GLint loc = qglGetUniformLocation( program, parmName );
-			if ( loc != -1 ) {
-				glslUniformLocation_t uniformLocation;
-				uniformLocation.parmIndex = RENDERPARM_USER + i;
-				uniformLocation.uniformIndex = loc;
-				prog.uniformLocations.Append( uniformLocation );
-			}
-		}
-
-		// sort the uniforms based on index
-		prog.uniformLocations.SortWithTemplate( idSort_QuickUniforms() );
-	}
+	assert( prog->vertexUniformArray != -1 || prog->vertexInfo.numParms == 0 );
+	assert( prog->fragmentUniformArray != -1 || prog->fragmentInfo.numParms == 0 );
 
 	// get the uniform buffer binding for skinning joint matrices
 	GLint blockIndex = qglGetUniformBlockIndex( program, "matrices_ubo" );
@@ -1266,28 +1177,104 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
 	}
 
 	// set the texture unit locations once for the render program. We only need to do this once since we only link the program once
+	info = {};
 	qglUseProgram( program );
 	for ( int i = 0; i < MAX_PROG_TEXTURE_PARMS; ++i ) {
 		GLint loc = qglGetUniformLocation( program, va( "samp%d", i ) );
 		if ( loc != -1 ) {
 			qglUniform1i( loc, i );
+			info.samplerMask = static_cast<uint16>( info.samplerMask | ( 1 << i ) );
 		}
 	}
 
-	idStr programName = vertexShaders[ vertexShaderIndex ].name;
-	programName.StripFileExtension();
-	prog.name = programName;
-	prog.progId = program;
-	prog.fragmentShaderIndex = fragmentShaderIndex;
-	prog.vertexShaderIndex = vertexShaderIndex;
+	// the rest of what the program needs from a draw: queries only, they change nothing in GL
+	info.usesJoints = ( blockIndex != -1 );
+	for ( int i = 0; attribsPC[i].glsl != NULL; i++ ) {
+		if ( ( attribsPC[i].flags & AT_VS_IN ) != 0 && qglGetAttribLocation( program, attribsPC[i].glsl ) != -1 ) {
+			info.attribMask = static_cast<uint16>( info.attribMask | ( 1 << attribsPC[i].bind ) );
+		}
+	}
+	GLint numUniforms = 0;
+	qglGetProgramiv( program, GL_ACTIVE_UNIFORMS, &numUniforms );
+	for ( int i = 0; i < numUniforms; i++ ) {
+		char uniformName[64] = {};
+		GLint size = 0;
+		GLenum type = 0;
+		qglGetActiveUniform( program, i, sizeof( uniformName ), NULL, &size, &type, uniformName );
+		if ( type == GL_SAMPLER_CUBE && idStr::Cmpn( uniformName, "samp", 4 ) == 0 ) {
+			const int slot = atoi( uniformName + 4 );
+			if ( slot >= 0 && slot < MAX_PROG_TEXTURE_PARMS ) {
+				info.cubeMask = static_cast<uint16>( info.cubeMask | ( 1 << slot ) );
+			}
+		}
+	}
+
+	return static_cast<programHandle_t>( reinterpret_cast<uintptr_t>( prog ) );
 }
 
 /*
 ================================================================================================
-idRenderProgManager::ZeroUniforms
+idRenderBackendGL::DestroyProgram
 ================================================================================================
 */
-void idRenderProgManager::ZeroUniforms() {
-	memset( glslUniforms.Ptr(), 0, glslUniforms.Allocated() );
+void idRenderBackendGL::DestroyProgram( programHandle_t program ) {
+	glProgram_t * prog = GL_Program( program );
+	if ( prog == nullptr ) {
+		return;
+	}
+	if ( latch.program == program ) {
+		latch.program = programHandle_t::NONE;
+	}
+	qglDeleteProgram( prog->progId );
+	delete prog;
 }
 
+/*
+================================================================================================
+idRenderBackendGL::API_BindProgram
+================================================================================================
+*/
+void idRenderBackendGL::API_BindProgram( programHandle_t program ) {
+	qglUseProgram( ( program != programHandle_t::NONE ) ? GL_Program( program )->progId : 0 );
+}
+
+/*
+================================================================================================
+idRenderBackendGL::CommitParms
+
+The uniforms go to the program GL has in use, which is not this one right after another
+program was created.
+================================================================================================
+*/
+void idRenderBackendGL::CommitParms( programHandle_t program, const idVec4 * parms ) {
+	const glProgram_t & prog = *GL_Program( program );
+
+	ALIGNTYPE16 idVec4 localVectors[MAX_RENDER_PARMS];
+
+	if ( prog.vertexUniformArray != -1 && prog.vertexInfo.numParms > 0 ) {
+		const int num = R_PackRenderParms( localVectors, parms, prog.vertexInfo );
+		qglUniform4fv( prog.vertexUniformArray, num, localVectors->ToFloatPtr() );
+	}
+
+	if ( prog.fragmentUniformArray != -1 && prog.fragmentInfo.numParms > 0 ) {
+		const int num = R_PackRenderParms( localVectors, parms, prog.fragmentInfo );
+		qglUniform4fv( prog.fragmentUniformArray, num, localVectors->ToFloatPtr() );
+	}
+}
+
+/*
+================================================================================================
+idRenderProgManager::CommitUnforms
+
+Lives here until the draw goes through DrawIndexed, which commits the parms itself. It follows
+the program index of the manager, not the latch: Unbind does not change that index.
+================================================================================================
+*/
+void idRenderProgManager::CommitUniforms() {
+	const programHandle_t program = glslPrograms[GetGLSLCurrentProgram()].handle;
+	if ( program == programHandle_t::NONE ) {
+		// its link failed: nothing was sent for such a program before either
+		return;
+	}
+	static_cast<idRenderBackendGL *>( renderBackend )->CommitParms( program, glslUniforms.Ptr() );
+}
