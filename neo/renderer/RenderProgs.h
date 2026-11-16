@@ -299,4 +299,6 @@ protected:
 
 extern idRenderProgManager renderProgManager;
 
+static_assert( MAX_RENDER_PARMS == RENDERPARM_USER + idRenderProgManager::MAX_GLSL_USER_PARMS );
+
 #endif

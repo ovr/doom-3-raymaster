@@ -1,0 +1,3 @@
+# _x3_perf: back-end CPU time on 08_cpuboss (the bk: field of com_speeds), run with vdemo_capture 0
+include 08_cpuboss
+set com_speeds 1
