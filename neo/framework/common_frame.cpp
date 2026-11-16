@@ -511,11 +511,6 @@ void idCommonLocal::Frame() {
 			// remove any printed lines at the top before taking the screenshot
 			console->ClearNotifyLines();
 
-			// TakeScreenshot reads GL_FRONT one render late (the swap presents the previous render),
-			// so render this frame once first, or the AVI would show the previous game frame
-			constexpr bool captureToImage = false;
-			UpdateScreen( captureToImage );
-
 			// this calls Draw com_aviDemoSamples times, with r_jitter when it is > 1
 			renderSystem->TakeScreenshot( com_aviDemoWidth.GetInteger(), com_aviDemoHeight.GetInteger(), name, com_aviDemoSamples.GetInteger(), nullptr );
 		}

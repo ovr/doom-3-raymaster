@@ -90,8 +90,8 @@ If you have questions concerning this license or the applicable additional terms
 
 	Capture: the game thread builds a frame into render system frame F, and with com_smp 1 the
 	back end renders it during the next Frame(), so the tag is keyed by F and the back buffer is
-	read right after the back end rendered F, before its swap (TakeScreenshot reads GL_FRONT, one
-	frame late). Worker threads encode the PNGs (zlib takes ~40 ms a frame), the main thread writes
+	read right after the back end rendered F, before its swap (as TakeScreenshot reads its own
+	render). Worker threads encode the PNGs (zlib takes ~40 ms a frame), the main thread writes
 	them in capture order and waits for them only at the end of a demo or with 16 frames queued.
 
 	Determinism: single player seeds gameLocal.random with 0 on every map load (LoadMap). Sound
