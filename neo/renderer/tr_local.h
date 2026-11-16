@@ -643,16 +643,9 @@ const int MAX_MULTITEXTURE_UNITS =	8;
 struct glstate_t {
 	tmu_t				tmu[MAX_MULTITEXTURE_UNITS];
 
-	int					faceCulling;
-
 	vertexLayoutType_t	vertexLayout;
 	unsigned int		currentVertexBuffer;
 	unsigned int		currentIndexBuffer;
-
-	float				polyOfsScale;
-	float				polyOfsBias;
-
-	uint64				glStateBits;
 };
 
 struct backEndCounters_t {

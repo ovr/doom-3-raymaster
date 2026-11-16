@@ -553,78 +553,6 @@ void idRenderBackendGL::PopDebugGroup() {
 
 /*
 ========================
-idRenderBackendGL::API_SetDefaultState
-========================
-*/
-void idRenderBackendGL::API_SetDefaultState() {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_State
-========================
-*/
-void idRenderBackendGL::API_State( uint64 stateBits, uint64 changedBits ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_BeginView
-========================
-*/
-void idRenderBackendGL::API_BeginView() {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_Cull
-========================
-*/
-void idRenderBackendGL::API_Cull( int cullType, int previousCullType ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_PolygonOffset
-========================
-*/
-void idRenderBackendGL::API_PolygonOffset( float scale, float bias ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_DepthBoundsTest
-========================
-*/
-void idRenderBackendGL::API_DepthBoundsTest( float zmin, float zmax ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_Viewport
-========================
-*/
-void idRenderBackendGL::API_Viewport( const renderRect_t & rect ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_Scissor
-========================
-*/
-void idRenderBackendGL::API_Scissor( const renderRect_t & rect ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
 idRenderBackendGL::API_BindTexture
 ========================
 */
@@ -638,15 +566,6 @@ idRenderBackendGL::API_BindProgram
 ========================
 */
 void idRenderBackendGL::API_BindProgram( programHandle_t program ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_Clear
-========================
-*/
-void idRenderBackendGL::API_Clear( const clearDesc_t & clear ) {
 	NotMigrated( __func__ );
 }
 

@@ -30,7 +30,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "../idlib/precompiled.h"
 
 #include "tr_local.h"
-#include "OpenGL/gl_Backend.h"	// glContext.global_vao, until the bind moves into the backend
 
 idCVar r_drawEyeColor( "r_drawEyeColor", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a colored box, red = left eye, blue = right eye, grey = non-stereo" );
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 - 5, log2 of the number of motion blur samples" );
@@ -43,6 +42,41 @@ idCVar r_useLightStencilSelect( "r_useLightStencilSelect", "0", CVAR_RENDERER | 
 extern idCVar stereoRender_swapEyes;
 
 backEndState_t	backEnd;
+
+/*
+====================
+GL_Color
+====================
+*/
+void GL_Color( float * color ) {
+	if ( color == NULL ) {
+		return;
+	}
+	GL_Color( color[0], color[1], color[2], color[3] );
+}
+
+/*
+====================
+GL_Color
+====================
+*/
+void GL_Color( float r, float g, float b ) {
+	GL_Color( r, g, b, 1.0f );
+}
+
+/*
+====================
+GL_Color
+====================
+*/
+void GL_Color( float r, float g, float b, float a ) {
+	float parm[4];
+	parm[0] = idMath::ClampFloat( 0.0f, 1.0f, r );
+	parm[1] = idMath::ClampFloat( 0.0f, 1.0f, g );
+	parm[2] = idMath::ClampFloat( 0.0f, 1.0f, b );
+	parm[3] = idMath::ClampFloat( 0.0f, 1.0f, a );
+	renderProgManager.SetRenderParm( RENDERPARM_COLOR, parm );
+}
 
 /*
 ================
@@ -1571,7 +1605,7 @@ static void RB_StencilSelectLight( const viewLight_t * vLight ) {
 	}
 
 	// clear stencil buffer to 0 (not drawable)
-	uint64 glStateMinusStencil = GL_GetCurrentStateMinusStencil();
+	uint64 glStateMinusStencil = GL_GetCurrentState() & ~(GLS_STENCIL_OP_BITS|GLS_STENCIL_FUNC_BITS|GLS_STENCIL_FUNC_REF_BITS|GLS_STENCIL_FUNC_MASK_BITS);
 	GL_State( glStateMinusStencil | GLS_STENCIL_FUNC_ALWAYS | GLS_STENCIL_MAKE_REF( STENCIL_SHADOW_TEST_VALUE ) | GLS_STENCIL_MAKE_MASK( STENCIL_SHADOW_MASK_VALUE ) );	// make sure stencil mask passes for the clear
 	GL_Clear( false, false, true, 0, 0.0f, 0.0f, 0.0f, 0.0f );	// clear to 0 for stencil select
 
@@ -2421,7 +2455,8 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 				viewDef->scissor.y2 + 1 - viewDef->scissor.y1 );
 	backEnd.currentScissor = viewDef->scissor;
 
-	backEnd.glState.faceCulling = -1;		// force face culling to set next time
+	// force face culling to set next time; the backend also starts its view here
+	renderBackend->SetViewMirror( backEnd.viewDef->isMirror );
 
 	// ensures that depth writes are enabled for the depth clear
 	GL_State( GLS_DEFAULT );
@@ -2434,9 +2469,6 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 	GL_Cull( CT_FRONT_SIDED );
 
 	renderLog.CloseMainBlock();
-
-	// bind one global Vertex Array Object (VAO)
-	qglBindVertexArray( glContext.global_vao );
 
 	//------------------------------------
 	// sets variables that can be used by all programs
@@ -2567,6 +2599,37 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 
 /*
 ==================
+RB_ClearColorMasked
+
+Clears the colour channels the latched state writes, inside the latched scissor. A backend that
+cannot clear part of the channels gets a quad instead; that changes the program and the MVP.
+==================
+*/
+static void RB_ClearColorMasked( float r, float g, float b, float a ) {
+	if ( renderBackend->Caps().maskedColorClear ) {
+		GL_Clear( true, false, false, 0, r, g, b, a );
+		return;
+	}
+
+	const uint64 stateBits = GL_GetCurrentState();
+	const int cullType = renderBackend->GetCull();
+
+	GL_State( ( stateBits & ( GLS_COLORMASK | GLS_ALPHAMASK ) ) | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS );
+	GL_Cull( CT_TWO_SIDED );
+	RB_SetMVP( renderMatrix_identity );
+	backEnd.currentSpace = nullptr;
+	renderProgManager.BindShader_Color();
+	GL_Color( r, g, b, a );
+	RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
+
+	GL_State( stateBits );
+	if ( cullType != CULL_UNSET ) {
+		GL_Cull( cullType );
+	}
+}
+
+/*
+==================
 RB_MotionBlur
 
 Experimental feature
@@ -2591,9 +2654,8 @@ void RB_MotionBlur() {
 
 	// clear the alpha buffer and draw only the hands + weapon into it so
 	// we can avoid blurring them
-	qglClearColor( 0, 0, 0, 1 );
 	GL_State( GLS_COLORMASK | GLS_DEPTHMASK );
-	qglClear( GL_COLOR_BUFFER_BIT );
+	RB_ClearColorMasked( 0, 0, 0, 1 );
 	GL_Color( 0, 0, 0, 0 );
 	globalImages->blackImage->Bind( 0 );
 	backEnd.currentSpace = NULL;
