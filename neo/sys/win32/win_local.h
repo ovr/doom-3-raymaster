@@ -44,18 +44,6 @@ extern	PFNWGLGETPIXELFORMATATTRIBIVARBPROC wglGetPixelFormatAttribivARB;
 extern	PFNWGLGETPIXELFORMATATTRIBFVARBPROC wglGetPixelFormatAttribfvARB;
 extern	PFNWGLCHOOSEPIXELFORMATARBPROC wglChoosePixelFormatARB;
 
-// WGL_ARB_pbuffer
-extern	PFNWGLCREATEPBUFFERARBPROC	wglCreatePbufferARB;
-extern	PFNWGLGETPBUFFERDCARBPROC	wglGetPbufferDCARB;
-extern	PFNWGLRELEASEPBUFFERDCARBPROC	wglReleasePbufferDCARB;
-extern	PFNWGLDESTROYPBUFFERARBPROC	wglDestroyPbufferARB;
-extern	PFNWGLQUERYPBUFFERARBPROC	wglQueryPbufferARB;
-
-// WGL_ARB_render_texture 
-extern	PFNWGLBINDTEXIMAGEARBPROC		wglBindTexImageARB;
-extern	PFNWGLRELEASETEXIMAGEARBPROC	wglReleaseTexImageARB;
-extern	PFNWGLSETPBUFFERATTRIBARBPROC	wglSetPbufferAttribARB;
-
 #define	WINDOW_STYLE	(WS_OVERLAPPED|WS_BORDER|WS_CAPTION|WS_VISIBLE | WS_THICKFRAME)
 
 void	Sys_QueEvent( sysEventType_t type, int value, int value2, int ptrLength, void *ptr, int inputDeviceNum );
@@ -128,8 +116,6 @@ typedef struct Win32Vars_s {
 
 	int				cdsFullscreen;	// 0 = not fullscreen, otherwise monitor number
 
-	idFileHandle	log_fp;
-
 	unsigned short	oldHardwareGamma[3][256];
 	// desktop gamma is saved here for restoration at exit
 
@@ -153,16 +139,6 @@ typedef struct Win32Vars_s {
 	LPDIRECTINPUTDEVICE8	g_pMouse;
 	LPDIRECTINPUTDEVICE8	g_pKeyboard;
 	idJoystickWin32			g_Joystick;
-
-	HANDLE			renderCommandsEvent;
-	HANDLE			renderCompletedEvent;
-	HANDLE			renderActiveEvent;
-	HANDLE			renderThreadHandle;
-	unsigned long	renderThreadId;
-	void			(*glimpRenderThread)();
-	void			*smpData;
-	int				wglErrors;
-	// SMP acceleration vars
 
 } Win32Vars_t;
 

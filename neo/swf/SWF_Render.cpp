@@ -394,15 +394,12 @@ uint64 idSWF::GLStateForRenderState( const swfRenderState_t & renderState ) {
 	switch ( renderState.blendMode ) {
 		case 7: // difference : dst = abs( dst - src )
 		case 9: // subtract : dst = dst - src
-			return extraGLState | ( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_BLENDOP_SUB );
 		case 8: // add : dst = dst + src
-			return extraGLState | ( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
 		case 6: // darken : dst = min( dst, src )
-			return extraGLState | ( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_BLENDOP_MIN );
 		case 5: // lighten : dst = max( dst, src )
-			return extraGLState | ( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_BLENDOP_MAX );
+			return extraGLState | ( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
 		case 4: // screen : dst = dst + src - dst*src ( we only do dst - dst * src, we could do the extra + src with another pass if we need to)
-			return extraGLState | ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE | GLS_BLENDOP_SUB );
+			return extraGLState | ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE );
 		case 14: // hardlight : src < 0.5 ? multiply : screen
 		case 13: // overlay : dst < 0.5 ? multiply  : screen
 		case 3: // multiply : dst = ( dst * src ) + ( dst * (1-src.a) )

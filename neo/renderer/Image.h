@@ -38,8 +38,6 @@ No texture is ever used that does not have a corresponding idImage.
 ====================================================================
 */
 
-static const int	MAX_TEXTURE_LEVELS = 14;
-
 // How is this texture used?  Determines the storage and color format
 typedef enum {
 	TD_SPECULAR,			// may be compressed, and always zeros the alpha channel
@@ -112,9 +110,7 @@ public:
 	int			GetUploadWidth() const { return opts.width; }
 	int			GetUploadHeight() const { return opts.height; }
 
-	void		SetReferencedOutsideLevelLoad() { referencedOutsideLevelLoad = true; }
-	void		SetReferencedInsideLevelLoad() { levelLoadReferenced = true; }
-	void		ActuallyLoadImage( bool fromBackEnd );
+	void		ActuallyLoadImage();
 	//---------------------------------------------
 	// Platform specific implementations
 	//---------------------------------------------
@@ -128,18 +124,11 @@ public:
 	// z is 0 for 2D textures, 0 - 5 for cube maps, and 0 - uploadDepth for 3D textures. Only 
 	// one plane at a time of 3D textures can be uploaded. The data is assumed to be correct for 
 	// the format, either bytes, halfFloats, floats, or DXT compressed. The data is assumed to 
-	// be in OpenGL RGBA format, the consoles may have to reorganize. pixelPitch is only needed 
-	// when updating from a source subrect. Width, height, and dest* are always in pixels, so 
-	// they must be a multiple of four for dxt data.
-	void		SubImageUpload( int mipLevel, int destX, int destY, int destZ, 
-								int width, int height, const void * data, 
+	// be in OpenGL RGBA format, the consoles may have to reorganize. pixelPitch is only needed
+	// when updating from a source subrect.
+	void		SubImageUpload( int mipLevel, int destZ,
+								int width, int height, const void * data,
 								int pixelPitch = 0 ) const;
-
-	// SetPixel is assumed to be a fast memory write on consoles, degenerating to a 
-	// SubImageUpload on PCs.  Used to update the page mapping images.
-	// We could remove this now, because the consoles don't use the intermediate page mapping
-	// textures now that they can pack everything into the virtual page table images.
-	void		SetPixel( int mipLevel, int x, int y, const void * data, int dataSize );
 
 	// some scratch images are dynamically resized based on the display window size.  This 
 	// simply purges the image and recreates it if the sizes are different, so it should not be 
@@ -242,9 +231,6 @@ public:
 	// look for a loaded image, whatever the parameters
 	idImage *			GetImage( const char *name ) const;
 
-	// look for a loaded image, whatever the parameters
-	idImage *			GetImageWithParameters( const char *name, textureFilter_t filter, textureRepeat_t repeat, textureUsage_t usage, cubeFiles_t cubeMap ) const;
-
 	// The callback will be issued immediately, and later if images are reloaded or vid_restart
 	// The callback function should call one of the idImage::Generate* functions to fill in the data
 	idImage *			ImageFromFunction( const char *name, void (*generatorFunction)( idImage *image ));
@@ -258,12 +244,6 @@ public:
 	// reloads all apropriate images after a vid_restart
 	void				ReloadImages( bool all );
 
-	// unbind all textures from all texture units
-	void				UnbindAll();
-
-	// disable the active texture unit
-	void				BindNull();
-
 	// Called only by renderSystem::BeginLevelLoad
 	void				BeginLevelLoad();
 
@@ -274,10 +254,6 @@ public:
 
 	// Loads unloaded level images
 	int					LoadLevelImages( bool pacifier );
-
-	// used to clear and then write the dds conversion batch file
-	void				StartBuild();
-	void				FinishBuild( bool removeDups = false );
 
 	void				PrintMemInfo( MemInfo_t *mi );
 
@@ -297,8 +273,6 @@ public:
 	idImage *			currentRenderImage;				// for SS_POST_PROCESS shaders
 	idImage *			currentDepthImage;				// for motion blur
 	idImage *			originalCurrentRenderImage;		// currentRenderImage before any changes for stereo rendering
-	idImage *			loadingIconImage;				// loading icon must exist always
-	idImage *			hellLoadingIconImage;				// loading icon must exist always
 
 	//--------------------------------------------------------
 	
@@ -315,8 +289,6 @@ public:
 };
 
 extern idImageManager	*globalImages;		// pointer to global list for the rest of the system
-
-int MakePowerOfTwo( int num );
 
 /*
 ====================================================================

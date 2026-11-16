@@ -531,9 +531,7 @@ static void RB_FinishStageTexturing( const shaderStage_t *pStage, const drawSurf
 	if ( pStage->texture.cinematic ) {
 		// unbind the extra bink textures
 		GL_SelectTexture( 1 );
-		globalImages->BindNull();
 		GL_SelectTexture( 2 );
-		globalImages->BindNull();
 		GL_SelectTexture( 0 );
 	}
 
@@ -543,7 +541,6 @@ static void RB_FinishStageTexturing( const shaderStage_t *pStage, const drawSurf
 		if ( bumpStage != NULL ) {
 			// per-pixel reflection mapping with bump mapping
 			GL_SelectTexture( 1 );
-			globalImages->BindNull();
 			GL_SelectTexture( 0 );
 		} else {
 			// per-pixel reflection mapping without bump mapping
@@ -669,13 +666,9 @@ static void RB_FillDepthBufferGeneric( const drawSurf_t * const * drawSurfs, int
 
 				GL_Color( color );
 
-#ifdef USE_CORE_PROFILE
 				GL_State( stageGLState );
 				idVec4 alphaTestValue( regs[ pStage->alphaTestRegister ] );
 				SetFragmentParm( RENDERPARM_ALPHA_TEST, alphaTestValue.ToFloatPtr() );
-#else
-				GL_State( stageGLState | GLS_ALPHATEST_FUNC_GREATER | GLS_ALPHATEST_MAKE_REF( idMath::Ftob( 255.0f * regs[ pStage->alphaTestRegister ] ) ) );
-#endif
 
 				if ( drawSurf->jointCache ) {
 					renderProgManager.BindShader_TextureVertexColorSkinned();
@@ -737,9 +730,7 @@ static void RB_FillDepthBufferGeneric( const drawSurf_t * const * drawSurfs, int
 		renderLog.CloseBlock();
 	}
 
-#ifdef USE_CORE_PROFILE
 	SetFragmentParm( RENDERPARM_ALPHA_TEST, vec4_zero.ToFloatPtr() );
-#endif
 }
 
 /*
@@ -772,8 +763,6 @@ static void RB_FillDepthBufferFast( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 
 	renderLog.OpenMainBlock( MRB_FILL_DEPTH_BUFFER );
 	renderLog.OpenBlock( "RB_FillDepthBufferFast" );
-
-	GL_StartDepthPass( backEnd.viewDef->scissor );
 
 	// force MVP change on first surface
 	backEnd.currentSpace = NULL;
@@ -842,9 +831,6 @@ static void RB_FillDepthBufferFast( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 	if ( numPerforatedSurfaces > 0 ) {
 		RB_FillDepthBufferGeneric( perforatedSurfaces, numPerforatedSurfaces );
 	}
-
-	// Allow platform specific data to be collected after the depth pass.
-	GL_FinishDepthPass();
 
 	renderLog.CloseBlock();
 	renderLog.CloseMainBlock();
@@ -1341,7 +1327,6 @@ static void RB_StencilShadowPass( const drawSurf_t *drawSurfs, const viewLight_t
 	renderProgManager.BindShader_Shadow();
 
 	GL_SelectTexture( 0 );
-	globalImages->BindNull();
 
 	uint64 glState = 0;
 
@@ -1799,7 +1784,6 @@ static void RB_DrawInteractions() {
 	// unbind texture units
 	for ( int i = 0; i < 5; i++ ) {
 		GL_SelectTexture( i );
-		globalImages->BindNull();
 	}
 	GL_SelectTexture( 0 );
 
@@ -1840,7 +1824,6 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 	renderLog.OpenBlock( "RB_DrawShaderPasses" );
 
 	GL_SelectTexture( 1 );
-	globalImages->BindNull();
 
 	GL_SelectTexture( 0 );
 
@@ -2024,7 +2007,6 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 					idImage * image = newStage->fragmentProgramImages[j];
 					if ( image != NULL ) {
 						GL_SelectTexture( j );
-						globalImages->BindNull();
 					}
 				}
 
@@ -2258,7 +2240,6 @@ static void RB_BlendLight( const drawSurf_t *drawSurfs, const drawSurf_t *drawSu
 	}
 
 	GL_SelectTexture( 1 );
-	globalImages->BindNull();
 
 	GL_SelectTexture( 0 );
 
@@ -2420,7 +2401,6 @@ static void RB_FogPass( const drawSurf_t * drawSurfs,  const drawSurf_t * drawSu
 	GL_Cull( CT_FRONT_SIDED );
 
 	GL_SelectTexture( 1 );
-	globalImages->BindNull();
 
 	GL_SelectTexture( 0 );
 
@@ -2435,7 +2415,7 @@ RB_FogAllLights
 ==================
 */
 static void RB_FogAllLights() {
-	if ( r_skipFogLights.GetBool() || r_showOverDraw.GetInteger() != 0 
+	if ( r_skipFogLights.GetBool()
 		 || backEnd.viewDef->isXraySubview /* don't fog in xray mode*/ ) {
 		return;
 	}
@@ -2525,10 +2505,8 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 
 	renderLog.CloseMainBlock();
 
-#ifdef USE_CORE_PROFILE
 	// bind one global Vertex Array Object (VAO)
 	qglBindVertexArray( glConfig.global_vao );
-#endif
 
 	//------------------------------------
 	// sets variables that can be used by all programs
@@ -2795,27 +2773,12 @@ void RB_DrawView( const void *data, const int stereoEye ) {
 		return;
 	}
 
-	// skip render context sets the wgl context to NULL,
-	// which should factor out the API cost, under the assumption
-	// that all gl calls just return if the context isn't valid
-	if ( r_skipRenderContext.GetBool() && backEnd.viewDef->viewEntitys ) {
-		GLimp_DeactivateContext();
-	}
-
 	backEnd.pc.c_surfaces += backEnd.viewDef->numDrawSurfs;
-
-	RB_ShowOverdraw();
 
 	// render the scene
 	RB_DrawViewInternal( cmd->viewDef, stereoEye );
 
 	RB_MotionBlur();
-
-	// restore the context for 2D drawing if we were stubbing it out
-	if ( r_skipRenderContext.GetBool() && backEnd.viewDef->viewEntitys ) {
-		GLimp_ActivateContext();
-		GL_SetDefaultState();
-	}
 
 	// optionally draw a box colored based on the eye number
 	if ( r_drawEyeColor.GetBool() ) {

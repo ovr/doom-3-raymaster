@@ -336,9 +336,6 @@ public:
 	// if the specified physical dimensions are larger than the current cropped region, they will be cut down to fit
 	virtual void			CropRenderSize( int width, int height ) = 0;
 	virtual void			CaptureRenderToImage( const char *imageName, bool clearColorAfterCopy = false ) = 0;
-	// fixAlpha will set all the alpha channel values to 0xff, which allows screen captures
-	// to use the default tga loading code without having dimmed down areas in many places
-	virtual void			CaptureRenderToFile( const char *fileName, bool fixAlpha = false ) = 0;
 	virtual void			UnCrop() = 0;
 
 	// the image has to be already loaded ( most straightforward way would be through a FindMaterial )

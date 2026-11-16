@@ -36,7 +36,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "ScreenRect.h"
 #include "ImageOpts.h"
 #include "Image.h"
-#include "RenderTexture.h"
 #include "Font.h"
 #include "RenderInterpolation.h"
 
@@ -515,7 +514,6 @@ struct emptyCommand_t {
 struct setBufferCommand_t {
 	renderCommand_t		commandId;
 	renderCommand_t *	next;
-	GLenum	buffer;
 };
 
 struct drawSurfsCommand_t {
@@ -532,7 +530,6 @@ struct copyRenderCommand_t {
 	int					imageWidth;
 	int					imageHeight;
 	idImage	*			image;
-	int					cubeFace;					// when copying to a cubeMap
 	bool				clearColorAfterCopy;
 };
 
@@ -662,8 +659,6 @@ struct glstate_t {
 
 struct backEndCounters_t {
 	int		c_surfaces;
-	int		c_shaders;
-
 	int		c_drawElements;
 	int		c_drawIndexes;
 
@@ -671,8 +666,6 @@ struct backEndCounters_t {
 	int		c_shadowIndexes;
 
 	int		c_copyFrameBuffer;
-
-	float	c_overDraw;	
 
 	int		totalMicroSec;			// total microseconds for backend run
 	int		shadowMicroSec;
@@ -772,7 +765,6 @@ public:
 	virtual void			TakeScreenshot( int width, int height, const char *fileName, int downSample, renderView_t *ref );
 	virtual void			CropRenderSize( int width, int height );
 	virtual void			CaptureRenderToImage( const char *imageName, bool clearColorAfterCopy = false );
-	virtual void			CaptureRenderToFile( const char *fileName, bool fixAlpha );
 	virtual void			UnCrop();
 	virtual bool			UploadImage( const char *imageName, const byte *data, int width, int height );
 
@@ -862,7 +854,6 @@ extern glconfig_t			glConfig;		// outside of TR since it shouldn't be cleared du
 // cvars
 //
 extern idCVar r_debugContext;				// enable various levels of context debug
-extern idCVar r_glDriver;					// "opengl32", etc
 extern idCVar r_skipIntelWorkarounds;		// skip work arounds for Intel driver bugs
 extern idCVar r_vidMode;					// video mode number
 extern idCVar r_displayRefresh;				// optional display refresh rate option for vid mode
@@ -909,8 +900,6 @@ extern idCVar r_lightAllBackFaces;			// light all the back faces, even when they
 extern idCVar r_useLightDepthBounds;		// use depth bounds test on lights to reduce both shadow and interaction fill
 extern idCVar r_useShadowDepthBounds;		// use depth bounds test on individual shadows to reduce shadow fill
 
-extern idCVar r_skipStaticInteractions;		// skip interactions created at level load
-extern idCVar r_skipDynamicInteractions;	// skip interactions created after level load
 extern idCVar r_skipPostProcess;			// skip all post-process renderings
 extern idCVar r_skipSuppress;				// ignore the per-view suppressions
 extern idCVar r_skipInteractions;			// skip all light/surface interaction drawing
@@ -918,7 +907,6 @@ extern idCVar r_skipFrontEnd;				// bypasses all front end work, but 2D gui rend
 extern idCVar r_skipBackEnd;				// don't draw anything
 extern idCVar r_skipCopyTexture;			// do all rendering, but don't actually copyTexSubImage2D
 extern idCVar r_skipRender;					// skip 3D rendering, but pass 2D
-extern idCVar r_skipRenderContext;			// NULL the rendering context during backend 3D rendering
 extern idCVar r_skipTranslucent;			// skip the translucent interaction rendering
 extern idCVar r_skipAmbient;				// bypasses all non-interaction drawing
 extern idCVar r_skipNewAmbient;				// bypasses all vertex/fragment program ambients
@@ -940,24 +928,13 @@ extern idCVar r_skipShadows;				// disable shadows
 extern idCVar r_ignoreGLErrors;
 
 extern idCVar r_screenFraction;				// for testing fill rate, the resolution of the entire screen can be changed
-extern idCVar r_showUnsmoothedTangents;		// highlight geometry rendered with unsmoothed tangents
-extern idCVar r_showSilhouette;				// highlight edges that are casting shadow planes
-extern idCVar r_showVertexColor;			// draws all triangles with the solid vertex color
 extern idCVar r_showUpdates;				// report entity and light updates and ref counts
 extern idCVar r_showDemo;					// report reads and writes to the demo file
 extern idCVar r_showDynamic;				// report stats on dynamic surface generation
-extern idCVar r_showIntensity;				// draw the screen colors based on intensity, red = 0, green = 128, blue = 255
-extern idCVar r_showTrace;					// show the intersection of an eye trace with the world
-extern idCVar r_showDepth;					// display the contents of the depth buffer and the depth range
 extern idCVar r_showTris;					// enables wireframe rendering of the world
 extern idCVar r_showSurfaceInfo;			// show surface material name under crosshair
 extern idCVar r_showNormals;				// draws wireframe normals
-extern idCVar r_showEdges;					// draw the sil edges
 extern idCVar r_showViewEntitys;			// displays the bounding boxes of all view models and optionally the index
-extern idCVar r_showTexturePolarity;		// shade triangles by texture area polarity
-extern idCVar r_showTangentSpace;			// shade triangles by tangent space
-extern idCVar r_showDominantTri;			// draw lines from vertexes to center of dominant triangles
-extern idCVar r_showTextureVectors;			// draw each triangles texture (tangent) vectors
 extern idCVar r_showLights;					// 1 = print light info, 2 = also draw volumes
 extern idCVar r_showLightCount;				// colors surfaces based on light count
 extern idCVar r_showShadows;				// visualize the stencil shadow volumes
@@ -969,12 +946,8 @@ extern idCVar r_showSurfaces;				// report surface/light/shadow counts
 extern idCVar r_showPrimitives;				// report vertex/index/draw counts
 extern idCVar r_showPortals;				// draw portal outlines in color based on passed / not passed
 extern idCVar r_showSkel;					// draw the skeleton when model animates
-extern idCVar r_showOverDraw;				// show overdraw
 extern idCVar r_jointNameScale;				// size of joint names when r_showskel is set to 1
 extern idCVar r_jointNameOffset;			// offset of joint names when r_showskel is set to 1
-
-extern idCVar r_testGamma;					// draw a grid pattern to test gamma levels
-extern idCVar r_testGammaBias;				// draw a grid pattern to test gamma levels
 
 extern idCVar r_singleLight;				// suppress all but one light
 extern idCVar r_singleEntity;				// suppress all but one entity
@@ -984,14 +957,12 @@ extern idCVar r_shadowPolygonOffset;		// bias value added to depth test for sten
 extern idCVar r_shadowPolygonFactor;		// scale value for stencil shadow drawing
 
 extern idCVar r_jitter;						// randomly subpixel jitter the projection matrix
-extern idCVar r_orderIndexes;				// perform index reorganization to optimize vertex use
 
 extern idCVar r_interpolate;				// draw the defs that moved in the last tic between their two tic poses
 extern idCVar r_interpolateSnapDist;		// a move farther than this in one tic is drawn at the tic pose
 extern idCVar r_showInterpolation;			// boxes of the previous, current and drawn poses
 
 extern idCVar r_debugLineDepthTest;			// perform depth test on debug lines
-extern idCVar r_debugLineWidth;				// width of debug lines
 extern idCVar r_debugArrowStep;				// step size of arrow cone line rotation in degrees
 extern idCVar r_debugPolygonFilled;
 
@@ -1017,7 +988,6 @@ void R_InitOpenGL();
 void R_SetColorMappings();
 
 void R_ScreenShot_f( const idCmdArgs &args );
-void R_StencilShot();
 
 /*
 ====================================================================
@@ -1078,27 +1048,6 @@ void		GLimp_SetGamma( unsigned short red[256],
 // Sets the hardware gamma ramps for gamma and brightness adjustment.
 // These are now taken as 16 bit values, so we can take full advantage
 // of dacs with >8 bits of precision
-
-
-bool		GLimp_SpawnRenderThread( void (*function)() );
-// Returns false if the system only has a single processor
-
-void *		GLimp_BackEndSleep();
-void		GLimp_FrontEndSleep();
-void		GLimp_WakeBackEnd( void *data );
-// these functions implement the dual processor syncronization
-
-void		GLimp_ActivateContext();
-void		GLimp_DeactivateContext();
-// These are used for managing SMP handoffs of the OpenGL context
-// between threads, and as a performance tunining aid.  Setting
-// 'r_skipRenderContext 1' will call GLimp_DeactivateContext() before
-// the 3D rendering code, and GLimp_ActivateContext() afterwards.  On
-// most OpenGL implementations, this will result in all OpenGL calls
-// being immediate returns, which lets us guage how much time is
-// being spent inside OpenGL.
-
-void		GLimp_EnableLogging( bool enable );
 
 
 /*
@@ -1389,9 +1338,6 @@ void RB_DrawBounds( const idBounds &bounds );
 void RB_ShowLights( drawSurf_t **drawSurfs, int numDrawSurfs );
 void RB_ShowLightCount( drawSurf_t **drawSurfs, int numDrawSurfs );
 void RB_PolygonClear();
-void RB_ScanStencilBuffer();
-void RB_ShowDestinationAlpha();
-void RB_ShowOverdraw();
 void RB_RenderDebugTools( drawSurf_t **drawSurfs, int numDrawSurfs );
 void RB_ShutdownDebugTools();
 
@@ -1399,8 +1345,6 @@ void RB_ShutdownDebugTools();
 
 #include "ResolutionScale.h"
 #include "RenderLog.h"
-#include "AutoRender.h"
-#include "AutoRenderBink.h"
 #include "jobs/ShadowShared.h"
 #include "jobs/prelightshadowvolume/PreLightShadowVolume.h"
 #include "jobs/staticshadowvolume/StaticShadowVolume.h"

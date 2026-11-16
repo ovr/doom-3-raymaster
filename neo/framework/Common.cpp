@@ -32,7 +32,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "Common_local.h"
 
 #include "ConsoleHistory.h"
-#include "../renderer/AutoRenderBink.h"
 
 #include "../sound/sound.h"
 
@@ -724,15 +723,6 @@ CONSOLE_COMMAND( reloadLanguage, "reload language dict", NULL ) {
 
 /*
 =================
-Com_StartBuild_f
-=================
-*/
-CONSOLE_COMMAND( startBuild, "prepares to make a build", NULL ) {
-	globalImages->StartBuild();
-}
-
-/*
-=================
 Com_FinishBuild_f
 =================
 */
@@ -740,7 +730,6 @@ CONSOLE_COMMAND( finishBuild, "finishes the build process", NULL ) {
 	if ( game ) {
 		game->CacheDictionaryMedia( NULL );
 	}
-	globalImages->FinishBuild( ( args.Argc() > 1 ) );
 }
 
 /*

@@ -41,34 +41,27 @@ Contains the Image implementation for OpenGL.
 idImage::SubImageUpload
 ========================
 */
-void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int height, const void * pic, int pixelPitch ) const {
-	assert( x >= 0 && y >= 0 && mipLevel >= 0 && width >= 0 && height >= 0 && mipLevel < opts.numLevels );
+void idImage::SubImageUpload( int mipLevel, int z, int width, int height, const void * pic, int pixelPitch ) const {
+	assert( mipLevel >= 0 && width >= 0 && height >= 0 && mipLevel < opts.numLevels );
 
 	int compressedSize = 0;
 
 	if ( IsCompressed() ) {
-		assert( !(x&3) && !(y&3) );
-
 		// compressed size may be larger than the dimensions due to padding to quads
 		int quadW = ( width + 3 ) & ~3;
 		int quadH = ( height + 3 ) & ~3;
 		compressedSize = quadW * quadH * BitsForFormat( opts.format ) / 8;
 
-		int padW = ( opts.width + 3 ) & ~3;
-		int padH = ( opts.height + 3 ) & ~3;
-		(void)padH;
-		(void)padW;
-		assert( x + width <= padW && y + height <= padH );
 		// upload the non-aligned value, OpenGL understands that there
 		// will be padding
-		if ( x + width > opts.width ) {
-			width = opts.width - x;
+		if ( width > opts.width ) {
+			width = opts.width;
 		}
-		if ( y + height > opts.height ) {
-			height = opts.height - x;
+		if ( height > opts.height ) {
+			height = opts.height;
 		}
 	} else {
-		assert( x + width <= opts.width && y + height <= opts.height );
+		assert( width <= opts.width && height <= opts.height );
 	}
 
 	int target;
@@ -97,7 +90,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 	GL_CheckErrors();
 #endif
 	if ( IsCompressed() ) {
-		qglCompressedTexSubImage2DARB( uploadTarget, mipLevel, x, y, width, height, internalFormat, compressedSize, pic );
+		qglCompressedTexSubImage2DARB( uploadTarget, mipLevel, 0, 0, width, height, internalFormat, compressedSize, pic );
 	} else {
 
 		// make sure the pixel store alignment is correct so that lower mips get created
@@ -110,7 +103,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 			qglPixelStorei( GL_UNPACK_ALIGNMENT, 1 );
 		}
 
-		qglTexSubImage2D( uploadTarget, mipLevel, x, y, width, height, dataFormat, dataType, pic );
+		qglTexSubImage2D( uploadTarget, mipLevel, 0, 0, width, height, dataFormat, dataType, pic );
 	}
 #ifdef DEBUG
 	GL_CheckErrors();
@@ -121,15 +114,6 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 	if ( pixelPitch != 0 ) {
 		qglPixelStorei( GL_UNPACK_ROW_LENGTH, 0 );
 	}
-}
-
-/*
-========================
-idImage::SetPixel
-========================
-*/
-void idImage::SetPixel( int mipLevel, int x, int y, const void * data, int dataSize ) {
-	SubImageUpload( mipLevel, x, y, 0, 1, 1, data );
 }
 
 /*
@@ -153,7 +137,6 @@ void idImage::SetTexParameters() {
 
 	// ALPHA, LUMINANCE, LUMINANCE_ALPHA, and INTENSITY have been removed
 	// in OpenGL 3.2. In order to mimic those modes, we use the swizzle operators
-#if defined( USE_CORE_PROFILE )
 	if ( opts.colorFormat == CFM_GREEN_ALPHA ) {
 		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_ONE );
 		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_ONE );
@@ -185,19 +168,6 @@ void idImage::SetTexParameters() {
 		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_BLUE );
 		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_ALPHA );
 	}
-#else
-	if ( opts.colorFormat == CFM_GREEN_ALPHA ) {
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_GREEN );
-	} else if ( opts.format == FMT_ALPHA ) {
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_R, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_G, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_B, GL_ONE );
-		qglTexParameteri( target, GL_TEXTURE_SWIZZLE_A, GL_RED );
-	}
-#endif
 
 	switch( filter ) {
 		case TF_DEFAULT:
@@ -300,43 +270,23 @@ void idImage::AllocImage() {
 		dataType = GL_UNSIGNED_SHORT_5_6_5;
 		break;
 	case FMT_ALPHA:
-#if defined( USE_CORE_PROFILE )
 		internalFormat = GL_R8;
 		dataFormat = GL_RED;
-#else
-		internalFormat = GL_ALPHA8;
-		dataFormat = GL_ALPHA;
-#endif
 		dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_L8A8:
-#if defined( USE_CORE_PROFILE )
 		internalFormat = GL_RG8;
 		dataFormat = GL_RG;
-#else
-		internalFormat = GL_LUMINANCE8_ALPHA8;
-		dataFormat = GL_LUMINANCE_ALPHA;
-#endif
 		dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_LUM8:
-#if defined( USE_CORE_PROFILE )
 		internalFormat = GL_R8;
 		dataFormat = GL_RED;
-#else
-		internalFormat = GL_LUMINANCE8;
-		dataFormat = GL_LUMINANCE;
-#endif
 		dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_INT8:
-#if defined( USE_CORE_PROFILE )
 		internalFormat = GL_R8;
 		dataFormat = GL_RED;
-#else
-		internalFormat = GL_INTENSITY8;
-		dataFormat = GL_LUMINANCE;
-#endif
 		dataType = GL_UNSIGNED_BYTE;
 		break;
 	case FMT_DXT1:

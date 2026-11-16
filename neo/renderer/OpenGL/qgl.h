@@ -100,12 +100,6 @@ extern PFNGLDELETEVERTEXARRAYSPROC			qglDeleteVertexArrays;
 extern PFNGLVERTEXATTRIBPOINTERARBPROC		qglVertexAttribPointerARB;
 extern PFNGLENABLEVERTEXATTRIBARRAYARBPROC	qglEnableVertexAttribArrayARB;
 extern PFNGLDISABLEVERTEXATTRIBARRAYARBPROC	qglDisableVertexAttribArrayARB;
-extern PFNGLPROGRAMSTRINGARBPROC			qglProgramStringARB;
-extern PFNGLBINDPROGRAMARBPROC				qglBindProgramARB;
-extern PFNGLGENPROGRAMSARBPROC				qglGenProgramsARB;
-extern PFNGLDELETEPROGRAMSARBPROC			qglDeleteProgramsARB;
-extern PFNGLPROGRAMENVPARAMETER4FVARBPROC	qglProgramEnvParameter4fvARB;
-extern PFNGLPROGRAMLOCALPARAMETER4FVARBPROC	qglProgramLocalParameter4fvARB;
 
 // GLSL / OpenGL 2.0
 extern PFNGLCREATESHADERPROC				qglCreateShader;
@@ -117,12 +111,10 @@ extern PFNGLGETSHADERINFOLOGPROC			qglGetShaderInfoLog;
 extern PFNGLCREATEPROGRAMPROC				qglCreateProgram;
 extern PFNGLDELETEPROGRAMPROC				qglDeleteProgram;
 extern PFNGLATTACHSHADERPROC				qglAttachShader;
-extern PFNGLDETACHSHADERPROC				qglDetachShader;
 extern PFNGLLINKPROGRAMPROC					qglLinkProgram;
 extern PFNGLUSEPROGRAMPROC					qglUseProgram;
 extern PFNGLGETPROGRAMIVPROC				qglGetProgramiv;
 extern PFNGLGETPROGRAMINFOLOGPROC			qglGetProgramInfoLog;
-extern PFNGLPROGRAMPARAMETERIPROC			qglProgramParameteri;
 extern PFNGLBINDATTRIBLOCATIONPROC			qglBindAttribLocation;
 extern PFNGLGETUNIFORMLOCATIONPROC			qglGetUniformLocation;
 extern PFNGLUNIFORM1IPROC					qglUniform1i;
@@ -180,13 +172,6 @@ extern PFNGLDEBUGMESSAGECALLBACKARBPROC		qglDebugMessageCallbackARB;
 extern PFNGLGETDEBUGMESSAGELOGARBPROC		qglGetDebugMessageLogARB;
 
 //===========================================================================
-
-// non-windows systems will just redefine qgl* to gl*
-#if defined( __APPLE__ ) || defined( ID_GL_HARDLINK )
-
-#include "qgl_linked.h"
-
-#else
 
 // windows systems use a function pointer for each call so we can do our log file intercepts
 
@@ -556,9 +541,5 @@ extern int  ( WINAPI * qwglGetLayerPaletteEntries)(HDC, int, int, int,
                                                 COLORREF *);
 extern BOOL ( WINAPI * qwglRealizeLayerPalette)(HDC, int, BOOL);
 extern BOOL ( WINAPI * qwglSwapLayerBuffers)(HDC, UINT);
-
-
-
-#endif	// hardlinlk vs dlopen
 
 #endif

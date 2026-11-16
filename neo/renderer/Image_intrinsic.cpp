@@ -421,10 +421,4 @@ void idImageManager::CreateIntrinsicImages() {
 	// save a copy of this for material comparison, because currentRenderImage may get
 	// reassigned during stereo rendering
 	originalCurrentRenderImage = currentRenderImage;
-
-	loadingIconImage = ImageFromFile("textures/loadingicon2", TF_DEFAULT, TR_CLAMP, TD_DEFAULT, CF_2D );
-	hellLoadingIconImage = ImageFromFile("textures/loadingicon3", TF_DEFAULT, TR_CLAMP, TD_DEFAULT, CF_2D );
-
-	release_assert( loadingIconImage->referencedOutsideLevelLoad );
-	release_assert( hellLoadingIconImage->referencedOutsideLevelLoad );
 }

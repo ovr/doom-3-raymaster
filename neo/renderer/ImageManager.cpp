@@ -296,57 +296,11 @@ idImage *idImageManager::ImageFromFunction( const char *_name, void (*generatorF
 
 	// check for precompressed, load is from the front end
 	image->referencedOutsideLevelLoad = true;
-	image->ActuallyLoadImage( false );
+	image->ActuallyLoadImage();
 
 	return image;
 }
 
-
-/*
-===============
-GetImageWithParameters
-==============
-*/
-idImage	*idImageManager::GetImageWithParameters( const char *_name, textureFilter_t filter, textureRepeat_t repeat, textureUsage_t usage, cubeFiles_t cubeMap ) const {
-	if ( !_name || !_name[0] || idStr::Icmp( _name, "default" ) == 0 || idStr::Icmp( _name, "_default" ) == 0 ) {
-		declManager->MediaPrint( "DEFAULTED\n" );
-		return globalImages->defaultImage;
-	}
-	if ( idStr::Icmpn( _name, "fonts", 5 ) == 0 || idStr::Icmpn( _name, "newfonts", 8 ) == 0 ) {
-		usage = TD_FONT;
-	}
-	if ( idStr::Icmpn( _name, "lights", 6 ) == 0 ) {
-		usage = TD_LIGHT;
-	}
-	// strip any .tga file extensions from anywhere in the _name, including image program parameters
-	idStrStatic< MAX_OSPATH > name = _name;
-	name.Replace( ".tga", "" );
-	name.BackSlashesToSlashes();
-	int hash = name.FileNameHash();
-	for ( int i = imageHash.First( hash ); i != -1; i = imageHash.Next( i ) ) {
-		idImage	* image = images[i];
-		if ( name.Icmp( image->GetName() ) == 0 ) {
-			// the built in's, like _white and _flat always match the other options
-			if ( name[0] == '_' ) {
-				return image;
-			}
-			if ( image->cubeFiles != cubeMap ) {
-				common->Error( "Image '%s' has been referenced with conflicting cube map states", _name );
-			}
-			if ( image->filter != filter || image->repeat != repeat ) {
-				// we might want to have the system reset these parameters on every bind and
-				// share the image data
-				continue;
-			}
-			if ( image->usage != usage ) {
-				// If an image is used differently then we need 2 copies of it because usage affects the way it's compressed and swizzled
-				continue;
-			}
-			return image;
-		}
-	}
-	return NULL;
-}
 /*
 ===============
 ImageFromFile
@@ -405,7 +359,7 @@ idImage	*idImageManager::ImageFromFile( const char *_name, textureFilter_t filte
 
 			if ( ( !insideLevelLoad  || preloadingMapImages ) && !image->IsLoaded() ) {
 				image->referencedOutsideLevelLoad = ( !insideLevelLoad && !preloadingMapImages );
-				image->ActuallyLoadImage( false );	// load is from front end
+				image->ActuallyLoadImage();	// load is from front end
 				declManager->MediaPrint( "%ix%i %s (reload for mixed referneces)\n", image->GetUploadWidth(), image->GetUploadHeight(), image->GetName() );
 			}
 			return image;
@@ -426,7 +380,7 @@ idImage	*idImageManager::ImageFromFile( const char *_name, textureFilter_t filte
 	// load it if we aren't in a level preload
 	if ( !insideLevelLoad || preloadingMapImages ) {
 		image->referencedOutsideLevelLoad = ( !insideLevelLoad && !preloadingMapImages );
-		image->ActuallyLoadImage( false );	// load is from front end
+		image->ActuallyLoadImage();	// load is from front end
 		declManager->MediaPrint( "%ix%i %s\n", image->GetUploadWidth(), image->GetUploadHeight(), image->GetName() );
 	} else {
 		declManager->MediaPrint( "%s\n", image->GetName() );
@@ -638,30 +592,6 @@ void R_CombineCubeImages_f( const idCmdArgs &args ) {
 
 /*
 ===============
-UnbindAll
-===============
-*/
-void idImageManager::UnbindAll() {
-	int oldTMU = backEnd.glState.currenttmu;
-	for ( int i = 0; i < MAX_PROG_TEXTURE_PARMS; ++i ) {
-		backEnd.glState.currenttmu = i;
-		BindNull();
-	}
-	backEnd.glState.currenttmu = oldTMU;
-}
-
-/*
-===============
-BindNull
-===============
-*/
-void idImageManager::BindNull() {
-	RENDERLOG_PRINTF( "BindNull()\n" );
-
-}
-
-/*
-===============
 Init
 ===============
 */
@@ -787,7 +717,7 @@ int idImageManager::LoadLevelImages( bool pacifier ) {
 		}
 		if ( image->levelLoadReferenced && !image->IsLoaded() ) {
 			loadCount++;
-			image->ActuallyLoadImage( false );
+			image->ActuallyLoadImage();
 		}
 	}
 	return loadCount;
@@ -809,22 +739,6 @@ void idImageManager::EndLevelLoad() {
 	common->Printf( "%5i images loaded in %5.1f seconds\n", loadCount, (end-start) * 0.001 );
 	common->Printf( "----------------------------------------\n" );
 	//R_ListImages_f( idCmdArgs( "sorted sorted", false ) );
-}
-
-/*
-===============
-idImageManager::StartBuild
-===============
-*/
-void idImageManager::StartBuild() {
-}
-
-/*
-===============
-idImageManager::FinishBuild
-===============
-*/
-void idImageManager::FinishBuild( bool removeDups ) {
 }
 
 /*

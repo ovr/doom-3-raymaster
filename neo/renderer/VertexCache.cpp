@@ -34,7 +34,6 @@ If you have questions concerning this license or the applicable additional terms
 idVertexCache vertexCache;
 
 idCVar r_showVertexCache( "r_showVertexCache", "0", CVAR_RENDERER | CVAR_BOOL, "Print stats about the vertex cache every frame" );
-idCVar r_showVertexCacheTimings( "r_showVertexCache", "0", CVAR_RENDERER | CVAR_BOOL, "Print stats about the vertex cache every frame" );
 
 
 /*
@@ -92,10 +91,10 @@ AllocGeoBufferSet
 ==============
 */
 static void AllocGeoBufferSet( geoBufferSet_t &gbs, const int vertexBytes, const int indexBytes, const int jointBytes ) {
-	gbs.vertexBuffer.AllocBufferObject( NULL, vertexBytes );
-	gbs.indexBuffer.AllocBufferObject( NULL, indexBytes );
+	gbs.vertexBuffer.AllocBufferObject( vertexBytes );
+	gbs.indexBuffer.AllocBufferObject( indexBytes );
 	if ( jointBytes != 0 ) {
-		gbs.jointBuffer.AllocBufferObject( NULL, jointBytes / sizeof( idJointMat ) );
+		gbs.jointBuffer.AllocBufferObject( jointBytes / sizeof( idJointMat ) );
 	}
 	ClearGeoBufferSet( gbs );
 }
@@ -105,7 +104,7 @@ static void AllocGeoBufferSet( geoBufferSet_t &gbs, const int vertexBytes, const
 idVertexCache::Init
 ==============
 */
-void idVertexCache::Init( bool restart ) {
+void idVertexCache::Init() {
 	currentFrame = 0;
 	listNum = 0;
 
@@ -141,7 +140,7 @@ idVertexCache::PurgeAll
 */
 void idVertexCache::PurgeAll() {
 	Shutdown();
-	Init( true );
+	Init();
 }
 
 /*
@@ -238,27 +237,6 @@ bool idVertexCache::GetVertexBuffer( vertCacheHandle_t handle, idVertexBuffer * 
 
 /*
 ==============
-idVertexCache::GetIndexBuffer
-==============
-*/
-bool idVertexCache::GetIndexBuffer( vertCacheHandle_t handle, idIndexBuffer * ib ) {
-	const int isStatic = handle & VERTCACHE_STATIC;
-	const uint64 size = (int)( handle >> VERTCACHE_SIZE_SHIFT ) & VERTCACHE_SIZE_MASK;
-	const uint64 offset = (int)( handle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
-	const uint64 frameNum = (int)( handle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
-	if ( isStatic ) {
-		ib->Reference( staticData.indexBuffer, offset, size );
-		return true;
-	}
-	if ( frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) ) {
-		return false;
-	}
-	ib->Reference( frameData[drawListNum].indexBuffer, offset, size );
-	return true;
-}
-
-/*
-==============
 idVertexCache::GetJointBuffer
 ==============
 */
@@ -306,7 +284,7 @@ void idVertexCache::BeginBackEnd() {
 	UnmapGeoBufferSet( staticData );
 	const int endUnmap = Sys_Milliseconds();
 	if ( endUnmap - startUnmap > 1 ) {
-		idLib::PrintfIf( r_showVertexCacheTimings.GetBool(), "idVertexCache::unmap took %i msec\n", endUnmap - startUnmap );
+		idLib::PrintfIf( r_showVertexCache.GetBool(), "idVertexCache::unmap took %i msec\n", endUnmap - startUnmap );
 	}
 	drawListNum = listNum;
 
@@ -318,21 +296,9 @@ void idVertexCache::BeginBackEnd() {
 	MapGeoBufferSet( frameData[listNum] );
 	const int endMap = Sys_Milliseconds();
 	if ( endMap - startMap > 1 ) {
-		idLib::PrintfIf( r_showVertexCacheTimings.GetBool(), "idVertexCache::map took %i msec\n", endMap - startMap );
+		idLib::PrintfIf( r_showVertexCache.GetBool(), "idVertexCache::map took %i msec\n", endMap - startMap );
 	}
 
 	ClearGeoBufferSet( frameData[listNum] );
-
-
-#if 0
-	const int startBind = Sys_Milliseconds();
-	qglBindBufferARB( GL_ARRAY_BUFFER_ARB, (GLuint)frameData[drawListNum].vertexBuffer.GetAPIObject() );
-	qglBindBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, (GLuint)frameData[drawListNum].indexBuffer.GetAPIObject() );
-	const int endBind = Sys_Milliseconds();
-	if ( endBind - startBind > 1 ) {
-		idLib::Printf( "idVertexCache::bind took %i msec\n", endBind - startBind );
-	}
-#endif
-
 }
 

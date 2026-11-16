@@ -125,7 +125,6 @@ public:
 	int					height;			// not needed for cube maps
 	int					numLevels;		// if 0, will be 1 for NEAREST / LINEAR filters, otherwise based on size
 	bool				gammaMips;		// if true, mips will be generated with gamma correction
-	bool				readback;		// 360 specific - cpu reads back from this texture, so allocate with cached memory
 };
 
 /*
@@ -141,7 +140,6 @@ ID_INLINE idImageOpts::idImageOpts() {
 	numLevels		= 0;
 	textureType		= TT_2D;
 	gammaMips		= false;
-	readback		= false;
 
 };
 

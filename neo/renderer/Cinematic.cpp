@@ -123,7 +123,7 @@ void UploadPlane( idImage * image, const uint8 * data, int pitch, int width, int
 		image->AllocImage( opts, TF_LINEAR, TR_CLAMP );
 	}
 	// GL_UNPACK_ROW_LENGTH is in pixels, which are bytes here
-	image->SubImageUpload( 0, 0, 0, 0, width, height, data, pitch );
+	image->SubImageUpload( 0, 0, width, height, data, pitch );
 }
 
 /*

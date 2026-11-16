@@ -51,7 +51,6 @@ const int VERTCACHE_FRAME_MASK = 0x7fff;		// 15 bits = 32k frames to wrap around
 
 const int VERTEX_CACHE_ALIGN		= 32;
 const int INDEX_CACHE_ALIGN			= 16;
-const int JOINT_CACHE_ALIGN			= 16;
 
 enum cacheType_t {
 	CACHE_VERTEX,
@@ -74,7 +73,7 @@ struct geoBufferSet_t {
 
 class idVertexCache {
 public:
-	void			Init( bool restart = false );
+	void			Init();
 	void			Shutdown();
 	void			PurgeAll();
 
@@ -143,7 +142,6 @@ public:
 
 	// vb/ib is a temporary reference -- don't store it
 	bool			GetVertexBuffer( vertCacheHandle_t handle, idVertexBuffer * vb );
-	bool			GetIndexBuffer( vertCacheHandle_t handle, idIndexBuffer * ib );
 	bool			GetJointBuffer( vertCacheHandle_t handle, idJointBuffer * jb );
 
 	void			BeginBackEnd();
