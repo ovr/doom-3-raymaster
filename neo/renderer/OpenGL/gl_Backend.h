@@ -102,6 +102,28 @@ struct glContext_t {
 
 extern glContext_t		glContext;
 
+// What a textureHandle_t points at.
+struct glTexture_t {
+	GLuint				texnum;				// gl texture binding
+	GLenum				target;				// GL_TEXTURE_2D or GL_TEXTURE_CUBE_MAP_EXT
+	// we could derive these in UploadTexture each time if necessary
+	GLuint				internalFormat;
+	GLuint				dataFormat;
+	GLuint				dataType;
+	idImageOpts			opts;				// the backend's copy: a copy from the output changes its size
+#ifdef _DEBUG
+	idStr				name;
+	int					boundInFrame;		// the frame of the last API_BindTexture
+#endif
+};
+
+ID_INLINE glTexture_t * GL_Texture( textureHandle_t texture ) {
+	return reinterpret_cast<glTexture_t *>( static_cast<uintptr_t>( texture ) );
+}
+ID_INLINE textureHandle_t GL_TextureHandle( glTexture_t * texture ) {
+	return static_cast<textureHandle_t>( reinterpret_cast<uintptr_t>( texture ) );
+}
+
 // gl_Extensions.cpp: loads the qgl* extension pointers, fills the flags of glContext and creates global_vao
 void					R_CheckPortableExtensions();
 
@@ -125,7 +147,7 @@ public:
 	void				ReadOutputPixels( int x, int y, int width, int height, byte * rgb ) override;
 
 	textureHandle_t		CreateTexture( const idImageOpts & opts, textureRole_t role, const samplerDesc_t & sampler, const char * debugName ) override;
-	void				UploadTexture( textureHandle_t texture, int mipLevel, int face, const void * pixels, int pixelPitch ) override;
+	void				UploadTexture( textureHandle_t texture, int mipLevel, int face, int width, int height, const void * pixels, int pixelPitch ) override;
 	void				SetTextureSampler( textureHandle_t texture, const samplerDesc_t & sampler ) override;
 	void				CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) override;
 	void				CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) override;
@@ -161,6 +183,10 @@ protected:
 	void				API_Clear( const clearDesc_t & clear ) override;
 	void				API_DestroyTexture( textureHandle_t texture ) override;
 	void				API_DrawIndexed( const drawCall_t & dc ) override;
+
+private:
+	int					debugFrame = 0;				// Debug: counts API_SetDefaultState, one per frame (per eye in stereo)
+	int					debugUploadsAfterBind = 0;	// Debug: uploads into a texture the frame had bound already (rule R4)
 };
 
 #endif /* !__GL_BACKEND_H__ */

@@ -4,8 +4,6 @@
     "neo/idlib/precompiled.h": 1,
     "neo/idlib/sys/sys_types.h": 4,
     "neo/renderer/BufferObject.cpp": 91,
-    "neo/renderer/Image.h": 5,
-    "neo/renderer/Image_load.cpp": 39,
     "neo/renderer/RenderLog.cpp": 24,
     "neo/renderer/RenderProgs.cpp": 9,
     "neo/renderer/RenderProgs.h": 9,

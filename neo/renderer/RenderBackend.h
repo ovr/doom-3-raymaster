@@ -173,7 +173,9 @@ public:
 	// Removes the texture from the latch; the memory is released after the next Present.
 	void					DestroyTexture( textureHandle_t texture );
 	// Replaces one whole level (face = cube side). Draws issued earlier keep the old contents (rule R4).
-	virtual void			UploadTexture( textureHandle_t texture, int mipLevel, int face, const void * pixels, int pixelPitch ) = 0;
+	// width and height are the size the image file gives the level: a compressed cube level under 4 pixels says 4.
+	// pixelPitch is the row length of pixels in pixels, 0 = width.
+	virtual void			UploadTexture( textureHandle_t texture, int mipLevel, int face, int width, int height, const void * pixels, int pixelPitch ) = 0;
 	// Changes filtering and addressing of the texture for the draws that follow.
 	virtual void			SetTextureSampler( textureHandle_t texture, const samplerDesc_t & sampler ) = 0;
 	// Makes a COLOR_COPY texture a width x height copy of that output rectangle. Earlier draws keep the old contents.

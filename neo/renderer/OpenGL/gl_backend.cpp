@@ -188,6 +188,7 @@ static void R_MakeStereoRenderImage( idImage *image ) {
 	opts.height = renderSystem->GetHeight();
 	opts.numLevels = 1;
 	opts.format = FMT_RGBA8;
+	image->SetRole( textureRole_t::COLOR_COPY );
 	image->AllocImage( opts, TF_LINEAR, TR_CLAMP );
 }
 

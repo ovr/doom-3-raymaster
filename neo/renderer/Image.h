@@ -31,7 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 IMAGE
 
-idImage have a one to one correspondance with GL/DX/GCM textures.
+idImage have a one to one correspondance with the textures of the render backend.
 
 No texture is ever used that does not have a corresponding idImage.
 
@@ -60,6 +60,7 @@ typedef enum {
 	CF_CAMERA		// _forward, _back, etc, rotated and flipped as needed before sending to GL
 } cubeFiles_t;
 
+#include "RenderBackendTypes.h"
 #include "ImageOpts.h"
 #include "BinaryImage.h"
 
@@ -71,17 +72,15 @@ public:
 
 	const char *	GetName() const { return imgName; }
 
-	// Makes this image active on the given texture unit.
-	// automatically enables or disables cube mapping
-	// May perform file loading if the image was not preloaded.
+	// Makes this image what the draws that follow sample on the slot, as a 2D or a cube texture.
+	// May perform file loading if the image was not preloaded; binds nothing when that fails.
 	void		Bind( int slot );
 
 	// Should be called at least once
 	void		SetSamplerState( textureFilter_t tf, textureRepeat_t tr );
 
 	// used by callback functions to specify the actual data
-	// data goes from the bottom to the top line of the image, as OpenGL expects it
-	// These bind the image on the texture unit GL has active
+	// data goes from the bottom to the top line of the image
 	// FIXME: should we implement cinematics this way, instead of with explicit calls?
 	void		GenerateImage( const byte *pic, int width, int height, 
 					   textureFilter_t filter, textureRepeat_t repeat, textureUsage_t usage );
@@ -93,7 +92,7 @@ public:
 
 	void		UploadScratch( const byte *pic, int width, int height );
 
-	// estimates size of the GL image based on dimensions and storage type
+	// estimates size of the texture based on dimensions and storage type
 	int			StorageSize() const;
 
 	// print a one line summary of the image
@@ -111,21 +110,16 @@ public:
 	int			GetUploadHeight() const { return opts.height; }
 
 	void		ActuallyLoadImage();
-	//---------------------------------------------
-	// Platform specific implementations
-	//---------------------------------------------
 
 	void		AllocImage( const idImageOpts &imgOpts, textureFilter_t filter, textureRepeat_t repeat );
 
-	// Deletes the texture object, but leaves the structure so it can be reloaded
+	// Destroys the texture, but leaves the structure so it can be reloaded
 	// or resized.
 	void		PurgeImage();
 
-	// z is 0 for 2D textures, 0 - 5 for cube maps, and 0 - uploadDepth for 3D textures. Only 
-	// one plane at a time of 3D textures can be uploaded. The data is assumed to be correct for 
-	// the format, either bytes, halfFloats, floats, or DXT compressed. The data is assumed to 
-	// be in OpenGL RGBA format, the consoles may have to reorganize. pixelPitch is only needed
-	// when updating from a source subrect.
+	// Uploads one level: destZ is 0 for 2D textures and 0 - 5 for cube maps. The data is in the
+	// format of the image (bytes in RGBA order, or DXT blocks). pixelPitch is the row length of
+	// the source in pixels when it is wider than the level.
 	void		SubImageUpload( int mipLevel, int destZ,
 								int width, int height, const void * data,
 								int pixelPitch = 0 ) const;
@@ -137,9 +131,17 @@ public:
 
 	bool		IsCompressed() const { return ( opts.format == FMT_DXT1 || opts.format == FMT_DXT5 ); }
 
-	void		SetTexParameters();	// update aniso and trilinear
+	bool		IsLoaded() const { return handle != textureHandle_t::NONE; }
 
-	bool		IsLoaded() const { return texnum != TEXTURE_NOT_LOADED; }
+	// Filtering and addressing from filter, repeat and usage: the only reader of
+	// r_useTrilinearFiltering, r_maxAnisotropicFiltering and r_lodBias.
+	samplerDesc_t	ResolveSampler() const;
+
+	// Sends ResolveSampler() to the texture again after one of its cvars changed; loads the image if needed.
+	void		UpdateSampler();
+
+	// What the texture is for, read by the next AllocImage: a copy target says so before it is created.
+	void		SetRole( textureRole_t r ) { role = r; }
 
 	static void			GetGeneratedName( idStr &_name, const textureUsage_t &_usage, const cubeFiles_t &_cube );
 
@@ -168,23 +170,11 @@ private:
 
 	int					refCount;				// overall ref count
 
-	static const GLuint TEXTURE_NOT_LOADED = 0xFFFFFFFF;
-
-	GLuint				texnum;				// gl texture binding
-
-	// we could derive these in subImageUpload each time if necessary
-	GLuint				internalFormat;
-	GLuint				dataFormat;
-	GLuint				dataType;
-
-
+	textureHandle_t		handle = textureHandle_t::NONE;		// the texture of the render backend
+	textureRole_t		role = textureRole_t::SAMPLED;
 };
 
 ID_INLINE idImage::idImage( const char * name ) : imgName( name ) {
-	texnum = TEXTURE_NOT_LOADED;
-	internalFormat = 0;
-	dataFormat = 0;
-	dataType = 0;
 	generatorFunction = NULL;
 	filter = TF_DEFAULT;
 	repeat = TR_REPEAT;

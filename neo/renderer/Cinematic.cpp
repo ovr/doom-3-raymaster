@@ -122,23 +122,8 @@ void UploadPlane( idImage * image, const uint8 * data, int pitch, int width, int
 		// videoMaps are always clamped
 		image->AllocImage( opts, TF_LINEAR, TR_CLAMP );
 	}
-	// GL_UNPACK_ROW_LENGTH is in pixels, which are bytes here
+	// the row length is in pixels, which are bytes here
 	image->SubImageUpload( 0, 0, width, height, data, pitch );
-}
-
-/*
-========================
-InvalidateTextureBindings
-
-SubImageUpload binds with glBindTexture on whatever unit is active, behind the back of the
-binding cache that idImage::Bind keeps: forget the cache so the next Bind really binds.
-========================
-*/
-void InvalidateTextureBindings() {
-	for ( tmu_t & tmu : backEnd.glState.tmu ) {
-		tmu.current2DMap = static_cast<unsigned int>( -1 );		// idImage::TEXTURE_NOT_LOADED
-		tmu.currentCubeMap = static_cast<unsigned int>( -1 );
-	}
 }
 
 /*
@@ -525,7 +510,8 @@ cinData_t idCinematicFFmpeg::ImageForTime( int thisTime ) {
 		UploadPlane( images.y, f.planes[ 0 ], f.pitches[ 0 ], f.width, f.height );
 		UploadPlane( images.cb, f.planes[ 1 ], f.pitches[ 1 ], chromaWidth, chromaHeight );
 		UploadPlane( images.cr, f.planes[ 2 ], f.pitches[ 2 ], chromaWidth, chromaHeight );
-		InvalidateTextureBindings();
+		// an upload may reach the texture through a slot behind the back of the latch: the next Bind must really bind
+		renderBackend->ForgetTextureBindings();
 		uploadedFrame = decoder->FrameIndex();
 	}
 

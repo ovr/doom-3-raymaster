@@ -68,7 +68,7 @@ enum class renderOption_t : uint8 { SRGB_OUTPUT, SEAMLESS_CUBE_MAPS, MULTISAMPLE
 enum class samplerFilter_t : uint8 { NEAREST, LINEAR, LINEAR_MIP_NEAREST, LINEAR_MIP_LINEAR };
 enum class samplerAddress_t : uint8 { REPEAT, CLAMP, BORDER_BLACK, BORDER_TRANSPARENT };	// border 0,0,0,1 and 0,0,0,0
 
-constexpr int MAX_TEXTURE_SLOTS	= 8;		// MAX_MULTITEXTURE_UNITS today
+constexpr int MAX_TEXTURE_SLOTS	= 8;		// texture units a draw can sample
 constexpr int MAX_RENDER_PARMS	= 136;		// RENDERPARM_USER + MAX_GLSL_USER_PARMS; RenderProgs.h checks it with a static_assert
 constexpr int TIMESTAMP_SETS	= 4;
 constexpr int CULL_UNSET		= -1;		// no Cull() since SetDefaultState or SetViewMirror

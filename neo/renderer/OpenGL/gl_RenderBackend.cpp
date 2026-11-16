@@ -376,52 +376,6 @@ void idRenderBackendGL::ReadOutputPixels( int x, int y, int width, int height, b
 
 /*
 ========================
-idRenderBackendGL::CreateTexture
-========================
-*/
-textureHandle_t idRenderBackendGL::CreateTexture( const idImageOpts & opts, textureRole_t role, const samplerDesc_t & sampler, const char * debugName ) {
-	NotMigrated( __func__ );
-	return textureHandle_t::NONE;
-}
-
-/*
-========================
-idRenderBackendGL::UploadTexture
-========================
-*/
-void idRenderBackendGL::UploadTexture( textureHandle_t texture, int mipLevel, int face, const void * pixels, int pixelPitch ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::SetTextureSampler
-========================
-*/
-void idRenderBackendGL::SetTextureSampler( textureHandle_t texture, const samplerDesc_t & sampler ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::CopyOutputToTexture
-========================
-*/
-void idRenderBackendGL::CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::CopyDepthToTexture
-========================
-*/
-void idRenderBackendGL::CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
 idRenderBackendGL::CreateBuffer
 ========================
 */
@@ -553,28 +507,10 @@ void idRenderBackendGL::PopDebugGroup() {
 
 /*
 ========================
-idRenderBackendGL::API_BindTexture
-========================
-*/
-void idRenderBackendGL::API_BindTexture( int slot, textureKind_t kind, textureHandle_t texture ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
 idRenderBackendGL::API_BindProgram
 ========================
 */
 void idRenderBackendGL::API_BindProgram( programHandle_t program ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_DestroyTexture
-========================
-*/
-void idRenderBackendGL::API_DestroyTexture( textureHandle_t texture ) {
 	NotMigrated( __func__ );
 }
 
