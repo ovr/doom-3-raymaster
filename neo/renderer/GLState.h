@@ -120,7 +120,32 @@ static const uint64 GLS_STENCIL_OP_PASS_INCR_WRAP		= 6ull << 45;
 static const uint64 GLS_STENCIL_OP_PASS_DECR_WRAP		= 7ull << 45;
 static const uint64 GLS_STENCIL_OP_PASS_BITS			= 7ull << 45;
 
-static const uint64 GLS_STENCIL_OP_BITS					= GLS_STENCIL_OP_FAIL_BITS | GLS_STENCIL_OP_ZFAIL_BITS | GLS_STENCIL_OP_PASS_BITS;
+// back-face stencil ops, read only when GLS_SEPARATE_STENCIL is set; clear = both faces use the front ops
+static const uint64 GLS_STENCIL_FRONT_OP_BITS			= GLS_STENCIL_OP_FAIL_BITS | GLS_STENCIL_OP_ZFAIL_BITS | GLS_STENCIL_OP_PASS_BITS;	// bits 39-47
+static const uint64 GLS_STENCIL_BACK_OP_SHIFT			= 9;				// front ops << 9 = the same ops for the back face, bits 48-56
+static const uint64 GLS_STENCIL_BACK_OP_BITS			= GLS_STENCIL_FRONT_OP_BITS << GLS_STENCIL_BACK_OP_SHIFT;
+static const uint64 GLS_SEPARATE_STENCIL				= 1ull << 57;
+static const uint64 GLS_STENCIL_OP_BITS					= GLS_STENCIL_FRONT_OP_BITS | GLS_STENCIL_BACK_OP_BITS | GLS_SEPARATE_STENCIL;
+
+constexpr uint64 GLS_BackStencilOps( uint64 frontOps ) { return ( frontOps & GLS_STENCIL_FRONT_OP_BITS ) << GLS_STENCIL_BACK_OP_SHIFT; }
+
+// stencil shadow volumes, both faces in one draw
+static const uint64 GLS_STENCIL_SHADOW_ZPASS			= GLS_SEPARATE_STENCIL
+	| GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR
+	| GLS_BackStencilOps( GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_DECR );
+static const uint64 GLS_STENCIL_SHADOW_PRELOAD			= GLS_SEPARATE_STENCIL
+	| GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_DECR | GLS_STENCIL_OP_PASS_DECR
+	| GLS_BackStencilOps( GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_INCR | GLS_STENCIL_OP_PASS_INCR );
+
+// the light volume of the stencil select pass (r_useLightStencilSelect), both faces in one draw
+static const uint64 GLS_STENCIL_LIGHT_SELECT			= GLS_SEPARATE_STENCIL
+	| GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_REPLACE | GLS_STENCIL_OP_PASS_ZERO
+	| GLS_BackStencilOps( GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_ZERO | GLS_STENCIL_OP_PASS_REPLACE );
+
+// true when the stencil ops of a state are one of the two shadow volume presets
+constexpr bool GLS_IsStencilShadowOps( uint64 stateBits ) {
+	return ( stateBits & GLS_STENCIL_OP_BITS ) == GLS_STENCIL_SHADOW_ZPASS || ( stateBits & GLS_STENCIL_OP_BITS ) == GLS_STENCIL_SHADOW_PRELOAD;
+}
 
 static const uint64 GLS_OVERRIDE						= 1ull << 63;		// override the render prog state
 
