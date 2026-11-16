@@ -376,44 +376,6 @@ void idRenderBackendGL::ReadOutputPixels( int x, int y, int width, int height, b
 
 /*
 ========================
-idRenderBackendGL::CreateBuffer
-========================
-*/
-bufferHandle_t idRenderBackendGL::CreateBuffer( bufferType_t type, bufferUsage_t usage, int size, const void * data ) {
-	NotMigrated( __func__ );
-	return bufferHandle_t::NONE;
-}
-
-/*
-========================
-idRenderBackendGL::DestroyBuffer
-========================
-*/
-void idRenderBackendGL::DestroyBuffer( bufferHandle_t buffer ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::MapBuffer
-========================
-*/
-void * idRenderBackendGL::MapBuffer( bufferHandle_t buffer ) {
-	NotMigrated( __func__ );
-	return nullptr;
-}
-
-/*
-========================
-idRenderBackendGL::UnmapBuffer
-========================
-*/
-void idRenderBackendGL::UnmapBuffer( bufferHandle_t buffer, int dirtyOffset, int dirtyBytes ) {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
 idRenderBackendGL::WriteTimestamp
 ========================
 */
@@ -464,14 +426,5 @@ idRenderBackendGL::PopDebugGroup
 ========================
 */
 void idRenderBackendGL::PopDebugGroup() {
-	NotMigrated( __func__ );
-}
-
-/*
-========================
-idRenderBackendGL::API_DrawIndexed
-========================
-*/
-void idRenderBackendGL::API_DrawIndexed( const drawCall_t & dc ) {
 	NotMigrated( __func__ );
 }

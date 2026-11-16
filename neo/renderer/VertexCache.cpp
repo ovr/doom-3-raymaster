@@ -46,6 +46,10 @@ static void ClearGeoBufferSet( geoBufferSet_t &gbs ) {
 	gbs.vertexMemUsed.SetValue( 0 );
 	gbs.jointMemUsed.SetValue( 0 );
 	gbs.allocations = 0;
+	// a set cleared while it is mapped is written from its start again
+	gbs.vertexMapStart = 0;
+	gbs.indexMapStart = 0;
+	gbs.jointMapStart = 0;
 }
 
 /*
@@ -55,13 +59,16 @@ MapGeoBufferSet
 */
 static void MapGeoBufferSet( geoBufferSet_t &gbs ) {
 	if ( gbs.mappedVertexBase == NULL ) {
-		gbs.mappedVertexBase = (byte *)gbs.vertexBuffer.MapBuffer( BM_WRITE );
+		gbs.mappedVertexBase = (byte *)gbs.vertexBuffer.MapBuffer();
+		gbs.vertexMapStart = gbs.vertexMemUsed.GetValue();
 	}
 	if ( gbs.mappedIndexBase == NULL ) {
-		gbs.mappedIndexBase = (byte *)gbs.indexBuffer.MapBuffer( BM_WRITE );
+		gbs.mappedIndexBase = (byte *)gbs.indexBuffer.MapBuffer();
+		gbs.indexMapStart = gbs.indexMemUsed.GetValue();
 	}
-	if ( gbs.mappedJointBase == NULL && gbs.jointBuffer.GetAllocedSize() != 0 ) {
-		gbs.mappedJointBase = (byte *)gbs.jointBuffer.MapBuffer( BM_WRITE );
+	if ( gbs.mappedJointBase == NULL && gbs.jointBuffer.GetSize() != 0 ) {
+		gbs.mappedJointBase = (byte *)gbs.jointBuffer.MapBuffer();
+		gbs.jointMapStart = gbs.jointMemUsed.GetValue();
 	}
 }
 
@@ -72,15 +79,15 @@ UnmapGeoBufferSet
 */
 static void UnmapGeoBufferSet( geoBufferSet_t &gbs ) {
 	if ( gbs.mappedVertexBase != NULL ) {
-		gbs.vertexBuffer.UnmapBuffer();
+		gbs.vertexBuffer.UnmapBuffer( gbs.vertexMapStart, Max( 0, gbs.vertexMemUsed.GetValue() - gbs.vertexMapStart ) );
 		gbs.mappedVertexBase = NULL;
 	}
 	if ( gbs.mappedIndexBase != NULL ) {
-		gbs.indexBuffer.UnmapBuffer();
+		gbs.indexBuffer.UnmapBuffer( gbs.indexMapStart, Max( 0, gbs.indexMemUsed.GetValue() - gbs.indexMapStart ) );
 		gbs.mappedIndexBase = NULL;
 	}
 	if ( gbs.mappedJointBase != NULL ) {
-		gbs.jointBuffer.UnmapBuffer();
+		gbs.jointBuffer.UnmapBuffer( gbs.jointMapStart, Max( 0, gbs.jointMemUsed.GetValue() - gbs.jointMapStart ) );
 		gbs.mappedJointBase = NULL;
 	}
 }
@@ -90,13 +97,32 @@ static void UnmapGeoBufferSet( geoBufferSet_t &gbs ) {
 AllocGeoBufferSet
 ==============
 */
-static void AllocGeoBufferSet( geoBufferSet_t &gbs, const int vertexBytes, const int indexBytes, const int jointBytes ) {
-	gbs.vertexBuffer.AllocBufferObject( vertexBytes );
-	gbs.indexBuffer.AllocBufferObject( indexBytes );
+static void AllocGeoBufferSet( geoBufferSet_t &gbs, const int vertexBytes, const int indexBytes, const int jointBytes, const bufferUsage_t usage ) {
+	bool allocated = gbs.vertexBuffer.AllocBufferObject( nullptr, vertexBytes, usage );
+	allocated = gbs.indexBuffer.AllocBufferObject( nullptr, indexBytes, usage ) && allocated;
 	if ( jointBytes != 0 ) {
-		gbs.jointBuffer.AllocBufferObject( jointBytes / sizeof( idJointMat ) );
+		// whole joints only
+		const int jointSize = static_cast<int>( sizeof( idJointMat ) );
+		allocated = gbs.jointBuffer.AllocBufferObject( nullptr, ( jointBytes / jointSize ) * jointSize, usage ) && allocated;
+	}
+	if ( !allocated ) {
+		idLib::FatalError( "idVertexCache: the render backend could not allocate the vertex cache" );
 	}
 	ClearGeoBufferSet( gbs );
+}
+
+/*
+==============
+FreeGeoBufferSet
+
+A buffer is unmapped before it is freed: the set must not keep a pointer into it.
+==============
+*/
+static void FreeGeoBufferSet( geoBufferSet_t &gbs ) {
+	UnmapGeoBufferSet( gbs );
+	gbs.vertexBuffer.FreeBufferObject();
+	gbs.indexBuffer.FreeBufferObject();
+	gbs.jointBuffer.FreeBufferObject();
 }
 
 /*
@@ -113,9 +139,9 @@ void idVertexCache::Init() {
 	mostUsedJoint = 0;
 
 	for ( int i = 0; i < VERTCACHE_NUM_FRAMES; i++ ) {
-		AllocGeoBufferSet( frameData[i], VERTCACHE_VERTEX_MEMORY_PER_FRAME, VERTCACHE_INDEX_MEMORY_PER_FRAME, VERTCACHE_JOINT_MEMORY_PER_FRAME );
+		AllocGeoBufferSet( frameData[i], VERTCACHE_VERTEX_MEMORY_PER_FRAME, VERTCACHE_INDEX_MEMORY_PER_FRAME, VERTCACHE_JOINT_MEMORY_PER_FRAME, bufferUsage_t::FRAME );
 	}
-	AllocGeoBufferSet( staticData, STATIC_VERTEX_MEMORY, STATIC_INDEX_MEMORY, 0 );
+	AllocGeoBufferSet( staticData, STATIC_VERTEX_MEMORY, STATIC_INDEX_MEMORY, 0, bufferUsage_t::STATIC );
 
 	MapGeoBufferSet( frameData[listNum] );
 }
@@ -127,10 +153,9 @@ idVertexCache::Shutdown
 */
 void idVertexCache::Shutdown() {
 	for ( int i = 0; i < VERTCACHE_NUM_FRAMES; i++ ) {
-		frameData[i].vertexBuffer.FreeBufferObject();
-		frameData[i].indexBuffer.FreeBufferObject();
-		frameData[i].jointBuffer.FreeBufferObject();
+		FreeGeoBufferSet( frameData[i] );
 	}
+	FreeGeoBufferSet( staticData );
 }
 
 /*
@@ -172,23 +197,27 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t & vcs, const void
 
 	// thread safe interlocked adds
 	byte ** base = NULL;
+	int * mapStart = NULL;
 	int	endPos = 0;
 	if ( type == CACHE_INDEX ) {
 		base = &vcs.mappedIndexBase;
+		mapStart = &vcs.indexMapStart;
 		endPos = vcs.indexMemUsed.Add( bytes );
-		if ( endPos > vcs.indexBuffer.GetAllocedSize() ) {
+		if ( endPos > vcs.indexBuffer.GetSize() ) {
 			idLib::Error( "Out of index cache" );
 		}
 	} else if ( type == CACHE_VERTEX ) {
 		base = &vcs.mappedVertexBase;
+		mapStart = &vcs.vertexMapStart;
 		endPos = vcs.vertexMemUsed.Add( bytes );
-		if ( endPos > vcs.vertexBuffer.GetAllocedSize() ) {
+		if ( endPos > vcs.vertexBuffer.GetSize() ) {
 			idLib::Error( "Out of vertex cache" );
 		}
 	} else if ( type == CACHE_JOINT ) {
 		base = &vcs.mappedJointBase;
+		mapStart = &vcs.jointMapStart;
 		endPos = vcs.jointMemUsed.Add( bytes );
-		if ( endPos > vcs.jointBuffer.GetAllocedSize() ) {
+		if ( endPos > vcs.jointBuffer.GetSize() ) {
 			idLib::Error( "Out of joint buffer cache" );
 		}
 	} else {
@@ -202,6 +231,10 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t & vcs, const void
 	// Actually perform the data transfer
 	if ( data != NULL ) {
 		MapGeoBufferSet( vcs );
+		// a buffer mapped just now took its start after this allocation; the frame sets start at 0 and never write here
+		if ( offset < *mapStart ) {
+			*mapStart = offset;
+		}
 		CopyBuffer( *base + offset, (const byte *)data, bytes );
 	}
 
@@ -214,48 +247,6 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t & vcs, const void
 	return handle;
 }
 
-/*
-==============
-idVertexCache::GetVertexBuffer
-==============
-*/
-bool idVertexCache::GetVertexBuffer( vertCacheHandle_t handle, idVertexBuffer * vb ) {
-	const int isStatic = handle & VERTCACHE_STATIC;
-	const uint64 size = (int)( handle >> VERTCACHE_SIZE_SHIFT ) & VERTCACHE_SIZE_MASK;
-	const uint64 offset = (int)( handle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
-	const uint64 frameNum = (int)( handle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
-	if ( isStatic ) {
-		vb->Reference( staticData.vertexBuffer, offset, size );
-		return true;
-	}
-	if ( frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) ) {
-		return false;
-	}
-	vb->Reference( frameData[drawListNum].vertexBuffer, offset, size );
-	return true;
-}
-
-/*
-==============
-idVertexCache::GetJointBuffer
-==============
-*/
-bool idVertexCache::GetJointBuffer( vertCacheHandle_t handle, idJointBuffer * jb ) {
-	const int isStatic = handle & VERTCACHE_STATIC;
-	const uint64 numBytes = (int)( handle >> VERTCACHE_SIZE_SHIFT ) & VERTCACHE_SIZE_MASK;
-	const uint64 jointOffset = (int)( handle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
-	const uint64 frameNum = (int)( handle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
-	const uint64 numJoints = numBytes / sizeof( idJointMat );
-	if ( isStatic ) {
-		jb->Reference( staticData.jointBuffer, jointOffset, numJoints );
-		return true;
-	}
-	if ( frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) ) {
-		return false;
-	}
-	jb->Reference( frameData[drawListNum].jointBuffer, jointOffset, numJoints );
-	return true;
-}
 
 /*
 ==============

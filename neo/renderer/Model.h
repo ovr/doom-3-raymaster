@@ -114,7 +114,7 @@ struct srfTriangles_t {
 	idRenderModelStatic *		staticModelWithJoints;
 
 	// data in vertex object space, not directly readable by the CPU
-	vertCacheHandle_t			indexCache;				// GL_INDEX_TYPE
+	vertCacheHandle_t			indexCache;				// triIndex_t
 	vertCacheHandle_t			ambientCache;			// idDrawVert
 	vertCacheHandle_t			shadowCache;			// idVec4
 

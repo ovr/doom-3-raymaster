@@ -170,7 +170,7 @@ textureHandle_t idRenderBackendGL::CreateTexture( const idImageOpts & opts, [[ma
 	tex->opts = opts;
 #ifdef _DEBUG
 	tex->name = debugName;
-	tex->boundInFrame = -1;
+	tex->drawnInFrame = -1;
 #endif
 
 	switch ( tex->opts.format ) {
@@ -345,9 +345,9 @@ void idRenderBackendGL::UploadTexture( textureHandle_t texture, int mipLevel, in
 	const glTexture_t * tex = GL_Texture( texture );
 
 #ifdef _DEBUG
-	// rule R4: an upload into a texture this frame has already bound breaks the pass of a pipeline backend
-	if ( tex->boundInFrame == debugFrame && debugUploadsAfterBind++ == 0 ) {
-		common->Printf( "idRenderBackendGL::UploadTexture: an upload into '%s', which this frame has bound already\n", tex->name.c_str() );
+	// rule R4: an upload into a texture this frame has already drawn with breaks the pass of a pipeline backend
+	if ( tex->drawnInFrame == debugFrame && debugUploadsAfterDraw++ == 0 ) {
+		common->Printf( "idRenderBackendGL::UploadTexture: an upload into '%s', which this frame has drawn with already\n", tex->name.c_str() );
 	}
 #endif
 
@@ -479,12 +479,10 @@ idRenderBackendGL::API_BindTexture
 ========================
 */
 void idRenderBackendGL::API_BindTexture( int slot, textureKind_t kind, textureHandle_t texture ) {
-	glTexture_t * tex = GL_Texture( texture );
+	const glTexture_t * tex = GL_Texture( texture );
 	const GLenum target = ( kind == textureKind_t::TEX_CUBE ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D;
 	qglBindMultiTextureEXT( GL_TEXTURE0_ARB + slot, target, ( tex != nullptr ) ? tex->texnum : 0 );
 #ifdef _DEBUG
-	if ( tex != nullptr ) {
-		tex->boundInFrame = debugFrame;
-	}
+	debugTexturesBound |= 1u << ( slot * 2 + static_cast<int>( kind ) );
 #endif
 }

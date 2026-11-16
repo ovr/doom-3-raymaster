@@ -28,160 +28,59 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __BUFFEROBJECT_H__
 #define __BUFFEROBJECT_H__
 
+#include "RenderBackendTypes.h"
+
 /*
 ================================================================================================
 
 	Buffer Objects
 
+	A buffer of the render backend and its size. The backend is called on its owner thread
+	only; the memory MapBuffer returns may be written by any thread until UnmapBuffer.
+
 ================================================================================================
 */
 
-class idIndexBuffer;
-
-enum bufferMapType_t {
-	BM_WRITE			// map for writing
-};
-
-// Returns all targets to virtual memory use instead of buffer object use.
-// Call this before doing any conventional buffer reads, like screenshots.
-void UnbindBufferObjects();
-
-/*
-================================================
-idVertexBuffer
-================================================
-*/
-class idVertexBuffer {
+class idBufferObject {
 public:
-						idVertexBuffer();
-						~idVertexBuffer();
-
-	// Allocate or free the buffer.
-	bool				AllocBufferObject( int allocSize );
+	// Allocate or free the buffer. data may be nullptr.
+	bool				AllocBufferObject( const void * data, int allocSize, bufferUsage_t usage );
 	void				FreeBufferObject();
 
-	// Make this buffer a reference to another buffer.
-	void				Reference( const idVertexBuffer & other, int refOffset, int refSize );
+	// Maps the whole buffer for writing only.
+	void *				MapBuffer();
+	// Only [dirtyOffset, dirtyOffset + dirtyBytes) was written since MapBuffer.
+	void				UnmapBuffer( int dirtyOffset, int dirtyBytes );
 
-	void *				MapBuffer( bufferMapType_t mapType ) const;
-	idDrawVert *		MapVertexBuffer( bufferMapType_t mapType ) const { return static_cast< idDrawVert * >( MapBuffer( mapType ) ); }
-	void				UnmapBuffer() const;
-	bool				IsMapped() const { return ( size & MAPPED_FLAG ) != 0; }
+	bufferHandle_t		GetHandle() const { return handle; }
+	int					GetSize() const { return size; }
 
-	int					GetSize() const { return ( size & ~MAPPED_FLAG ); }
-	int					GetAllocedSize() const { return ( ( size & ~MAPPED_FLAG ) + 15 ) & ~15; }
-	void *				GetAPIObject() const { return apiObject; }
-	int					GetOffset() const { return ( offsetInOtherBuffer & ~OWNS_BUFFER_FLAG ); }
+protected:
+	explicit			idBufferObject( bufferType_t bufferType ) : type( bufferType ) {}
 
 private:
-	int					size;					// size in bytes
-	int					offsetInOtherBuffer;	// offset in bytes
-	void *				apiObject;
+	bufferHandle_t		handle = bufferHandle_t::NONE;
+	int					size = 0;				// size in bytes
+	const bufferType_t	type;
 
-	// sizeof() confuses typeinfo...
-	static const int	MAPPED_FLAG			= 1 << ( 4 /* sizeof( int ) */ * 8 - 1 );
-	static const int	OWNS_BUFFER_FLAG	= 1 << ( 4 /* sizeof( int ) */ * 8 - 1 );
-
-private:
-	void				ClearWithoutFreeing();
-	void				SetMapped() const { const_cast< int & >( size ) |= MAPPED_FLAG; }
-	void				SetUnmapped() const { const_cast< int & >( size ) &= ~MAPPED_FLAG; }
-	bool				OwnsBuffer() const { return ( ( offsetInOtherBuffer & OWNS_BUFFER_FLAG ) != 0 ); }
-
-	DISALLOW_COPY_AND_ASSIGN( idVertexBuffer );
+	DISALLOW_COPY_AND_ASSIGN( idBufferObject );
 };
 
-/*
-================================================
-idIndexBuffer
-================================================
-*/
-class idIndexBuffer {
+class idVertexBuffer : public idBufferObject {
 public:
-						idIndexBuffer();
-						~idIndexBuffer();
-
-	// Allocate or free the buffer.
-	bool				AllocBufferObject( int allocSize );
-	void				FreeBufferObject();
-
-	// Make this buffer a reference to another buffer.
-	void				Reference( const idIndexBuffer & other, int refOffset, int refSize );
-
-	void *				MapBuffer( bufferMapType_t mapType ) const;
-	triIndex_t *		MapIndexBuffer( bufferMapType_t mapType ) const { return static_cast< triIndex_t * >( MapBuffer( mapType ) ); }
-	void				UnmapBuffer() const;
-	bool				IsMapped() const { return ( size & MAPPED_FLAG ) != 0; }
-
-	int					GetSize() const { return ( size & ~MAPPED_FLAG ); }
-	int					GetAllocedSize() const { return ( ( size & ~MAPPED_FLAG ) + 15 ) & ~15; }
-	void *				GetAPIObject() const { return apiObject; }
-	int					GetOffset() const { return ( offsetInOtherBuffer & ~OWNS_BUFFER_FLAG ); }
-
-private:
-	int					size;					// size in bytes
-	int					offsetInOtherBuffer;	// offset in bytes
-	void *				apiObject;
-
-	// sizeof() confuses typeinfo...
-	static const int	MAPPED_FLAG			= 1 << ( 4 /* sizeof( int ) */ * 8 - 1 );
-	static const int	OWNS_BUFFER_FLAG	= 1 << ( 4 /* sizeof( int ) */ * 8 - 1 );
-
-private:
-	void				ClearWithoutFreeing();
-	void				SetMapped() const { const_cast< int & >( size ) |= MAPPED_FLAG; }
-	void				SetUnmapped() const { const_cast< int & >( size ) &= ~MAPPED_FLAG; }
-	bool				OwnsBuffer() const { return ( ( offsetInOtherBuffer & OWNS_BUFFER_FLAG ) != 0 ); }
-
-	DISALLOW_COPY_AND_ASSIGN( idIndexBuffer );
+						idVertexBuffer() : idBufferObject( bufferType_t::VERTEX ) {}
 };
 
-/*
-================================================
-idJointBuffer
-
-IMPORTANT NOTICE: on the PC, binding to an offset in uniform buffer objects 
-is limited to GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, which is 256 on current nvidia cards,
-so joint offsets, which are multiples of 48 bytes, must be in multiples of 16 = 768 bytes.
-================================================
-*/
-class idJointBuffer {
+class idIndexBuffer : public idBufferObject {
 public:
-						idJointBuffer();
-						~idJointBuffer();
+						idIndexBuffer() : idBufferObject( bufferType_t::INDEX ) {}
+};
 
-	// Allocate or free the buffer.
-	bool				AllocBufferObject( int numAllocJoints );
-	void				FreeBufferObject();
-
-	// Make this buffer a reference to another buffer.
-	void				Reference( const idJointBuffer & other, int jointRefOffset, int numRefJoints );
-
-	float *				MapBuffer( bufferMapType_t mapType ) const;
-	void				UnmapBuffer() const;
-	bool				IsMapped() const { return ( numJoints & MAPPED_FLAG ) != 0; }
-
-	int					GetNumJoints() const { return ( numJoints & ~MAPPED_FLAG ); }
-	int					GetAllocedSize() const { return ( numJoints & ~MAPPED_FLAG ) * 3 * 4 * sizeof( float ); }
-	void *				GetAPIObject() const { return apiObject; }
-	int					GetOffset() const { return ( offsetInOtherBuffer & ~OWNS_BUFFER_FLAG ); }
-
-private:
-	int					numJoints;
-	int					offsetInOtherBuffer;	// offset in bytes
-	void *				apiObject;
-
-	// sizeof() confuses typeinfo...
-	static const int	MAPPED_FLAG			= 1 << ( 4 /* sizeof( int ) */ * 8 - 1 );
-	static const int	OWNS_BUFFER_FLAG	= 1 << ( 4 /* sizeof( int ) */ * 8 - 1 );
-
-private:
-	void				ClearWithoutFreeing();
-	void				SetMapped() const { const_cast< int & >( numJoints ) |= MAPPED_FLAG; }
-	void				SetUnmapped() const { const_cast< int & >( numJoints ) &= ~MAPPED_FLAG; }
-	bool				OwnsBuffer() const { return ( ( offsetInOtherBuffer & OWNS_BUFFER_FLAG ) != 0 ); }
-
-	DISALLOW_COPY_AND_ASSIGN( idJointBuffer );
+// Draws bind a range of it at an offset that is a multiple of Caps().uniformBufferOffsetAlignment,
+// at most 256 bytes: joint offsets, multiples of 48 bytes, come in steps of 16 joints = 768 bytes.
+class idJointBuffer : public idBufferObject {
+public:
+						idJointBuffer() : idBufferObject( bufferType_t::JOINT ) {}
 };
 
 #endif // !__BUFFEROBJECT_H__

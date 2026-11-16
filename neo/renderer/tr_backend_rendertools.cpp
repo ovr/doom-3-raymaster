@@ -426,7 +426,7 @@ static void RB_ShowTris( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 	GL_Color( color );
 	renderProgManager.BindShader_Color();
 
-	RB_RenderDrawSurfListWithFunction( drawSurfs, numDrawSurfs, RB_DrawElementsWithCounters );
+	RB_RenderDrawSurfListWithFunction( drawSurfs, numDrawSurfs, []( const drawSurf_t * surf ) { RB_DrawElementsWithCounters( surf ); } );
 
 	if ( r_showTris.GetInteger() == 3 ) {
 		GL_Cull( CT_FRONT_SIDED );

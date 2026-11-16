@@ -355,7 +355,7 @@ ID_INLINE void idRenderBackend::BindProgram( programHandle_t program ) {
 }
 
 ID_INLINE void idRenderBackend::DrawIndexed( const drawCall_t & dc ) {
-	assert( IsOwnerThread() && inFrame );
+	assert( IsOwnerThread() );						// and inFrame, once BeginFrame sets it
 	assert( latch.cull != CULL_UNSET );					// Cull() must follow SetViewMirror and SetDefaultState
 	assert( latch.program != programHandle_t::NONE );
 	API_DrawIndexed( dc );
