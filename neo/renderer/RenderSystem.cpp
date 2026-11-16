@@ -715,6 +715,9 @@ const emptyCommand_t * idRenderSystemLocal::SwapCommandBuffers_FinishCommandBuff
 	guiModel->EmitFullScreen();
 	guiModel->Clear();
 
+	// the debug lines, text and polygons of this frame go into its vertex cache set
+	RB_SnapshotDebugGeometry();
+
 	// unmap the buffer objects so they can be used by the GPU
 	vertexCache.BeginBackEnd();
 

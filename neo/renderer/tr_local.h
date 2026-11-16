@@ -646,6 +646,17 @@ struct backEndCounters_t {
 	int		shadowMicroSec;
 };
 
+// debug lines, text or polygons of one frame in the frame set of the vertex cache, as idDrawVert
+struct debugBatch_t {
+	vertCacheHandle_t	vertexCache;
+	vertCacheHandle_t	indexCache;
+	int					numIndexes;
+	primitive_t			topology;
+	uint64				stateBits;		// GLS_POLYGON_OFFSET means scale -1, bias -2
+};
+
+const int MAX_DEBUG_BATCHES	= 64;
+
 // all state modified by the back end is separated
 // from the front end state
 struct backEndState_t {
@@ -663,6 +674,10 @@ struct backEndState_t {
 	drawSurf_t			unitSquareSurface;
 	drawSurf_t			zeroOneCubeSurface;
 	drawSurf_t			testImageSurface;
+
+	// written by RB_SnapshotDebugGeometry between two back-end frames
+	debugBatch_t		debugBatches[MAX_DEBUG_BATCHES];
+	int					numDebugBatches;
 };
 
 class idParallelJobList;
@@ -1276,12 +1291,14 @@ void RB_AddDebugLine( const idVec4 &color, const idVec3 &start, const idVec3 &en
 void RB_ClearDebugLines( int time );
 void RB_AddDebugPolygon( const idVec4 &color, const idWinding &winding, const int lifeTime, const bool depthTest );
 void RB_ClearDebugPolygons( int time );
-void RB_DrawBounds( const idBounds &bounds );
-void RB_ShowLights( drawSurf_t **drawSurfs, int numDrawSurfs );
-void RB_ShowLightCount( drawSurf_t **drawSurfs, int numDrawSurfs );
-void RB_PolygonClear();
+void RB_SnapshotDebugGeometry();
 void RB_RenderDebugTools( drawSurf_t **drawSurfs, int numDrawSurfs );
 void RB_ShutdownDebugTools();
+
+// front end, game thread, outside jobs: lines and text drawn in the frame being built
+void R_AddFrameDebugLine( const idVec4 & color, const idVec3 & start, const idVec3 & end );
+void R_AddFrameDebugText( const char * text, const idVec3 & origin, float scale, const idVec4 & color, const idMat3 & viewAxis, const int align );
+void R_AddViewDebugTools( const viewDef_t * viewDef );
 
 //=============================================
 
