@@ -33,26 +33,6 @@ If you have questions concerning this license or the applicable additional terms
 
 /*
 ====================
-GL_SelectTexture
-====================
-*/
-void GL_SelectTexture( int unit ) {
-	if ( backEnd.glState.currenttmu == unit ) {
-		return;
-	}
-
-	if ( unit < 0 || unit >= glConfig.maxTextureImageUnits ) {
-		common->Warning( "GL_SelectTexture: unit = %i", unit );
-		return;
-	}
-
-	RENDERLOG_PRINTF( "GL_SelectTexture( %i );\n", unit );
-
-	backEnd.glState.currenttmu = unit;
-}
-
-/*
-====================
 GL_Cull
 
 This handles the flipping needed when the view being

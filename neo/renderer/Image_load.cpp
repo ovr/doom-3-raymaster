@@ -433,9 +433,9 @@ Bind
 Automatically enables 2D mapping or cube mapping if needed
 ==============
 */
-void idImage::Bind() {
+void idImage::Bind( int slot ) {
 
-	RENDERLOG_PRINTF( "idImage::Bind( %s )\n", GetName() );
+	RENDERLOG_PRINTF( "idImage::Bind( %s, %i )\n", GetName(), slot );
 
 	// load the image if necessary (FIXME: not SMP safe!)
 	if ( !IsLoaded() ) {
@@ -443,19 +443,19 @@ void idImage::Bind() {
 		ActuallyLoadImage();
 	}
 
-	const int texUnit = backEnd.glState.currenttmu;
+	assert( slot >= 0 && slot < MAX_MULTITEXTURE_UNITS );
 
-	tmu_t * tmu = &backEnd.glState.tmu[texUnit];
+	tmu_t * tmu = &backEnd.glState.tmu[slot];
 	// bind the texture
 	if ( opts.textureType == TT_2D ) {
 		if ( tmu->current2DMap != texnum ) {
 			tmu->current2DMap = texnum;
-			qglBindMultiTextureEXT( GL_TEXTURE0_ARB + texUnit, GL_TEXTURE_2D, texnum );
+			qglBindMultiTextureEXT( GL_TEXTURE0_ARB + slot, GL_TEXTURE_2D, texnum );
 		}
 	} else if ( opts.textureType == TT_CUBIC ) {
 		if ( tmu->currentCubeMap != texnum ) {
 			tmu->currentCubeMap = texnum;
-			qglBindMultiTextureEXT( GL_TEXTURE0_ARB + texUnit, GL_TEXTURE_CUBE_MAP_EXT, texnum );
+			qglBindMultiTextureEXT( GL_TEXTURE0_ARB + slot, GL_TEXTURE_CUBE_MAP_EXT, texnum );
 		}
 	}
 

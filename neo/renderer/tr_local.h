@@ -643,8 +643,6 @@ const int MAX_MULTITEXTURE_UNITS =	8;
 struct glstate_t {
 	tmu_t				tmu[MAX_MULTITEXTURE_UNITS];
 
-	int					currenttmu;
-
 	int					faceCulling;
 
 	vertexLayoutType_t	vertexLayout;
