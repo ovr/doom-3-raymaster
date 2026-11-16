@@ -337,7 +337,6 @@ set(DOOMEXE_SOURCES
 	renderer/ModelDecal.cpp
 	renderer/ModelManager.cpp
 	renderer/ModelOverlay.cpp
-	renderer/OpenGL/gl_backend.cpp
 	renderer/OpenGL/gl_Buffer.cpp
 	renderer/OpenGL/gl_Draw.cpp
 	renderer/OpenGL/gl_Extensions.cpp
@@ -360,6 +359,7 @@ set(DOOMEXE_SOURCES
 	renderer/ResolutionScale.cpp
 	renderer/ScreenRect.cpp
 	renderer/tr_backend_draw.cpp
+	renderer/tr_backend_frame.cpp
 	renderer/tr_backend_rendertools.cpp
 	renderer/tr_frontend_addlights.cpp
 	renderer/tr_frontend_addmodels.cpp

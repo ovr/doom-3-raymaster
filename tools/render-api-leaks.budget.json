@@ -1,9 +1,6 @@
 {
   "files": {
-    "neo/framework/VisualDemo.cpp": 12,
     "neo/idlib/precompiled.h": 1,
-    "neo/renderer/RenderLog.cpp": 24,
-    "neo/renderer/RenderSystem.cpp": 20,
     "neo/renderer/RenderSystem_init.cpp": 5,
     "neo/renderer/RenderWorld_portals.cpp": 4,
     "neo/renderer/tr_backend_rendertools.cpp": 154

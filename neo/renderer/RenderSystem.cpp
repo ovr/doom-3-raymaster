@@ -30,7 +30,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "../idlib/precompiled.h"
 
 #include "tr_local.h"
-#include "OpenGL/gl_Backend.h"	// glContext, until R_CheckCvars sets its options through the backend
 
 idRenderSystemLocal	tr;
 idRenderSystem * renderSystem = &tr;
@@ -125,17 +124,8 @@ void idRenderSystemLocal::RenderCommandBuffers( const emptyCommand_t * const cmd
 	// r_skipRender is usually more usefull, because it will still
 	// draw 2D graphics
 	if ( !r_skipBackEnd.GetBool() ) {
-		if ( renderBackend->Caps().gpuTimer ) {
-			if ( tr.timerQueryId == 0 ) {
-				qglGenQueriesARB( 1, & tr.timerQueryId );
-			}
-			qglBeginQueryARB( GL_TIME_ELAPSED_EXT, tr.timerQueryId );
-			RB_ExecuteBackEndCommands( cmdHead );
-			qglEndQueryARB( GL_TIME_ELAPSED_EXT );
-			qglFlush();
-		} else {
-			RB_ExecuteBackEndCommands( cmdHead );
-		}
+		// opens and closes the frame of the backend, GPU timer included
+		RB_ExecuteBackEndCommands( cmdHead );
 	}
 
 	// pass in null for now - we may need to do some map specific hackery in the future
@@ -246,34 +236,18 @@ static void R_CheckCvars() {
 	extern idCVar r_useSeamlessCubeMap;
 	if ( r_useSeamlessCubeMap.IsModified() ) {
 		r_useSeamlessCubeMap.ClearModified();
-		if ( glContext.seamlessCubeMapAvailable ) {
-			if ( r_useSeamlessCubeMap.GetBool() ) {
-				qglEnable( GL_TEXTURE_CUBE_MAP_SEAMLESS );
-			} else {
-				qglDisable( GL_TEXTURE_CUBE_MAP_SEAMLESS );
-			}
-		}
+		renderBackend->SetOption( renderOption_t::SEAMLESS_CUBE_MAPS, r_useSeamlessCubeMap.GetBool() );
 	}
 
 	extern idCVar r_useSRGB;
 	if ( r_useSRGB.IsModified() ) {
 		r_useSRGB.ClearModified();
-		if ( glContext.sRGBFramebufferAvailable ) {
-			if ( r_useSRGB.GetBool() ) {
-				qglEnable( GL_FRAMEBUFFER_SRGB );
-			} else {
-				qglDisable( GL_FRAMEBUFFER_SRGB );
-			}
-		}
+		renderBackend->SetOption( renderOption_t::SRGB_OUTPUT, r_useSRGB.GetBool() );
 	}
 
 
 	if ( r_multiSamples.IsModified() ) {
-		if ( r_multiSamples.GetInteger() > 0 ) {
-			qglEnable( GL_MULTISAMPLE_ARB );
-		} else {
-			qglDisable( GL_MULTISAMPLE_ARB );
-		}
+		renderBackend->SetOption( renderOption_t::MULTISAMPLE, r_multiSamples.GetInteger() > 0 );
 	}
 }
 
@@ -681,23 +655,28 @@ void idRenderSystemLocal::SwapCommandBuffers_FinishRendering(
 	if ( frameData->cmdHead->next != NULL ) {
 		// wait for our fence to hit, which means the swap has actually happened
 		// We must do this before clearing any resources the GPU may be using
-		void GL_BlockingSwapBuffers();
-		GL_BlockingSwapBuffers();
+		presentMode_t presentMode = presentMode_t::IMMEDIATE;
+		if ( r_swapInterval.GetInteger() == 1 ) {
+			presentMode = presentMode_t::ADAPTIVE;
+		} else if ( r_swapInterval.GetInteger() == 2 ) {
+			presentMode = presentMode_t::VSYNC;
+		}
+		if ( renderBackend->Present( presentMode ) == presentResult_t::DEVICE_LOST ) {
+			common->FatalError( "The graphics device was lost" );
+		}
 	}
 
-	// read back the start and end timer queries from the previous frame
-	uint64 drawingTimeNanoseconds = 0;
+	// read back the GPU time of the previous frame
+	uint64 drawingTimeMicroseconds = 0;
 	if ( renderBackend->Caps().gpuTimer ) {
-		if ( tr.timerQueryId != 0 ) {
-			qglGetQueryObjectui64vEXT( tr.timerQueryId, GL_QUERY_RESULT, &drawingTimeNanoseconds );
-		}
+		drawingTimeMicroseconds = renderBackend->GetFrameGpuMicroseconds();
 		if ( gpuMicroSec != NULL ) {
-			*gpuMicroSec = drawingTimeNanoseconds / 1000;
+			*gpuMicroSec = drawingTimeMicroseconds;
 		}
 	}
 
 	// r_pix: read back the render pass timestamps the GPU has written, print them about once a second
-	PC_FinishRendering( drawingTimeNanoseconds );
+	PC_FinishRendering( drawingTimeMicroseconds );
 
 	//------------------------------
 
@@ -719,7 +698,7 @@ void idRenderSystemLocal::SwapCommandBuffers_FinishRendering(
 	R_CheckCvars();
 
     // check for errors
-	GL_CheckErrors();
+	renderBackend->CheckErrors();
 }
 
 /*

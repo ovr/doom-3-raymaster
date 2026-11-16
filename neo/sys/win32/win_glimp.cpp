@@ -189,7 +189,6 @@ static void GLW_CheckWGLExtensions( HDC hDC ) {
 
 	// WGL_EXT_swap_control
 	glw.wglSwapIntervalEXT = (PFNWGLSWAPINTERVALEXTPROC) GLimp_ExtensionPointer( "wglSwapIntervalEXT" );
-	r_swapInterval.SetModified();	// force a set next frame
 
 	// WGL_EXT_swap_control_tear
 	glw.info.swapControlTearAvailable = R_CheckWinExtension( "WGL_EXT_swap_control_tear" );
@@ -575,19 +574,6 @@ GLimp_SwapBuffers
 =====================
 */
 void GLimp_SwapBuffers() {
-	if ( r_swapInterval.IsModified() ) {
-		r_swapInterval.ClearModified();
-
-		int interval = 0;
-		if ( r_swapInterval.GetInteger() == 1 ) {
-			interval = ( glw.info.swapControlTearAvailable ) ? -1 : 1;
-		} else if ( r_swapInterval.GetInteger() == 2 ) {
-			interval = 1;
-		}
-
-		GLimp_SetSwapInterval( interval );
-	}
-
 	qwglSwapBuffers( glw.hDC );
 }
 

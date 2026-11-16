@@ -35,16 +35,8 @@ If you have questions concerning this license or the applicable additional terms
 
 static idRenderBackendFactory glFactory( "opengl", []() -> idRenderBackend * { return new idRenderBackendGL; } );
 
-/*
-========================
-NotMigrated
-
-The body of this method still lives in the old OpenGL path and nothing may call it yet.
-========================
-*/
-static void NotMigrated( const char * method ) {
-	common->FatalError( "idRenderBackendGL::%s is not migrated yet", method );
-}
+idCVar r_showSwapBuffers( "r_showSwapBuffers", "0", CVAR_BOOL, "Show timings from GL_BlockingSwapBuffers" );
+idCVar r_syncEveryFrame( "r_syncEveryFrame", "1", CVAR_BOOL, "Don't let the GPU buffer execution past swapbuffers" );
 
 /*
 ========================
@@ -134,7 +126,7 @@ bool idRenderBackendGL::Init( const renderBackendInit_t & init ) {
 	// recheck all the extensions (FIXME: this might be dangerous)
 	R_CheckPortableExtensions();
 
-	// maxSamples and maxDebugGroupDepth stay 0: asking GL for them would add calls to the init sequence
+	// maxSamples stays 0: asking GL for it would add calls to the init sequence
 	caps = {};
 	caps.apiName = "OpenGL";
 	caps.vendorName = glContext.vendor_string;
@@ -151,6 +143,12 @@ bool idRenderBackendGL::Init( const renderBackendInit_t & init ) {
 	caps.gpuTimer = glContext.timerQueryAvailable;
 	caps.timestamps = glContext.timestampQueryAvailable;
 	caps.debugGroups = glContext.debugGroupsAvailable;
+	if ( glContext.debugGroupsAvailable ) {
+		GLint maxStackDepth = 0;
+		qglGetIntegerv( GL_MAX_DEBUG_GROUP_STACK_DEPTH, &maxStackDepth );
+		// the default group takes the first level of the stack
+		caps.maxDebugGroupDepth = Max( 0, maxStackDepth - 1 );
+	}
 
 	outputWidth = init.width;
 	outputHeight = init.height;
@@ -166,6 +164,16 @@ Safe without a context: Sys_Error calls it in whatever state the renderer is.
 */
 void idRenderBackendGL::Shutdown() {
 	GLimp_DestroyContext();
+
+	// the queries and fences went with the context; the next one sets its swap interval again
+	timerQueryId = 0;
+	for ( idList<GLuint> & queries : timestampQueries ) {
+		queries.Clear();
+	}
+	swapIndex = 0;
+	renderSync[0] = renderSync[1] = nullptr;
+	swapModeSet = false;
+	inFrame = false;
 }
 
 /*
@@ -184,7 +192,29 @@ idRenderBackendGL::SetOption
 ========================
 */
 void idRenderBackendGL::SetOption( renderOption_t option, bool enable ) {
-	NotMigrated( __func__ );
+	GLenum cap = 0;
+	switch ( option ) {
+		case renderOption_t::SEAMLESS_CUBE_MAPS:
+			if ( !glContext.seamlessCubeMapAvailable ) {
+				return;
+			}
+			cap = GL_TEXTURE_CUBE_MAP_SEAMLESS;
+			break;
+		case renderOption_t::SRGB_OUTPUT:
+			if ( !glContext.sRGBFramebufferAvailable ) {
+				return;
+			}
+			cap = GL_FRAMEBUFFER_SRGB;
+			break;
+		case renderOption_t::MULTISAMPLE:
+			cap = GL_MULTISAMPLE_ARB;
+			break;
+	}
+	if ( enable ) {
+		qglEnable( cap );
+	} else {
+		qglDisable( cap );
+	}
 }
 
 /*
@@ -324,7 +354,16 @@ idRenderBackendGL::BeginFrame
 ========================
 */
 void idRenderBackendGL::BeginFrame() {
-	NotMigrated( __func__ );
+	assert( !inFrame );
+	inFrame = true;
+	debugFrame++;
+
+	if ( glContext.timerQueryAvailable ) {
+		if ( timerQueryId == 0 ) {
+			qglGenQueriesARB( 1, & timerQueryId );
+		}
+		qglBeginQueryARB( GL_TIME_ELAPSED_EXT, timerQueryId );
+	}
 }
 
 /*
@@ -333,36 +372,140 @@ idRenderBackendGL::EndFrame
 ========================
 */
 void idRenderBackendGL::EndFrame() {
-	NotMigrated( __func__ );
+	assert( inFrame );
+
+	// Fix for the steam overlay not showing up while in game without Shell/Debug/Console/Menu also rendering
+	qglColorMask( 1, 1, 1, 1 );
+
+	qglFlush();
+
+	if ( glContext.timerQueryAvailable ) {
+		qglEndQueryARB( GL_TIME_ELAPSED_EXT );
+		qglFlush();
+	}
+	inFrame = false;
 }
 
 /*
 ========================
 idRenderBackendGL::Present
+
+We want to exit this with the GPU idle, right at vsync
 ========================
 */
 presentResult_t idRenderBackendGL::Present( presentMode_t mode ) {
-	NotMigrated( __func__ );
+    RENDERLOG_PRINTF( "***************** GL_BlockingSwapBuffers *****************\n\n\n" );
+
+	const int beforeFinish = Sys_Milliseconds();
+
+	if ( !glContext.syncAvailable ) {
+		glFinish();
+	}
+
+	const int beforeSwap = Sys_Milliseconds();
+	if ( r_showSwapBuffers.GetBool() && beforeSwap - beforeFinish > 1 ) {
+		common->Printf( "%i msec to glFinish\n", beforeSwap - beforeFinish );
+	}
+
+	// the first present of a context and every change of mode
+	if ( !swapModeSet || mode != swapMode ) {
+		swapModeSet = true;
+		swapMode = mode;
+
+		int interval = 0;
+		if ( mode == presentMode_t::ADAPTIVE ) {
+			interval = ( glContext.swapControlTearAvailable ) ? -1 : 1;
+		} else if ( mode == presentMode_t::VSYNC ) {
+			interval = 1;
+		}
+
+		GLimp_SetSwapInterval( interval );
+	}
+
+	GLimp_SwapBuffers();
+
+	const int beforeFence = Sys_Milliseconds();
+	if ( r_showSwapBuffers.GetBool() && beforeFence - beforeSwap > 1 ) {
+		common->Printf( "%i msec to swapBuffers\n", beforeFence - beforeSwap );
+	}
+
+	if ( glContext.syncAvailable ) {
+		swapIndex ^= 1;
+
+		if ( qglIsSync( renderSync[swapIndex] ) ) {
+			qglDeleteSync( renderSync[swapIndex] );
+		}
+		// draw something tiny to ensure the sync is after the swap
+		const int start = Sys_Milliseconds();
+		qglScissor( 0, 0, 1, 1 );
+		qglEnable( GL_SCISSOR_TEST );
+		qglClear( GL_COLOR_BUFFER_BIT );
+		renderSync[swapIndex] = qglFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+		const int end = Sys_Milliseconds();
+		if ( r_showSwapBuffers.GetBool() && end - start > 1 ) {
+			common->Printf( "%i msec to start fence\n", end - start );
+		}
+
+		GLsync	syncToWaitOn;
+		if ( r_syncEveryFrame.GetBool() ) {
+			syncToWaitOn = renderSync[swapIndex];
+		} else {
+			syncToWaitOn = renderSync[!swapIndex];
+		}
+
+		if ( qglIsSync( syncToWaitOn ) ) {
+			for ( GLenum r = GL_TIMEOUT_EXPIRED; r == GL_TIMEOUT_EXPIRED; ) {
+				r = qglClientWaitSync( syncToWaitOn, GL_SYNC_FLUSH_COMMANDS_BIT, 1000 * 1000 );
+			}
+		}
+	}
+
+	const int afterFence = Sys_Milliseconds();
+	if ( r_showSwapBuffers.GetBool() && afterFence - beforeFence > 1 ) {
+		common->Printf( "%i msec to wait on fence\n", afterFence - beforeFence );
+	}
+
+	const int64 exitBlockTime = Sys_Microseconds();
+
+	static int64 prevBlockTime;
+	if ( r_showSwapBuffers.GetBool() && prevBlockTime ) {
+		const int delta = (int) ( exitBlockTime - prevBlockTime );
+		common->Printf( "blockToBlock: %i\n", delta );
+	}
+	prevBlockTime = exitBlockTime;
+
+	// a lost context is not detected
 	return presentResult_t::OK;
 }
 
 /*
 ========================
 idRenderBackendGL::GetFrameGpuMicroseconds
+
+Reads the query of the last frame; GL waits until the result is there.
 ========================
 */
 uint64 idRenderBackendGL::GetFrameGpuMicroseconds() {
-	NotMigrated( __func__ );
-	return 0;
+	uint64 drawingTimeNanoseconds = 0;
+	if ( glContext.timerQueryAvailable && timerQueryId != 0 ) {
+		qglGetQueryObjectui64vEXT( timerQueryId, GL_QUERY_RESULT, &drawingTimeNanoseconds );
+	}
+	return drawingTimeNanoseconds / 1000;
 }
 
 /*
 ========================
 idRenderBackendGL::SelectOutput
+
+In a monoscopic context GL_BACK_LEFT is the only buffer, the same as GL_BACK.
 ========================
 */
 void idRenderBackendGL::SelectOutput( outputEye_t eye ) {
-	NotMigrated( __func__ );
+	switch ( eye ) {
+		case outputEye_t::BOTH:		qglDrawBuffer( GL_BACK ); break;
+		case outputEye_t::LEFT:		qglDrawBuffer( GL_BACK_LEFT ); break;
+		case outputEye_t::RIGHT:	qglDrawBuffer( GL_BACK_RIGHT ); break;
+	}
 }
 
 /*
@@ -371,7 +514,12 @@ idRenderBackendGL::ReadOutputPixels
 ========================
 */
 void idRenderBackendGL::ReadOutputPixels( int x, int y, int width, int height, byte * rgb ) {
-	NotMigrated( __func__ );
+	GLint packAlignment = 4;
+	qglGetIntegerv( GL_PACK_ALIGNMENT, &packAlignment );
+	qglPixelStorei( GL_PACK_ALIGNMENT, 1 );
+	qglReadBuffer( GL_BACK );
+	qglReadPixels( x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE, rgb );
+	qglPixelStorei( GL_PACK_ALIGNMENT, packAlignment );
 }
 
 /*
@@ -380,7 +528,14 @@ idRenderBackendGL::WriteTimestamp
 ========================
 */
 void idRenderBackendGL::WriteTimestamp( int set, int index ) {
-	NotMigrated( __func__ );
+	idList<GLuint> & queries = timestampQueries[set];
+	if ( index >= queries.Num() ) {
+		// grow in steps, so a frame like the last one creates no queries
+		const int oldSize = queries.Num();
+		queries.SetNum( Max3( index + 2, oldSize * 2, 128 ) );
+		qglGenQueriesARB( queries.Num() - oldSize, queries.Ptr() + oldSize );
+	}
+	qglQueryCounter( queries[index], GL_TIMESTAMP );
 }
 
 /*
@@ -389,8 +544,9 @@ idRenderBackendGL::TimestampReady
 ========================
 */
 bool idRenderBackendGL::TimestampReady( int set, int index ) {
-	NotMigrated( __func__ );
-	return false;
+	GLuint available = GL_FALSE;
+	qglGetQueryObjectuivARB( timestampQueries[set][index], GL_QUERY_RESULT_AVAILABLE, &available );
+	return available != GL_FALSE;
 }
 
 /*
@@ -399,7 +555,11 @@ idRenderBackendGL::ReadTimestamps
 ========================
 */
 void idRenderBackendGL::ReadTimestamps( int set, int count, uint64 * nanoseconds ) {
-	NotMigrated( __func__ );
+	const idList<GLuint> & queries = timestampQueries[set];
+	for ( int i = 0; i < count; i++ ) {
+		nanoseconds[i] = 0;
+		qglGetQueryObjectui64vEXT( queries[i], GL_QUERY_RESULT, &nanoseconds[i] );
+	}
 }
 
 /*
@@ -408,7 +568,12 @@ idRenderBackendGL::FreeTimestamps
 ========================
 */
 void idRenderBackendGL::FreeTimestamps() {
-	NotMigrated( __func__ );
+	for ( idList<GLuint> & queries : timestampQueries ) {
+		if ( queries.Num() > 0 ) {
+			qglDeleteQueriesARB( queries.Num(), queries.Ptr() );
+		}
+		queries.Clear();
+	}
 }
 
 /*
@@ -417,7 +582,7 @@ idRenderBackendGL::PushDebugGroup
 ========================
 */
 void idRenderBackendGL::PushDebugGroup( const char * name ) {
-	NotMigrated( __func__ );
+	qglPushDebugGroup( GL_DEBUG_SOURCE_APPLICATION, 0, -1, name );
 }
 
 /*
@@ -426,5 +591,5 @@ idRenderBackendGL::PopDebugGroup
 ========================
 */
 void idRenderBackendGL::PopDebugGroup() {
-	NotMigrated( __func__ );
+	qglPopDebugGroup();
 }
