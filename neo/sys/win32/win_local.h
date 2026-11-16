@@ -30,19 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #define __WIN_LOCAL_H__
 
 #include <windows.h>
-#include "../../renderer/OpenGL/wglext.h"		// windows OpenGL extensions
 #include "win_input.h"
-
-// WGL_ARB_extensions_string
-extern	PFNWGLGETEXTENSIONSSTRINGARBPROC wglGetExtensionsStringARB;
-
-// WGL_EXT_swap_interval
-extern	PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
-
-// WGL_ARB_pixel_format
-extern	PFNWGLGETPIXELFORMATATTRIBIVARBPROC wglGetPixelFormatAttribivARB;
-extern	PFNWGLGETPIXELFORMATATTRIBFVARBPROC wglGetPixelFormatAttribfvARB;
-extern	PFNWGLCHOOSEPIXELFORMATARBPROC wglChoosePixelFormatARB;
 
 #define	WINDOW_STYLE	(WS_OVERLAPPED|WS_BORDER|WS_CAPTION|WS_VISIBLE | WS_THICKFRAME)
 
@@ -70,9 +58,9 @@ void	IN_ActivateMouse();
 
 void	IN_Frame();
 
-// fullscreen window focus handling (alt-tab)
-void	GLimp_WindowActivated();
-void	GLimp_WindowDeactivated();
+// fullscreen window focus handling (alt-tab), win_window.cpp
+void	Win_WindowActivated();
+void	Win_WindowDeactivated();
 
 void	DisableTaskKeys( BOOL bDisable, BOOL bBeep, BOOL bTaskMgr );
 
@@ -103,11 +91,6 @@ typedef struct Win32Vars_s {
 	bool			windowClassRegistered;
 
 	WNDPROC			wndproc;
-
-	HDC				hDC;							// handle to device context
-	HGLRC			hGLRC;						// handle to GL rendering context
-	PIXELFORMATDESCRIPTOR pfd;		
-	int				pixelformat;
 
 	HINSTANCE		hinstOpenGL;	// HINSTANCE for the OpenGL library
 

@@ -434,6 +434,7 @@ set(DOOMEXE_SOURCES
 	sys/win32/win_snd.cpp
 	sys/win32/win_syscon.cpp
 	sys/win32/win_taskkeyhook.cpp
+	sys/win32/win_window.cpp
 	sys/win32/win_wndproc.cpp
 	ui/BindWindow.cpp
 	ui/ChoiceWindow.cpp

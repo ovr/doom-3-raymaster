@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <memory>
 
 #include "tr_local.h"
+#include "OpenGL/gl_glimp.h"
 
 // DeviceContext bypasses RenderSystem to work directly with this
 idGuiModel * tr_guiModel;
@@ -660,7 +661,7 @@ void R_SetNewMode( const bool fullInit ) {
 			continue;		// don't even try for a stereo mode
 		}
 
-		glimpParms_t	parms;
+		windowParms_t	parms;
 
 		if ( r_fullscreen.GetInteger() <= 0 ) {
 			// use explicit position / size for window
@@ -710,22 +711,27 @@ void R_SetNewMode( const bool fullInit ) {
 			}
 		}
 
-		parms.multiSamples = r_multiSamples.GetInteger();
+		glContextParms_t contextParms;
+		contextParms.multiSamples = r_multiSamples.GetInteger();
 		if ( i == 0 ) {
-			parms.stereo = ( stereoRender_enable.GetInteger() == STEREO3D_QUAD_BUFFER );
+			contextParms.stereo = ( stereoRender_enable.GetInteger() == STEREO3D_QUAD_BUFFER );
 		} else {
-			parms.stereo = false;
+			contextParms.stereo = false;
 		}
 
 		if ( fullInit ) {
-			// create the context as well as setting up the window
-			if ( GLimp_Init( parms ) ) {
-				// it worked
-				break;
+			// create the window, then the context on it
+			if ( Sys_CreateWindow( parms ) ) {
+				contextParms.nativeWindow = Sys_GetNativeWindow();
+				if ( GLimp_CreateContext( contextParms ) ) {
+					// it worked
+					break;
+				}
+				Sys_DestroyWindow();
 			}
 		} else {
 			// just rebuild the window
-			if ( GLimp_SetScreenParms( parms ) ) {
+			if ( Sys_SetWindowMode( parms ) ) {
 				// it worked
 				break;
 			}
@@ -757,8 +763,8 @@ idStr extensions_string;
 R_InitOpenGL
 
 This function is responsible for initializing a valid OpenGL subsystem
-for rendering.  This is done by calling the system specific GLimp_Init,
-which gives us a working OGL subsystem, then setting all necessary openGL
+for rendering.  This is done by calling Sys_CreateWindow and the system
+specific GLimp_CreateContext, which give us a working OGL subsystem, then setting all necessary openGL
 state, including images, vertex programs, and display lists.
 
 Changes to the vertex cache size or smp state require a vid_restart.
@@ -1570,7 +1576,7 @@ void R_SetColorMappings() {
 		tr.gammaTable[i] = idMath::ClampInt( 0, 0xFFFF, inf );
 	}
 
-	GLimp_SetGamma( tr.gammaTable, tr.gammaTable, tr.gammaTable );
+	Sys_SetDeviceGammaRamp( tr.gammaTable, tr.gammaTable, tr.gammaTable );
 }
 
 /*
@@ -1612,11 +1618,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 
 	common->Printf( "-------\n" );
 
-	// WGL_EXT_swap_interval
-	typedef BOOL (WINAPI * PFNWGLSWAPINTERVALEXTPROC) (int interval);
-	extern	PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
-
-	if ( r_swapInterval.GetInteger() && wglSwapIntervalEXT != NULL ) {
+	if ( r_swapInterval.GetInteger() && GLimp_HasWGLExtension( "WGL_EXT_swap_control" ) ) {
 		common->Printf( "Forcing swapInterval %i\n", r_swapInterval.GetInteger() );
 	} else {
 		common->Printf( "swapInterval not forced\n" );
@@ -2277,7 +2279,8 @@ void idRenderSystemLocal::ShutdownOpenGL() {
 
 	// free the context and close the window
 	R_ShutdownFrameData();
-	GLimp_Shutdown();
+	GLimp_DestroyContext();
+	Sys_DestroyWindow();
 	r_initialized = false;
 }
 

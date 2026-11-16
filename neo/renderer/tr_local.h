@@ -1012,40 +1012,10 @@ bool R_GetModeListForDisplay( const int displayNum, idList<vidMode_t> & modeList
 // desktop resolution of a monitor (0 based), as used by the borderless fullscreen window
 bool R_GetDesktopResolution( const int displayNum, int & width, int & height );
 
-struct glimpParms_t {
-	int			x;				// ignored in fullscreen
-	int			y;				// ignored in fullscreen
-	int			width;
-	int			height;
-	int			fullScreen;		// 0 = windowed, otherwise 1 based monitor number to go full screen on
-								// -1 = borderless window for spanning multiple displays
-	bool		borderless;		// with fullScreen > 0: borderless window at the desktop resolution
-								// of that monitor instead of exclusive fullscreen (width/height ignored)
-	bool		stereo;
-	int			displayHz;
-	int			multiSamples;
-};
-
-bool		GLimp_Init( glimpParms_t parms );
-// If the desired mode can't be set satisfactorily, false will be returned.
-// If succesful, sets glConfig.nativeScreenWidth, glConfig.nativeScreenHeight, and glConfig.pixelAspect
-
-// The renderer will then reset the glimpParms to "safe mode" of 640x480
-// fullscreen and try again.  If that also fails, the error will be fatal.
-
-bool		GLimp_SetScreenParms( glimpParms_t parms );
-// will set up gl up with the new parms
-
-void		GLimp_Shutdown();
-// Destroys the rendering context, closes the window, resets the resolution,
-// and resets the gamma ramps.
-
-void		GLimp_SetGamma( unsigned short red[256], 
-						    unsigned short green[256],
-							unsigned short blue[256] );
-// Sets the hardware gamma ramps for gamma and brightness adjustment.
-// These are now taken as 16 bit values, so we can take full advantage
-// of dacs with >8 bits of precision
+// The window comes from the platform layer. When a mode cannot be set, the renderer
+// resets the parms to "safe mode" and tries again; if that also fails, the error is fatal.
+// The OpenGL context on that window is renderer/OpenGL/gl_glimp.h.
+#include "../sys/sys_window.h"
 
 
 /*
