@@ -76,7 +76,7 @@ enum stereoDepthType_t {
 
 // The window and the display mode being run right now. What the graphics device can do is
 // renderBackend->Caps(); the OpenGL-only facts are glContext_t in renderer/OpenGL/gl_Backend.h.
-struct glconfig_t {
+struct screenConfig_t {
 	stereo3DMode_t		stereo3Dmode;
 	int					nativeScreenWidth; // this is the native screen width resolution of the renderer
 	int					nativeScreenHeight; // this is the native screen height resolution of the renderer
@@ -217,7 +217,7 @@ public:
 
 	virtual uint32			GetColor() = 0;
 
-	virtual void			SetGLState( const uint64 glState ) = 0;
+	virtual void			SetRenderState( const uint64 glState ) = 0;
 
 	virtual void			DrawFilled( const idVec4 & color, float x, float y, float w, float h ) = 0;
 	virtual void			DrawStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, const idMaterial *material ) = 0;

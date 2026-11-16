@@ -141,7 +141,7 @@ void idRenderProgManager::Init() {
 	int numBuiltins = sizeof( builtins ) / sizeof( builtins[0] );
 	vertexShaders.SetNum( numBuiltins );
 	fragmentShaders.SetNum( numBuiltins );
-	glslPrograms.SetNum( numBuiltins );
+	renderProgs.SetNum( numBuiltins );
 
 	for ( int i = 0; i < numBuiltins; i++ ) {
 		vertexShaders[i].name = builtins[i].name;
@@ -159,7 +159,7 @@ void idRenderProgManager::Init() {
 	FindGLSLProgram( "shadow.vp", builtinShaders[BUILTIN_SHADOW], -1 );
 	FindGLSLProgram( "shadow_skinned.vp", builtinShaders[BUILTIN_SHADOW_SKINNED], -1 );
 
-	glslUniforms.SetNum( RENDERPARM_USER + MAX_GLSL_USER_PARMS, vec4_zero );
+	renderParms.SetNum( RENDERPARM_USER + MAX_GLSL_USER_PARMS, vec4_zero );
 
 	vertexShaders[builtinShaders[BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED]].usesJoints = true;
 	vertexShaders[builtinShaders[BUILTIN_INTERACTION_SKINNED]].usesJoints = true;
@@ -187,8 +187,8 @@ void idRenderProgManager::LoadAllShaders() {
 		LoadFragmentShader( i );
 	}
 
-	for ( int i = 0; i < glslPrograms.Num(); ++i ) {
-		LoadGLSLProgram( i, glslPrograms[i].vertexShaderIndex, glslPrograms[i].fragmentShaderIndex );
+	for ( int i = 0; i < renderProgs.Num(); ++i ) {
+		LoadGLSLProgram( i, renderProgs[i].vertexShaderIndex, renderProgs[i].fragmentShaderIndex );
 	}
 }
 
@@ -217,12 +217,12 @@ void idRenderProgManager::KillAllShaders() {
 			fragmentShaders[i].handle = shaderHandle_t::NONE;
 		}
 	}
-	for ( int i = 0; i < glslPrograms.Num(); ++i ) {
-		if ( glslPrograms[i].handle != programHandle_t::NONE ) {
+	for ( int i = 0; i < renderProgs.Num(); ++i ) {
+		if ( renderProgs[i].handle != programHandle_t::NONE ) {
 			if ( callable ) {
-				renderBackend->DestroyProgram( glslPrograms[i].handle );
+				renderBackend->DestroyProgram( renderProgs[i].handle );
 			}
-			glslPrograms[i].handle = programHandle_t::NONE;
+			renderProgs[i].handle = programHandle_t::NONE;
 		}
 	}
 }
@@ -326,8 +326,8 @@ idRenderProgManager::FindGLSLProgram
 */
 int	 idRenderProgManager::FindGLSLProgram( const char * name, int vIndex, int fIndex ) {
 
-	for ( int i = 0; i < glslPrograms.Num(); ++i ) {
-		if ( ( glslPrograms[i].vertexShaderIndex == vIndex ) && ( glslPrograms[i].fragmentShaderIndex == fIndex ) ) {
+	for ( int i = 0; i < renderProgs.Num(); ++i ) {
+		if ( ( renderProgs[i].vertexShaderIndex == vIndex ) && ( renderProgs[i].fragmentShaderIndex == fIndex ) ) {
 			LoadGLSLProgram( i, vIndex, fIndex );
 			return i;
 		}
@@ -335,7 +335,7 @@ int	 idRenderProgManager::FindGLSLProgram( const char * name, int vIndex, int fI
 
 	renderProg_t program;
 	program.name = name;
-	int index = glslPrograms.Append( program );
+	int index = renderProgs.Append( program );
 	LoadGLSLProgram( index, vIndex, fIndex );
 	return index;
 }
@@ -349,7 +349,7 @@ link in OpenGL is an error that leaves the entry without them, so no later searc
 ================================================================================================
 */
 void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int vertexShaderIndex, const int fragmentShaderIndex ) {
-	renderProg_t & prog = glslPrograms[programIndex];
+	renderProg_t & prog = renderProgs[programIndex];
 
 	if ( prog.handle != programHandle_t::NONE ) {
 		return; // Already loaded
@@ -382,12 +382,12 @@ void idRenderProgManager::BindShader( int vIndex, int fIndex ) {
 	currentVertexShader = vIndex;
 	currentFragmentShader = fIndex;
 	// vIndex denotes the GLSL program
-	if ( vIndex >= 0 && vIndex < glslPrograms.Num() ) {
+	if ( vIndex >= 0 && vIndex < renderProgs.Num() ) {
 		currentRenderProgram = vIndex;
-		RENDERLOG_PRINTF( "Binding GLSL Program %s\n", glslPrograms[vIndex].name.c_str() );
+		RENDERLOG_PRINTF( "Binding GLSL Program %s\n", renderProgs[vIndex].name.c_str() );
 		// a program without a handle leaves the previous one in use, as binding a bad OpenGL name did
-		if ( glslPrograms[vIndex].handle != programHandle_t::NONE ) {
-			renderBackend->BindProgram( glslPrograms[vIndex].handle );
+		if ( renderProgs[vIndex].handle != programHandle_t::NONE ) {
+			renderBackend->BindProgram( renderProgs[vIndex].handle );
 		}
 	}
 }
@@ -433,7 +433,7 @@ idRenderProgManager::SetUniformValue
 */
 void idRenderProgManager::SetUniformValue( const renderParm_t rp, const float * value ) {
 	for ( int i = 0; i < 4; i++ ) {
-		glslUniforms[rp][i] = value[i];
+		renderParms[rp][i] = value[i];
 	}
 }
 
@@ -443,6 +443,6 @@ idRenderProgManager::ZeroUniforms
 ================================================================================================
 */
 void idRenderProgManager::ZeroUniforms() {
-	memset( glslUniforms.Ptr(), 0, glslUniforms.Allocated() );
+	memset( renderParms.Ptr(), 0, renderParms.Allocated() );
 }
 

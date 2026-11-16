@@ -111,7 +111,7 @@ RB_ResetViewScissor
 ================
 */
 static void RB_ResetViewScissor() {
-	GL_Scissor( backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+	renderBackend->Scissor( backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
 				backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
 				backEnd.viewDef->scissor.x2 + 1 - backEnd.viewDef->scissor.x1,
 				backEnd.viewDef->scissor.y2 + 1 - backEnd.viewDef->scissor.y1 );
@@ -132,7 +132,7 @@ static void RB_SimpleSurfaceSetup( const drawSurf_t *drawSurf ) {
 
 	// change the scissor if needed
 	if ( !backEnd.currentScissor.Equals( drawSurf->scissorRect ) && r_useScissor.GetBool() ) {
-		GL_Scissor( backEnd.viewDef->viewport.x1 + drawSurf->scissorRect.x1,
+		renderBackend->Scissor( backEnd.viewDef->viewport.x1 + drawSurf->scissorRect.x1,
 					backEnd.viewDef->viewport.y1 + drawSurf->scissorRect.y1,
 					drawSurf->scissorRect.x2 + 1 - drawSurf->scissorRect.x1,
 					drawSurf->scissorRect.y2 + 1 - drawSurf->scissorRect.y1 );
@@ -145,7 +145,7 @@ static void RB_SimpleSurfaceSetup( const drawSurf_t *drawSurf ) {
 RB_SetTextureColorParms
 
 The parms of the texture_color programs: the white image on slot 0, no texgen, no alpha test.
-The colour is the vertex colour, or the one of GL_Color.
+The colour is the vertex colour, or the one of RB_SetColor.
 ================
 */
 static void RB_SetTextureColorParms( bool useVertexColor ) {
@@ -199,8 +199,8 @@ static void RB_ClearRect( int x, int y, int width, int height, const idVec4 & co
 	if ( width <= 0 || height <= 0 ) {
 		return;
 	}
-	GL_Scissor( x, y, width, height );
-	GL_Clear( true, false, false, 0, color.x, color.y, color.z, color.w );
+	renderBackend->Scissor( x, y, width, height );
+	renderBackend->Clear( true, false, false, 0, color.x, color.y, color.z, color.w );
 }
 
 /*
@@ -211,7 +211,7 @@ Puts back the scissor backEnd.currentScissor stands for, after RB_ClearRect.
 ================
 */
 static void RB_RestoreScissor() {
-	GL_Scissor( backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1,
+	renderBackend->Scissor( backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1,
 				backEnd.viewDef->viewport.y1 + backEnd.currentScissor.y1,
 				backEnd.currentScissor.x2 + 1 - backEnd.currentScissor.x1,
 				backEnd.currentScissor.y2 + 1 - backEnd.currentScissor.y1 );
@@ -239,21 +239,21 @@ static void R_ColorByStencilBuffer() {
 
 	// clear color buffer to white (more passes than the table has)
 	RB_ResetViewScissor();
-	GL_State( GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS );
-	GL_Clear( true, false, false, 0, 1.0f, 1.0f, 1.0f, 1.0f );
+	renderBackend->State( GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS );
+	renderBackend->Clear( true, false, false, 0, 1.0f, 1.0f, 1.0f, 1.0f );
 
 	// now draw color for each stencil value
-	GL_Cull( CT_TWO_SIDED );
+	renderBackend->Cull( CT_TWO_SIDED );
 	RB_SetMVP( renderMatrix_identity );
 	backEnd.currentSpace = NULL;
 	renderProgManager.BindShader_Color();
 	for ( int i = 0; i < 7; i++ ) {
-		GL_State( GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_REF( i ) | GLS_STENCIL_MAKE_MASK( 255 ) );
-		GL_Color( colors[i][0], colors[i][1], colors[i][2] );
+		renderBackend->State( GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_REF( i ) | GLS_STENCIL_MAKE_MASK( 255 ) );
+		RB_SetColor( colors[i][0], colors[i][1], colors[i][2] );
 		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
 	}
 
-	GL_State( GLS_DEFAULT );
+	renderBackend->State( GLS_DEFAULT );
 }
 
 //======================================================================
@@ -277,18 +277,18 @@ static void RB_ShowLightCount() {
 
 	RB_ResetViewScissor();
 
-	GL_Clear( false, false, true, 0, 0.0f, 0.0f, 0.0f, 0.0f );
+	renderBackend->Clear( false, false, true, 0, 0.0f, 0.0f, 0.0f, 0.0f );
 
 	// only the stencil buffer is written; optionally count everything through walls
 	const uint64 countBits = GLS_COLORMASK | GLS_ALPHAMASK | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL | GLS_STENCIL_MAKE_MASK( 255 );
 	if ( r_showLightCount.GetInteger() >= 2 ) {
-		GL_State( countBits | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_INCR | GLS_STENCIL_OP_PASS_INCR );
+		renderBackend->State( countBits | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_INCR | GLS_STENCIL_OP_PASS_INCR );
 	} else {
-		GL_State( countBits | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR );
+		renderBackend->State( countBits | GLS_STENCIL_OP_FAIL_KEEP | GLS_STENCIL_OP_ZFAIL_KEEP | GLS_STENCIL_OP_PASS_INCR );
 	}
-	GL_Cull( CT_FRONT_SIDED );
+	renderBackend->Cull( CT_FRONT_SIDED );
 
-	GL_Color( 1.0f, 1.0f, 1.0f );
+	RB_SetColor( 1.0f, 1.0f, 1.0f );
 	RB_SetTextureColorParms( false );
 
 	backEnd.currentSpace = NULL;
@@ -320,25 +320,25 @@ static void RB_ShowTris( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 
 	float color[4] = { 1, 1, 1, 1 };
 
-	GL_PolygonOffset( -1.0f, -2.0f );
+	renderBackend->PolygonOffset( -1.0f, -2.0f );
 
 	switch ( r_showTris.GetInteger() ) {
 		case 1: // only draw visible ones
-			GL_State( GLS_DEPTHMASK | GLS_ALPHAMASK | GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET );
+			renderBackend->State( GLS_DEPTHMASK | GLS_ALPHAMASK | GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET );
 			break;
 		case 2:	// draw all front facing
 		case 3: // draw all
-			GL_State( GLS_DEPTHMASK | GLS_ALPHAMASK | GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET | GLS_DEPTHFUNC_ALWAYS );
+			renderBackend->State( GLS_DEPTHMASK | GLS_ALPHAMASK | GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET | GLS_DEPTHFUNC_ALWAYS );
 			break;
 		case 4: // only draw visible ones with blended lines
-			GL_State( GLS_DEPTHMASK | GLS_ALPHAMASK | GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA );
+			renderBackend->State( GLS_DEPTHMASK | GLS_ALPHAMASK | GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA );
 			color[3] = 0.4f;
 			break;
 	}
 
-	GL_Cull( ( r_showTris.GetInteger() == 3 ) ? CT_TWO_SIDED : CT_FRONT_SIDED );
+	renderBackend->Cull( ( r_showTris.GetInteger() == 3 ) ? CT_TWO_SIDED : CT_FRONT_SIDED );
 
-	GL_Color( color );
+	RB_SetColor( color );
 	RB_SetTextureColorParms( false );
 
 	backEnd.currentSpace = NULL;
@@ -353,7 +353,7 @@ static void RB_ShowTris( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 	}
 
 	if ( r_showTris.GetInteger() == 3 ) {
-		GL_Cull( CT_FRONT_SIDED );
+		renderBackend->Cull( CT_FRONT_SIDED );
 	}
 }
 
@@ -372,7 +372,7 @@ static void RB_ShowLights() {
 		return;
 	}
 
-	GL_State( GLS_DEFAULT );
+	renderBackend->State( GLS_DEFAULT );
 	RB_ResetViewScissor();
 
 	// the volumes are drawn with 'vLight->inverseBaseLightProject'
@@ -380,7 +380,7 @@ static void RB_ShowLights() {
 
 	renderProgManager.BindShader_Color();
 
-	GL_Cull( CT_TWO_SIDED );
+	renderBackend->Cull( CT_TWO_SIDED );
 
 	common->Printf( "volumes: " );	// FIXME: not in back end!
 
@@ -390,8 +390,8 @@ static void RB_ShowLights() {
 
 		// depth buffered planes
 		if ( r_showLights.GetInteger() >= 2 ) {
-			GL_State( GLS_DEPTHFUNC_ALWAYS | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHMASK );
-			GL_Color( 0.0f, 0.0f, 1.0f, 0.25f );
+			renderBackend->State( GLS_DEPTHFUNC_ALWAYS | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHMASK );
+			RB_SetColor( 0.0f, 0.0f, 1.0f, 0.25f );
 			idRenderMatrix invProjectMVPMatrix;
 			idRenderMatrix::Multiply( backEnd.viewDef->worldSpace.mvp, vLight->inverseBaseLightProject, invProjectMVPMatrix );
 			RB_SetMVP( invProjectMVPMatrix );
@@ -400,8 +400,8 @@ static void RB_ShowLights() {
 
 		// non-hidden lines
 		if ( r_showLights.GetInteger() >= 3 ) {
-			GL_State( GLS_DEPTHFUNC_ALWAYS | GLS_POLYMODE_LINE | GLS_DEPTHMASK  );
-			GL_Color( 1.0f, 1.0f, 1.0f );
+			renderBackend->State( GLS_DEPTHFUNC_ALWAYS | GLS_POLYMODE_LINE | GLS_DEPTHMASK  );
+			RB_SetColor( 1.0f, 1.0f, 1.0f );
 			idRenderMatrix invProjectMVPMatrix;
 			idRenderMatrix::Multiply( backEnd.viewDef->worldSpace.mvp, vLight->inverseBaseLightProject, invProjectMVPMatrix );
 			RB_SetMVP( invProjectMVPMatrix );
@@ -1149,17 +1149,17 @@ static void RB_DrawDebugBatches() {
 	RB_SetMVP( backEnd.viewDef->worldSpace.mvp );
 	backEnd.currentSpace = &backEnd.viewDef->worldSpace;
 
-	GL_Cull( CT_TWO_SIDED );
-	GL_Color( 1.0f, 1.0f, 1.0f, 1.0f );
+	renderBackend->Cull( CT_TWO_SIDED );
+	RB_SetColor( 1.0f, 1.0f, 1.0f, 1.0f );
 	RB_SetTextureColorParms( true );
 	renderProgManager.BindShader_TextureVertexColor();
 
-	GL_PolygonOffset( -1.0f, -2.0f );
+	renderBackend->PolygonOffset( -1.0f, -2.0f );
 
 	for ( int i = 0; i < backEnd.numDebugBatches; i++ ) {
 		const debugBatch_t & batch = backEnd.debugBatches[i];
 
-		GL_State( batch.stateBits );
+		renderBackend->State( batch.stateBits );
 
 		drawSurf_t surf = {};
 		surf.ambientCache = batch.vertexCache;
@@ -1168,7 +1168,7 @@ static void RB_DrawDebugBatches() {
 		RB_DrawElementsWithCounters( &surf, batch.topology );
 	}
 
-	GL_State( GLS_DEFAULT );
+	renderBackend->State( GLS_DEFAULT );
 }
 
 /*
@@ -1181,7 +1181,7 @@ void RB_ShowCenterOfProjection() {
 		return;
 	}
 
-	GL_State( GLS_DEFAULT );
+	renderBackend->State( GLS_DEFAULT );
 
 	const int w = backEnd.viewDef->scissor.GetWidth();
 	const int h = backEnd.viewDef->scissor.GetHeight();
@@ -1208,7 +1208,7 @@ void RB_ShowLines() {
 		return;
 	}
 
-	GL_State( GLS_DEFAULT );
+	renderBackend->State( GLS_DEFAULT );
 
 	idVec4 color;
 	if ( backEnd.viewDef->renderView.viewEyeBuffer == 0 ) {
@@ -1277,8 +1277,8 @@ void RB_TestImage() {
 	}
 
 	// Set State
-	GL_State( GLS_DEPTHFUNC_ALWAYS | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
-	GL_Cull( CT_TWO_SIDED );
+	renderBackend->State( GLS_DEPTHFUNC_ALWAYS | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+	renderBackend->Cull( CT_TWO_SIDED );
 
 	// Set Parms
 	float texS[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
@@ -1321,7 +1321,7 @@ void RB_TestImage() {
 	backEnd.currentSpace = NULL;
 
 	// Set Color
-	GL_Color( 1, 1, 1, 1 );
+	RB_SetColor( 1, 1, 1, 1 );
 
 	// Bind the Texture
 	if ( ( imageCr != NULL ) && ( imageCb != NULL ) ) {
@@ -1355,9 +1355,9 @@ void RB_RenderDebugTools( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 	renderLog.OpenMainBlock( MRB_DRAW_DEBUG_TOOLS );
 	RENDERLOG_PRINTF( "---------- RB_RenderDebugTools ----------\n" );
 
-	GL_State( GLS_DEFAULT );
+	renderBackend->State( GLS_DEFAULT );
 
-	GL_Scissor( backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+	renderBackend->Scissor( backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
 				backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
 				backEnd.viewDef->scissor.x2 + 1 - backEnd.viewDef->scissor.x1,
 				backEnd.viewDef->scissor.y2 + 1 - backEnd.viewDef->scissor.y1 );

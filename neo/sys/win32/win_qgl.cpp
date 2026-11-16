@@ -37,6 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
+#include "../../renderer/OpenGL/qgl.h"
 
 #include <float.h>
 #include "win_local.h"

@@ -163,3 +163,7 @@ target_link_libraries(idlibTests PRIVATE idLib winmm dbghelp)
 target_link_options(idlibTests PRIVATE /LARGEADDRESSAWARE /DEBUG)
 set_target_properties(idlibTests PROPERTIES FOLDER "tests")
 add_test(NAME idlibTests COMMAND idlibTests)
+
+# renderApiLeaks: no OpenGL name outside neo/renderer/OpenGL/ and the two WGL files
+add_test(NAME renderApiLeaks
+	COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/check-render-api-leaks.ps1")

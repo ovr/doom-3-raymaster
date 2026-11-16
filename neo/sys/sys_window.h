@@ -54,7 +54,7 @@ struct windowParms_t {
 };
 
 // Window class, display mode and window. False when the mode cannot be set; nothing is left behind then.
-// Sets glConfig.nativeScreenWidth, nativeScreenHeight, isFullscreen, displayFrequency and pixelAspect.
+// Sets screenConfig.nativeScreenWidth, nativeScreenHeight, isFullscreen, displayFrequency and pixelAspect.
 bool		Sys_CreateWindow( const windowParms_t & parms );
 
 // Changes the mode or the size without destroying the window.

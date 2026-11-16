@@ -28,6 +28,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
+#include "qgl.h"
 
 #include "../tr_local.h"
 #include "gl_Backend.h"
@@ -149,7 +150,7 @@ may touch, including the editor.
 ========================
 */
 void idRenderBackendGL::API_SetDefaultState() {
-	RENDERLOG_PRINTF( "--- GL_SetDefaultState ---\n" );
+	RENDERLOG_PRINTF( "--- SetDefaultState ---\n" );
 
 	qglClearDepth( 1.0f );
 
@@ -163,11 +164,11 @@ void idRenderBackendGL::API_SetDefaultState() {
 #endif
 	API_State( 0, ~0ull );
 
-	// These are changed by GL_Cull
+	// These are changed by Cull
 	qglCullFace( GL_FRONT_AND_BACK );
 	qglEnable( GL_CULL_FACE );
 
-	// These are changed by GL_State
+	// These are changed by State
 	qglColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
 	qglBlendFunc( GL_ONE, GL_ZERO );
 	qglDepthMask( GL_TRUE );
@@ -234,7 +235,7 @@ void idRenderBackendGL::API_State( uint64 stateBits, uint64 diff ) {
 			case GLS_SRCBLEND_DST_ALPHA:			srcFactor = GL_DST_ALPHA; break;
 			case GLS_SRCBLEND_ONE_MINUS_DST_ALPHA:	srcFactor = GL_ONE_MINUS_DST_ALPHA; break;
 			default:
-				assert( !"GL_State: invalid src blend state bits\n" );
+				assert( !"State: invalid src blend state bits\n" );
 				break;
 		}
 
@@ -248,7 +249,7 @@ void idRenderBackendGL::API_State( uint64 stateBits, uint64 diff ) {
 			case GLS_DSTBLEND_DST_ALPHA:			dstFactor = GL_DST_ALPHA; break;
 			case GLS_DSTBLEND_ONE_MINUS_DST_ALPHA:  dstFactor = GL_ONE_MINUS_DST_ALPHA; break;
 			default:
-				assert( !"GL_State: invalid dst blend state bits\n" );
+				assert( !"State: invalid dst blend state bits\n" );
 				break;
 		}
 

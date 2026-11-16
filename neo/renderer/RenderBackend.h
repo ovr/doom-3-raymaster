@@ -69,6 +69,26 @@ If you have questions concerning this license or the applicable additional terms
 	Accidents of the OpenGL path that frames depend on stay inside renderer/OpenGL/ and are not
 	part of this contract.
 
+	Where OpenGL lives. Only the files of renderer/OpenGL/ and sys/win32/win_glimp.cpp and
+	win_qgl.cpp include the GL headers; the precompiled header does not, so a GL type or a qgl call in
+	shared code does not compile. tools/check-render-api-leaks.ps1 finds the rest (gl* functions
+	that windows.h declares, GL includes, code no config builds) and fails when it finds a name:
+
+	  ctest --test-dir build/vs2022-win32 -C Release -R renderApiLeaks
+
+	Shared code keeps the engine's own names: the GLS_* state bits (RenderState.h), screenConfig
+	(the window and the screen), renderProgManager, RB_* for the passes.
+
+	Adding a backend:
+	  1. a folder renderer/<Api>/ with a class derived from idRenderBackend that implements
+	     Init .. Present and the API_* hooks; its API headers stay inside that folder;
+	  2. its files in neo/sources.cmake and one static idRenderBackendFactory object with the name
+	     r_renderApi selects (see gl_RenderBackend.cpp);
+	  3. the window is made by sys/sys_window.h before Init and arrives as
+	     renderBackendInit_t::nativeWindow (an HWND); win_glimp.cpp is the WGL context only;
+	  4. the visual demos (tools/vdemo) are the check: the frames of the new backend against the
+	     OpenGL ones.
+
 	The rules of the contract:
 
 	R1	Every method is called on the owner thread (IsOwnerThread). The exception: memory returned
@@ -100,7 +120,7 @@ If you have questions concerning this license or the applicable additional terms
 ===============================================================================
 */
 
-#include "GLState.h"
+#include "RenderState.h"
 #include "RenderBackendTypes.h"
 
 class idImageOpts;

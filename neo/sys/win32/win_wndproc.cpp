@@ -152,14 +152,14 @@ LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam ) {
 				if (::GetClientRect(win32.hWnd, &rect)) {
 
 					if ( rect.right > rect.left && rect.bottom > rect.top ) {
-						glConfig.nativeScreenWidth = rect.right - rect.left;
-						glConfig.nativeScreenHeight = rect.bottom - rect.top;
+						screenConfig.nativeScreenWidth = rect.right - rect.left;
+						screenConfig.nativeScreenHeight = rect.bottom - rect.top;
 
 						// save the window size in cvars if we aren't fullscreen
 						int style = GetWindowLong( hWnd, GWL_STYLE );
 						if ( ( style & WS_POPUP ) == 0 ) {
-							r_windowWidth.SetInteger( glConfig.nativeScreenWidth );
-							r_windowHeight.SetInteger( glConfig.nativeScreenHeight );
+							r_windowWidth.SetInteger( screenConfig.nativeScreenWidth );
+							r_windowHeight.SetInteger( screenConfig.nativeScreenHeight );
 						}
 					}
 				}

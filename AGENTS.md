@@ -43,6 +43,7 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 - The runner enables FTZ/DAZ by default, like the engine, and `noftz` turns that off.
 - Set `IDLIB_TESTS_VERBOSE=1` to print every failed check. By default each test prints its first 20.
 - `lcp_generic.cpp` recompiles `Lcp.cpp` under renamed classes (`idLCP_*_Generic`) with the SSE macros undefined, so the solvers can be compared. Right now both copies are the same code (see SIMD below).
+- `ctest` also runs `renderApiLeaks` (`tools/check-render-api-leaks.ps1`): it fails when a file outside `neo/renderer/OpenGL/`, `win_glimp.cpp` and `win_qgl.cpp` uses an OpenGL name. `precompiled.h` does not include `qgl.h`, so GL types don't compile there either.
 - There is no lint step and no other test suite. Game code is checked by running the game and the visual demos (below).
 
 ## Architecture
