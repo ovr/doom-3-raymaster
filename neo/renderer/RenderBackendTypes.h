@@ -120,7 +120,7 @@ struct renderCaps_t {
 	int				maxDebugGroupDepth;
 	bool			depthBoundsTest;
 	bool			maskedColorClear;		// Clear() can honour a partial colour write mask
-	bool			quadBufferStereo;		// SelectOutput( LEFT / RIGHT ) is legal
+	bool			quadBufferStereo;		// the display has a quad-buffer format; SelectOutput( LEFT / RIGHT ) also needs Init to have asked for it
 	bool			adaptiveSync;			// presentMode_t::ADAPTIVE differs from VSYNC
 	bool			gpuTimer;				// GetFrameGpuMicroseconds returns a measurement
 	bool			timestamps;				// WriteTimestamp works
@@ -131,7 +131,7 @@ struct renderBackendInit_t {
 	void *		nativeWindow;		// HWND
 	int			width, height;		// client area
 	int			multiSamples;		// fixed until Shutdown
-	bool		stereoPixelFormat;	// ask for quad-buffer; caps.quadBufferStereo says whether it was granted
+	bool		stereoPixelFormat;	// ask for quad-buffer; Init fails when it cannot be had
 };
 
 // what a stage reads; filled by CreateShaderStage

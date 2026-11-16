@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../idlib/precompiled.h"
 
 #include "../tr_local.h"
+#include "gl_Backend.h"
 
 /*
 ====================
@@ -106,7 +107,7 @@ GL_DepthBoundsTest
 ========================
 */
 void GL_DepthBoundsTest( const float zmin, const float zmax ) {
-	if ( !glConfig.depthBoundsTestAvailable || zmin > zmax ) {
+	if ( !glContext.depthBoundsTestAvailable || zmin > zmax ) {
 		return;
 	}
 

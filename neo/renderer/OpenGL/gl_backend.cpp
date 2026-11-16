@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../idlib/precompiled.h"
 
 #include "../tr_local.h"
+#include "gl_Backend.h"
 #include "gl_glimp.h"
 #include "../../framework/Common_local.h"
 
@@ -114,7 +115,7 @@ const void GL_BlockingSwapBuffers() {
 
 	const int beforeFinish = Sys_Milliseconds();
 
-	if ( !glConfig.syncAvailable ) {
+	if ( !glContext.syncAvailable ) {
 		glFinish();
 	}
 
@@ -130,7 +131,7 @@ const void GL_BlockingSwapBuffers() {
 		common->Printf( "%i msec to swapBuffers\n", beforeFence - beforeSwap );
 	}
 
-	if ( glConfig.syncAvailable ) {
+	if ( glContext.syncAvailable ) {
 		swapIndex ^= 1;
 
 		if ( qglIsSync( renderSync[swapIndex] ) ) {

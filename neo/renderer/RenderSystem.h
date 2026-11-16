@@ -74,59 +74,9 @@ enum stereoDepthType_t {
 };
 
 
-enum graphicsVendor_t {
-	VENDOR_NVIDIA,
-	VENDOR_AMD,
-	VENDOR_INTEL
-};
-
-// Contains variables specific to the OpenGL configuration being run right now.
-// These are constant once the OpenGL subsystem is initialized.
+// The window and the display mode being run right now. What the graphics device can do is
+// renderBackend->Caps(); the OpenGL-only facts are glContext_t in renderer/OpenGL/gl_Backend.h.
 struct glconfig_t {
-	const char *		renderer_string;
-	const char *		vendor_string;
-	const char *		version_string;
-	const char *		extensions_string;
-	const char *		wgl_extensions_string;
-	const char *		shading_language_string;
-
-	float				glVersion;				// atof( version_string )
-	graphicsVendor_t	vendor;
-
-	int					maxTextureSize;			// queried from GL
-	int					maxTextureCoords;
-	int					maxTextureImageUnits;
-	int					uniformBufferOffsetAlignment;
-	float				maxTextureAnisotropy;
-
-	int					colorBits;
-	int					depthBits;
-	int					stencilBits;
-
-	bool				multitextureAvailable;
-	bool				directStateAccess;
-	bool				textureCompressionAvailable;
-	bool				anisotropicFilterAvailable;
-	bool				textureLODBiasAvailable;
-	bool				seamlessCubeMapAvailable;
-	bool				sRGBFramebufferAvailable;
-	bool				vertexBufferObjectAvailable;
-	bool				mapBufferRangeAvailable;
-	bool				vertexArrayObjectAvailable;
-	bool				drawElementsBaseVertexAvailable;
-	bool				fragmentProgramAvailable;
-	bool				glslAvailable;
-	bool				uniformBufferAvailable;
-	bool				twoSidedStencilAvailable;
-	bool				depthBoundsTestAvailable;
-	bool				syncAvailable;
-	bool				timerQueryAvailable;
-	bool				timestampQueryAvailable;	// glQueryCounter( GL_TIMESTAMP ), GL_ARB_timer_query only
-	bool				occlusionQueryAvailable;
-	bool				debugOutputAvailable;
-	bool				debugGroupsAvailable;		// glPushDebugGroup, GL_KHR_debug
-	bool				swapControlTearAvailable;
-
 	stereo3DMode_t		stereo3Dmode;
 	int					nativeScreenWidth; // this is the native screen width resolution of the renderer
 	int					nativeScreenHeight; // this is the native screen height resolution of the renderer
@@ -134,18 +84,13 @@ struct glconfig_t {
 	int					displayFrequency;
 
 	int					isFullscreen;					// monitor number
-	bool				isStereoPixelFormat;
-	bool				stereoPixelFormatAvailable;
-	int					multisamples;
 
 	// Screen separation for stereoscopic rendering is set based on this.
 	// PC vid code sets this, converting from diagonals / inches / whatever as needed.
 	// If the value can't be determined, set something reasonable, like 50cm.
-	float				physicalScreenWidthInCentimeters;	
+	float				physicalScreenWidthInCentimeters;
 
 	float				pixelAspect;
-
-	GLuint				global_vao;
 };
 
 

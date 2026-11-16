@@ -35,6 +35,7 @@ Contains the Image implementation for OpenGL.
 */
 
 #include "../tr_local.h"
+#include "gl_Backend.h"
 
 /*
 ========================
@@ -190,12 +191,12 @@ void idImage::SetTexParameters() {
 			common->FatalError( "%s: bad texture filter %d", GetName(), filter );
 	}
 
-	if ( glConfig.anisotropicFilterAvailable ) {
+	if ( glContext.anisotropicFilterAvailable ) {
 		// only do aniso filtering on mip mapped images
 		if ( filter == TF_DEFAULT ) {
 			int aniso = r_maxAnisotropicFiltering.GetInteger();
-			if ( aniso > glConfig.maxTextureAnisotropy ) {
-				aniso = glConfig.maxTextureAnisotropy;
+			if ( aniso > glContext.maxTextureAnisotropy ) {
+				aniso = glContext.maxTextureAnisotropy;
 			}
 			if ( aniso < 0 ) {
 				aniso = 0;
@@ -205,7 +206,7 @@ void idImage::SetTexParameters() {
 			qglTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1 );
 		}
 	}
-	if ( glConfig.textureLODBiasAvailable && ( usage != TD_FONT ) ) {
+	if ( glContext.textureLODBiasAvailable && ( usage != TD_FONT ) ) {
 		// use a blurring LOD bias in combination with high anisotropy to fix our aliasing grate textures...
 		qglTexParameterf(target, GL_TEXTURE_LOD_BIAS_EXT, r_lodBias.GetFloat() );
 	}

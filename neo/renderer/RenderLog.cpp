@@ -234,20 +234,20 @@ void idRenderPassTimer::BeginFrame() {
 	int flags = r_pix.GetInteger();
 	if ( flags != requestedFlags ) {
 		requestedFlags = flags;
-		if ( ( flags & TIMING ) != 0 && !glConfig.timestampQueryAvailable ) {
+		if ( ( flags & TIMING ) != 0 && !renderBackend->Caps().timestamps ) {
 			common->Printf( "r_pix: no GPU time per pass, GL_ARB_timer_query (glQueryCounter) is not available\n" );
 		}
-		if ( ( flags & DEBUG_GROUPS ) != 0 && !glConfig.debugGroupsAvailable ) {
+		if ( ( flags & DEBUG_GROUPS ) != 0 && !renderBackend->Caps().debugGroups ) {
 			common->Printf( "r_pix: no debug groups, GL_KHR_debug is not available\n" );
 		}
 	}
 	if ( flags == 0 ) {
 		return;
 	}
-	if ( !glConfig.timestampQueryAvailable ) {
+	if ( !renderBackend->Caps().timestamps ) {
 		flags &= ~TIMING;
 	}
-	if ( !glConfig.debugGroupsAvailable ) {
+	if ( !renderBackend->Caps().debugGroups ) {
 		flags &= ~DEBUG_GROUPS;
 	}
 
@@ -538,7 +538,7 @@ Called after the swap of the previous frame, while the game thread is idle.
 ========================
 */
 void idRenderPassTimer::FinishRendering( const uint64 gpuTotalNanoseconds ) {
-	if ( ( r_pix.GetInteger() & TIMING ) == 0 || !glConfig.timestampQueryAvailable ) {
+	if ( ( r_pix.GetInteger() & TIMING ) == 0 || !renderBackend->Caps().timestamps ) {
 		const bool hasQueries = std::ranges::any_of( frames, []( const frame_t & frame ) { return !frame.queries.empty(); } );
 		if ( periodStarted || hasQueries ) {
 			// r_pix 1 was turned off: give the queries back
@@ -633,7 +633,7 @@ void idRenderPassTimer::PrintPeriod( const int periodMsec ) const {
 	}
 	printRow( "Outside the passes", "", periodOther );
 	printRow( RenderPassName( MRB_TOTAL ), "", periodPasses[MRB_TOTAL] );
-	if ( timeElapsedFrames > 0 && glConfig.timerQueryAvailable ) {
+	if ( timeElapsedFrames > 0 && renderBackend->Caps().gpuTimer ) {
 		// the GL_TIME_ELAPSED query of com_showFPS and com_speeds, it should match the backend frame
 		common->Printf( "%-28s %6s %8.3f %8.3f\n", "GPU total (time elapsed)", "", timeElapsedSum / timeElapsedFrames, timeElapsedMax );
 	}

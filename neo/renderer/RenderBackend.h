@@ -264,7 +264,7 @@ private:
 	static idRenderBackendFactory *	staticFactories;	// the idCVar::staticVars pattern, safe before main
 };
 
-extern idRenderBackend *	renderBackend;	// created in idRenderSystemLocal::Init, destroyed in Shutdown
+extern idRenderBackend *	renderBackend;	// created in R_InitOpenGL, destroyed in idRenderSystemLocal::Shutdown
 extern idCVar				r_renderApi;
 extern idCVar				r_useStateCaching;
 

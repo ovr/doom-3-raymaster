@@ -45,9 +45,19 @@ struct glContextParms_t {
 	bool		stereo;
 };
 
+// what the platform found out while creating the context
+struct glContextInfo_t {
+	int				colorBits;
+	int				depthBits;
+	int				stencilBits;
+	bool			stereoPixelFormatAvailable;	// a quad-buffer format exists, whether or not it was asked for
+	bool			swapControlTearAvailable;
+	const char *	wglExtensions;				// never nullptr
+};
+
 // Loads OpenGL, sets the pixel format of the window (found through the WGL bootstrap window) and
-// creates the context. False leaves nothing behind. Sets the pixel format fields of glConfig.
-bool			GLimp_CreateContext( const glContextParms_t & parms );
+// creates the context. False leaves nothing behind and info undefined.
+bool			GLimp_CreateContext( const glContextParms_t & parms, glContextInfo_t & info );
 
 // Destroys the context and unloads OpenGL; the window stays.
 void			GLimp_DestroyContext();
