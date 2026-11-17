@@ -132,7 +132,7 @@ ID3D12GraphicsCommandList1 & idD3D12Context::List() {
 	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( rootSignature.Get() );
-	recorder.Invalidate();
+	recorder.NewList();
 	groups.Reopen( list );
 	return list;
 }
@@ -178,6 +178,7 @@ void idD3D12Context::BeginFrame( int width, int height ) {
 	if ( swapChain && ( width != swapChain->Width() || height != swapChain->Height() ) ) {
 		Resize( width, height );
 	}
+	recorder.BeginFrame();
 }
 
 void idD3D12Context::EndFrame() {

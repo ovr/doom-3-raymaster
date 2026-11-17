@@ -41,6 +41,7 @@ If you have questions concerning this license or the applicable additional terms
 	  VS_IN                                    → only the members the body reads
 	  VS_OUT, PS_IN, PS_OUT                    → without semantics; PS_IN always has a position (gl_FragCoord)
 	  void main( ..., out X result )           → void idMain( ..., inout X result )
+	  pow( x, y )                              → idPow( x, y ): pow( abs( x ), y ) for an even whole y (E15)
 
 	WithEntry adds the struct idVaryings of a pair and vsMain / psMain, which link it to the stage's
 	structs by semantic: position, then TEXCOORD0-9, COLOR0, COLOR1, every one a float4.
@@ -79,7 +80,7 @@ struct d3d12EmittedStage_t {
 
 class idD3D12HlslEmitter {
 public:
-	static constexpr int			VERSION = 1;	// in the blob cache key: bump it with every change of the output
+	static constexpr int			VERSION = 2;	// in the blob cache key: bump it with every change of the output
 
 	// name is the source's for the messages; an error is "name: what".
 	[[nodiscard]] static std::expected<d3d12EmittedStage_t, idStr>	Emit( shaderStageType_t stage, const renderProgSource_t & source, const char * name );

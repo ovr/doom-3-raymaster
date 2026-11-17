@@ -58,7 +58,7 @@ struct d3d12Features_t {
 	uint64							driverVersion = 0;		// UMD version, in the pipeline library key
 	bool							warp = false;
 	std::array<bool, 4>				samples = {};			// 1, 2, 4, 8 for RGBA8 and D24S8 together
-	bool							depthBounds = false;	// OPTIONS2
+	bool							depthBounds = false;	// OPTIONS2, not on WARP
 	bool							unalignedBlocks = false;	// OPTIONS8
 	bool							gpuUploadHeap = false;	// OPTIONS16
 	bool							dynamicDepthBias = false;	// OPTIONS16

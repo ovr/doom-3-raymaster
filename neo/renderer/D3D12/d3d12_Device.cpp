@@ -291,8 +291,10 @@ void idD3D12Device::ReadFeatures() {
 		}
 		features.samples[i] = supported;
 	}
+	// WARP (10.0.26100) reports it, but a PSO with DepthBoundsTestEnable passes every depth test there,
+	// even with bounds ( 0, 1 ): the world draws through walls (test RasterDepthOrder).
 	D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2 = {};
-	features.depthBounds = Feature( d3d, D3D12_FEATURE_D3D12_OPTIONS2, options2 ) && options2.DepthBoundsTestSupported;
+	features.depthBounds = Feature( d3d, D3D12_FEATURE_D3D12_OPTIONS2, options2 ) && options2.DepthBoundsTestSupported && !features.warp;
 	D3D12_FEATURE_DATA_D3D12_OPTIONS8 options8 = {};
 	features.unalignedBlocks = Feature( d3d, D3D12_FEATURE_D3D12_OPTIONS8, options8 ) && options8.UnalignedBlockTexturesSupported;
 	D3D12_FEATURE_DATA_D3D12_OPTIONS16 options16 = {};

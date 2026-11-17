@@ -32,7 +32,14 @@ If you have questions concerning this license or the applicable additional terms
 #include "../tr_local.h"
 #include "d3d12_Draw.h"
 
+idCVar r_d3d12SubmitDraws( "r_d3d12SubmitDraws", "256", CVAR_RENDERER | CVAR_INTEGER,
+	"Direct3D 12 submits the open list after the first 64 draws of a frame, then after every N more; 0 = only at the end of a frame and on full rings",
+	0, 65536 );
+
 namespace {
+
+// Small, so the GPU starts early in the frame; r_d3d12SubmitDraws takes over after it.
+constexpr int FIRST_CHUNK_DRAWS = 64;
 
 // A root CBV reads its cbuffer whole: the parms a stage packs, in 256-byte steps of the ring.
 [[nodiscard]] constexpr uint32 ParmBytes( const shaderStageInfo_t & info ) {
@@ -123,6 +130,11 @@ void idD3D12DrawRecorder::Draw( const renderLatch_t & latch, const pipelineKey_t
 		stats.skipped++;
 		return;
 	}
+	if ( drawsInList >= ChunkLimit() ) {
+		submitter.SubmitChunk();
+		firstChunk = false;
+		stats.chunkSubmits++;
+	}
 	static_cast<void>( submitter.List() );
 	const std::optional<prepared_t> prepared = Prepare( latch, key, dc, *program );
 	if ( !prepared ) {
@@ -131,7 +143,16 @@ void idD3D12DrawRecorder::Draw( const renderLatch_t & latch, const pipelineKey_t
 	}
 	const reserved_t reserved = Reserve( *prepared, latch, dc );
 	Record( submitter.List(), *prepared, reserved, latch, dc, *program );
+	drawsInList++;
 	stats.draws++;
+}
+
+int idD3D12DrawRecorder::ChunkLimit() const {
+	const int submitDraws = r_d3d12SubmitDraws.GetInteger();
+	if ( submitDraws <= 0 ) {
+		return INT_MAX;
+	}
+	return firstChunk ? FIRST_CHUNK_DRAWS : submitDraws;
 }
 
 std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( const renderLatch_t & latch, const pipelineKey_t & sharedKey,
@@ -228,6 +249,7 @@ idD3D12DrawRecorder::reserved_t idD3D12DrawRecorder::Reserve( const prepared_t &
 			common->FatalError( "d3d12: a draw does not fit into empty rings" );
 		}
 		submitter.WaitFor( oldest );
+		stats.reserveWaits++;
 		static_cast<void>( submitter.List() );
 		reserved = TryReserve( prepared, latch, dc );
 	}
@@ -246,10 +268,7 @@ void idD3D12DrawRecorder::Record( ID3D12GraphicsCommandList1 & list, const prepa
 	}
 	BindDynamicState( list, latch, dc.topology );
 	BindParms( list, reserved, latch, dc, program );
-	if ( !bound.joints ) {
-		list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), buffers.ZeroJoints() );
-		bound.joints = true;
-	}
+	BindJoints( list, program, dc );
 	BindTextures( list, prepared, reserved );
 	BindGeometry( list, prepared, dc );
 	barriers.Flush();
@@ -289,9 +308,16 @@ void idD3D12DrawRecorder::BindDynamicState( ID3D12GraphicsCommandList1 & list, c
 		list.OMSetStencilRef( stencilRef );
 		bound.stencilRef = stencilRef;
 	}
-	if ( device.Features().depthBounds && !bound.depthBounds ) {
-		list.OMSetDepthBounds( 0.0f, 1.0f );
-		bound.depthBounds = true;
+	if ( device.Features().depthBounds ) {
+		// Every PSO has the test on, so GL's off, (0, 0), is (0, 1). Clamped as glDepthBoundsEXT does: D3D12 rejects bounds outside [0, 1].
+		std::pair<float, float> depthBounds( 0.0f, 1.0f );
+		if ( latch.depthBoundsMin != 0.0f || latch.depthBoundsMax != 0.0f ) {
+			depthBounds = { idMath::ClampFloat( 0.0f, 1.0f, latch.depthBoundsMin ), idMath::ClampFloat( 0.0f, 1.0f, latch.depthBoundsMax ) };
+		}
+		if ( bound.depthBounds != depthBounds ) {
+			list.OMSetDepthBounds( depthBounds.first, depthBounds.second );
+			bound.depthBounds = depthBounds;
+		}
 	}
 }
 
@@ -315,6 +341,23 @@ void idD3D12DrawRecorder::BindParms( ID3D12GraphicsCommandList1 & list, const re
 	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::FRAGMENT_PARMS ), parms[1] );
 	bound.parms = parms;
 	bound.parmsProgram = latch.program;
+}
+
+// Root CBV b2 at the draw's joints, which the JOINT buffer's zero tail keeps readable for all 408 vectors. A skinned
+// program drawn without joints (heatHaze with rpEnableSkinning 0) reads the zero block; other programs bind nothing.
+void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList1 & list, const d3d12Program_t & program, const drawCall_t & dc ) {
+	if ( !program.info.usesJoints ) {
+		return;
+	}
+	D3D12_GPU_VIRTUAL_ADDRESS joints = buffers.ZeroJoints();
+	if ( const d3d12Buffer_t * buffer = buffers.Use( dc.jointBuffer ) ) {
+		assert( dc.jointOffset >= 0 && dc.jointOffset < buffer->size && ( dc.jointOffset % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT ) == 0 );
+		joints = buffer->gpu + static_cast<uint64>( dc.jointOffset );
+	}
+	if ( bound.joints != joints ) {
+		list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), joints );
+		bound.joints = joints;
+	}
 }
 
 // An upload since the last draw may have put a texture back into COPY_DEST: every sampled one is made readable.

@@ -138,6 +138,8 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 	sum.draw.psoBinds += last.draw.psoBinds;
 	sum.draw.tableCopies += last.draw.tableCopies;
 	sum.draw.incompleteBinds += last.draw.incompleteBinds;
+	sum.draw.chunkSubmits += last.draw.chunkSubmits;
+	sum.draw.reserveWaits += last.draw.reserveWaits;
 	sum.draw.parmBytes += last.draw.parmBytes;
 	sum.psoCreated += last.psoCreated;
 	sum.nearestBiases += last.nearestBiases;
@@ -159,13 +161,15 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 	const d3d12DrawStats_t & draw = sum.draw;
 	common->Printf( "d3d12 stats: %d frames; per frame: %.1f draws (%.1f skipped, %.1f incomplete), %.1f PSO binds, %.1f PSOs created, "
 		"%d depth biases (%.1f draws with the nearest one), "
-		"%.1f SRV tables, %.1f KB parms, %.1f debug groups; uploads %.1f KB staged (max %.1f KB) + %.1f KB in place, %.1f submits, %.1f waits, "
+		"%.1f SRV tables, %.1f KB parms, %.1f debug groups; uploads %.1f KB staged (max %.1f KB) + %.1f KB in place, "
+		"%.1f submits (%.1f after their draws), %.1f waits (%.1f in Reserve), "
 		"%.1f barriers, %.1f sampler tables built; buffers %d: FRAME %.1f MB, STATIC %.1f MB + %.1f MB mirror; textures %d: %.1f MB; "
 		"staging %.1f of %.0f MB, constants %.1f of %.0f MB\n",
 		frames, draw.draws * perFrame, draw.skipped * perFrame, draw.incompleteBinds * perFrame, draw.psoBinds * perFrame, sum.psoCreated * perFrame,
 		context.pipelines.Bias().Num(), sum.nearestBiases * perFrame, draw.tableCopies * perFrame, Kilobytes( draw.parmBytes ) * perFrame, sum.debugGroups * perFrame,
 		Kilobytes( sum.uploadBytes ) * perFrame, Kilobytes( maxUploadBytes ), Kilobytes( sum.inPlaceBytes ) * perFrame,
-		sum.submits * perFrame, sum.waits * perFrame, sum.barriers * perFrame, sum.samplerTables * perFrame, buffers.Num(),
+		sum.submits * perFrame, draw.chunkSubmits * perFrame, sum.waits * perFrame, draw.reserveWaits * perFrame, sum.barriers * perFrame,
+		sum.samplerTables * perFrame, buffers.Num(),
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ), Megabytes( buffers.MirrorBytes() ),
 		context.textures.Num(), Megabytes( context.textures.Bytes() ), Megabytes( context.staging.Used() ), Megabytes( context.staging.Size() ),
 		Megabytes( context.constants.Used() ), Megabytes( context.constants.Size() ) );

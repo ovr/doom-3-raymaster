@@ -46,6 +46,14 @@ constexpr const char * PRELUDE =
 	"float4 tex2Dbias( Texture2D t, SamplerState s, float4 uv ) { return t.SampleBias( s, uv.xy, uv.w ); }\n"
 	"float4 texCUBE( TextureCube t, SamplerState s, float3 dir ) { return t.Sample( s, dir ); }\n";
 
+// E15: GLSL leaves pow( x < 0, y ) undefined. FXC's exp2( y * log2( x ) ) is NaN, a black pixel, while AMD's GL
+// driver unrolls the interactions' pow( hDotN, 10 ) into products. Added when the source calls pow; per component.
+constexpr const char * POW_PRELUDE =
+	"float idPow( float x, float y ) { return pow( ( frac( y * 0.5 ) == 0.0 ) ? abs( x ) : x, y ); }\n"
+	"float2 idPow( float2 x, float2 y ) { return pow( ( frac( y * 0.5 ) == 0.0 ) ? abs( x ) : x, y ); }\n"
+	"float3 idPow( float3 x, float3 y ) { return pow( ( frac( y * 0.5 ) == 0.0 ) ? abs( x ) : x, y ); }\n"
+	"float4 idPow( float4 x, float4 y ) { return pow( ( frac( y * 0.5 ) == 0.0 ) ? abs( x ) : x, y ); }\n";
+
 struct token_t {
 	idStr				space;		// the whitespace before the token
 	idStr				text;		// as in the source
@@ -363,7 +371,7 @@ struct scope_t {
 	}
 };
 
-// The tokens [begin, end) into out, E4-E6, E14 and for main E9; the first token's whitespace is the caller's.
+// The tokens [begin, end) into out, E4-E6, E14, E15 and for main E9; the first token's whitespace is the caller's.
 void Rewrite( const tokens_t & tokens, int begin, int end, const scope_t & scope, const decl_t * main, idStr & out ) {
 	const int mainClose = ( main != nullptr ) ? Match( tokens, main->open ) : -1;
 	std::vector<bool> casts;	// per open '(': whether it closes a cast with "))"
@@ -401,6 +409,8 @@ void Rewrite( const tokens_t & tokens, int begin, int end, const scope_t & scope
 			out += parameter + "_t, SamplerState " + parameter + "_s";
 		} else if ( scope.contains( t.text ) ) {
 			out += t.text + "_t, " + t.text + "_s";
+		} else if ( next && mapped == "pow" && tokens[i + 1].text == "(" ) {
+			out += "idPow";
 		} else if ( main != nullptr && i == main->open - 1 ) {
 			out += "idMain";
 		} else if ( main != nullptr && i > main->open && i < mainClose && t.text == "out" ) {
@@ -628,6 +638,9 @@ std::expected<d3d12EmittedStage_t, idStr> idD3D12HlslEmitter::Emit( shaderStageT
 	// the text in source order
 	idStr & out = emitted.body;
 	out = PRELUDE;
+	if ( std::ranges::any_of( tokens, []( const token_t & t ) { return t.type == TT_NAME && t.text == "pow"; } ) ) {
+		out += POW_PRELUDE;
+	}
 	if ( !parms.empty() ) {
 		out += vertex ? "cbuffer idVertexParms : register( b0 ) {\n" : "cbuffer idFragmentParms : register( b1 ) {\n";
 		for ( const idStr & parm : parms ) {

@@ -1524,6 +1524,21 @@ void Test_HlslRules() {
 	Check( !directive && directive.error().Find( "preprocessor" ) >= 0, "a leftover # is an error" );
 }
 
+// E15: pow becomes idPow, which only a source that calls pow defines.
+void Test_HlslPow() {
+	renderProgSource_t source;
+	source.text = "struct PS_OUT {\nfloat4 color : COLOR ;\n} ;\n"
+		"void main (out PS_OUT result )  {\nfloat base = -0.5 ;\nresult . color = float4 ( pow ( base , 10.0 ) , 0.0 , 0.0 , 1.0 ) ;\n}\n";
+	const auto withPow = idD3D12HlslEmitter::Emit( shaderStageType_t::FRAGMENT, source, "test" );
+	if ( !Check( withPow.has_value(), "a source with pow emits" ) ) {
+		return;
+	}
+	Check( withPow->body.Find( "idPow ( base , 10.0 )" ) >= 0 && withPow->body.Find( "float idPow( float x, float y )" ) >= 0, "pow becomes idPow" );
+	source.text = "struct PS_OUT {\nfloat4 color : COLOR ;\n} ;\nvoid main (out PS_OUT result )  {\nresult . color = float4 ( 0.0 , 0.0 , 0.0 , 1.0 ) ;\n}\n";
+	const auto withoutPow = idD3D12HlslEmitter::Emit( shaderStageType_t::FRAGMENT, source, "test" );
+	Check( withoutPow && withoutPow->body.Find( "idPow" ) < 0, "no idPow without a pow" );
+}
+
 void Test_HlslGolden() {
 	const bool write = ( getenv( "D3D12_TESTS_WRITE_GOLDEN" ) != nullptr );
 	for ( const char * name : { "texture", "gui" } ) {
@@ -2172,6 +2187,645 @@ void Test_WarpDebugGroups() {
 	CheckNoLayerErrors( *gpu );
 }
 
+// ---- GL's rasterization rules through the real root signature, programs and PSOs -----------------------------
+
+// A SIZE x SIZE RGBA8 + D24S8 target drawn as the recorder draws: base/renderprogs programs, GL clip space through
+// idGLClipToD3D, so memory row r is GL row r (glReadPixels' order). Vertices, indexes and parms share one UPLOAD buffer.
+class idTestRaster {
+public:
+	static constexpr int			SIZE = 64;
+	struct draw_t {
+		uint64						stateBits = 0;
+		int							raster = 0;			// the cull, lines and strict depth bits of pipelineKey_t
+		uint8						stencilRef = 0;
+		uint8						depthBias = 0;		// a slot of Bias()
+		std::pair<float, float>		depthBounds = { 0.0f, 1.0f };
+		int							times = 1;
+	};
+	struct pixels_t {
+		std::vector<uint32>			color;		// R | G << 8 | B << 16 | A << 24
+		std::vector<uint32>			depth;		// the 24 bits
+		std::vector<byte>			stencil;
+		[[nodiscard]] static int	At( int column, int row ) { return row * SIZE + column; }
+	};
+
+	explicit						idTestRaster( idTestGpu & gpu );
+									~idTestRaster();
+									idTestRaster( const idTestRaster & ) = delete;
+	idTestRaster &					operator=( const idTestRaster & ) = delete;
+	[[nodiscard]] bool				Ready() const { return mapped != nullptr && readback && viewHeap && samplerHeap; }
+	// Stages of base/renderprogs ("depth.vertex"); nullptr when they do not build.
+	[[nodiscard]] d3d12Program_t *	Program( const char * vertex, const char * fragment );
+	void							Clear( const idVec4 & rgba, float depthValue, uint8 stencil );
+	void							ClearDepth( float depthValue, const D3D12_RECT & rect );
+	void							Draw( d3d12Program_t & program, const draw_t & draw, std::span<const idDrawVert> verts, std::span<const triIndex_t> indexes );
+	[[nodiscard]] pixels_t			Read();		// waits for the GPU
+	[[nodiscard]] idD3D12DepthBiasTable &	Bias() { return factory.Bias(); }
+
+	std::array<idVec4, MAX_RENDER_PARMS>	parms = {};	// the MVP starts as the identity: positions are GL clip space
+
+private:
+	static constexpr uint64			UPLOAD_BYTES = 4 << 20;
+	static constexpr uint64			ZERO_BYTES = 8192;		// the parms and joints of a stage without any
+	[[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS	Put( const void * data, uint64 bytes );
+	void							Target( D3D12_RESOURCE_STATES colorAfter, D3D12_RESOURCE_STATES depthAfter );
+
+	idTestGpu &						gpu;
+	idD3D12ShaderCompiler			compiler;
+	idD3D12RootSignature			root;
+	idD3D12PipelineFactory			factory;
+	idD3D12DescriptorPool			dsvPool;
+	std::vector<std::unique_ptr<d3d12Program_t>>	programs;
+	idComPtr<ID3D12Resource>		color, depth, upload, readback;
+	d3d12ResourceState_t			colorState, depthState;
+	d3d12Descriptor_t				rtv, dsv;
+	idComPtr<ID3D12DescriptorHeap>	viewHeap, samplerHeap;
+	std::array<D3D12_PLACED_SUBRESOURCE_FOOTPRINT, 3>	footprints = {};	// colour, depth plane, stencil plane
+	byte *							mapped = nullptr;
+	uint64							used = ZERO_BYTES;
+};
+
+idTestRaster::idTestRaster( idTestGpu & owner ) :
+	gpu( owner ),
+	compiler( owner.library, false ),
+	root( owner.device, owner.library ),
+	factory( owner.device, root ),
+	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ) {
+	ID3D12Device2 & device = gpu.device.Get();
+	D3D12_HEAP_PROPERTIES defaultHeap = {};
+	defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC colorDesc = {};
+	colorDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	colorDesc.Width = SIZE;
+	colorDesc.Height = SIZE;
+	colorDesc.DepthOrArraySize = 1;
+	colorDesc.MipLevels = 1;
+	colorDesc.Format = d3d12TargetId_t::Of( false, 1 ).ColorView();
+	colorDesc.SampleDesc.Count = 1;
+	colorDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	D3D12_RESOURCE_DESC depthDesc = colorDesc;
+	depthDesc.Format = d3d12TargetId_t::DEPTH;
+	depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+	D3D12_CLEAR_VALUE colorClear = {};
+	colorClear.Format = colorDesc.Format;
+	D3D12_CLEAR_VALUE depthClear = {};
+	depthClear.Format = depthDesc.Format;
+	depthClear.DepthStencil = { 1.0f, 0 };
+	if ( !root.Get()
+			|| !gpu.device.Check( device.CreateCommittedResource( &defaultHeap, D3D12_HEAP_FLAG_NONE, &colorDesc, D3D12_RESOURCE_STATE_RENDER_TARGET,
+				&colorClear, IID_PPV_ARGS( &color ) ), "CreateCommittedResource (test colour)" )
+			|| !gpu.device.Check( device.CreateCommittedResource( &defaultHeap, D3D12_HEAP_FLAG_NONE, &depthDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+				&depthClear, IID_PPV_ARGS( &depth ) ), "CreateCommittedResource (test depth)" ) ) {
+		Check( false, "the test target" );
+		return;
+	}
+	colorState.current = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	depthState.current = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	rtv = gpu.rtvPool.Allocate();
+	dsv = dsvPool.Allocate();
+	device.CreateRenderTargetView( color.Get(), nullptr, gpu.rtvPool.Cpu( rtv ) );
+	device.CreateDepthStencilView( depth.Get(), nullptr, dsvPool.Cpu( dsv ) );
+
+	UINT rows[2] = {};
+	UINT64 rowBytes[2] = {};
+	UINT64 colorBytes = 0;
+	device.GetCopyableFootprints( &colorDesc, 0, 1, 0, &footprints[0], rows, rowBytes, &colorBytes );
+	const UINT64 depthBase = ( colorBytes + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1 ) & ~UINT64( D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1 );
+	device.GetCopyableFootprints( &depthDesc, 0, 2, depthBase, &footprints[1], rows, rowBytes, nullptr );
+	const uint64 readbackBytes = footprints[2].Offset + static_cast<uint64>( footprints[2].Footprint.RowPitch ) * SIZE;
+	readback = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_READBACK, readbackBytes, D3D12_RESOURCE_STATE_COPY_DEST, L"test raster readback" );
+	upload = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_UPLOAD, UPLOAD_BYTES, D3D12_RESOURCE_STATE_GENERIC_READ, L"test raster upload" );
+
+	// the table slots no program samples here: null views and point samplers
+	const auto heap = [&]( D3D12_DESCRIPTOR_HEAP_TYPE type ) {
+		const D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { type, MAX_TEXTURE_SLOTS, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+		idComPtr<ID3D12DescriptorHeap> created;
+		gpu.device.Check( device.CreateDescriptorHeap( &heapDesc, IID_PPV_ARGS( &created ) ), "CreateDescriptorHeap (test raster)" );
+		return created;
+	};
+	viewHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+	samplerHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
+	if ( !viewHeap || !samplerHeap || !upload ) {
+		return;
+	}
+	D3D12_SHADER_RESOURCE_VIEW_DESC none = {};
+	none.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	none.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	none.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	none.Texture2D.MipLevels = 1;
+	const D3D12_SAMPLER_DESC sampler = D3D12_SamplerFor( D3D12_PackSampler( POINT_CLAMP ), false );
+	D3D12_CPU_DESCRIPTOR_HANDLE view = viewHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_CPU_DESCRIPTOR_HANDLE samplerSlot = samplerHeap->GetCPUDescriptorHandleForHeapStart();
+	for ( int slot = 0; slot < MAX_TEXTURE_SLOTS; slot++ ) {
+		device.CreateShaderResourceView( nullptr, &none, view );
+		device.CreateSampler( &sampler, samplerSlot );
+		view.ptr += device.GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		samplerSlot.ptr += device.GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
+	}
+	const D3D12_RANGE nothingRead = { 0, 0 };
+	void * cpu = nullptr;
+	if ( gpu.device.Check( upload->Map( 0, &nothingRead, &cpu ), "Map (test raster upload)" ) ) {
+		mapped = static_cast<byte *>( cpu );
+		memset( mapped, 0, ZERO_BYTES );
+	}
+	for ( int row = 0; row < 4; row++ ) {
+		idVec4 & mvp = parms[RENDERPARM_MVPMATRIX_X + row];
+		mvp.Zero();
+		mvp[row] = 1.0f;
+	}
+}
+
+idTestRaster::~idTestRaster() {
+	if ( !gpu.device.IsLost() ) {
+		gpu.WaitIdle();
+	}
+	if ( rtv.IsValid() ) {
+		gpu.rtvPool.Free( rtv );
+	}
+}
+
+d3d12Program_t * idTestRaster::Program( const char * vertexName, const char * fragmentName ) {
+	const auto build = [this]( const char * name, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
+		const std::optional<renderProgSource_t> source = RepoSource( name, type );
+		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
+	};
+	const auto vertex = build( vertexName, shaderStageType_t::VERTEX );
+	const auto fragment = build( fragmentName, shaderStageType_t::FRAGMENT );
+	if ( !Check( vertex && fragment, va( "%s and %s build", vertexName, fragmentName ) ) ) {
+		return nullptr;
+	}
+	auto program = D3D12_LinkProgram( compiler, *vertex, &*fragment );
+	if ( !Check( program.has_value(), va( "%s and %s link", vertexName, fragmentName ) ) ) {
+		return nullptr;
+	}
+	programs.push_back( std::make_unique<d3d12Program_t>( std::move( *program ) ) );
+	programs.back()->dense = static_cast<uint16>( programs.size() );
+	return programs.back().get();
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS idTestRaster::Put( const void * data, uint64 bytes ) {
+	const uint64 offset = ( used + D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - 1 ) & ~uint64( D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - 1 );
+	if ( !Check( offset + bytes <= UPLOAD_BYTES, "the test upload buffer is full" ) ) {
+		return upload->GetGPUVirtualAddress();
+	}
+	memcpy( mapped + offset, data, static_cast<size_t>( bytes ) );
+	used = offset + bytes;
+	return upload->GetGPUVirtualAddress() + offset;
+}
+
+void idTestRaster::Target( D3D12_RESOURCE_STATES colorAfter, D3D12_RESOURCE_STATES depthAfter ) {
+	gpu.barriers.Transition( *color.Get(), colorState, colorAfter );
+	gpu.barriers.Transition( *depth.Get(), depthState, depthAfter );
+	gpu.barriers.Flush();
+}
+
+void idTestRaster::Clear( const idVec4 & rgba, float depthValue, uint8 stencil ) {
+	Target( D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	gpu.List().ClearRenderTargetView( gpu.rtvPool.Cpu( rtv ), rgba.ToFloatPtr(), 0, nullptr );
+	gpu.List().ClearDepthStencilView( dsvPool.Cpu( dsv ), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, depthValue, stencil, 0, nullptr );
+}
+
+void idTestRaster::ClearDepth( float depthValue, const D3D12_RECT & rect ) {
+	Target( D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	gpu.List().ClearDepthStencilView( dsvPool.Cpu( dsv ), D3D12_CLEAR_FLAG_DEPTH, depthValue, 0, 1, &rect );
+}
+
+void idTestRaster::Draw( d3d12Program_t & program, const draw_t & draw, std::span<const idDrawVert> verts, std::span<const triIndex_t> indexes ) {
+	pipelineKey_t key = {};
+	key.stateBits = draw.stateBits & GLS_PIPELINE_BITS;
+	key.layout = LAYOUT_DRAW_VERT;
+	key.raster = static_cast<uint8>( draw.raster | ( d3d12TargetId_t::Of( false, 1 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	key.depthBias = draw.depthBias;
+	key.program = program.dense;
+	ID3D12PipelineState * pso = factory.Get( program, D3D12_NormalizeKey( key ) );
+	if ( !Check( pso != nullptr, va( "a PSO for 0x%016llx", key.stateBits ) ) ) {
+		return;
+	}
+	std::array<idVec4, MAX_RENDER_PARMS> packed;
+	const auto stageParms = [&]( const shaderStageInfo_t & info ) {
+		if ( info.numParms == 0 ) {
+			return upload->GetGPUVirtualAddress();
+		}
+		R_PackRenderParms( packed.data(), parms.data(), info );
+		return Put( packed.data(), static_cast<uint64>( info.numParms ) * sizeof( idVec4 ) );
+	};
+	const D3D12_GPU_VIRTUAL_ADDRESS vertexParms = stageParms( program.vertexInfo );
+	const D3D12_GPU_VIRTUAL_ADDRESS fragmentParms = stageParms( program.fragmentInfo );
+	const D3D12_VERTEX_BUFFER_VIEW vertexView = { Put( verts.data(), verts.size_bytes() ), static_cast<UINT>( verts.size_bytes() ), sizeof( idDrawVert ) };
+	const D3D12_INDEX_BUFFER_VIEW indexView = { Put( indexes.data(), indexes.size_bytes() ), static_cast<UINT>( indexes.size_bytes() ), DXGI_FORMAT_R16_UINT };
+
+	Target( D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { viewHeap.Get(), samplerHeap.Get() };
+	list.SetDescriptorHeaps( 2, heaps );
+	list.SetGraphicsRootSignature( root.Get() );
+	list.SetPipelineState( pso );
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = gpu.rtvPool.Cpu( rtv );
+	const D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = dsvPool.Cpu( dsv );
+	list.OMSetRenderTargets( 1, &rtvHandle, FALSE, &dsvHandle );
+	const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>( SIZE ), static_cast<float>( SIZE ), 0.0f, 1.0f };
+	const D3D12_RECT scissor = { 0, 0, SIZE, SIZE };
+	list.RSSetViewports( 1, &viewport );
+	list.RSSetScissorRects( 1, &scissor );
+	list.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	list.OMSetStencilRef( draw.stencilRef );
+	if ( gpu.device.Features().depthBounds ) {
+		list.OMSetDepthBounds( draw.depthBounds.first, draw.depthBounds.second );
+	}
+	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::VERTEX_PARMS ), vertexParms );
+	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::FRAGMENT_PARMS ), fragmentParms );
+	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), upload->GetGPUVirtualAddress() );
+	list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::TEXTURES ), viewHeap->GetGPUDescriptorHandleForHeapStart() );
+	list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::SAMPLERS ), samplerHeap->GetGPUDescriptorHandleForHeapStart() );
+	list.IASetVertexBuffers( 0, 1, &vertexView );
+	list.IASetIndexBuffer( &indexView );
+	for ( int i = 0; i < draw.times; i++ ) {
+		list.DrawIndexedInstanced( static_cast<UINT>( indexes.size() ), 1, 0, 0, 0 );
+	}
+}
+
+idTestRaster::pixels_t idTestRaster::Read() {
+	pixels_t pixels;
+	Target( D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE );
+	for ( size_t i = 0; i < footprints.size(); i++ ) {
+		D3D12_TEXTURE_COPY_LOCATION destination = {};
+		destination.pResource = readback.Get();
+		destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+		destination.PlacedFootprint = footprints[i];
+		D3D12_TEXTURE_COPY_LOCATION source = {};
+		source.pResource = ( i == 0 ) ? color.Get() : depth.Get();
+		source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+		source.SubresourceIndex = ( i == 2 ) ? 1 : 0;
+		gpu.List().CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+	}
+	gpu.WaitIdle();
+	used = ZERO_BYTES;
+	const D3D12_RANGE everything = { 0, static_cast<SIZE_T>( footprints[2].Offset + static_cast<uint64>( footprints[2].Footprint.RowPitch ) * SIZE ) };
+	void * cpu = nullptr;
+	if ( !gpu.device.Check( readback->Map( 0, &everything, &cpu ), "Map (test raster readback)" ) ) {
+		return pixels;
+	}
+	const byte * bytes = static_cast<const byte *>( cpu );
+	const auto texel = [&]( size_t plane, int column, int row, int texelBytes ) {
+		return bytes + footprints[plane].Offset + static_cast<size_t>( row ) * footprints[plane].Footprint.RowPitch + static_cast<size_t>( column * texelBytes );
+	};
+	pixels.color.resize( SIZE * SIZE );
+	pixels.depth.resize( SIZE * SIZE );
+	pixels.stencil.resize( SIZE * SIZE );
+	for ( int row = 0; row < SIZE; row++ ) {
+		for ( int column = 0; column < SIZE; column++ ) {
+			const int at = pixels_t::At( column, row );
+			memcpy( &pixels.color[at], texel( 0, column, row, 4 ), 4 );
+			memcpy( &pixels.depth[at], texel( 1, column, row, 4 ), 4 );
+			pixels.depth[at] &= 0xFFFFFFu;
+			pixels.stencil[at] = *texel( 2, column, row, 1 );
+		}
+	}
+	const D3D12_RANGE nothingWritten = { 0, 0 };
+	readback->Unmap( 0, &nothingWritten );
+	return pixels;
+}
+
+[[nodiscard]] idDrawVert ClipVertex( float x, float y, float z ) {
+	idDrawVert vertex;
+	vertex.Clear();
+	vertex.xyz.Set( x, y, z );
+	return vertex;
+}
+
+// Counter-clockwise in GL's window (y up): a GL front face. QUAD_CW winds it the other way.
+[[nodiscard]] std::array<idDrawVert, 4> Quad( float x0, float y0, float x1, float y1, float z0, float z1 ) {
+	return { ClipVertex( x0, y0, z0 ), ClipVertex( x1, y0, z1 ), ClipVertex( x1, y1, z1 ), ClipVertex( x0, y1, z0 ) };
+}
+[[nodiscard]] std::array<idDrawVert, 4> Quad( float x0, float y0, float x1, float y1, float z = 0.0f ) {
+	return Quad( x0, y0, x1, y1, z, z );
+}
+constexpr std::array<triIndex_t, 6> QUAD_CCW = { 0, 1, 2, 0, 2, 3 };
+constexpr std::array<triIndex_t, 6> QUAD_CW = { 0, 2, 1, 0, 3, 2 };
+constexpr uint32 RGBA_RED = 0xFF0000FFu;
+constexpr uint32 RGBA_GREEN = 0xFF00FF00u;
+
+// The GL clip coordinates of the centre of a target pixel, its memory row taken as GL's row.
+[[nodiscard]] idVec2 GlCentre( int column, int row ) {
+	constexpr float HALF = idTestRaster::SIZE * 0.5f;
+	return idVec2( ( column + 0.5f ) / HALF - 1.0f, ( row + 0.5f ) / HALF - 1.0f );
+}
+
+// The distance of p from the edge a → b, positive on its left (inside a counter-clockwise triangle).
+[[nodiscard]] float EdgeDistance( const idVec2 & a, const idVec2 & b, const idVec2 & p ) {
+	const idVec2 edge = b - a;
+	return ( edge.x * ( p.y - a.y ) - edge.y * ( p.x - a.x ) ) / edge.Length();
+}
+
+// A quad and a triangle in GL clip space land where glReadPixels finds them in GL's frame.
+void RasterGlRows( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+	raster.parms[RENDERPARM_COLOR] = idVec4( 1.0f, 0.0f, 0.0f, 1.0f );
+	raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_ALWAYS }, Quad( -1.0f, 0.0f, 0.0f, 1.0f ), QUAD_CCW );
+	const idVec2 corners[3] = { idVec2( 0.1f, -0.9f ), idVec2( 0.9f, -0.9f ), idVec2( 0.9f, -0.15f ) };
+	const std::array<idDrawVert, 3> triangle = { ClipVertex( corners[0].x, corners[0].y, 0.0f ), ClipVertex( corners[1].x, corners[1].y, 0.0f ),
+		ClipVertex( corners[2].x, corners[2].y, 0.0f ) };
+	constexpr std::array<triIndex_t, 3> TRIANGLE = { 0, 1, 2 };
+	raster.parms[RENDERPARM_COLOR] = idVec4( 0.0f, 1.0f, 0.0f, 1.0f );
+	raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_ALWAYS }, triangle, TRIANGLE );
+	const idTestRaster::pixels_t pixels = raster.Read();
+	if ( !Check( !pixels.color.empty(), "the read back" ) ) {
+		return;
+	}
+	int wrong = 0;
+	for ( int row = 0; row < idTestRaster::SIZE; row++ ) {
+		for ( int column = 0; column < idTestRaster::SIZE; column++ ) {
+			const idVec2 p = GlCentre( column, row );
+			const float inside = Min( Min( EdgeDistance( corners[0], corners[1], p ), EdgeDistance( corners[1], corners[2], p ) ),
+				EdgeDistance( corners[2], corners[0], p ) );
+			if ( idMath::Fabs( inside ) < 0.01f ) {
+				continue;	// on an edge: the fill rule decides
+			}
+			const uint32 expected = ( inside > 0.0f ) ? RGBA_GREEN : ( p.x < 0.0f && p.y > 0.0f ) ? RGBA_RED : 0u;
+			const uint32 drawn = pixels.color[idTestRaster::pixels_t::At( column, row )];
+			wrong += ( drawn != expected ) ? 1 : 0;
+			Check( drawn == expected, va( "memory row %d column %d: 0x%08x, GL 0x%08x", row, column, drawn, expected ) );
+		}
+	}
+	printf( "  %d pixels off GL's rows\n", wrong );
+	CheckNoLayerErrors( gpu );
+}
+
+// R_PipelineCull and FrontCounterClockwise FALSE against API_Cull: GL's front faces wind counter-clockwise in its window,
+// a mirror swaps the culled face, and the two-sided stencil ops of a shadow volume go to GL's faces.
+void RasterCull( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	const std::array<idDrawVert, 4> left = Quad( -0.9f, -0.5f, -0.1f, 0.5f );		// drawn counter-clockwise
+	const std::array<idDrawVert, 4> right = Quad( 0.1f, -0.5f, 0.9f, 0.5f );		// drawn clockwise
+	const int leftPixel = idTestRaster::pixels_t::At( idTestRaster::SIZE / 4, idTestRaster::SIZE / 2 );
+	const int rightPixel = idTestRaster::pixels_t::At( idTestRaster::SIZE * 3 / 4, idTestRaster::SIZE / 2 );
+	raster.parms[RENDERPARM_COLOR] = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+	for ( const cullType_t cullType : { CT_FRONT_SIDED, CT_BACK_SIDED, CT_TWO_SIDED } ) {
+		for ( const bool mirror : { false, true } ) {
+			for ( const bool enabled : { true, false } ) {
+				// API_Cull: glCullFace( GL_FRONT ) for FRONT_SIDED, GL_BACK for BACK_SIDED, swapped in a mirror; GL_CULL_FACE off for
+				// TWO_SIDED, and while a two-sided pass left it off
+				const bool culling = enabled && cullType != CT_TWO_SIDED;
+				const bool cullsGlFront = culling && ( ( cullType == CT_FRONT_SIDED ) != mirror );
+				const bool cullsGlBack = culling && !cullsGlFront;
+				raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+				const idTestRaster::draw_t draw = { .stateBits = GLS_DEPTHFUNC_ALWAYS, .raster = R_PipelineCull( cullType, enabled, mirror ) };
+				raster.Draw( *program, draw, left, QUAD_CCW );
+				raster.Draw( *program, draw, right, QUAD_CW );
+				const idTestRaster::pixels_t pixels = raster.Read();
+				if ( pixels.color.empty() ) {
+					return;
+				}
+				const bool leftDrawn = pixels.color[leftPixel] != 0;
+				const bool rightDrawn = pixels.color[rightPixel] != 0;
+				Check( leftDrawn == !cullsGlFront && rightDrawn == !cullsGlBack, va( "cull type %d, mirror %d, culling %d: counter-clockwise %s, "
+					"clockwise %s", cullType, mirror ? 1 : 0, enabled ? 1 : 0, leftDrawn ? "drawn" : "culled", rightDrawn ? "drawn" : "culled" ) );
+			}
+		}
+	}
+
+	raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 128 );
+	const idTestRaster::draw_t volume = { .stateBits = GLS_STENCIL_SHADOW_ZPASS | GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK };
+	raster.Draw( *program, volume, left, QUAD_CCW );
+	raster.Draw( *program, volume, right, QUAD_CW );
+	const idTestRaster::pixels_t pixels = raster.Read();
+	if ( !pixels.stencil.empty() ) {
+		Check( pixels.stencil[leftPixel] == 129 && pixels.stencil[rightPixel] == 127, va( "shadow volume: front face %d (GL 129), back face %d (GL 127)",
+			pixels.stencil[leftPixel], pixels.stencil[rightPixel] ) );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// E17: the interaction pass with depth EQUAL hits every pixel the depth pass wrote, though interaction.vertex is another
+// program than depth.vertex: precise keeps the arithmetic of the position the same in both.
+void RasterDepthEqual( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * depthPass = raster.Ready() ? raster.Program( "depth.vertex", "depth.pixel" ) : nullptr;
+	d3d12Program_t * interaction = raster.Ready() ? raster.Program( "interaction.vertex", "interaction.pixel" ) : nullptr;
+	if ( depthPass == nullptr || interaction == nullptr ) {
+		return;
+	}
+	uint32 seed = 7;
+	const auto random = [&seed]( float low, float high ) {
+		seed = seed * 1664525u + 1013904223u;
+		return low + ( high - low ) * static_cast<float>( seed >> 8 ) / static_cast<float>( 1 << 24 );
+	};
+	for ( idVec4 & parm : raster.parms ) {
+		parm.Set( random( -1.0f, 1.0f ), random( -1.0f, 1.0f ), random( -1.0f, 1.0f ), random( -1.0f, 1.0f ) );
+	}
+	raster.parms[RENDERPARM_MVPMATRIX_X].Set( 0.93f, 0.071f, -0.013f, 0.0123f );
+	raster.parms[RENDERPARM_MVPMATRIX_Y].Set( -0.061f, 0.97f, 0.027f, -0.0071f );
+	raster.parms[RENDERPARM_MVPMATRIX_Z].Set( 0.031f, -0.043f, 0.89f, 0.0137f );
+	raster.parms[RENDERPARM_MVPMATRIX_W].Set( 0.011f, -0.023f, 0.037f, 1.0f );
+
+	constexpr int CELLS = 16;
+	std::vector<idDrawVert> grid;
+	for ( int y = 0; y <= CELLS; y++ ) {
+		for ( int x = 0; x <= CELLS; x++ ) {
+			idDrawVert vertex = ClipVertex( -1.2f + 2.4f * x / CELLS, -1.2f + 2.4f * y / CELLS, random( -0.6f, 0.6f ) );
+			vertex.SetTexCoord( random( 0.0f, 4.0f ), random( 0.0f, 4.0f ) );
+			idVec3 normal( random( -1.0f, 1.0f ), random( -1.0f, 1.0f ), 1.0f );
+			idVec3 tangent( 1.0f, random( -1.0f, 1.0f ), random( -1.0f, 1.0f ) );
+			normal.Normalize();
+			tangent.Normalize();
+			vertex.SetNormal( normal );
+			vertex.SetTangent( tangent );
+			vertex.SetColor( 0xFF8040C0u );
+			grid.push_back( vertex );
+		}
+	}
+	std::vector<triIndex_t> indexes;
+	for ( int y = 0; y < CELLS; y++ ) {
+		for ( int x = 0; x < CELLS; x++ ) {
+			const int corner = y * ( CELLS + 1 ) + x;
+			for ( const int offset : { 0, 1, CELLS + 2, 0, CELLS + 2, CELLS + 1 } ) {
+				indexes.push_back( static_cast<triIndex_t>( corner + offset ) );
+			}
+		}
+	}
+	raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+	raster.Draw( *depthPass, { .stateBits = GLS_DEPTHFUNC_LESS | GLS_COLORMASK | GLS_ALPHAMASK }, grid, indexes );
+	raster.Draw( *interaction, { .stateBits = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL | GLS_STENCIL_OP_PASS_INCR },
+		grid, indexes );
+	const idTestRaster::pixels_t pixels = raster.Read();
+	int covered = 0;
+	int missed = 0;
+	for ( size_t i = 0; i < pixels.depth.size(); i++ ) {
+		if ( pixels.depth[i] != 0xFFFFFFu ) {
+			covered++;
+			missed += ( pixels.stencil[i] != 1 ) ? 1 : 0;
+		}
+	}
+	printf( "  %d of %d covered pixels fail EQUAL\n", missed, covered );
+	Check( covered == idTestRaster::SIZE * idTestRaster::SIZE, va( "the grid covers %d pixels", covered ) );
+	Check( missed == 0, va( "%d pixels fail EQUAL", missed ) );
+	CheckNoLayerErrors( gpu );
+}
+
+// The depth test rejects the farther of two quads in either order, with BFG's LESS (GL_LEQUAL) and the strict GL_LESS
+// of GL's initial state; EQUAL lets only the stored depth through.
+void RasterDepthOrder( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	const int centre = idTestRaster::pixels_t::At( idTestRaster::SIZE / 2, idTestRaster::SIZE / 2 );
+	const idVec4 red( 1.0f, 0.0f, 0.0f, 1.0f );
+	const idVec4 green( 0.0f, 1.0f, 0.0f, 1.0f );
+	for ( const int strict : { 0, static_cast<int>( D3D12_KEY_STRICT_DEPTH ) } ) {
+		for ( const bool nearFirst : { true, false } ) {
+			raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+			const idTestRaster::draw_t draw = { .stateBits = GLS_DEPTHFUNC_LESS, .raster = strict };
+			raster.parms[RENDERPARM_COLOR] = nearFirst ? red : green;
+			raster.Draw( *program, draw, Quad( -1.0f, -1.0f, 1.0f, 1.0f, nearFirst ? -0.5f : 0.5f ), QUAD_CCW );
+			raster.parms[RENDERPARM_COLOR] = nearFirst ? green : red;
+			raster.Draw( *program, draw, Quad( -1.0f, -1.0f, 1.0f, 1.0f, nearFirst ? 0.5f : -0.5f ), QUAD_CCW );
+			raster.parms[RENDERPARM_COLOR] = idVec4( 0.0f, 0.0f, 1.0f, 1.0f );
+			raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_EQUAL | GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK | GLS_STENCIL_OP_PASS_INCR },
+				Quad( -1.0f, -1.0f, 1.0f, 1.0f, 0.5f ), QUAD_CCW );
+			const idTestRaster::pixels_t pixels = raster.Read();
+			if ( !Check( !pixels.color.empty(), "the read back" ) ) {
+				return;
+			}
+			Check( pixels.color[centre] == RGBA_RED && pixels.stencil[centre] == 0, va( "strict %d, near quad %s: 0x%08x, stencil %d (GL red, 0)",
+				strict != 0 ? 1 : 0, nearFirst ? "first" : "second", pixels.color[centre], pixels.stencil[centre] ) );
+		}
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// GL's INCR and DECR saturate (D3D12's INCR_SAT, DECR_SAT); INCR_WRAP and DECR_WRAP wrap (D3D12's INCR, DECR).
+void RasterStencilOps( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	struct row_t {
+		const char *				name;
+		uint64						op;
+		uint8						start;
+		int							times;
+		byte						gl;
+	};
+	const row_t rows[] = {
+		{ "INCR", GLS_STENCIL_OP_PASS_INCR, 0, 300, 255 },
+		{ "INCR_WRAP", GLS_STENCIL_OP_PASS_INCR_WRAP, 0, 300, 300 - 256 },
+		{ "DECR", GLS_STENCIL_OP_PASS_DECR, 2, 5, 0 },
+		{ "DECR_WRAP", GLS_STENCIL_OP_PASS_DECR_WRAP, 2, 5, 253 },
+	};
+	for ( const row_t & row : rows ) {
+		raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, row.start );
+		raster.Draw( *program, { .stateBits = row.op | GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK, .times = row.times },
+			Quad( -1.0f, -1.0f, 1.0f, 1.0f ), QUAD_CCW );
+		const idTestRaster::pixels_t pixels = raster.Read();
+		const auto wrong = std::ranges::count_if( pixels.stencil, [&row]( byte s ) { return s != row.gl; } );
+		Check( !pixels.stencil.empty() && wrong == 0, va( "%s %d times from %d: %d, GL %d (%d pixels off)", row.name, row.times, row.start,
+			pixels.stencil.empty() ? -1 : pixels.stencil[0], row.gl, static_cast<int>( wrong ) ) );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// The depth bounds test reads the stored depth, as EXT_depth_bounds_test does, inclusive; (0, 1) lets everything through.
+void RasterDepthBounds( idTestGpu & gpu ) {
+	if ( !gpu.device.Features().depthBounds ) {
+		printf( "  skipped: no depth bounds test (OPTIONS2; WARP's turns the depth test off)\n" );
+		return;
+	}
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	struct row_t {
+		float						min, max;
+		bool						left, right;	// stored 0.25 and 0.75
+	};
+	const row_t rows[] = {
+		{ 0.5f, 1.0f, false, true },
+		{ 0.0f, 0.5f, true, false },
+		{ 0.0f, 1.0f, true, true },
+		{ 0.3f, 0.7f, false, false },
+		{ 0.2f, 0.8f, true, true },
+	};
+	constexpr int HALF = idTestRaster::SIZE / 2;
+	raster.parms[RENDERPARM_COLOR] = idVec4( 1.0f, 0.0f, 0.0f, 1.0f );
+	for ( const row_t & row : rows ) {
+		raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+		raster.ClearDepth( 0.25f, { 0, 0, HALF, idTestRaster::SIZE } );
+		raster.ClearDepth( 0.75f, { HALF, 0, idTestRaster::SIZE, idTestRaster::SIZE } );
+		// the fragments' own depth, 0.05, is outside every bound but the first rows': a test of it would fail them
+		raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK, .depthBounds = { row.min, row.max } },
+			Quad( -1.0f, -1.0f, 1.0f, 1.0f, -0.9f ), QUAD_CCW );
+		const idTestRaster::pixels_t pixels = raster.Read();
+		int wrong = 0;
+		for ( int y = 0; y < idTestRaster::SIZE && !pixels.color.empty(); y++ ) {
+			for ( int x = 0; x < idTestRaster::SIZE; x++ ) {
+				const bool expected = ( x < HALF ) ? row.left : row.right;
+				wrong += ( ( pixels.color[idTestRaster::pixels_t::At( x, y )] == RGBA_RED ) != expected ) ? 1 : 0;
+			}
+		}
+		Check( !pixels.color.empty() && wrong == 0, va( "bounds %.2f .. %.2f: %d pixels off", row.min, row.max, wrong ) );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// glPolygonOffset( factor, units ) with r = 2^-24 on D24: the slot's DepthBias moves the stored depth by units steps, and its
+// slope bias by factor times the depth slope per pixel.
+void RasterDepthBias( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	const int centre = idTestRaster::pixels_t::At( idTestRaster::SIZE / 2, idTestRaster::SIZE / 2 );
+	const auto depthAt = [&]( float factor, float units, float z0, float z1 ) -> int64 {
+		const uint8 slot = ( factor != 0.0f || units != 0.0f ) ? raster.Bias().Slot( factor, units ) : 0;
+		raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+		raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_ALWAYS | ( slot != 0 ? GLS_POLYGON_OFFSET : 0 ), .depthBias = slot },
+			Quad( -1.0f, -1.0f, 1.0f, 1.0f, z0, z1 ), QUAD_CCW );
+		const idTestRaster::pixels_t pixels = raster.Read();
+		return pixels.depth.empty() ? -1 : static_cast<int64>( pixels.depth[centre] );
+	};
+	const int64 flat = depthAt( 0.0f, 0.0f, 0.0f, 0.0f );
+	const int64 up = depthAt( 0.0f, 64.0f, 0.0f, 0.0f ) - flat;
+	const int64 down = depthAt( 0.0f, -64.0f, 0.0f, 0.0f ) - flat;
+	printf( "  units 64: %+lld steps, units -64: %+lld steps\n", up, down );
+	Check( flat > 0 && std::abs( up - 64 ) <= 1 && std::abs( down + 64 ) <= 1, va( "units 64 move the depth %lld and %lld steps", up, down ) );
+
+	// z from -0.5 to 0.5 across the target: a depth slope of 0.5 / SIZE per pixel
+	const int64 sloped = depthAt( 0.0f, 0.0f, -0.5f, 0.5f );
+	const int64 slopeBias = depthAt( 2.0f, 0.0f, -0.5f, 0.5f ) - sloped;
+	const double gl = 2.0 * 0.5 / idTestRaster::SIZE * 16777215.0;
+	printf( "  factor 2: %+lld steps, GL %+.0f\n", slopeBias, gl );
+	Check( std::abs( static_cast<double>( slopeBias ) - gl ) <= gl * 0.02, va( "factor 2 moves the depth %lld steps, GL %.0f", slopeBias, gl ) );
+	CheckNoLayerErrors( gpu );
+}
+
+template <void ( *RULE )( idTestGpu & )>
+void OnWarp() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		RULE( *gpu );
+	}
+}
+
+template <void ( *RULE )( idTestGpu & )>
+void OnGpu() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20 ) ) {
+		RULE( *gpu );
+	}
+}
+
 struct testCase_t {
 	const char *	name;
 	void			( *run )();
@@ -2206,6 +2860,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_TextureLevels", Test_WarpTextureLevels },
 	{ "Warp_TextureGraves", Test_WarpTextureGraves },
 	{ "Hlsl_Rules", Test_HlslRules },
+	{ "Hlsl_Pow", Test_HlslPow },
 	{ "Hlsl_Golden", Test_HlslGolden },
 	{ "Hlsl_AllSources", Test_HlslAllSources },
 	{ "Hlsl_ReflectionMatchesGl", Test_HlslReflectionMatchesGl },
@@ -2218,6 +2873,20 @@ constexpr testCase_t TESTS[] = {
 	{ "Pipeline_DepthBiasTable", Test_DepthBiasTable },
 	{ "Warp_Pipelines", Test_WarpPipelines },
 	{ "Warp_DebugGroups", Test_WarpDebugGroups },
+	{ "Warp_RasterGlRows", OnWarp<RasterGlRows> },
+	{ "Gpu_RasterGlRows", OnGpu<RasterGlRows> },
+	{ "Warp_RasterCull", OnWarp<RasterCull> },
+	{ "Gpu_RasterCull", OnGpu<RasterCull> },
+	{ "Warp_RasterDepthEqual", OnWarp<RasterDepthEqual> },
+	{ "Gpu_RasterDepthEqual", OnGpu<RasterDepthEqual> },
+	{ "Warp_RasterDepthOrder", OnWarp<RasterDepthOrder> },
+	{ "Gpu_RasterDepthOrder", OnGpu<RasterDepthOrder> },
+	{ "Warp_RasterStencilOps", OnWarp<RasterStencilOps> },
+	{ "Gpu_RasterStencilOps", OnGpu<RasterStencilOps> },
+	{ "Warp_RasterDepthBounds", OnWarp<RasterDepthBounds> },
+	{ "Gpu_RasterDepthBounds", OnGpu<RasterDepthBounds> },
+	{ "Warp_RasterDepthBias", OnWarp<RasterDepthBias> },
+	{ "Gpu_RasterDepthBias", OnGpu<RasterDepthBias> },
 };
 
 }	// namespace

@@ -41,7 +41,8 @@ If you have questions concerning this license or the applicable additional terms
 	  Record    the pass, the PSO, the dynamic state, the root parameters, the barriers, DrawIndexedInstanced,
 	            each sent only when it differs from d3d12BoundState_t
 
-	Joints are the zero block and depth bounds stay (0, 1) until the stages that bring them.
+	A list is submitted before its 65th draw of a frame, then before every r_d3d12SubmitDraws more, so the
+	GPU starts on a frame while the CPU still records it. That submit comes before Prepare: no draw is cut.
 */
 
 struct d3d12DrawStats_t {
@@ -50,6 +51,8 @@ struct d3d12DrawStats_t {
 	int								psoBinds = 0;
 	int								tableCopies = 0;	// SRV tables copied into the ring
 	int								incompleteBinds = 0;	// draws with a sampled slot that reads black (R11)
+	int								chunkSubmits = 0;	// lists submitted because they had their draws
+	int								reserveWaits = 0;	// full rings: Reserve waited for an older list
 	uint64							parmBytes = 0;		// taken from "constants"
 };
 
@@ -81,10 +84,10 @@ struct d3d12BoundState_t {
 	std::optional<std::array<int, 4>>	viewport;		// x, y, width, height
 	std::optional<std::array<int, 4>>	scissor;		// left, top, right, bottom inside the scene
 	std::optional<uint8>			stencilRef;
-	bool							depthBounds = false;	// (0, 1)
+	std::optional<std::pair<float, float>>	depthBounds;	// (0, 1) is the test off
 	std::optional<std::array<D3D12_GPU_VIRTUAL_ADDRESS, 2>>	parms;	// b0, b1
 	programHandle_t					parmsProgram = programHandle_t::NONE;
-	bool							joints = false;		// the zero block
+	std::optional<D3D12_GPU_VIRTUAL_ADDRESS>	joints;		// b2: a joint buffer + jointOffset, or the zero block
 	std::optional<std::array<uint32, MAX_TEXTURE_SLOTS>>	srvs;
 	std::optional<d3d12SamplerTableKey_t>	samplers;
 	std::optional<std::pair<bufferHandle_t, uint8>>	vertexBuffer;	// and its layout, which gives the stride
@@ -106,7 +109,9 @@ public:
 	void							Draw( const renderLatch_t & latch, const pipelineKey_t & key, const drawCall_t & dc );
 	void							SkippedDraw() { stats.skipped++; }	// R12: program NONE
 	void							EndPass() { bound.passOpen = false; }	// R10: before a copy, a readback, the blit and in EndFrame
-	void							Invalidate() { bound = {}; }			// a new list or an internal pass
+	void							Invalidate() { bound = {}; }			// after an internal pass
+	void							NewList() { bound = {}; drawsInList = 0; }	// the submitter opened a list
+	void							BeginFrame() { firstChunk = true; }
 	void							ForgetBuffer( bufferHandle_t buffer );	// before it dies: a new one may get its handle
 	void							ForgetProgram( programHandle_t program );	// before it dies: a new one may get its dense index
 	[[nodiscard]] d3d12DrawStats_t	TakeStats();	// the frame's, and zero again
@@ -142,8 +147,10 @@ private:
 	void							BindDynamicState( ID3D12GraphicsCommandList1 & list, const renderLatch_t & latch, primitive_t topology );
 	void							BindParms( ID3D12GraphicsCommandList1 & list, const reserved_t & reserved, const renderLatch_t & latch,
 										const drawCall_t & dc, const d3d12Program_t & program );
+	void							BindJoints( ID3D12GraphicsCommandList1 & list, const d3d12Program_t & program, const drawCall_t & dc );
 	void							BindTextures( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved );
 	void							BindGeometry( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const drawCall_t & dc );
+	[[nodiscard]] int				ChunkLimit() const;	// the draws the open list takes before it is submitted
 
 	const idD3D12Device &			device;
 	idD3D12Submitter &				submitter;
@@ -160,4 +167,6 @@ private:
 	idD3D12SamplerHeap &			samplers;
 	d3d12BoundState_t				bound;
 	d3d12DrawStats_t				stats;
+	int								drawsInList = 0;
+	bool							firstChunk = true;	// the frame has not submitted a full list yet
 };
