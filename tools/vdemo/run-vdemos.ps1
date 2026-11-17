@@ -28,7 +28,7 @@ anything, 2 when the game timed out, crashed, exited with a nonzero code or ran 
 .EXAMPLE
 tools\vdemo\run-vdemos.ps1 -OutDir research\vdemo\baseline
 tools\vdemo\run-vdemos.ps1 -OutDir build\vdemo\run2 -Demos 01_camera,04_lighting -NoDeploy
-tools\vdemo\run-vdemos.ps1 -Api d3d12 -DebugLevel 1 -OutDir build\vdemo\d3d12 -Demos 01_camera -ExtraArgs '+set','vdemo_capture','0'
+tools\vdemo\run-vdemos.ps1 -Api d3d12 -DebugLevel 1 -OutDir build\vdemo\d3d12 -Demos 01_camera -ExtraArgs '+set','r_testClearPattern','1'
 #>
 [CmdletBinding()]
 param(

@@ -42,18 +42,29 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12Queue                    ID3D12CommandQueue, ID3D12Fence; Waited() = the last explicit wait
 	      ├── idD3D12Graveyard                GPU objects that die after the fence of their last list
 	      ├── idD3D12CommandStream            ID3D12GraphicsCommandList1 + allocators reused by fence
-	      └── optional<idD3D12SwapChain>      IDXGISwapChain3, 3 back buffers + RTVs, latency object
+	      ├── idD3D12Barriers                 transitions batched until the next draw, clear, copy or submit
+	      ├── idD3D12DescriptorPool x 3       SRV, RTV, DSV: the permanent views, never shader visible
+	      ├── idD3D12DescriptorRing           the shader-visible CBV/SRV heap, 8-slot tables reused by fence
+	      ├── idD3D12UploadRing               "constants": 16 MB UPLOAD for the root CBVs, reused by fence
+	      ├── idD3D12ShaderCompiler           FXC with constant flags
+	      ├── idD3D12RootSignature            the 5 parameters of every PSO
+	      ├── idD3D12SceneTarget              colour + depth in GL row order, the MSAA resolve texture
+	      ├── optional<idD3D12SwapChain>      IDXGISwapChain3, 3 back buffers + RTVs, latency object
+	      ├── idD3D12InternalPasses           the present blit and the masked clear
+	      ├── idD3D12Readback                 copies into a READBACK buffer for ReadOutputPixels
+	      └── idD3D12DrawRecorder             clears (and later draws) into the open pass
 
 	Sync points: every wait is explicit, and everything that frees or reuses memory reads
 	idD3D12Queue::Waited(), never the fence, so two runs record the same commands.
 
 	  point                          waits for                     why
 	  Present                        the fence of the frame        the vertex cache remaps the set the frame read (R3, R8)
+	  ReadOutputPixels               a signal after the copy       the CPU reads the readback buffer
+	  a full ring                    the fence of its oldest chunk  that room is taken again
 	  Resize, vid_restart, Shutdown  a signal after the last Present  ResizeBuffers and releasing a back buffer need an idle queue
 */
 
-#include "d3d12_Device.h"
-#include "d3d12_Output.h"
+#include "d3d12_Draw.h"
 
 class idD3D12Context final : public idD3D12Submitter {
 public:
@@ -63,8 +74,8 @@ public:
 									idD3D12Context( const idD3D12Context & ) = delete;
 	idD3D12Context &				operator=( const idD3D12Context & ) = delete;
 
-	ID3D12GraphicsCommandList1 &	List() override;
-	uint64							SubmitChunk() override;
+	ID3D12GraphicsCommandList1 &	List() override;	// a new list gets the heap, the root signature and an empty bound state
+	uint64							SubmitChunk() override;	// flushes the barriers; closes the chunks of the rings
 	void							WaitFor( uint64 fence ) override;
 	void							WaitIdle() override;
 	uint64							PendingFence() const override { return queue.LastSignaled() + 1; }
@@ -72,8 +83,9 @@ public:
 	uint64							WaitedFence() const override { return queue.Waited(); }
 
 	void							BeginFrame( int width, int height );	// follows a window that changed size on its own
-	void							EndFrame();								// submits; no wait
-	[[nodiscard]] presentResult_t	Present( presentMode_t mode );			// clear, submit, present, wait, retire, latency
+	void							EndFrame();								// ends the pass and submits; no wait
+	[[nodiscard]] presentResult_t	Present( presentMode_t mode );			// blit, submit, present, wait, retire, latency
+	void							ReadOutputPixels( int x, int y, int width, int height, byte * rgb );	// R8: after EndFrame
 	void							Resize( int width, int height );		// between frames; 0 x 0 (minimized) is ignored
 	void							PrintInfo() const;
 
@@ -83,10 +95,24 @@ public:
 	idD3D12Queue					queue;
 	idD3D12Graveyard				graveyard;
 	idD3D12CommandStream			commands;
+	idD3D12Barriers					barriers;
+	idD3D12DescriptorPool			srvPool;
+	idD3D12DescriptorPool			rtvPool;
+	idD3D12DescriptorPool			dsvPool;
+	idD3D12DescriptorRing			descriptors;
+	idD3D12UploadRing				constants;
+	idD3D12ShaderCompiler			compiler;
+	idD3D12RootSignature			rootSignature;
+	idD3D12SceneTarget				scene;
 	std::optional<idD3D12SwapChain>	swapChain;
+	idD3D12InternalPasses			passes;
+	idD3D12Readback					readback;
+	idD3D12DrawRecorder				recorder;
 
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );
 	[[nodiscard]] std::expected<void, idStr>	CreateOutput( HWND window, int width, int height );
-	void							Retire( uint64 waitedFence );	// graves up to an explicitly waited fence
+	void							Retire( uint64 waitedFence );	// ring chunks and graves up to an explicitly waited fence
+	// The scene, resolved, into the back buffer through the present blit; leaves it in RENDER_TARGET.
+	void							BlitToBackBuffer( idD3D12SwapChain::backBuffer_t & back );
 };

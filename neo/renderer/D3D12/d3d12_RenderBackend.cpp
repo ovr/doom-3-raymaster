@@ -194,9 +194,13 @@ uint64 idRenderBackendD3D12::GetFrameGpuMicroseconds() {
 void idRenderBackendD3D12::SelectOutput( outputEye_t ) {
 }
 
-// Silently black captures would pass for frames, so a read stops the game until it is written.
-void idRenderBackendD3D12::ReadOutputPixels( int, int, int, int, byte * ) {
-	common->FatalError( "d3d12: ReadOutputPixels is not implemented yet (run the visual demos with +set vdemo_capture 0)" );
+// A lost device reads black.
+void idRenderBackendD3D12::ReadOutputPixels( int x, int y, int width, int height, byte * rgb ) {
+	if ( !context || context->device.IsLost() ) {
+		memset( rgb, 0, static_cast<size_t>( Max( width, 0 ) ) * static_cast<size_t>( Max( height, 0 ) ) * 3 );
+		return;
+	}
+	context->ReadOutputPixels( x, y, width, height, rgb );
 }
 
 textureHandle_t idRenderBackendD3D12::CreateTexture( const idImageOpts &, textureRole_t, const samplerDesc_t &, const char * ) {
@@ -287,8 +291,8 @@ void idRenderBackendD3D12::PopDebugGroup() {
 	D3D12_Unimplemented( "PopDebugGroup" );
 }
 
-void idRenderBackendD3D12::API_Clear( const clearDesc_t & ) {
-	D3D12_Unimplemented( "Clear" );
+void idRenderBackendD3D12::API_Clear( const clearDesc_t & clear ) {
+	context->recorder.Clear( latch, clear );
 }
 
 // Counted and skipped.

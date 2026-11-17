@@ -357,7 +357,8 @@ int idD3D12Device::DrainMessages() const {
 			}
 			buffer.resize( length );
 			D3D12_MESSAGE * message = reinterpret_cast<D3D12_MESSAGE *>( buffer.data() );
-			if ( SUCCEEDED( infoQueue->GetMessage( i, message, &length ) ) ) {
+			// the layer stores the clear value warnings despite the storage filter (Windows 11 26300)
+			if ( SUCCEEDED( infoQueue->GetMessage( i, message, &length ) ) && std::ranges::find( MUTED_MESSAGES, message->ID ) == std::end( MUTED_MESSAGES ) ) {
 				common->Printf( "d3d12 debug: %s #%d %s\n", SeverityName( message->Severity ), static_cast<int>( message->ID ), message->pDescription );
 				errors += ( message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR ) ? 1 : 0;
 			}

@@ -114,6 +114,13 @@ private:
 	const idD3D12Device &			device;
 };
 
+// A slot of a descriptor pool; the pool turns it into a CPU handle.
+struct d3d12Descriptor_t {
+	uint32							index = UINT32_MAX;
+	[[nodiscard]] constexpr bool	IsValid() const { return index != UINT32_MAX; }
+	constexpr bool					operator==( const d3d12Descriptor_t & ) const = default;
+};
+
 // The direct queue and its fence timeline: each Execute and Signal signals the next value.
 class idD3D12Queue {
 public:

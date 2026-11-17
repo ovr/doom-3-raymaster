@@ -34,25 +34,12 @@ If you have questions concerning this license or the applicable additional terms
 
 idCVar r_d3d12Adapter( "r_d3d12Adapter", "", CVAR_RENDERER | CVAR_INIT,
 	"Direct3D 12 adapter: empty = the high-performance GPU, warp = the software reference, N = adapter N by GPU preference" );
+idCVar r_d3d12CaptureBackBuffer( "r_d3d12CaptureBackBuffer", "0", CVAR_RENDERER | CVAR_BOOL,
+	"1 = ReadOutputPixels reads the back buffer after the present blit instead of the scene target (checks the blit)" );
 
 namespace {
 
-// The window colour until frames reach the back buffer.
-constexpr float PRESENT_CLEAR_COLOR[4] = { 0.0f, 0.25f, 0.3f, 1.0f };
-
-void Transition( ID3D12GraphicsCommandList1 & list, idD3D12SwapChain::backBuffer_t & buffer, D3D12_RESOURCE_STATES after ) {
-	if ( buffer.state == after ) {
-		return;
-	}
-	D3D12_RESOURCE_BARRIER barrier = {};
-	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-	barrier.Transition.pResource = buffer.resource.Get();
-	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	barrier.Transition.StateBefore = buffer.state;
-	barrier.Transition.StateAfter = after;
-	list.ResourceBarrier( 1, &barrier );
-	buffer.state = after;
-}
+constexpr uint64 CONSTANTS_RING_SIZE = 16 << 20;
 
 }	// namespace
 
@@ -79,13 +66,26 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	liveObjects( device ),
 	queue( device ),
 	graveyard( queue ),
-	commands( device, queue ) {
+	commands( device, queue ),
+	barriers( *this ),
+	srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ),
+	rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
+	dsvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
+	descriptors( device ),
+	constants( device, CONSTANTS_RING_SIZE, L"doom3 constants ring" ),
+	compiler( library ),
+	rootSignature( device, library ),
+	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
+	passes( device, rootSignature, compiler, *this, barriers, constants, descriptors, srvPool ),
+	readback( device, *this, barriers, graveyard ),
+	recorder( *this, barriers, scene, passes ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The members then die in
 // reverse order, the library last.
 idD3D12Context::~idD3D12Context() {
 	commands.Abandon();
+	barriers.Discard();
 	if ( !device.IsLost() ) {
 		WaitIdle();
 	}
@@ -93,27 +93,39 @@ idD3D12Context::~idD3D12Context() {
 	device.DrainMessages();
 }
 
+// MSAA comes with the sample-count option (stage 12): one sample until then.
 std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width, int height ) {
-	auto created = idD3D12SwapChain::Create( device, queue, window, width, height );
+	auto created = idD3D12SwapChain::Create( device, queue, rtvPool, window, width, height );
 	if ( !created ) {
 		return std::unexpected( created.error() );
 	}
 	swapChain.emplace( std::move( *created ) );
+	scene.Create( swapChain->Width(), swapChain->Height(), 1 );
+	passes.CreateDefaults();
 	return {};
 }
 
 ID3D12GraphicsCommandList1 & idD3D12Context::List() {
-	if ( !commands.IsOpen() ) {
-		return commands.Open();
+	if ( commands.IsOpen() ) {
+		return commands.List();
 	}
-	return commands.List();
+	ID3D12GraphicsCommandList1 & list = commands.Open();
+	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap() };
+	list.SetDescriptorHeaps( 1, heaps );
+	list.SetGraphicsRootSignature( rootSignature.Get() );
+	recorder.Invalidate();
+	return list;
 }
 
 uint64 idD3D12Context::SubmitChunk() {
 	if ( !commands.IsOpen() ) {
 		return queue.LastSignaled();
 	}
-	return commands.CloseAndExecute();
+	barriers.Flush();
+	const uint64 fence = commands.CloseAndExecute();
+	constants.CloseChunk( fence );
+	descriptors.CloseChunk( fence );
+	return fence;
 }
 
 void idD3D12Context::WaitFor( uint64 fence ) {
@@ -127,7 +139,9 @@ void idD3D12Context::WaitIdle() {
 	WaitFor( queue.Signal() );
 }
 
-void idD3D12Context::Retire( [[maybe_unused]] uint64 waitedFence ) {
+void idD3D12Context::Retire( uint64 waitedFence ) {
+	constants.Retire( waitedFence );
+	descriptors.Retire( waitedFence );
 	graveyard.Collect();
 }
 
@@ -140,7 +154,17 @@ void idD3D12Context::BeginFrame( int width, int height ) {
 }
 
 void idD3D12Context::EndFrame() {
+	recorder.EndPass();
 	SubmitChunk();
+}
+
+void idD3D12Context::BlitToBackBuffer( idD3D12SwapChain::backBuffer_t & back ) {
+	recorder.EndPass();
+	idD3D12SceneTarget::surface_t & source = scene.Resolved( barriers, *this );
+	barriers.Transition( *source.resource.Get(), source.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+	barriers.Transition( *back.resource.Get(), back.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	passes.PresentBlit( source.srv, rtvPool.Cpu( back.rtv ), scene.Width(), scene.Height() );
+	recorder.Invalidate();
 }
 
 // Blocks until the GPU has finished the frame: the next frame maps the vertex cache set this one read.
@@ -149,16 +173,28 @@ presentResult_t idD3D12Context::Present( presentMode_t mode ) {
 		return presentResult_t::DEVICE_LOST;
 	}
 	idD3D12SwapChain::backBuffer_t & back = swapChain->Current();
-	ID3D12GraphicsCommandList1 & list = List();
-	Transition( list, back, D3D12_RESOURCE_STATE_RENDER_TARGET );
-	list.ClearRenderTargetView( back.rtv, PRESENT_CLEAR_COLOR, 0, nullptr );
-	Transition( list, back, D3D12_RESOURCE_STATE_PRESENT );
+	BlitToBackBuffer( back );
+	barriers.Transition( *back.resource.Get(), back.state, D3D12_RESOURCE_STATE_PRESENT );
 	const uint64 fence = SubmitChunk();
 
 	const presentResult_t result = swapChain->Present( mode );
 	WaitFor( fence );
 	swapChain->WaitForLatency();
 	return device.IsLost() ? presentResult_t::DEVICE_LOST : result;
+}
+
+// r_d3d12CaptureBackBuffer reads what Present would show, so a wrong row flip in the blit makes the
+// capture differ from the scene's; Present then blits into the same back buffer again.
+void idD3D12Context::ReadOutputPixels( int x, int y, int width, int height, byte * rgb ) {
+	recorder.EndPass();
+	if ( r_d3d12CaptureBackBuffer.GetBool() && swapChain ) {
+		idD3D12SwapChain::backBuffer_t & back = swapChain->Current();
+		BlitToBackBuffer( back );
+		readback.Read( *back.resource.Get(), back.state, x, y, width, height, rgb, true );
+		return;
+	}
+	idD3D12SceneTarget::surface_t & source = scene.Resolved( barriers, *this );
+	readback.Read( *source.resource.Get(), source.state, x, y, width, height, rgb, false );
 }
 
 void idD3D12Context::Resize( int width, int height ) {
@@ -170,15 +206,20 @@ void idD3D12Context::Resize( int width, int height ) {
 	}
 	WaitIdle();
 	swapChain->Resize( width, height );
-	common->DPrintf( "d3d12: swap chain resized to %d x %d\n", width, height );
+	scene.Create( swapChain->Width(), swapChain->Height(), scene.Samples() );
+	recorder.Invalidate();
+	common->DPrintf( "d3d12: output resized to %d x %d\n", width, height );
 }
 
 void idD3D12Context::PrintInfo() const {
 	device.PrintInfo();
 	const uint64 version = library.compilerVersion;
-	common->Printf( "D3D12 shader compiler: d3dcompiler_47.dll %u.%u.%u.%u\n", static_cast<unsigned>( version >> 48 ),
-		static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ), static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ), static_cast<unsigned>( version & 0xFFFF ) );
+	common->Printf( "D3D12 shader compiler: d3dcompiler_47.dll %u.%u.%u.%u, %d shaders compiled\n", static_cast<unsigned>( version >> 48 ),
+		static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ), static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ), static_cast<unsigned>( version & 0xFFFF ),
+		compiler.Compiled() );
 	if ( swapChain ) {
 		common->Printf( "D3D12 swap chain: %d x %d, %u flip-discard buffers\n", swapChain->Width(), swapChain->Height(), idD3D12SwapChain::BUFFERS );
 	}
+	common->Printf( "D3D12 scene target: %d x %d, RGBA8 + D24S8, %u sample(s); constants ring %llu MB\n", scene.Width(), scene.Height(),
+		scene.Samples(), static_cast<unsigned long long>( constants.Size() >> 20 ) );
 }
