@@ -907,6 +907,72 @@ static const char * GL_RenderParmName( int rp ) {
 	return GLSLParmNames[ rp ];
 }
 
+// The renderParm_t of a uniform name as CreateShaderStage resolves it, -1 when it has none.
+static int GL_RenderParmIndex( const char * name ) {
+	for ( int i = 0; i < RENDERPARM_TOTAL; i++ ) {
+		if ( idStr::Cmp( name, GL_RenderParmName( i ) ) == 0 ) {
+			return i;
+		}
+	}
+	for ( int i = 0; i < idRenderProgManager::MAX_GLSL_USER_PARMS; i++ ) {
+		if ( idStr::Cmp( name, GL_RenderParmName( RENDERPARM_USER + i ) ) == 0 ) {
+			return RENDERPARM_USER + i;
+		}
+	}
+	return -1;
+}
+
+// What CreateShaderStage would make of a source: the parm list, then the StripDeadCode text.
+// The files are the reference for moving StripDeadCode out of this file, so the format is fixed.
+static idStr GL_DumpRenderProgSource( const idStr & source, const char * fileName, bool isVertex ) {
+	const idStr inFile = va( "renderprogs\\%s", fileName );
+	const idStr stripped = StripDeadCode( source, inFile );
+	idStr uniforms;
+	ConvertCG2GLSL( stripped, inFile, isVertex, uniforms );
+
+	idStr parms;
+	int numParms = 0;
+	idLexer src( uniforms, uniforms.Length(), "uniforms" );
+	idToken token;
+	while ( src.ReadToken( &token ) ) {
+		parms += va( "// parm %d %s\n", GL_RenderParmIndex( token ), token.c_str() );
+		numParms++;
+	}
+
+	idStr text = va( "// renderprogs/%s after StripDeadCode, %d parms in constant order\n", fileName, numParms );
+	text += parms;
+	text += stripped;
+	return text;
+}
+
+CONSOLE_COMMAND_SHIP( renderProgDump, "writes StripDeadCode and the parm list of every renderprogs/*.vertex and *.pixel to fs_savepath/<dir>", nullptr ) {
+	if ( args.Argc() != 2 ) {
+		common->Printf( "usage: renderProgDump <dir> (quote a dir name that has a '-')\n" );
+		return;
+	}
+	const idStr dir = args.Argv( 1 );
+	int written = 0;
+	for ( const bool isVertex : { true, false } ) {
+		idFileList * files = fileSystem->ListFiles( "renderprogs", isVertex ? ".vertex" : ".pixel", true );
+		for ( int i = 0; i < files->GetNumFiles(); i++ ) {
+			const char * fileName = files->GetFile( i );
+			void * buffer = nullptr;
+			if ( fileSystem->ReadFile( va( "renderprogs/%s", fileName ), &buffer ) <= 0 || buffer == nullptr ) {
+				common->Warning( "renderProgDump: can't read renderprogs/%s", fileName );
+				continue;
+			}
+			const idStr source( static_cast<const char *>( buffer ) );
+			fileSystem->FreeFile( buffer );
+			const idStr text = GL_DumpRenderProgSource( source, fileName, isVertex );
+			if ( fileSystem->WriteFile( va( "%s/%s.txt", dir.c_str(), fileName ), text.c_str(), text.Length() ) > 0 ) {
+				written++;
+			}
+		}
+		fileSystem->FreeFileList( files );
+	}
+	common->Printf( "renderProgDump: %d sources written to %s\n", written, dir.c_str() );
+}
+
 /*
 ================================================================================================
 GL_NewShaderStage

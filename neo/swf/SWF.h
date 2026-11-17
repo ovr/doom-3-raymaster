@@ -77,6 +77,9 @@ public:
 	idSWF( const char * filename, idSoundWorld * soundWorld = NULL );
 	~idSWF();
 
+	// the clock of every Flash GUI: a visual demo replaces it, so its HUD frames repeat
+	[[nodiscard]] static int	Milliseconds();
+
 	bool	IsLoaded() { return ( frameRate > 0 ); }
 	bool	IsActive() { return isActive; }
 	void	Activate( bool b );

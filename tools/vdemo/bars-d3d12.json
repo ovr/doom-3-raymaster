@@ -1,0 +1,42 @@
+{
+	"comment": [
+		"Copyright (C) 2026 Dmitry Patsura",
+		"SPDX-License-Identifier: GPL-3.0-or-later",
+		"Bars of a Direct3D 12 run against the OpenGL frames of the same tics (analyze.py --bars).",
+		"The worst frame of a demo decides: min SSIM >= ssimMin, mean SSIM >= ssimMean, the fraction of",
+		"pixels with delta > 8 <= frac8, the largest eroded delta > 8 blob <= blob pixels.",
+		"differences: the expected differences from GL (O1 .. O18 of the design, section 8.2); stage: the",
+		"stage that first runs the demo on D3D12. The first pass of stages 8-12 may tighten a bar to the",
+		"worst value seen (SSIM - 0.005, fractions x 1.5, blob x 2); a bar is relaxed only with a heat map",
+		"and a named difference in the commit message.",
+		"layers: bars of runs with the same extra cvars on both APIs, replacing the plain bars of a demo.",
+		"_x3_perf has no bar: it only measures time."
+	],
+	"demos": {
+		"_x4_gui":            { "ssimMin": 0.990, "ssimMean": 0.997, "frac8": 0.003, "blob": 16,  "differences": "O2 O7 O1", "stage": 8 },
+		"01_camera":          { "ssimMin": 0.975, "ssimMean": 0.990, "frac8": 0.005, "blob": 64,  "differences": "O1 O4 O5", "stage": 9 },
+		"02_monsters":        { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1",       "stage": 9 },
+		"03_physics":         { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1",       "stage": 9 },
+		"04_lighting":        { "ssimMin": 0.950, "ssimMean": 0.980, "frac8": 0.020, "blob": 256, "differences": "O1 O3",    "stage": 9 },
+		"04b_lighting_zfail": { "ssimMin": 0.950, "ssimMean": 0.980, "frac8": 0.020, "blob": 256, "differences": "O1 O3",    "stage": 9 },
+		"05_weapons":         { "ssimMin": 0.965, "ssimMean": 0.985, "frac8": 0.010, "blob": 128, "differences": "O1 O5",    "stage": 9 },
+		"08_cpuboss":         { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1",       "stage": 9 },
+		"_smoke":             { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1",       "stage": 9 },
+		"06_particles":       { "ssimMin": 0.960, "ssimMean": 0.985, "frac8": 0.015, "blob": 128, "differences": "O1, blending +-1", "stage": 10 },
+		"07_cinematic":       { "ssimMin": 0.955, "ssimMean": 0.980, "frac8": 0.020, "blob": 128, "differences": "O2 O7",    "stage": 10 },
+		"_x1_resscale":       { "ssimMin": 0.965, "ssimMean": 0.985, "frac8": 0.010, "blob": 64,  "differences": "O1",       "stage": 10 },
+		"_x2_motionblur":     { "ssimMin": 0.955, "ssimMean": 0.980, "frac8": 0.020, "blob": 128, "differences": "O1, accumulation", "stage": 10 },
+		"_x5_tools":          { "ssimMin": 0.900, "ssimMean": 0.950, "frac8": 0.060, "blob": 32,  "differences": "O6",       "stage": 11 },
+		"_x6_restart":        { "ssimMin": 0.975, "ssimMean": 0.990, "frac8": 0.005, "blob": 64,  "differences": "as 01_camera", "stage": 12 },
+		"_x7_heathaze":       { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1 O9, run alone: loadAttempts 2 on both APIs", "stage": 9 }
+	},
+	"layers": {
+		"msaa4": {
+			"comment": "r_multiSamples 4 on both APIs",
+			"demos": {
+				"01_camera":  { "ssimMin": 0.960, "ssimMean": 0.985, "frac8": 0.015, "blob": 128, "differences": "O1 O16", "stage": 12 },
+				"05_weapons": { "ssimMin": 0.960, "ssimMean": 0.985, "frac8": 0.015, "blob": 128, "differences": "O1 O16", "stage": 12 }
+			}
+		}
+	}
+}

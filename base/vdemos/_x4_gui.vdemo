@@ -1,0 +1,6 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# _x4_gui: 07_cinematic with the 3D views skipped and the HUD on: only the 2D (HUD, PDA, the PDA video) over the black screen clear of r_clear 2.
+include 07_cinematic
+set r_skipRender 1
+set g_showHud 1

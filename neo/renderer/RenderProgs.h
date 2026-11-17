@@ -196,6 +196,9 @@ public:
 	int			FindGLSLProgram( const char* name, int vIndex, int fIndex );
 	void		ZeroUniforms();
 
+	// One line per program in load order: its stages and what the backend reported for them
+	[[nodiscard]] idStrList	ProgramInfoLines() const;
+
 protected:
 	void	LoadVertexShader( int index );
 	void	LoadFragmentShader( int index );

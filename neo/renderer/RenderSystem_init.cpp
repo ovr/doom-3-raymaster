@@ -602,8 +602,13 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 	const int sysHeight = renderSystem->GetHeight();
 	byte * temp = (byte *)R_StaticAlloc( sysWidth * sysHeight * 3 );
 
-	// disable scissor, so we don't need to adjust all those rects
-	r_useScissor.SetBool( false );
+	// tiles disable the scissor, so we don't need to adjust all those rects; a single window-sized
+	// render keeps it, or the scissored debug drawing would differ from the frame on screen
+	const bool tiled = width > sysWidth || height > sysHeight;
+	const bool useScissor = r_useScissor.GetBool();
+	if ( tiled ) {
+		r_useScissor.SetBool( false );
+	}
 
 	for ( int xo = 0 ; xo < width ; xo += sysWidth ) {
 		for ( int yo = 0 ; yo < height ; yo += sysHeight ) {
@@ -644,7 +649,7 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 		}
 	}
 
-	r_useScissor.SetBool( true );
+	r_useScissor.SetBool( useScissor );
 
 	R_StaticFree( temp );
 }

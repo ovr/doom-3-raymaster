@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Analyse the frames of a visual demo run (tools/vdemo/run-vdemos.ps1, the vdemo command).
 
 A run dir holds one dir per demo with frames t<tic>_s<step>.png (and vdemo.json). Frames with the
@@ -6,7 +8,10 @@ same name in two runs show the same game tic and virtual-clock step, so they mus
 "on a tic" when its render alpha is 0 (the "frameTags" of vdemo.json), else when its step is 0.
 
   analyze.py RUN                         smoothness of RUN alone
-  analyze.py RUN --baseline BASE         + SSIM/PSNR of the frames RUN and BASE share, heat maps
+  analyze.py RUN --baseline BASE         + SSIM/PSNR and the difference metrics of the frames RUN
+                                         and BASE share, heat maps
+  analyze.py RUN --baseline BASE --bars tools/vdemo/bars-d3d12.json [--layer msaa4]
+                                         + the per-demo bars of another API against BASE
   analyze.py RUN --sheets DIR --sheet-prefix 10-   contact sheets DIR/10-<demo>-sheet.png
   analyze.py RUN --video                 an mp4 per demo (ffmpeg on PATH)
   analyze.py RUN --pair 04_lighting:04b_lighting_zfail   two passes of a scene in one run
@@ -14,8 +19,19 @@ same name in two runs show the same game tic and virtual-clock step, so they mus
   analyze.py RUN --baseline BASE --hold  frames between tics against the baseline frame of their tic
 
 Writes report.md and report.json into --out (default RUN/analysis). Exit code 1 when a frame on a
-tic falls below --ssim-threshold against the baseline, a baseline frame is missing, or a demo has
-more pops than its baseline; 2 on bad arguments.
+tic falls below --ssim-threshold against the baseline (with --bars: a demo misses one of its bars),
+a baseline frame is missing, or a demo has more pops than its baseline; 2 on bad arguments.
+
+The difference of two frames is the largest per-channel |delta| of each pixel. Per frame: SSIM of
+the luma, max delta, the fractions of pixels with delta > 2 and > 8, and the blob: the pixel count of
+the largest 4-connected region of delta > 8 left after a 3x3 erosion, which removes every line and
+speckle up to 2 px thick. Compiler noise and rasterization lines stay out of the blob; a missing
+surface, a wrong blend or a flipped cull leaves a solid one, so the blob is the main bug detector.
+
+Bars (a JSON file, "demos": {demo: {ssimMin, ssimMean, frac8, blob}}, "layers": {layer: {"demos":
+{...}}} for runs with other cvars on both APIs) hold for the worst frame of a demo: min SSIM >=
+ssimMin, mean SSIM >= ssimMean, every frac8 <= frac8, every blob <= blob; the repeats and pops of the
+demo must equal the baseline's.
 
 Smoothness looks at frames that are neighbours in virtual time (one capture interval apart): the
 mean absolute luma difference between them, repeats (no pixel changed) and pops (a difference
@@ -114,6 +130,114 @@ def diff_region(a, b):
         return 0, None
     ys, xs = np.nonzero(mask)
     return count, [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
+def erode3x3(mask):
+    """A pixel stays when its whole 3x3 neighbourhood is set; outside the frame counts as unset."""
+    h, w = mask.shape
+    padded = np.pad(mask, 1, constant_values=False)
+    out = np.ones_like(mask)
+    for dy in range(3):
+        for dx in range(3):
+            out &= padded[dy:dy + h, dx:dx + w]
+    return out
+
+
+def largest_component(mask):
+    """Pixel count and bounding box (x0, y0, x1, y1) of the largest 4-connected region of mask.
+
+    Runs of set pixels per row are joined with union-find wherever runs of neighbouring rows share a
+    column, so the cost follows the number of runs, not of pixels."""
+    h = mask.shape[0]
+    edges = np.diff(np.pad(mask.astype(np.int8), ((0, 0), (1, 1))), axis=1)
+    run_y, run_start = np.nonzero(edges == 1)
+    _, run_end = np.nonzero(edges == -1)
+    count = len(run_start)
+    if count == 0:
+        return 0, None
+    parent = list(range(count))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    row_first = np.searchsorted(run_y, np.arange(h + 1))
+    for y in range(1, h):
+        i, i_end = row_first[y - 1], row_first[y]
+        j, j_end = row_first[y], row_first[y + 1]
+        while i < i_end and j < j_end:
+            if run_start[i] < run_end[j] and run_start[j] < run_end[i]:
+                parent[find(i)] = find(j)
+            if run_end[i] < run_end[j]:
+                i += 1
+            else:
+                j += 1
+    sizes = {}
+    for k in range(count):
+        root = find(k)
+        sizes[root] = sizes.get(root, 0) + int(run_end[k] - run_start[k])
+    best = max(sizes, key=sizes.get)
+    members = [k for k in range(count) if find(k) == best]
+    box = [int(min(run_start[k] for k in members)), int(min(run_y[k] for k in members)),
+           int(max(run_end[k] for k in members)) - 1, int(max(run_y[k] for k in members))]
+    return sizes[best], box
+
+
+def difference_metrics(a, b):
+    """max delta, the fractions of delta > 2 and > 8, and the eroded delta > 8 blob of two RGB frames."""
+    delta = np.abs(a.astype(np.int16) - b.astype(np.int16)).max(axis=2)
+    big = delta > 8
+    blob, blob_box = largest_component(erode3x3(big))
+    return {"maxDelta": int(delta.max()), "frac2": float(np.mean(delta > 2)), "frac8": float(np.mean(big)),
+            "blob": blob, "blobBox": blob_box}
+
+
+NO_DIFFERENCE = {"maxDelta": 0, "frac2": 0.0, "frac8": 0.0, "blob": 0, "blobBox": None}
+
+
+def load_bars(path, layer):
+    """The bars of every demo, the layer's entries replacing the plain ones."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    bars = dict(data.get("demos", {}))
+    if layer:
+        layers = data.get("layers", {})
+        if layer not in layers:
+            raise ValueError(f"no layer '{layer}' in {path}")
+        bars.update(layers[layer].get("demos", {}))
+    return bars
+
+
+def check_bars(demo, entry, bar):
+    """The bars a demo misses: (metric, value, bar, frame) rows."""
+    c = entry.get("compare")
+    if not c or not c["frames"]:
+        return [("frames", 0, "> 0", "-")]
+    if bar is None:
+        return [("bar", "none", "an entry in the bars file", "-")]
+    rows = c["frames"]
+    misses = []
+    worst_ssim = min(rows, key=lambda r: r["ssim"])
+    if worst_ssim["ssim"] < bar["ssimMin"]:
+        misses.append(("min SSIM", round(worst_ssim["ssim"], 5), f">= {bar['ssimMin']}", worst_ssim["frame"]))
+    if c["meanSsim"] < bar["ssimMean"]:
+        misses.append(("mean SSIM", round(c["meanSsim"], 5), f">= {bar['ssimMean']}", "-"))
+    worst_frac = max(rows, key=lambda r: r["frac8"])
+    if worst_frac["frac8"] > bar["frac8"]:
+        misses.append(("delta>8 fraction", round(worst_frac["frac8"], 5), f"<= {bar['frac8']}", worst_frac["frame"]))
+    worst_blob = max(rows, key=lambda r: r["blob"])
+    if worst_blob["blob"] > bar["blob"]:
+        misses.append(("blob px", worst_blob["blob"], f"<= {bar['blob']}", worst_blob["frame"]))
+    smooth, base_smooth = entry["smoothness"], entry.get("baselineSmoothness", {})
+    for key, label in (("repeats", "repeats"), ("pops", "pops")):
+        value = smooth.get(key, 0)
+        base_value = base_smooth.get(key, 0)
+        if key == "pops":
+            value, base_value = len(value or []), len(base_value or [])
+        if value != base_value:
+            misses.append((label, value, f"= {base_value} (baseline)", "-"))
+    return misses
 
 
 def write_heatmap(path, base, run, label):
@@ -262,21 +386,26 @@ def compare(run_frames, base_frames, ssim_threshold, heat_dir, heat_count, demo,
         b = load_rgb(run_frames[name].path)
         row = {"frame": name, "baseline": base_name}
         if a.shape != b.shape:
-            rows.append(row | {"ssim": 0.0, "psnr": 0.0, "identical": False, "diffPixels": -1, "bbox": None})
+            rows.append(row | {"ssim": 0.0, "psnr": 0.0, "identical": False, "diffPixels": -1, "bbox": None,
+                               "maxDelta": 255, "frac2": 1.0, "frac8": 1.0, "blob": a.shape[0] * a.shape[1],
+                               "blobBox": None})
             continue
         count, bbox = diff_region(a, b)
         if count == 0:
-            rows.append(row | {"ssim": 1.0, "psnr": math.inf, "identical": True, "diffPixels": 0, "bbox": None})
+            rows.append(row | {"ssim": 1.0, "psnr": math.inf, "identical": True, "diffPixels": 0, "bbox": None}
+                        | NO_DIFFERENCE)
             continue
         rows.append(row | {"ssim": ssim(luma(a), luma(b)), "psnr": psnr(a, b), "identical": False,
-                           "diffPixels": count, "bbox": bbox})
-    worst = sorted((r for r in rows if not r["identical"]), key=lambda r: r["ssim"])[:heat_count]
+                           "diffPixels": count, "bbox": bbox} | difference_metrics(a, b))
+    # the frames with the biggest blob first: those are the likely bugs
+    worst = sorted((r for r in rows if not r["identical"]), key=lambda r: (-r["blob"], r["ssim"]))[:heat_count]
     for r in worst:
         name = r["frame"]
         label = name if r["baseline"] == name else f"{name} vs baseline {r['baseline']}"
         write_heatmap(heat_dir / f"{demo}-{Path(name).stem}-heat.png", load_rgb(base_frames[r["baseline"]].path),
                       load_rgb(run_frames[name].path),
-                      f"{demo} {label}  SSIM {r['ssim']:.5f}  PSNR {r['psnr']:.2f} dB  {r['diffPixels']} px differ")
+                      f"{demo} {label}  SSIM {r['ssim']:.5f}  PSNR {r['psnr']:.2f} dB  {r['diffPixels']} px differ  "
+                      f"d>8 {100 * r['frac8']:.3f}%  blob {r['blob']} px at {r['blobBox']}")
         r["heatmap"] = f"{demo}-{Path(name).stem}-heat.png"
     below = [r for r in rows if r["ssim"] < ssim_threshold]
     return {
@@ -285,6 +414,10 @@ def compare(run_frames, base_frames, ssim_threshold, heat_dir, heat_count, demo,
         "minSsim": min((r["ssim"] for r in rows), default=None),
         "meanSsim": float(np.mean([r["ssim"] for r in rows])) if rows else None,
         "minPsnr": min((r["psnr"] for r in rows), default=None),
+        "maxDelta": max((r["maxDelta"] for r in rows), default=None),
+        "maxFrac2": max((r["frac2"] for r in rows), default=None),
+        "maxFrac8": max((r["frac8"] for r in rows), default=None),
+        "maxBlob": max((r["blob"] for r in rows), default=None),
         "belowThreshold": [r["frame"] for r in below],
         "missing": missing,
         "frames": rows,
@@ -324,6 +457,9 @@ def main():
     parser.add_argument("--video-fps", type=int, default=60)
     parser.add_argument("--pair", action="append", default=[], metavar="A:B",
                         help="compare demo B against demo A of the same run (e.g. a second pass with other cvars)")
+    parser.add_argument("--bars", type=Path,
+                        help="per-demo bars (tools/vdemo/bars-d3d12.json); they replace --ssim-threshold")
+    parser.add_argument("--layer", help="take the bars of this layer of the bars file where it has them")
     args = parser.parse_args()
     if args.hold:
         args.all_steps = True
@@ -333,6 +469,19 @@ def main():
         return 2
     if args.baseline is not None and not args.baseline.is_dir():
         print(f"no baseline dir {args.baseline}", file=sys.stderr)
+        return 2
+    bars = None
+    if args.bars is not None:
+        if args.baseline is None:
+            print("--bars needs --baseline", file=sys.stderr)
+            return 2
+        try:
+            bars = load_bars(args.bars, args.layer)
+        except (OSError, ValueError) as error:
+            print(f"--bars: {error}", file=sys.stderr)
+            return 2
+    elif args.layer:
+        print("--layer needs --bars", file=sys.stderr)
         return 2
     out = args.out or (args.run / "analysis")
     out.mkdir(parents=True, exist_ok=True)
@@ -347,8 +496,10 @@ def main():
         demos = [d for d in demos if d in wanted]
 
     report = {"run": str(args.run), "baseline": str(args.baseline) if args.baseline else None,
-              "ssimThreshold": args.ssim_threshold, "offsetTics": args.offset_tics, "hold": args.hold, "demos": {}}
+              "ssimThreshold": args.ssim_threshold, "offsetTics": args.offset_tics, "hold": args.hold,
+              "bars": str(args.bars) if args.bars else None, "layer": args.layer, "demos": {}}
     regressions = []
+    bar_misses = []
     for demo in demos:
         run_dir = args.run / demo
         run_frames = list_frames(run_dir) if run_dir.is_dir() else {}
@@ -363,9 +514,16 @@ def main():
                                        not args.all_steps, args.offset_tics, args.hold)
             base_steps, _ = demo_steps(base_dir) if base_dir.is_dir() else (4, {})
             base_smooth = smoothness(base_frames, base_steps, args.pop_factor, args.pop_floor)
+            entry["baselineSmoothness"] = base_smooth
             entry["baselinePops"] = len(base_smooth.get("pops", []))
             c = entry["compare"]
-            if c["belowThreshold"]:
+            if bars is not None:
+                misses = check_bars(demo, entry, bars.get(demo))
+                entry["barMisses"] = [list(m) for m in misses]
+                bar_misses += [(demo,) + m for m in misses]
+                if misses:
+                    regressions.append(f"{demo}: misses {len(misses)} bars")
+            elif c["belowThreshold"]:
                 regressions.append(f"{demo}: {len(c['belowThreshold'])} tic frames below SSIM {args.ssim_threshold}")
             if c["missing"]:
                 regressions.append(f"{demo}: {len(c['missing'])} baseline frames missing")
@@ -402,18 +560,31 @@ def main():
             "all frames" if args.all_steps else "frames on a tic"
         offset = f", run tic T against baseline tic T-{args.offset_tics}" if args.offset_tics else ""
         lines += [f"Baseline: `{args.baseline}`, SSIM threshold {args.ssim_threshold} on {matching}{offset}"]
-    lines += ["", "| demo | frames | compared | identical | min SSIM | mean SSIM | min PSNR | missing | "
-                  "mean diff | repeats | pops (base) |",
-              "|---|---|---|---|---|---|---|---|---|---|---|"]
+    if args.bars is not None:
+        lines += [f"Bars: `{args.bars}`" + (f", layer {args.layer}" if args.layer else "")]
+    lines += ["", "| demo | frames | compared | identical | min SSIM | mean SSIM | min PSNR | max d | "
+                  "max d>2 % | max d>8 % | max blob | missing | mean diff | repeats (base) | pops (base) |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for demo, e in report["demos"].items():
         c = e.get("compare", {})
         s = e["smoothness"]
         pops = len(s.get("pops", []))
         base_pops = f" ({e['baselinePops']})" if "baselinePops" in e else ""
+        base_repeats = f" ({e['baselineSmoothness'].get('repeats', '-')})" if "baselineSmoothness" in e else ""
+        percent = lambda key: fmt(100 * c[key], 3) if c.get(key) is not None else "-"
         lines.append(f"| {demo} | {e['frames']} | {c.get('compared', '-')} | {c.get('identical', '-')} | "
                      f"{fmt(c.get('minSsim'))} | {fmt(c.get('meanSsim'))} | {fmt(c.get('minPsnr'), 2)} | "
+                     f"{c.get('maxDelta', '-')} | {percent('maxFrac2')} | {percent('maxFrac8')} | "
+                     f"{c.get('maxBlob', '-')} | "
                      f"{len(c.get('missing', [])) if c else '-'} | {fmt(s.get('meanDiff'), 2)} | "
-                     f"{s.get('repeats', '-')} | {pops}{base_pops} |")
+                     f"{s.get('repeats', '-')}{base_repeats} | {pops}{base_pops} |")
+    if bars is not None:
+        lines += ["", "## Bars missed", ""]
+        if bar_misses:
+            lines += ["| demo | metric | value | bar | worst frame |", "|---|---|---|---|---|"]
+            lines += [f"| {d} | {m} | {v} | {b} | {f} |" for d, m, v, b, f in bar_misses]
+        else:
+            lines.append("none")
     if args.baseline is not None:
         lines += ["", "## Frames that differ from the baseline", ""]
         for demo, e in report["demos"].items():
@@ -421,11 +592,12 @@ def main():
             if not differ:
                 continue
             lines.append(f"- **{demo}**: {len(differ)} frames differ")
-            for r in sorted(differ, key=lambda r: r["ssim"])[:5]:
+            for r in sorted(differ, key=lambda r: (-r["blob"], r["ssim"]))[:5]:
                 heat = f", heat map `{r['heatmap']}`" if "heatmap" in r else ""
                 versus = f" (vs `{r['baseline']}`)" if r["baseline"] != r["frame"] else ""
                 lines.append(f"  - `{r['frame']}`{versus} SSIM {fmt(r['ssim'], 5)}, PSNR {fmt(r['psnr'], 2)} dB, "
-                             f"{r['diffPixels']} px in box {r['bbox']}{heat}")
+                             f"{r['diffPixels']} px in box {r['bbox']}, max d {r['maxDelta']}, "
+                             f"d>8 {fmt(100 * r['frac8'], 3)} %, blob {r['blob']} px at {r['blobBox']}{heat}")
     if report["pairs"]:
         lines += ["", "## Pairs (B against A in this run)", "",
                   "| pair | compared | identical | min SSIM | mean SSIM | min PSNR | worst frames |", "|---|---|---|---|---|---|---|"]

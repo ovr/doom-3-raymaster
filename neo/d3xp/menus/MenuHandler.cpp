@@ -270,7 +270,7 @@ void idMenuHandler::Update() {
 	PumpWidgetActionRepeater();
 
 	if ( gui != NULL && gui->IsActive() ) {
-		gui->Render( renderSystem, Sys_Milliseconds() );
+		gui->Render( renderSystem, idSWF::Milliseconds() );
 	}
 }
 

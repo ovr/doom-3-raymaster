@@ -73,7 +73,9 @@ If you have questions concerning this license or the applicable additional terms
 
 	Frames are written to fs_savepath/base/vdemos/<demo>/t<tic, 5 digits>_s<step>.png, with a
 	vdemo.json per demo (frameTags: the tic, step and render alpha of every frame) and
-	vdemos/run.json for the run. <tic> is the last game tic run before the frame was built.
+	vdemos/run.json for the run (and the render API it ran on). <tic> is the last game tic run
+	before the frame was built. vdemo_timeoutScale stretches the load and stall timeouts for slow
+	runs (GPU-based validation).
 
 	Every demo starts from the same setup (fixedSetup below): r_swapInterval 0, rs_enable 0,
 	g_showHud 0 (the view weapon stays), g_fov 80, g_skill 1, con_noPrint 1, com_wipeSeconds 0,
@@ -96,7 +98,9 @@ If you have questions concerning this license or the applicable additional terms
 
 	Determinism: single player seeds gameLocal.random with 0 on every map load (LoadMap). Sound
 	is off (s_noSound 1, needs a restart): muted sound would still be mixed by the wall clock,
-	and sound-driven materials and script waits on sound lengths would follow it.
+	and sound-driven materials and script waits on sound lengths would follow it. The Flash GUIs
+	(HUD, PDA) animate by idSWF::Milliseconds, which reads GuiMilliseconds: the virtual clock
+	counted from the demo's start, so HUD frames and SWF random seeds repeat too.
 
 ===============================================================================
 */
@@ -104,6 +108,7 @@ If you have questions concerning this license or the applicable additional terms
 idCVar vdemo_fps( "vdemo_fps", "240", CVAR_SYSTEM | CVAR_INTEGER, "steps per second of the visual demo clock, a multiple of com_engineHz" );
 idCVar vdemo_capture( "vdemo_capture", "1", CVAR_SYSTEM | CVAR_BOOL, "0 runs the visual demos without writing their frames" );
 idCVar vdemo_realtime( "vdemo_realtime", "0", CVAR_SYSTEM | CVAR_BOOL, "1 plays the visual demos at the speed of their clock, for watching; 0 runs them as fast as possible. The frames are the same" );
+idCVar vdemo_timeoutScale( "vdemo_timeoutScale", "1", CVAR_SYSTEM | CVAR_FLOAT, "multiplies the map load and stall timeouts of the visual demos, for slow runs such as GPU-based validation", 1.0f, 100.0f );
 
 extern idCVar s_noSound;
 
@@ -118,6 +123,10 @@ constexpr int		LOAD_TIMEOUT_MSEC = 90000;
 constexpr int		STALL_TIMEOUT_MSEC = 60000;
 constexpr int		EXPECTED_WIDTH = 1280;
 constexpr int		EXPECTED_HEIGHT = 720;
+
+[[nodiscard]] int ScaledTimeoutMsec( int msec ) {
+	return static_cast<int>( msec * vdemo_timeoutScale.GetFloat() );
+}
 
 struct cvarSetting_t {
 	idStr		name;
@@ -482,6 +491,7 @@ public:
 	bool			IsRunning() const override { return state != state_t::IDLE; }
 	int				MaxFrameRate() const override { return vdemo_realtime.GetBool() ? vdemo_fps.GetInteger() : 0; }
 	uint64			FrameLoopMicroseconds( int ticMilliseconds, double residual ) override;
+	int				GuiMilliseconds() const override;
 	void			RunFrame( bool gameRunning, int numGameFrames, float renderAlpha, usercmd_t & cmd ) override;
 	void			OnMapSpawned() override { mapSpawned = true; }
 	void			OnDropError() override { dropped = true; }
@@ -531,6 +541,7 @@ private:
 	uint64			lastFrameLoopTimeUS = 0;
 	int64			wallOffsetUS = 0;
 	int				step = 0;			// virtual steps since the last tic
+	uint64			demoStartUS = 0;	// the virtual clock when the demo began, the origin of the GUI clock
 
 	bool			mapSpawned = false;
 	bool			dropped = false;
@@ -572,6 +583,16 @@ uint64 idVisualDemoLocal::FrameLoopMicroseconds( int ticMilliseconds, double res
 	return lastFrameLoopTimeUS;
 }
 
+// Only the main thread moves the clock, between the game thread's frames. The base is nonzero
+// because idSWF reads a last render time of 0 as "never rendered".
+int idVisualDemoLocal::GuiMilliseconds() const {
+	constexpr int GUI_CLOCK_BASE_MSEC = 1000000;
+	if ( !virtualClock ) {
+		return Sys_Milliseconds();
+	}
+	return GUI_CLOCK_BASE_MSEC + static_cast<int>( ( lastFrameLoopTimeUS - demoStartUS ) / 1000 );
+}
+
 /*
 ========================
 idVisualDemoLocal::RunFrame
@@ -605,7 +626,7 @@ void idVisualDemoLocal::RunFrame( bool gameRunning, int numGameFrames, float ren
 			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "map %s\n", demo.map.c_str() ) );
 		} else if ( dropped ) {
 			EndDemo( "load error" );
-		} else if ( now - stateStartTime > LOAD_TIMEOUT_MSEC ) {
+		} else if ( now - stateStartTime > ScaledTimeoutMsec( LOAD_TIMEOUT_MSEC ) ) {
 			common->Warning( "vdemo %s: %s didn't load", demo.name.c_str(), demo.map.c_str() );
 			EndDemo( "load timeout" );
 		}
@@ -622,8 +643,9 @@ void idVisualDemoLocal::RunFrame( bool gameRunning, int numGameFrames, float ren
 			common->Warning( "vdemo %s: another map was loaded during the demo", demo.name.c_str() );
 			EndDemo( "map changed" );
 		} else if ( !gameRunning || numGameFrames <= 0 ) {
-			if ( !gameRunning && now - lastTicTime > STALL_TIMEOUT_MSEC ) {
-				common->Warning( "vdemo %s: no game tics for %d seconds (paused?)", demo.name.c_str(), STALL_TIMEOUT_MSEC / 1000 );
+			const int stallTimeout = ScaledTimeoutMsec( STALL_TIMEOUT_MSEC );
+			if ( !gameRunning && now - lastTicTime > stallTimeout ) {
+				common->Warning( "vdemo %s: no game tics for %d seconds (paused?)", demo.name.c_str(), stallTimeout / 1000 );
 				EndDemo( "stalled" );
 			} else if ( gameRunning && nextTic > 0 ) {
 				// a frame between tics
@@ -723,8 +745,11 @@ void idVisualDemoLocal::WriteEncodedFrames( const size_t maxPending ) {
 			encoder.WaitDone( job );
 		}
 
+		// not va(): the game thread runs during the capture and shares its ring of buffers, which
+		// once wrote a frame to fs_savepath/base/0
 		const frameTag_t & tag = job->tag;
-		const idStr fileName = va( "vdemos/%s/t%05d_s%d.png", tag.demo.c_str(), tag.tic, tag.step );
+		idStr fileName;
+		fileName.Format( "vdemos/%s/t%05d_s%d.png", tag.demo.c_str(), tag.tic, tag.step );
 		if ( !job->encoded ) {
 			common->Warning( "vdemo %s: couldn't compress tic %d", tag.demo.c_str(), tag.tic );
 		} else if ( fileSystem->WriteFile( fileName, job->png.data(), static_cast<int>( job->png.size() ) ) <= 0 ) {
@@ -1062,6 +1087,7 @@ void idVisualDemoLocal::StartRun( std::vector<idStr> names, bool quit ) {
 	warnedSize = false;
 	step = 0;
 	virtualClock = true;
+	demoStartUS = lastFrameLoopTimeUS;
 	runStartTime = Sys_Milliseconds();
 	state = state_t::NEXT_DEMO;
 	common->Printf( "vdemo: %d demos, %d clock steps per tic\n", static_cast<int>( queue.size() ), stepsPerTic );
@@ -1138,6 +1164,7 @@ void idVisualDemoLocal::BeginDemo() {
 	mapSpawned = false;
 	dropped = false;
 	stateStartTime = Sys_Milliseconds();
+	demoStartUS = lastFrameLoopTimeUS;
 	state = state_t::LOADING;
 }
 
@@ -1194,7 +1221,8 @@ void idVisualDemoLocal::WriteRunSummary() const {
 		json += va( "\t\t{ \"demo\": \"%s\", \"map\": \"%s\", \"status\": \"%s\", \"tics\": %d, \"frames\": %d, \"loadAttempts\": %d, \"loadMsec\": %d, \"runMsec\": %d }%s\n",
 			r.name.c_str(), r.map.c_str(), r.status.c_str(), r.tics, r.frames, r.loadAttempts, r.loadMsec, r.runMsec, ( i + 1 < results.size() ) ? "," : "" );
 	}
-	json += va( "\t],\n\t\"runMsec\": %d\n}\n", Sys_Milliseconds() - runStartTime );
+	const char * api = ( renderBackend != nullptr ) ? renderBackend->Caps().apiName : "none";
+	json += va( "\t],\n\t\"api\": \"%s\",\n\t\"runMsec\": %d\n}\n", api, Sys_Milliseconds() - runStartTime );
 	fileSystem->WriteFile( "vdemos/run.json", json.c_str(), json.Length() );
 }
 

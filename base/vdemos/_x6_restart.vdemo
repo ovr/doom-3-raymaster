@@ -1,0 +1,27 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# _x6_restart: the mars_city2 start room through vid_restart, reloadShaders and a 1600x900 window and back; frames only at 1280x720.
+# reloadShaders relinks every program the process has loaded; this pack has all map-only stages (colorProcess, heatHaze), so any earlier demo is fine.
+map game/mars_city2
+at 0 god
+at 0 notarget
+at 1 remove monster_zsec_pistol_2
+at 1 setviewpos -300 -2040 84 90
+move 10 500 yaw=15
+capture 0 100 every=10 fps=60
+at 110 vid_restart
+capture 111 113
+capture 120 200 every=10 fps=60
+at 210 reloadShaders
+capture 211 213
+capture 220 300 every=10 fps=60
+# vid_restart applies the window size; the frames in between are 1600x900
+at 310 r_windowWidth 1600
+at 310 r_windowHeight 900
+at 310 vid_restart
+at 400 r_windowWidth 1280
+at 400 r_windowHeight 720
+at 400 vid_restart
+capture 401 403
+capture 410 500 every=10 fps=60
+end 500
