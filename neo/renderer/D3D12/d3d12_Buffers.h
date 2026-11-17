@@ -1,0 +1,90 @@
+/*
+===========================================================================
+
+Doom 3 BFG Edition GPL Source Code
+Copyright (C) 2026 Dmitry Patsura
+
+This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition Source Code").  
+
+Doom 3 BFG Edition Source Code is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Doom 3 BFG Edition Source Code is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Doom 3 BFG Edition Source Code.  If not, see <http://www.gnu.org/licenses/>.
+
+In addition, the Doom 3 BFG Edition Source Code is also subject to certain additional terms. You should have received a copy of these additional terms immediately following the terms and conditions of the GNU General Public License which accompanied the Doom 3 BFG Edition Source Code.  If not, please request a copy in writing from id Software at the address below.
+
+If you have questions concerning this license or the applicable additional terms, you may contact in writing id Software LLC, c/o ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
+
+===========================================================================
+*/
+
+#pragma once
+
+#include "d3d12_HandleTable.h"
+#include "d3d12_Memory.h"
+
+enum class d3d12BufferPlacement_t : uint8 {
+	UPLOAD,			// a persistently mapped UPLOAD heap the GPU reads in place: FRAME
+	STAGED			// a DEFAULT heap and a CPU mirror, copied through "staging" at Unmap: STATIC
+};
+
+// What a bufferHandle_t names.
+struct d3d12Buffer_t {
+	bufferType_t					type = bufferType_t::VERTEX;
+	bufferUsage_t					usage = bufferUsage_t::STATIC;
+	d3d12BufferPlacement_t			placement = d3d12BufferPlacement_t::UPLOAD;
+	int								size = 0;		// what shared code asked for
+	uint64							bytes = 0;		// of resource: size + JOINT_TAIL for JOINT
+	idComPtr<ID3D12Resource>		resource;
+	D3D12_GPU_VIRTUAL_ADDRESS		gpu = 0;
+	byte *							cpu = nullptr;	// MapBuffer's pointer, the mapped heap or the mirror; never changes
+	idD3D12CpuBlock					mirror;			// STAGED
+	d3d12ResourceState_t			state;			// STAGED: decays to COMMON in every list
+};
+
+// Vertex, index and joint buffers. Map makes no API call and reads one live record, so it is legal from any
+// thread (R1); everything else runs on the owner thread.
+class idD3D12BufferStore {
+public:
+	static constexpr int			JOINT_TAIL = 408 * 16;	// matrices_ubo is declared whole and a root CBV has no size
+
+									idD3D12BufferStore( const idD3D12Device & device, idD3D12Graveyard & graveyard, idD3D12Uploader & uploader,
+										idD3D12Barriers & barriers, d3d12BufferPlacement_t framePlacement );
+	void							CreateDefaults();	// the zero joints and the (0,0,0,1) attribute, after construction
+	[[nodiscard]] bufferHandle_t	Create( bufferType_t type, bufferUsage_t usage, int size, const void * data );
+	void							Destroy( bufferHandle_t buffer );	// a dead handle is ignored
+	[[nodiscard]] void *			Map( bufferHandle_t buffer ) const;
+	void							Unmap( bufferHandle_t buffer, int dirtyOffset, int dirtyBytes );	// STAGED: the copy is recorded now
+	[[nodiscard]] const d3d12Buffer_t &	Get( bufferHandle_t buffer ) const { return table.Get( buffer ); }
+	// For a program with usesJoints and no joint buffer: 6528 zero bytes.
+	[[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS	ZeroJoints() const;
+	// Stride 0, (0,0,0,1) as four floats: GL's current value of an attribute the layout lacks.
+	[[nodiscard]] D3D12_VERTEX_BUFFER_VIEW	DefaultAttribs() const;
+	void							DestroyAll();		// Shutdown, the GPU idle
+	[[nodiscard]] uint64			Bytes( bufferUsage_t usage ) const { return bytes[static_cast<size_t>( usage )]; }
+	[[nodiscard]] uint64			MirrorBytes() const { return mirrorBytes; }
+	[[nodiscard]] int				Num() const { return table.Num(); }
+	[[nodiscard]] uint64			InPlaceBytesThisFrame() const { return inPlaceBytes; }	// the dirty bytes of UPLOAD buffers
+	void							ResetFrameCounters() { inPlaceBytes = 0; }
+
+private:
+	const idD3D12Device &			device;
+	idD3D12Graveyard &				graveyard;
+	idD3D12Uploader &				uploader;
+	idD3D12Barriers &				barriers;
+	d3d12BufferPlacement_t			framePlacement;
+	idD3D12HandleTable<d3d12Buffer_t, bufferHandle_t>	table;
+	idComPtr<ID3D12Resource>		zeroJoints;
+	idComPtr<ID3D12Resource>		defaultAttribs;
+	std::array<uint64, 2>			bytes = {};		// GPU memory by bufferUsage_t
+	uint64							mirrorBytes = 0;
+	uint64							inPlaceBytes = 0;
+};

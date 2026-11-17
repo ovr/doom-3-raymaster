@@ -166,6 +166,31 @@ target_link_options(idlibTests PRIVATE /LARGEADDRESSAWARE /DEBUG)
 set_target_properties(idlibTests PROPERTIES FOLDER "tests")
 add_test(NAME idlibTests COMMAND idlibTests)
 
+# d3d12Tests: the ring, the handle table, and the uploader and buffer store on a WARP device
+#   bin/<config>/d3d12Tests.exe [filter]
+add_executable(d3d12Tests
+	tests/d3d12_tests.cpp
+	tests/d3d12_test_stubs.cpp
+	renderer/D3D12/d3d12_Buffers.cpp
+	renderer/D3D12/d3d12_Device.cpp
+	renderer/D3D12/d3d12_Memory.cpp
+	renderer/D3D12/d3d12_RingAllocator.cpp
+)
+d3bfg_neo_common(d3d12Tests)
+# /W3 like idlibTests: at /W4 the PCH of old idLib headers warns again. Doom3BFG builds the D3D12 files at /W4;
+# /WX per file, as for D3D12_SOURCES above, whose property this directory shares.
+d3bfg_configure_target(d3d12Tests WARNING_LEVEL 3 WITH_INLINES)
+set_source_files_properties(tests/d3d12_tests.cpp tests/d3d12_test_stubs.cpp PROPERTIES COMPILE_OPTIONS /WX)
+target_compile_definitions(d3d12Tests PRIVATE
+	__DOOM__ _MBCS _CONSOLE
+	$<$<CONFIG:Retail>:ID_RETAIL>
+)
+target_precompile_headers(d3d12Tests PRIVATE "${D3BFG_PCH}")
+target_link_libraries(d3d12Tests PRIVATE idLib winmm dbghelp dxguid)
+target_link_options(d3d12Tests PRIVATE /DEBUG)
+set_target_properties(d3d12Tests PROPERTIES FOLDER "tests")
+add_test(NAME d3d12Tests COMMAND d3d12Tests)
+
 # renderApiLeaks: no OpenGL name outside neo/renderer/OpenGL/ and the two WGL files, no D3D12 or DXGI
 # name outside neo/renderer/D3D12/
 add_test(NAME renderApiLeaks

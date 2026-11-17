@@ -71,32 +71,6 @@ void D3D12_PrintUnimplemented() {
 	common->Printf( "%s\n", line.c_str() );
 }
 
-bufferHandle_t idD3D12Placeholders::CreateBuffer( int size, const void * data ) {
-	auto record = std::make_unique<buffer_t>();
-	record->size = Max( size, 16 );
-	record->memory.reset( static_cast<byte *>( Mem_ClearedAlloc( static_cast<size_t>( record->size ), TAG_RENDER ) ) );
-	if ( data != nullptr && size > 0 ) {
-		memcpy( record->memory.get(), data, static_cast<size_t>( size ) );
-	}
-	const bufferHandle_t handle = static_cast<bufferHandle_t>( reinterpret_cast<uintptr_t>( record.get() ) );
-	buffers.push_back( std::move( record ) );
-	return handle;
-}
-
-// A handle from before the last Clear is no record any more and is ignored.
-void idD3D12Placeholders::DestroyBuffer( bufferHandle_t buffer ) {
-	const auto found = std::find_if( buffers.begin(), buffers.end(), [buffer]( const std::unique_ptr<buffer_t> & record ) {
-		return reinterpret_cast<uintptr_t>( record.get() ) == static_cast<uintptr_t>( buffer );
-	} );
-	if ( found != buffers.end() ) {
-		buffers.erase( found );
-	}
-}
-
-void * idD3D12Placeholders::MapBuffer( bufferHandle_t buffer ) {
-	return reinterpret_cast<buffer_t *>( static_cast<uintptr_t>( buffer ) )->memory.get();
-}
-
 idRenderBackendD3D12::idRenderBackendD3D12() {
 	ownerThread = Sys_GetCurrentThreadID();
 }
@@ -130,7 +104,7 @@ void idRenderBackendD3D12::Shutdown() {
 		D3D12_PrintUnimplemented();
 		context.reset();
 	}
-	placeholders.Clear();
+	report.Reset();
 	inFrame = false;
 }
 
@@ -183,7 +157,9 @@ void idRenderBackendD3D12::EndFrame() {
 }
 
 presentResult_t idRenderBackendD3D12::Present( presentMode_t mode ) {
-	return context->Present( mode );
+	const presentResult_t result = context->Present( mode );
+	report.Frame( *context );
+	return result;
 }
 
 uint64 idRenderBackendD3D12::GetFrameGpuMicroseconds() {
@@ -228,21 +204,24 @@ void idRenderBackendD3D12::API_DestroyTexture( textureHandle_t ) {
 	D3D12_Unimplemented( "DestroyTexture" );
 }
 
-bufferHandle_t idRenderBackendD3D12::CreateBuffer( bufferType_t, bufferUsage_t, int size, const void * data ) {
-	D3D12_Unimplemented( "CreateBuffer" );
-	return placeholders.CreateBuffer( size, data );
+bufferHandle_t idRenderBackendD3D12::CreateBuffer( bufferType_t type, bufferUsage_t usage, int size, const void * data ) {
+	return context ? context->buffers.Create( type, usage, size, data ) : bufferHandle_t::NONE;
 }
 
+// After Shutdown there is nothing to destroy: every older handle is invalid (contract).
 void idRenderBackendD3D12::DestroyBuffer( bufferHandle_t buffer ) {
-	placeholders.DestroyBuffer( buffer );
+	if ( context ) {
+		context->buffers.Destroy( buffer );
+	}
 }
 
+// Any thread (R1): a lookup of a live record, no API call.
 void * idRenderBackendD3D12::MapBuffer( bufferHandle_t buffer ) {
-	return idD3D12Placeholders::MapBuffer( buffer );
+	return context->buffers.Map( buffer );
 }
 
-void idRenderBackendD3D12::UnmapBuffer( bufferHandle_t, int, int ) {
-	D3D12_Unimplemented( "UnmapBuffer" );
+void idRenderBackendD3D12::UnmapBuffer( bufferHandle_t buffer, int dirtyOffset, int dirtyBytes ) {
+	context->buffers.Unmap( buffer, dirtyOffset, dirtyBytes );
 }
 
 shaderHandle_t idRenderBackendD3D12::CreateShaderStage( shaderStageType_t, const char *, shaderStageInfo_t & info ) {

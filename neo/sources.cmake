@@ -252,9 +252,11 @@ set(GAME_D3XP_SOURCES
 
 # the Direct3D 12 backend (r_renderApi d3d12): always built, with /WX (CMakeLists.txt)
 set(D3D12_SOURCES
+	renderer/D3D12/d3d12_Buffers.cpp
 	renderer/D3D12/d3d12_Context.cpp
 	renderer/D3D12/d3d12_Descriptors.cpp
 	renderer/D3D12/d3d12_Device.cpp
+	renderer/D3D12/d3d12_Diagnostics.cpp
 	renderer/D3D12/d3d12_Draw.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
 	renderer/D3D12/d3d12_Memory.cpp

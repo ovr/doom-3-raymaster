@@ -728,6 +728,7 @@ public:
 	virtual void			GetLastFrameDrawStats( int & numDraws, int & numTris, int & numShadowTris ) const;
 	void					GetLastFrameInterpStats( renderInterpStats_t & stats ) const override;
 	int						GetRenderPassTimings( std::span<renderPassTiming_t> passes ) const override;
+	const char *			GetBackendStats() const override;
 	virtual void			PrintMemInfo( MemInfo_t *mi );
 
 	virtual void			SetColor( const idVec4 & color );

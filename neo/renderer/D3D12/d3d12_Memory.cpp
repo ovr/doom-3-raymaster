@@ -32,6 +32,13 @@ If you have questions concerning this license or the applicable additional terms
 #include "../tr_local.h"
 #include "d3d12_Memory.h"
 
+namespace {
+
+// CopyBufferRegion needs no alignment; the vertex cache's 16 keeps the copies of its ranges aligned.
+constexpr uint64 BUFFER_COPY_ALIGN = 16;
+
+}	// namespace
+
 idComPtr<ID3D12Resource> D3D12_CreateBuffer( const idD3D12Device & device, D3D12_HEAP_TYPE heap, uint64 bytes,
 	D3D12_RESOURCE_STATES state, const wchar_t * name ) {
 	D3D12_HEAP_PROPERTIES properties = {};
@@ -69,7 +76,13 @@ std::optional<d3d12UploadSpan_t> idD3D12UploadRing::TryAllocate( uint64 bytes, u
 	return d3d12UploadSpan_t{ mapped + *offset, gpuBase + *offset, buffer.Get(), *offset };
 }
 
+// A decaying resource starts every list in COMMON; a pending barrier never outlives its list (SubmitChunk flushes).
 void idD3D12Barriers::Transition( ID3D12Resource & resource, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES after ) {
+	if ( state.decays && state.listSerial != submitter.ListSerial() ) {
+		assert( state.pending < 0 );
+		state.current = D3D12_RESOURCE_STATE_COMMON;
+		state.listSerial = submitter.ListSerial();
+	}
 	if ( state.pending >= 0 ) {
 		D3D12_RESOURCE_TRANSITION_BARRIER & queued = batch[state.pending].Transition;
 		assert( queued.pResource == &resource );
@@ -115,6 +128,7 @@ void idD3D12Barriers::Flush() {
 		return;
 	}
 	submitter.List().ResourceBarrier( static_cast<UINT>( count ), batch.data() );
+	issued += count;
 	Discard();
 }
 
@@ -123,4 +137,78 @@ void idD3D12Barriers::Discard() {
 		owner->pending = -1;
 	}
 	count = 0;
+}
+
+idD3D12Uploader::idD3D12Uploader( const idD3D12Device & owner, idD3D12Submitter & submit, idD3D12UploadRing & ring, idD3D12Barriers & batch,
+	idD3D12Graveyard & graves ) :
+	device( owner ),
+	submitter( submit ),
+	staging( ring ),
+	barriers( batch ),
+	graveyard( graves ) {
+	assert( staging.Size() >= PIECE );
+}
+
+std::optional<d3d12UploadSpan_t> idD3D12Uploader::Stage( uint64 bytes, uint64 align ) {
+	bytesThisFrame += bytes;
+	if ( bytes <= PIECE ) {
+		return Room( bytes, align );
+	}
+	// only the biggest texture levels: simpler than cutting compressed rows into ring pieces
+	idComPtr<ID3D12Resource> buffer = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_UPLOAD, bytes, D3D12_RESOURCE_STATE_GENERIC_READ,
+		L"doom3 staging (one large copy)" );
+	const D3D12_RANGE nothingRead = { 0, 0 };
+	void * mapped = nullptr;
+	if ( !buffer || !device.Check( buffer->Map( 0, &nothingRead, &mapped ), "Map (large staging buffer)" ) ) {
+		return std::nullopt;
+	}
+	const d3d12UploadSpan_t span = { static_cast<byte *>( mapped ), buffer->GetGPUVirtualAddress(), buffer.Get(), 0 };
+	graveyard.Bury( std::move( buffer ) );	// tagged with the open list, which records the copy
+	return span;
+}
+
+d3d12UploadSpan_t idD3D12Uploader::Room( uint64 bytes, uint64 align ) {
+	for ( ;; ) {
+		if ( const std::optional<d3d12UploadSpan_t> span = staging.TryAllocate( bytes, align ) ) {
+			return *span;
+		}
+		submitter.SubmitChunk();
+		const uint64 oldest = staging.OldestFence();
+		if ( oldest == 0 ) {
+			common->FatalError( "d3d12: %llu bytes do not fit into the empty staging ring", static_cast<unsigned long long>( bytes ) );
+		}
+		submitter.WaitFor( oldest );
+	}
+}
+
+void idD3D12Uploader::Pace( uint64 bytes ) {
+	if ( paceList != submitter.ListSerial() ) {
+		paceList = submitter.ListSerial();
+		bytesInList = 0;
+	}
+	bytesInList += bytes;
+	if ( bytesInList >= PIECE ) {
+		submitter.SubmitChunk();
+	}
+}
+
+// A new list after a submit finds the buffer back in COMMON, so each piece transitions again.
+void idD3D12Uploader::BufferRange( ID3D12Resource & buffer, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES useState,
+	uint64 offset, std::span<const byte> bytes ) {
+	for ( size_t done = 0; done < bytes.size(); ) {
+		const size_t piece = Min( bytes.size() - done, static_cast<size_t>( PIECE ) );
+		const std::optional<d3d12UploadSpan_t> span = Stage( piece, BUFFER_COPY_ALIGN );
+		if ( !span ) {
+			return;
+		}
+		memcpy( span->cpu, bytes.data() + done, piece );
+		barriers.Transition( buffer, state, D3D12_RESOURCE_STATE_COPY_DEST );
+		barriers.Flush();
+		submitter.List().CopyBufferRegion( &buffer, offset + done, span->buffer, span->offset, piece );
+		done += piece;
+		if ( done == bytes.size() ) {
+			barriers.Transition( buffer, state, useState );
+		}
+		Pace( piece );
+	}
 }

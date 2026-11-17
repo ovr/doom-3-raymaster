@@ -37,24 +37,28 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "d3d12_Context.h"
 
-// CPU records that keep shared code running until the GPU stores exist. A buffer is real memory, so
-// MapBuffer works; textures, stages and programs get distinct non-zero handles and nothing else.
+// Distinct non-zero handles that keep shared code running until the texture and program stores exist.
 class idD3D12Placeholders {
 public:
-	[[nodiscard]] bufferHandle_t	CreateBuffer( int size, const void * data );
-	void							DestroyBuffer( bufferHandle_t buffer );
-	// No lookup, the handle is the record's address: the vertex cache may map its static set off the owner thread.
-	[[nodiscard]] static void *		MapBuffer( bufferHandle_t buffer );
 	template<typename Handle>
 	[[nodiscard]] Handle			NewHandle() { return static_cast<Handle>( ++lastHandle ); }
-	void							Clear() { buffers.clear(); }
 private:
-	struct buffer_t {
-		idD3D12CpuBlock				memory;
-		int							size = 0;
-	};
-	std::vector<std::unique_ptr<buffer_t>>	buffers;
 	uintptr_t						lastHandle = 0;
+};
+
+// r_d3d12Stats: sums the frames of the context and prints them once a second; the com_showFPS line.
+class idD3D12StatsReport {
+public:
+	void							Frame( const idD3D12Context & context );	// after each Present
+	[[nodiscard]] const char *		OverlayLine() const { return overlay; }		// "" while r_d3d12Stats is 0
+	void							Reset();
+
+private:
+	d3d12FrameStats_t				sum;
+	uint64							maxUploadBytes = 0;
+	int								frames = 0;
+	int								startMsec = 0;
+	char							overlay[96] = {};
 };
 
 class idRenderBackendD3D12 final : public idRenderBackend {
@@ -69,6 +73,7 @@ public:
 	void							SetGammaRamp( const unsigned short red[256], const unsigned short green[256], const unsigned short blue[256] ) override;
 	void							CheckErrors() override;				// drains the info queues; reports a loss once
 	void							PrintInfo() const override;
+	const char *					OverlayStats() const override { return report.OverlayLine(); }
 
 	void							BeginFrame() override;
 	void							EndFrame() override;
@@ -108,4 +113,5 @@ protected:
 private:
 	std::unique_ptr<idD3D12Context>	context;
 	idD3D12Placeholders				placeholders;
+	idD3D12StatsReport				report;
 };

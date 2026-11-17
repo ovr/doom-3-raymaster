@@ -635,6 +635,10 @@ int idRenderSystemLocal::GetRenderPassTimings( std::span<renderPassTiming_t> pas
 	return PC_GetPassTimings( passes );
 }
 
+const char * idRenderSystemLocal::GetBackendStats() const {
+	return ( renderBackend != nullptr ) ? renderBackend->OverlayStats() : "";
+}
+
 /*
 =====================
 idRenderSystemLocal::SwapCommandBuffers_FinishRendering

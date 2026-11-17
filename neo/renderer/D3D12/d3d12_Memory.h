@@ -52,6 +52,7 @@ public:
 	void							Retire( uint64 waitedFence ) { ring.Retire( waitedFence ); }
 	[[nodiscard]] uint64			OldestFence() const { return ring.OldestFence(); }
 	[[nodiscard]] uint64			Size() const { return ring.Size(); }
+	[[nodiscard]] uint64			Used() const { return ring.Used(); }
 
 private:
 	idComPtr<ID3D12Resource>		buffer;
@@ -63,7 +64,9 @@ private:
 // The state of one tracked resource, kept in its owner's record from creation on.
 struct d3d12ResourceState_t {
 	D3D12_RESOURCE_STATES			current = D3D12_RESOURCE_STATE_COMMON;	// what it is in once the batch is flushed
+	uint64							listSerial = 0;	// decaying resources: the list in which current holds
 	int16							pending = -1;	// this resource's entry in the batch
+	bool							decays = false;	// buffers: the runtime puts them back in COMMON after every list
 };
 
 // Legacy transitions batched until the next draw, clear, copy, resolve or submit; a reversed pending pair cancels out.
@@ -73,6 +76,8 @@ public:
 	void							Transition( ID3D12Resource & resource, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES after );
 	void							Flush();			// into submitter.List(); a no-op when empty
 	void							Discard();			// the list was abandoned
+	[[nodiscard]] int				IssuedThisFrame() const { return issued; }
+	void							ResetFrameCounters() { issued = 0; }
 
 private:
 	static constexpr int			BATCH = 64;		// a full batch flushes itself
@@ -82,4 +87,36 @@ private:
 	std::array<D3D12_RESOURCE_BARRIER, BATCH>	batch = {};
 	std::array<d3d12ResourceState_t *, BATCH>	owners = {};	// owners[i] is the state of batch[i]
 	int								count = 0;
+	int								issued = 0;		// flushed into lists
+};
+
+// CPU data → GPU resources through "staging", recorded in the open list, so GPU order gives R4: draws recorded
+// before a copy read the old bytes. It runs between the calls of the contract, so it may submit and wait.
+class idD3D12Uploader {
+public:
+	static constexpr uint64			PIECE = 16 << 20;	// the most one copy takes from the ring, and the submit pace
+
+									idD3D12Uploader( const idD3D12Device & device, idD3D12Submitter & submitter, idD3D12UploadRing & staging,
+										idD3D12Barriers & barriers, idD3D12Graveyard & graveyard );
+	// Memory for one copy source: ring room up to PIECE, else a temporary UPLOAD buffer that dies with the open
+	// list. Record the copy before anything submits. nullopt only on a lost device.
+	[[nodiscard]] std::optional<d3d12UploadSpan_t>	Stage( uint64 bytes, uint64 align );
+	// bytes → buffer at offset, in copies of at most PIECE; leaves the buffer in useState.
+	void							BufferRange( ID3D12Resource & buffer, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES useState,
+										uint64 offset, std::span<const byte> bytes );
+	[[nodiscard]] uint64			BytesThisFrame() const { return bytesThisFrame; }
+	void							ResetFrameCounters() { bytesThisFrame = 0; }
+
+private:
+	[[nodiscard]] d3d12UploadSpan_t	Room( uint64 bytes, uint64 align );	// a full ring: SubmitChunk, WaitFor( oldest chunk ), again
+	void							Pace( uint64 bytes );	// submits after every PIECE copied into one list: the GPU copies while a level loads
+
+	const idD3D12Device &			device;
+	idD3D12Submitter &				submitter;
+	idD3D12UploadRing &				staging;
+	idD3D12Barriers &				barriers;
+	idD3D12Graveyard &				graveyard;
+	uint64							paceList = 0;		// the list bytesInList counts for
+	uint64							bytesInList = 0;
+	uint64							bytesThisFrame = 0;
 };

@@ -30,6 +30,15 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "d3d12_InternalPasses.h"
 
+// What one frame cost, Present to Present: r_d3d12Stats sums these.
+struct d3d12FrameStats_t {
+	int								submits = 0;		// ExecuteCommandLists
+	int								waits = 0;			// explicit fence waits
+	int								barriers = 0;		// transitions that reached a list
+	uint64							uploadBytes = 0;	// copied through the staging ring
+	uint64							inPlaceBytes = 0;	// written into FRAME buffers the GPU reads in place
+};
+
 // What the open list has bound. Empty means unknown: a new list and every internal pass clear it.
 struct d3d12BoundState_t {
 	bool							passOpen = false;	// scene RTV + DSV set, colour in RENDER_TARGET, depth in DEPTH_WRITE

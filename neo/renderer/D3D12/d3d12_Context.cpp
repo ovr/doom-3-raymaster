@@ -40,6 +40,7 @@ idCVar r_d3d12CaptureBackBuffer( "r_d3d12CaptureBackBuffer", "0", CVAR_RENDERER 
 namespace {
 
 constexpr uint64 CONSTANTS_RING_SIZE = 16 << 20;
+constexpr uint64 STAGING_RING_SIZE = 64 << 20;	// four uploader pieces: the GPU copies one while the CPU fills the next
 
 }	// namespace
 
@@ -56,6 +57,7 @@ std::expected<std::unique_ptr<idD3D12Context>, idStr> idD3D12Context::Create( co
 	if ( auto output = context->CreateOutput( static_cast<HWND>( init.nativeWindow ), init.width, init.height ); !output ) {
 		return std::unexpected( output.error() );
 	}
+	context->CreateDefaults();
 	context->device.DrainMessages();
 	return context;
 }
@@ -73,6 +75,9 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	dsvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
 	descriptors( device ),
 	constants( device, CONSTANTS_RING_SIZE, L"doom3 constants ring" ),
+	staging( device, STAGING_RING_SIZE, L"doom3 staging ring" ),
+	uploader( device, *this, staging, barriers, graveyard ),
+	buffers( device, graveyard, uploader, barriers, d3d12BufferPlacement_t::UPLOAD ),
 	compiler( library ),
 	rootSignature( device, library ),
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
@@ -89,6 +94,7 @@ idD3D12Context::~idD3D12Context() {
 	if ( !device.IsLost() ) {
 		WaitIdle();
 	}
+	buffers.DestroyAll();
 	graveyard.CollectAll();
 	device.DrainMessages();
 }
@@ -101,8 +107,12 @@ std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width,
 	}
 	swapChain.emplace( std::move( *created ) );
 	scene.Create( swapChain->Width(), swapChain->Height(), 1 );
-	passes.CreateDefaults();
 	return {};
+}
+
+void idD3D12Context::CreateDefaults() {
+	passes.CreateDefaults();
+	buffers.CreateDefaults();
 }
 
 ID3D12GraphicsCommandList1 & idD3D12Context::List() {
@@ -124,11 +134,16 @@ uint64 idD3D12Context::SubmitChunk() {
 	barriers.Flush();
 	const uint64 fence = commands.CloseAndExecute();
 	constants.CloseChunk( fence );
+	staging.CloseChunk( fence );
 	descriptors.CloseChunk( fence );
+	frame.submits++;
 	return fence;
 }
 
 void idD3D12Context::WaitFor( uint64 fence ) {
+	if ( fence > queue.Waited() ) {
+		frame.waits++;
+	}
 	queue.Wait( fence );
 	Retire( queue.Waited() );
 }
@@ -141,6 +156,7 @@ void idD3D12Context::WaitIdle() {
 
 void idD3D12Context::Retire( uint64 waitedFence ) {
 	constants.Retire( waitedFence );
+	staging.Retire( waitedFence );
 	descriptors.Retire( waitedFence );
 	graveyard.Collect();
 }
@@ -180,7 +196,19 @@ presentResult_t idD3D12Context::Present( presentMode_t mode ) {
 	const presentResult_t result = swapChain->Present( mode );
 	WaitFor( fence );
 	swapChain->WaitForLatency();
+	EndFrameStats();
 	return device.IsLost() ? presentResult_t::DEVICE_LOST : result;
+}
+
+void idD3D12Context::EndFrameStats() {
+	frame.barriers = barriers.IssuedThisFrame();
+	frame.uploadBytes = uploader.BytesThisFrame();
+	frame.inPlaceBytes = buffers.InPlaceBytesThisFrame();
+	lastFrame = frame;
+	frame = {};
+	barriers.ResetFrameCounters();
+	uploader.ResetFrameCounters();
+	buffers.ResetFrameCounters();
 }
 
 // r_d3d12CaptureBackBuffer reads what Present would show, so a wrong row flip in the blit makes the
@@ -220,6 +248,9 @@ void idD3D12Context::PrintInfo() const {
 	if ( swapChain ) {
 		common->Printf( "D3D12 swap chain: %d x %d, %u flip-discard buffers\n", swapChain->Width(), swapChain->Height(), idD3D12SwapChain::BUFFERS );
 	}
-	common->Printf( "D3D12 scene target: %d x %d, RGBA8 + D24S8, %u sample(s); constants ring %llu MB\n", scene.Width(), scene.Height(),
-		scene.Samples(), static_cast<unsigned long long>( constants.Size() >> 20 ) );
+	common->Printf( "D3D12 scene target: %d x %d, RGBA8 + D24S8, %u sample(s); constants ring %llu MB, staging ring %llu MB\n", scene.Width(),
+		scene.Height(), scene.Samples(), static_cast<unsigned long long>( constants.Size() >> 20 ), static_cast<unsigned long long>( staging.Size() >> 20 ) );
+	common->Printf( "D3D12 buffers: %d, FRAME %.1f MB in UPLOAD heaps, STATIC %.1f MB in DEFAULT heaps + %.1f MB CPU mirrors\n", buffers.Num(),
+		buffers.Bytes( bufferUsage_t::FRAME ) / ( 1024.0 * 1024.0 ), buffers.Bytes( bufferUsage_t::STATIC ) / ( 1024.0 * 1024.0 ),
+		buffers.MirrorBytes() / ( 1024.0 * 1024.0 ) );
 }

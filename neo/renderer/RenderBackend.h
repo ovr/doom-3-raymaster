@@ -178,6 +178,8 @@ public:
 	virtual void			CheckErrors() = 0;
 	// Prints the gfxInfo block of this API.
 	virtual void			PrintInfo() const = 0;
+	// A com_showFPS line of API counters, "" for none; it changes only in Present.
+	[[nodiscard]] virtual const char *	OverlayStats() const { return ""; }
 
 	// ---- frame: main thread ----------------------------------------------------------------------
 	// Opens the frame and starts the GPU timer. Draws, clears and copies are legal until EndFrame.

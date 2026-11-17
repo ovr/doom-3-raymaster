@@ -46,6 +46,9 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12DescriptorPool x 3       SRV, RTV, DSV: the permanent views, never shader visible
 	      ├── idD3D12DescriptorRing           the shader-visible CBV/SRV heap, 8-slot tables reused by fence
 	      ├── idD3D12UploadRing               "constants": 16 MB UPLOAD for the root CBVs, reused by fence
+	      ├── idD3D12UploadRing               "staging": 64 MB UPLOAD, the copy sources of buffers and textures
+	      ├── idD3D12Uploader                 copies through "staging" into the open list, a submit every 16 MB
+	      ├── idD3D12BufferStore              bufferHandle_t → FRAME in UPLOAD heaps, STATIC in DEFAULT + a CPU mirror
 	      ├── idD3D12ShaderCompiler           FXC with constant flags
 	      ├── idD3D12RootSignature            the 5 parameters of every PSO
 	      ├── idD3D12SceneTarget              colour + depth in GL row order, the MSAA resolve texture
@@ -64,6 +67,7 @@ If you have questions concerning this license or the applicable additional terms
 	  Resize, vid_restart, Shutdown  a signal after the last Present  ResizeBuffers and releasing a back buffer need an idle queue
 */
 
+#include "d3d12_Buffers.h"
 #include "d3d12_Draw.h"
 
 class idD3D12Context final : public idD3D12Submitter {
@@ -79,7 +83,8 @@ public:
 	void							WaitFor( uint64 fence ) override;
 	void							WaitIdle() override;
 	uint64							PendingFence() const override { return queue.LastSignaled() + 1; }
-	uint64							ListSerial() const override { return commands.Serial(); }
+	// The list that commands recorded now land in, also before it is opened.
+	uint64							ListSerial() const override { return commands.IsOpen() ? commands.Serial() : commands.Serial() + 1; }
 	uint64							WaitedFence() const override { return queue.Waited(); }
 
 	void							BeginFrame( int width, int height );	// follows a window that changed size on its own
@@ -88,6 +93,8 @@ public:
 	void							ReadOutputPixels( int x, int y, int width, int height, byte * rgb );	// R8: after EndFrame
 	void							Resize( int width, int height );		// between frames; 0 x 0 (minimized) is ignored
 	void							PrintInfo() const;
+	// The frame before the last Present.
+	[[nodiscard]] const d3d12FrameStats_t &	LastFrameStats() const { return lastFrame; }
 
 	idD3D12Library					library;
 	idD3D12Device					device;
@@ -101,6 +108,9 @@ public:
 	idD3D12DescriptorPool			dsvPool;
 	idD3D12DescriptorRing			descriptors;
 	idD3D12UploadRing				constants;
+	idD3D12UploadRing				staging;
+	idD3D12Uploader					uploader;
+	idD3D12BufferStore				buffers;
 	idD3D12ShaderCompiler			compiler;
 	idD3D12RootSignature			rootSignature;
 	idD3D12SceneTarget				scene;
@@ -112,7 +122,12 @@ public:
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );
 	[[nodiscard]] std::expected<void, idStr>	CreateOutput( HWND window, int width, int height );
+	void							CreateDefaults();	// the internal passes and the default buffers
 	void							Retire( uint64 waitedFence );	// ring chunks and graves up to an explicitly waited fence
 	// The scene, resolved, into the back buffer through the present blit; leaves it in RENDER_TARGET.
 	void							BlitToBackBuffer( idD3D12SwapChain::backBuffer_t & back );
+	void							EndFrameStats();	// at Present: the counters of the frame into lastFrame
+
+	d3d12FrameStats_t				frame;
+	d3d12FrameStats_t				lastFrame;
 };
