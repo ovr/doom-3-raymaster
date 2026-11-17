@@ -123,7 +123,12 @@ If you have questions concerning this license or the applicable additional terms
 	R9	One backend per run: r_renderApi is CVAR_INIT, vid_restart does not change the API.
 	R10	A pipeline backend opens its pass at the first draw or clear after BeginFrame or after a
 		copy, and closes it at a copy and in EndFrame. SetDefaultState does not close the pass.
-	R11	A slot the program samples and shared code did not bind reads as opaque black.
+	R11	A slot the program samples and shared code did not bind reads as opaque black, from a 2D
+		or a cube texture as programInfo_t::cubeMask says.
+	R12	A stage the game data lacks still gets a handle, and CreateProgram with it raises idLib::Error
+		with the text of GL's failed link, which ends the map load. A stage that fails to compile is
+		NONE. A draw with program NONE is illegal: Debug asserts, GL draws with the fixed-function
+		pipeline, a pipeline backend skips it.
 
 ===============================================================================
 */
@@ -258,9 +263,11 @@ public:
 	virtual void			UnmapBuffer( bufferHandle_t buffer, int dirtyOffset, int dirtyBytes ) = 0;
 
 	// ---- programs ---------------------------------------------------------------------------------------
-	// Loads one stage of base/renderprogs/<name> in the backend's own form. NONE when it is missing or fails.
+	// Loads one stage of base/renderprogs/<name> in the backend's own form. A stage the game data lacks
+	// gets a handle all the same (R12); NONE when it fails to compile.
 	virtual shaderHandle_t	CreateShaderStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info ) = 0;
-	// Pairs two stages. NONE on failure.
+	// Pairs two stages; fragment NONE = a program without a fragment stage. A stage the game data lacks
+	// raises idLib::Error (R12), any other failure returns NONE.
 	virtual programHandle_t	CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * debugName, programInfo_t & info ) = 0;
 	virtual void			DestroyShaderStage( shaderHandle_t shader ) = 0;
 	virtual void			DestroyProgram( programHandle_t program ) = 0;

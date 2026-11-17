@@ -36,6 +36,8 @@ idCVar r_d3d12Adapter( "r_d3d12Adapter", "", CVAR_RENDERER | CVAR_INIT,
 	"Direct3D 12 adapter: empty = the high-performance GPU, warp = the software reference, N = adapter N by GPU preference" );
 idCVar r_d3d12CaptureBackBuffer( "r_d3d12CaptureBackBuffer", "0", CVAR_RENDERER | CVAR_BOOL,
 	"1 = ReadOutputPixels reads the back buffer after the present blit instead of the scene target (checks the blit)" );
+idCVar r_d3d12ShaderCache( "r_d3d12ShaderCache", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT,
+	"1 = Direct3D 12 keeps the DXBC of every shader in fs_savepath/renderprogs/dxbc and compiles only a text it has not seen" );
 
 namespace {
 
@@ -80,7 +82,8 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	uploader( device, *this, staging, barriers, graveyard ),
 	buffers( device, graveyard, uploader, barriers, d3d12BufferPlacement_t::UPLOAD ),
 	textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ),
-	compiler( library ),
+	compiler( library, r_d3d12ShaderCache.GetBool() ),
+	shaders( compiler, graveyard ),
 	rootSignature( device, library ),
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
 	passes( device, rootSignature, compiler, *this, barriers, constants, descriptors, samplers, srvPool ),
@@ -98,6 +101,7 @@ idD3D12Context::~idD3D12Context() {
 	}
 	buffers.DestroyAll();
 	textures.DestroyAll();
+	shaders.DestroyAll();
 	graveyard.CollectAll();
 	device.DrainMessages();
 }
@@ -269,9 +273,9 @@ void idD3D12Context::Resize( int width, int height ) {
 void idD3D12Context::PrintInfo() const {
 	device.PrintInfo();
 	const uint64 version = library.compilerVersion;
-	common->Printf( "D3D12 shader compiler: d3dcompiler_47.dll %u.%u.%u.%u, %d shaders compiled\n", static_cast<unsigned>( version >> 48 ),
-		static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ), static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ), static_cast<unsigned>( version & 0xFFFF ),
-		compiler.Compiled() );
+	common->Printf( "D3D12 shader compiler: d3dcompiler_47.dll %u.%u.%u.%u, compiled %d, %d from the cache; %d stages, %d programs\n",
+		static_cast<unsigned>( version >> 48 ), static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ), static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ),
+		static_cast<unsigned>( version & 0xFFFF ), compiler.Compiled(), compiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
 	if ( swapChain ) {
 		common->Printf( "D3D12 swap chain: %d x %d, %u flip-discard buffers\n", swapChain->Width(), swapChain->Height(), idD3D12SwapChain::BUFFERS );
 	}

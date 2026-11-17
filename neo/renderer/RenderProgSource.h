@@ -73,6 +73,9 @@ struct renderProgVertexInput_t {
 [[nodiscard]] std::optional<renderProgSource_t>	R_LoadRenderProgSource( const char * name, shaderStageType_t stage );
 // renderprogs\<name without extension>.vertex|.pixel
 [[nodiscard]] idStr								R_RenderProgPath( const char * name, shaderStageType_t stage );
+// GL's probe of a stage, the same two ReadFile calls: false where GL creates a stage without a shader.
+// With resource files loaded it looks only in the packs, which hold the GLSL, not the sources.
+[[nodiscard]] bool								R_RenderProgStageExists( const char * name, shaderStageType_t stage );
 
 [[nodiscard]] std::span<const renderProgVertexInput_t>	R_VertexInputs();
 [[nodiscard]] int								R_VertexAttribIndex( std::string_view semantic );	// -1 if unknown

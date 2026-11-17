@@ -51,7 +51,8 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12Uploader                 copies through "staging" into the open list, a submit every 16 MB
 	      ├── idD3D12BufferStore              bufferHandle_t → FRAME in UPLOAD heaps, STATIC in DEFAULT + a CPU mirror
 	      ├── idD3D12TextureStore             textureHandle_t → a committed texture + SRV, the black fallbacks
-	      ├── idD3D12ShaderCompiler           FXC with constant flags
+	      ├── idD3D12ShaderCompiler           FXC with constant flags, the DXBC cache in renderprogs/dxbc
+	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → emitted stages, DXBC pairs, their PSOs
 	      ├── idD3D12RootSignature            the 5 parameters of every PSO
 	      ├── idD3D12SceneTarget              colour + depth in GL row order, the MSAA resolve texture
 	      ├── optional<idD3D12SwapChain>      IDXGISwapChain3, 3 back buffers + RTVs, latency object
@@ -71,6 +72,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "d3d12_Buffers.h"
 #include "d3d12_Draw.h"
+#include "d3d12_Programs.h"
 #include "d3d12_Textures.h"
 
 class idD3D12Context final : public idD3D12Submitter {
@@ -119,6 +121,7 @@ public:
 	idD3D12BufferStore				buffers;
 	idD3D12TextureStore				textures;
 	idD3D12ShaderCompiler			compiler;
+	idD3D12ShaderLibrary			shaders;
 	idD3D12RootSignature			rootSignature;
 	idD3D12SceneTarget				scene;
 	std::optional<idD3D12SwapChain>	swapChain;

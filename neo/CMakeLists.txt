@@ -166,8 +166,9 @@ target_link_options(idlibTests PRIVATE /LARGEADDRESSAWARE /DEBUG)
 set_target_properties(idlibTests PROPERTIES FOLDER "tests")
 add_test(NAME idlibTests COMMAND idlibTests)
 
-# d3d12Tests: the ring, the handle table, the format and sampler tables, and the uploader, buffer and
-# texture stores on a WARP device (the texture border and decoding tests also on the GPU)
+# d3d12Tests: the ring, the handle table, the format and sampler tables, the uploader, buffer and texture
+# stores on a WARP device (the texture border and decoding tests also on the GPU), and the HLSL emitter and
+# FXC over base/renderprogs against neo/tests/d3d12_golden
 #   bin/<config>/d3d12Tests.exe [filter]
 add_executable(d3d12Tests
 	tests/d3d12_tests.cpp
@@ -176,11 +177,15 @@ add_executable(d3d12Tests
 	renderer/D3D12/d3d12_Descriptors.cpp
 	renderer/D3D12/d3d12_Device.cpp
 	renderer/D3D12/d3d12_Formats.cpp
+	renderer/D3D12/d3d12_HlslEmitter.cpp
 	renderer/D3D12/d3d12_Memory.cpp
+	renderer/D3D12/d3d12_Programs.cpp
 	renderer/D3D12/d3d12_RingAllocator.cpp
+	renderer/D3D12/d3d12_ShaderCompiler.cpp
 	renderer/D3D12/d3d12_StateMap.cpp
 	renderer/D3D12/d3d12_Textures.cpp
 	renderer/DXT/DXTDecoder.cpp
+	renderer/RenderProgSource.cpp
 )
 d3bfg_neo_common(d3d12Tests)
 # /W3 like idlibTests: at /W4 the PCH of old idLib headers warns again. Doom3BFG builds the D3D12 files at /W4;
@@ -189,6 +194,7 @@ d3bfg_configure_target(d3d12Tests WARNING_LEVEL 3 WITH_INLINES)
 set_source_files_properties(tests/d3d12_tests.cpp tests/d3d12_test_stubs.cpp PROPERTIES COMPILE_OPTIONS /WX)
 target_compile_definitions(d3d12Tests PRIVATE
 	__DOOM__ _MBCS _CONSOLE
+	D3D12_TESTS_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 	$<$<CONFIG:Retail>:ID_RETAIL>
 )
 target_precompile_headers(d3d12Tests PRIVATE "${D3BFG_PCH}")

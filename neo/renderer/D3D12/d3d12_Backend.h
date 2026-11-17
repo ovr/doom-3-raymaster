@@ -37,15 +37,6 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "d3d12_Context.h"
 
-// Distinct non-zero handles that keep shared code running until the program store exists.
-class idD3D12Placeholders {
-public:
-	template<typename Handle>
-	[[nodiscard]] Handle			NewHandle() { return static_cast<Handle>( ++lastHandle ); }
-private:
-	uintptr_t						lastHandle = 0;
-};
-
 extern idCVar					r_d3d12CheckImages;
 
 // The console commands of d3d12_Diagnostics.cpp act on this context; nullptr outside Init .. Shutdown.
@@ -130,7 +121,6 @@ protected:
 
 private:
 	std::unique_ptr<idD3D12Context>	context;
-	idD3D12Placeholders				placeholders;
 	idD3D12StatsReport				report;
 	idD3D12ImageViewer				viewer;
 };

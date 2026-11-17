@@ -464,6 +464,19 @@ idStr R_RenderProgPath( const char * name, shaderStageType_t stage ) {
 	return path;
 }
 
+bool R_RenderProgStageExists( const char * name, shaderStageType_t stage ) {
+	const idStr source = R_RenderProgPath( name, stage );
+	idStr glsl;
+	glsl.Format( "renderprogs\\glsl\\%s", name );
+	glsl.StripFileExtension();
+	glsl += ( stage == shaderStageType_t::FRAGMENT ) ? "_fragment.glsl" : "_vertex.glsl";
+	ID_TIME_T sourceTime = FILE_NOT_FOUND_TIMESTAMP;
+	const int sourceLength = fileSystem->ReadFile( source, nullptr, &sourceTime );
+	ID_TIME_T glslTime = FILE_NOT_FOUND_TIMESTAMP;
+	const int glslLength = fileSystem->ReadFile( glsl, nullptr, &glslTime );
+	return !( ( glslLength <= 0 || sourceTime > glslTime ) && sourceLength <= 0 );
+}
+
 std::optional<renderProgSource_t> R_LoadRenderProgSource( const char * name, shaderStageType_t stage ) {
 	const idStr path = R_RenderProgPath( name, stage );
 	const std::optional<idStr> text = ReadTextFile( path );

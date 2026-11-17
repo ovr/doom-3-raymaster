@@ -259,10 +259,12 @@ set(D3D12_SOURCES
 	renderer/D3D12/d3d12_Diagnostics.cpp
 	renderer/D3D12/d3d12_Draw.cpp
 	renderer/D3D12/d3d12_Formats.cpp
+	renderer/D3D12/d3d12_HlslEmitter.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
 	renderer/D3D12/d3d12_Memory.cpp
 	renderer/D3D12/d3d12_Output.cpp
 	renderer/D3D12/d3d12_Pipelines.cpp
+	renderer/D3D12/d3d12_Programs.cpp
 	renderer/D3D12/d3d12_RenderBackend.cpp
 	renderer/D3D12/d3d12_RingAllocator.cpp
 	renderer/D3D12/d3d12_ShaderCompiler.cpp

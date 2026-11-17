@@ -71,6 +71,15 @@ CONSOLE_COMMAND( d3d12_checkImages, "reads every texture upload recorded under r
 	static_cast<void>( activeContext->CheckTextures() );
 }
 
+CONSOLE_COMMAND( d3d12_compileAll, "emits and compiles every renderprogs/*.vertex and *.pixel for Direct3D 12 and prints the errors; 'd3d12_compileAll v' lists each source", nullptr ) {
+	if ( activeContext == nullptr ) {
+		common->Printf( "d3d12_compileAll: Direct3D 12 is not running\n" );
+		return;
+	}
+	const bool verbose = ( args.Argc() > 1 && idStr::Icmp( args.Argv( 1 ), "v" ) == 0 );
+	static_cast<void>( activeContext->shaders.CompileAll( verbose ) );
+}
+
 void idD3D12ImageViewer::Reset() {
 	name.Clear();
 	texture = textureHandle_t::NONE;

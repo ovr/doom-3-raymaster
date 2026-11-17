@@ -41,6 +41,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <dxgi1_6.h>
 #include <dxgidebug.h>
 #include <d3dcompiler.h>
+#include <d3d12shader.h>
 #include <wrl/client.h>
 
 #include <array>

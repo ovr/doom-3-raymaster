@@ -104,6 +104,7 @@ bool idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 void idRenderBackendD3D12::Shutdown() {
 	if ( context ) {
 		D3D12_PrintUnimplemented();
+		common->Printf( "d3d12 shaders: compiled %d, %d from the cache\n", context->compiler.Compiled(), context->compiler.CacheHits() );
 		D3D12_SetActiveContext( nullptr );
 		context.reset();
 	}
@@ -244,24 +245,37 @@ void idRenderBackendD3D12::UnmapBuffer( bufferHandle_t buffer, int dirtyOffset, 
 	context->buffers.Unmap( buffer, dirtyOffset, dirtyBytes );
 }
 
-shaderHandle_t idRenderBackendD3D12::CreateShaderStage( shaderStageType_t, const char *, shaderStageInfo_t & info ) {
-	D3D12_Unimplemented( "CreateShaderStage" );
-	info.numParms = 0;
-	return placeholders.NewHandle<shaderHandle_t>();
+// Legal at any time (R2), like a texture; before Init and after Shutdown there is no stage.
+shaderHandle_t idRenderBackendD3D12::CreateShaderStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info ) {
+	if ( !context ) {
+		info.numParms = 0;
+		return shaderHandle_t::NONE;
+	}
+	return context->shaders.CreateStage( stage, name, info );
 }
 
-programHandle_t idRenderBackendD3D12::CreateProgram( shaderHandle_t, shaderHandle_t, const char *, programInfo_t & info ) {
-	D3D12_Unimplemented( "CreateProgram" );
-	info = {};
-	return placeholders.NewHandle<programHandle_t>();
+programHandle_t idRenderBackendD3D12::CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * debugName, programInfo_t & info ) {
+	if ( !context ) {
+		info = {};
+		return programHandle_t::NONE;
+	}
+	return context->shaders.CreateProgram( vertex, fragment, debugName, info );
 }
 
-void idRenderBackendD3D12::DestroyShaderStage( shaderHandle_t ) {
-	D3D12_Unimplemented( "DestroyShaderStage" );
+void idRenderBackendD3D12::DestroyShaderStage( shaderHandle_t shader ) {
+	if ( context ) {
+		context->shaders.DestroyStage( shader );
+	}
 }
 
-void idRenderBackendD3D12::DestroyProgram( programHandle_t ) {
-	D3D12_Unimplemented( "DestroyProgram" );
+// R3: the latch forgets it at once, as GL's does.
+void idRenderBackendD3D12::DestroyProgram( programHandle_t program ) {
+	if ( latch.program == program ) {
+		latch.program = programHandle_t::NONE;
+	}
+	if ( context ) {
+		context->shaders.DestroyProgram( program );
+	}
 }
 
 // caps.timestamps and caps.debugGroups are false: shared code does not call these.
