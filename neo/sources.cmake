@@ -357,6 +357,7 @@ set(DOOMEXE_SOURCES
 	renderer/RenderBackend.cpp
 	renderer/RenderEntity.cpp
 	renderer/RenderLog.cpp
+	renderer/RenderProgSource.cpp
 	renderer/RenderProgs.cpp
 	renderer/RenderSystem.cpp
 	renderer/RenderSystem_init.cpp

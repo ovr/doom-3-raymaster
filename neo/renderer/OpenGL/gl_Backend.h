@@ -232,6 +232,13 @@ private:
 	// Sends the parms both stages of the program read to the program GL has in use.
 	void				CommitParms( programHandle_t program, const idVec4 * parms );
 
+	// r_glCheckLatch (gl_Draw.cpp): GL's culling and depth function against the latch rules
+	void				CheckLatch();
+	void				ReportLatchChecks();
+	static constexpr int MAX_LATCH_WARNINGS = 20;
+	int					latchChecks = 0;
+	int					latchMismatches = 0;
+
 	// what API_DrawIndexed left bound, so that a repeat is skipped; reset by API_SetDefaultState
 	vertexLayoutType_t	currentVertexLayout = LAYOUT_UNKNOWN;
 	bufferHandle_t		currentVertexBuffer = bufferHandle_t::NONE;

@@ -175,7 +175,8 @@ struct pipelineKey_t {
 	uint64		stateBits;		// latch.stateBits & GLS_PIPELINE_BITS
 	uint16		program;		// the backend's dense program index
 	uint8		layout;			// vertexLayoutType_t
-	uint8		raster;			// bits 0-1 resolved cull (0 none, 1 front, 2 back), bit 2 lines, bits 3-5 target format id
+	uint8		raster;			// bits 0-1 effective cull (0 none, 1 front, 2 back), bit 2 lines, bits 3-5 target format id,
+							// bit 6 strict depth test (LESS where the GLS bits say LEQUAL), see renderLatch_t
 	uint8		depthBias;		// 0 = off or dynamic, else slot + 1 in the backend's bias table
 	uint8		pad[3];
 	bool		operator==( const pipelineKey_t & ) const = default;
@@ -187,6 +188,11 @@ struct renderLatch_t {
 	uint64				stateBits = 0;
 	int					cull = CULL_UNSET;		// cullType_t
 	bool				viewIsMirror = false;
+	// GL's rules the frames depend on, both reset by SetDefaultState: TWO_SIDED turns culling off and only a
+	// one-sided Cull right after a TWO_SIDED one turns it on (not one after SetViewMirror's CULL_UNSET); the
+	// depth test is strict LESS until a State whose changed bits include GLS_DEPTHFUNC_BITS.
+	bool				cullEnabled = true;
+	bool				depthFuncStrict = true;
 	float				polyOfsScale = 0.0f;
 	float				polyOfsBias = 0.0f;
 	float				depthBoundsMin = 0.0f;	// 0, 0 = test off

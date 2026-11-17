@@ -164,6 +164,7 @@ Safe without a context: Sys_Error calls it in whatever state the renderer is.
 ========================
 */
 void idRenderBackendGL::Shutdown() {
+	ReportLatchChecks();
 	GLimp_DestroyContext();
 
 	// the queries and fences went with the context; the next one sets its swap interval again

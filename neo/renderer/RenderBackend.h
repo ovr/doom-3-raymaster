@@ -66,15 +66,23 @@ If you have questions concerning this license or the applicable additional terms
 	Vulkan) leaves the change hooks empty, builds a pipelineKey_t from the latch in API_DrawIndexed
 	and looks a pipeline up only when the key differs from the last one.
 
-	Accidents of the OpenGL path that frames depend on stay inside renderer/OpenGL/ and are not
-	part of this contract.
+	Two rules of the OpenGL path change pixels, so they are part of this contract, of the latch and
+	of pipelineKey_t: after a TWO_SIDED Cull face culling stays off until a one-sided Cull right after
+	a TWO_SIDED one (renderLatch_t::cullEnabled; the CULL_UNSET of SetViewMirror does not turn it on),
+	and the depth test is strict LESS after SetDefaultState until a State changes the depth function
+	(renderLatch_t::depthFuncStrict). r_glCheckLatch 1 compares both with GL on every draw.
+
+	Diagnostics every backend has, in the shared wrappers and the frame loop: r_debugMaxDraws N
+	drops the draws of a frame after the first N, r_hashDrawStream 1 prints a hash of every frame's
+	draws without handles and buffer offsets (two runs of a visual demo print the same hashes),
+	r_testClearPattern 1 ends every frame with a fixed pattern of clears (tools/vdemo/check-pattern.py).
 
 	Where OpenGL lives. Only the files of renderer/OpenGL/ and sys/win32/win_glimp.cpp and
 	win_qgl.cpp include the GL headers; the precompiled header does not, so a GL type or a qgl call in
 	shared code does not compile. tools/check-render-api-leaks.ps1 finds the rest (gl* functions
 	that windows.h declares, GL includes, code no config builds) and fails when it finds a name:
 
-	  ctest --test-dir build/vs2022-win32 -C Release -R renderApiLeaks
+	  ctest --test-dir build/vs2022-x64 -C Release -R renderApiLeaks
 
 	Shared code keeps the engine's own names: the GLS_* state bits (RenderState.h), screenConfig
 	(the window and the screen), renderProgManager, RB_* for the passes.
@@ -125,6 +133,25 @@ If you have questions concerning this license or the applicable additional terms
 
 class idImageOpts;
 
+// r_debugMaxDraws and r_hashDrawStream for every backend. The cvars are read once a frame, so with
+// both off a draw pays one compare.
+class idDrawStreamCheck {
+public:
+	void				BeginFrame();
+	void				EndFrame();		// prints the frame's hash with r_hashDrawStream
+	bool				Active() const { return active; }
+	// counts and hashes the draw; false when r_debugMaxDraws drops it
+	[[nodiscard]] bool	Admit( const renderLatch_t & latch, const drawCall_t & dc );
+
+private:
+	bool				active = false;
+	bool				hashing = false;
+	int					maxDraws = -1;
+	int					numDraws = 0;
+	int					numFrames = 0;
+	uint64				hash = 0;
+};
+
 class idRenderBackend {
 public:
 	virtual					~idRenderBackend() = default;
@@ -140,6 +167,9 @@ public:
 	bool					IsOwnerThread() const { return Sys_GetCurrentThreadID() == ownerThread; }
 	// The window's client area changed (mode switch, vid_restart). Sample count does not change.
 	virtual void			ResizeOutput( int width, int height ) = 0;
+	// The size of the last Init or ResizeOutput.
+	int						OutputWidth() const { return outputWidth; }
+	int						OutputHeight() const { return outputHeight; }
 	// A hint between frames; a backend without the notion does nothing.
 	virtual void			SetOption( renderOption_t option, bool enable ) = 0;
 	// Display gamma tables from R_SetColorMappings. GL: device ramp; others: applied in the present blit.
@@ -162,9 +192,13 @@ public:
 	virtual void			SelectOutput( outputEye_t eye ) = 0;
 	// Reads the finished frame: after EndFrame, before Present. RGB8, tightly packed, bottom row first.
 	virtual void			ReadOutputPixels( int x, int y, int width, int height, byte * rgb ) = 0;
+	// The frame loop brackets the draws of a frame with these: after BeginFrame, before EndFrame.
+	void					BeginDrawStream() { drawStream.BeginFrame(); }
+	void					EndDrawStream() { drawStream.EndFrame(); }
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
-	// Resets the latch: state bits 0, cull unset, offsets and bounds off, scissor = output, texture hooks re-sent.
+	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,
+	// scissor = output, texture hooks re-sent.
 	void					SetDefaultState();
 	// Sets the whole state vector. A draw uses the vector latched at its DrawIndexed.
 	void					State( uint64 stateBits );
@@ -268,6 +302,7 @@ protected:
 	pipelineKey_t			PipelineKey( const drawCall_t & dc ) const;
 
 	renderLatch_t			latch;
+	idDrawStreamCheck		drawStream;
 	renderCaps_t			caps = {};
 	uintptr_t				ownerThread = 0;
 	int						outputWidth = 0;
@@ -291,6 +326,9 @@ private:
 extern idRenderBackend *	renderBackend;	// created in R_InitOpenGL, destroyed in idRenderSystemLocal::Shutdown
 extern idCVar				r_renderApi;
 extern idCVar				r_useStateCaching;
+extern idCVar				r_debugMaxDraws;		// RenderSystem_init.cpp, like the two below
+extern idCVar				r_hashDrawStream;
+extern idCVar				r_testClearPattern;
 
 /*
 ===============================================================================
@@ -309,6 +347,9 @@ ID_INLINE void idRenderBackend::State( uint64 stateBits ) {
 		return;
 	}
 	latch.stateBits = stateBits;
+	if ( ( changed & GLS_DEPTHFUNC_BITS ) != 0 ) {
+		latch.depthFuncStrict = false;
+	}
 	API_State( stateBits, changed );
 }
 
@@ -318,13 +359,18 @@ ID_INLINE void idRenderBackend::SetViewMirror( bool isMirror ) {
 	API_BeginView();
 }
 
-// the hook gets the previous value: GL needs it to repeat its enable rule
+// the hook gets the previous value: GL applies the enable rule of latch.cullEnabled itself
 ID_INLINE void idRenderBackend::Cull( int cullType ) {
 	if ( latch.cull == cullType ) {
 		return;
 	}
 	const int previous = latch.cull;
 	latch.cull = cullType;
+	if ( cullType == CT_TWO_SIDED ) {
+		latch.cullEnabled = false;
+	} else if ( previous == CT_TWO_SIDED ) {
+		latch.cullEnabled = true;
+	}
 	API_Cull( cullType, previous );
 }
 
@@ -351,7 +397,11 @@ ID_INLINE void idRenderBackend::Viewport( int x, int y, int width, int height ) 
 	API_Viewport( latch.viewport );
 }
 
+// a negative size is an error in GL (nothing changes) and has no meaning elsewhere
 ID_INLINE void idRenderBackend::Scissor( int x, int y, int width, int height ) {
+	if ( width < 0 || height < 0 ) {
+		return;
+	}
 	latch.scissor = { x, y, width, height };
 	API_Scissor( latch.scissor );
 }
@@ -378,16 +428,23 @@ ID_INLINE void idRenderBackend::DrawIndexed( const drawCall_t & dc ) {
 	assert( IsOwnerThread() && inFrame );
 	assert( latch.cull != CULL_UNSET );					// Cull() must follow SetViewMirror and SetDefaultState
 	assert( latch.program != programHandle_t::NONE );
+	if ( drawStream.Active() && !drawStream.Admit( latch, dc ) ) {
+		return;
+	}
 	API_DrawIndexed( dc );
 }
 
-// raster cull: 1 = cull the faces GL calls GL_FRONT (the engine winds clockwise), 2 = GL_BACK; a mirror swaps them
+// raster cull: 1 = cull the faces GL calls GL_FRONT (the engine winds clockwise), 2 = GL_BACK; a mirror
+// swaps them. A one-sided cull counts only while latch.cullEnabled, as in GL.
 ID_INLINE pipelineKey_t idRenderBackend::PipelineKey( const drawCall_t & dc ) const {
 	pipelineKey_t key = {};
 	key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
 	key.layout = dc.layout;
-	const int cull = ( latch.cull == CT_TWO_SIDED ) ? 0 : ( ( ( latch.cull == CT_BACK_SIDED ) != latch.viewIsMirror ) ? 2 : 1 );
-	key.raster = static_cast<uint8>( cull | ( dc.topology == primitive_t::LINES ? 4 : 0 ) );
+	int cull = 0;
+	if ( latch.cullEnabled && latch.cull != CT_TWO_SIDED ) {
+		cull = ( ( latch.cull == CT_BACK_SIDED ) != latch.viewIsMirror ) ? 2 : 1;
+	}
+	key.raster = static_cast<uint8>( cull | ( dc.topology == primitive_t::LINES ? 4 : 0 ) | ( latch.depthFuncStrict ? 64 : 0 ) );
 	return key;
 }
 

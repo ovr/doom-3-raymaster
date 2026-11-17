@@ -249,6 +249,11 @@ static void R_CheckCvars() {
 	if ( r_multiSamples.IsModified() ) {
 		renderBackend->SetOption( renderOption_t::MULTISAMPLE, r_multiSamples.GetInteger() > 0 );
 	}
+
+	// the wndproc changes the native size when the border is dragged; the output follows between frames
+	if ( renderBackend->OutputWidth() != screenConfig.nativeScreenWidth || renderBackend->OutputHeight() != screenConfig.nativeScreenHeight ) {
+		renderBackend->ResizeOutput( screenConfig.nativeScreenWidth, screenConfig.nativeScreenHeight );
+	}
 }
 
 /*
