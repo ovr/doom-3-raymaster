@@ -43,6 +43,8 @@ If you have questions concerning this license or the applicable additional terms
 ===============================================================================
 */
 
+#include "RenderParms.h"
+
 enum class textureHandle_t : uintptr_t { NONE = 0 };
 enum class bufferHandle_t : uintptr_t { NONE = 0 };
 enum class shaderHandle_t : uintptr_t { NONE = 0 };
@@ -105,7 +107,46 @@ struct vertexLayoutDesc_t {
 	uint16				attribMask;		// bit per PC_ATTRIB_INDEX_*
 	vertexAttribDesc_t	attribs[6];
 };
-extern const vertexLayoutDesc_t vertexLayouts[NUM_VERTEX_LAYOUTS];	// RenderBackend.cpp
+
+static_assert( sizeof( idDrawVert ) == 32 && sizeof( idShadowVert ) == 16 && sizeof( idShadowVertSkinned ) == 32 );
+
+// The vertex inputs of every layout, in the order the OpenGL path sets them up.
+inline constexpr vertexLayoutDesc_t vertexLayouts[NUM_VERTEX_LAYOUTS] = {
+	// LAYOUT_UNKNOWN
+	{},
+	// LAYOUT_DRAW_VERT
+	{
+		sizeof( idDrawVert ), 6,
+		( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_NORMAL ) | ( 1 << PC_ATTRIB_INDEX_COLOR ) | ( 1 << PC_ATTRIB_INDEX_COLOR2 )
+			| ( 1 << PC_ATTRIB_INDEX_ST ) | ( 1 << PC_ATTRIB_INDEX_TANGENT ),
+		{
+			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT3,		DRAWVERT_XYZ_OFFSET },
+			{ PC_ATTRIB_INDEX_NORMAL,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_NORMAL_OFFSET },
+			{ PC_ATTRIB_INDEX_COLOR,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_COLOR_OFFSET },
+			{ PC_ATTRIB_INDEX_COLOR2,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_COLOR2_OFFSET },
+			{ PC_ATTRIB_INDEX_ST,		vertexAttribFormat_t::HALF2,		DRAWVERT_ST_OFFSET },
+			{ PC_ATTRIB_INDEX_TANGENT,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_TANGENT_OFFSET }
+		}
+	},
+	// LAYOUT_DRAW_SHADOW_VERT
+	{
+		sizeof( idShadowVert ), 1,
+		1 << PC_ATTRIB_INDEX_VERTEX,
+		{
+			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT4,		SHADOWVERT_XYZW_OFFSET }
+		}
+	},
+	// LAYOUT_DRAW_SHADOW_VERT_SKINNED
+	{
+		sizeof( idShadowVertSkinned ), 3,
+		( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_COLOR ) | ( 1 << PC_ATTRIB_INDEX_COLOR2 ),
+		{
+			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT4,		SHADOWVERTSKINNED_XYZW_OFFSET },
+			{ PC_ATTRIB_INDEX_COLOR,	vertexAttribFormat_t::UBYTE4_NORM,	SHADOWVERTSKINNED_COLOR_OFFSET },
+			{ PC_ATTRIB_INDEX_COLOR2,	vertexAttribFormat_t::UBYTE4_NORM,	SHADOWVERTSKINNED_COLOR2_OFFSET }
+		}
+	}
+};
 
 struct renderCaps_t {
 	const char *	apiName;				// "OpenGL", "Direct3D 12", "Vulkan"

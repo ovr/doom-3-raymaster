@@ -31,9 +31,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../renderer/tr_local.h"
 #include "../renderer/D3D12/d3d12_Buffers.h"
+#include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
 #include "../renderer/D3D12/d3d12_Textures.h"
+#include "../renderer/D3D12/d3d12_Timers.h"
 #include "../renderer/DXT/DXTCodec.h"
 
 #include <algorithm>
@@ -44,6 +46,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <cstdlib>
 #include <filesystem>
 #include <source_location>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -56,6 +59,7 @@ If you have questions concerning this license or the applicable additional terms
 	The HLSL emitter and FXC run on the repo's base/renderprogs: the texture and gui pairs against
 	neo/tests/d3d12_golden/*.hlsl (D3D12_TESTS_WRITE_GOLDEN=1 writes them), every source through FXC,
 	and the reflection of every program against what GL reported on mars_city1 (renderProgInfo-gl.txt).
+	The pipeline state map runs per GLS family and on random keys; the PSO factory on WARP.
 
 	Usage: d3d12Tests [filter]     filter: run the tests whose name contains it; "all" runs every test
 	D3D12_TESTS_VERBOSE=1 prints every failed check, not only the first 20 of a test.
@@ -1682,6 +1686,492 @@ void Test_HlslReflectionMatchesGl() {
 	Check( programs == 43, va( "%d programs in renderProgInfo-gl.txt, not 43", programs ) );
 }
 
+// ---- pipeline state: pipelineKey_t → the PSO description ---------------------------------------------------
+
+constexpr uint16 GUI_ATTRIBS = ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_ST ) | ( 1 << PC_ATTRIB_INDEX_COLOR );
+constexpr d3d12DepthBias_t TEST_BIAS = { -100, -2.0f };
+
+[[nodiscard]] pipelineKey_t Key( uint64 stateBits, int raster = 0, int layout = LAYOUT_DRAW_VERT ) {
+	pipelineKey_t key = {};
+	key.stateBits = stateBits;
+	key.raster = static_cast<uint8>( raster );
+	key.layout = static_cast<uint8>( layout );
+	return key;
+}
+
+[[nodiscard]] d3d12PipelineDesc_t Desc( const pipelineKey_t & key, uint16 attribs = GUI_ATTRIBS, bool depthBounds = false ) {
+	return D3D12_PipelineDescFor( D3D12_NormalizeKey( key ), attribs, TEST_BIAS, depthBounds );
+}
+
+// Every field of a description, so equal strings are equal PSOs.
+[[nodiscard]] std::string DescBytes( const d3d12PipelineDesc_t & desc ) {
+	std::string out;
+	const auto put = [&out]( const auto value ) { out.append( reinterpret_cast<const char *>( &value ), sizeof( value ) ); };
+	put( desc.blend.AlphaToCoverageEnable );
+	put( desc.blend.IndependentBlendEnable );
+	for ( const D3D12_RENDER_TARGET_BLEND_DESC & target : desc.blend.RenderTarget ) {
+		put( target.BlendEnable );
+		put( target.LogicOpEnable );
+		put( target.SrcBlend );
+		put( target.DestBlend );
+		put( target.BlendOp );
+		put( target.SrcBlendAlpha );
+		put( target.DestBlendAlpha );
+		put( target.BlendOpAlpha );
+		put( target.LogicOp );
+		put( target.RenderTargetWriteMask );
+	}
+	const D3D12_RASTERIZER_DESC & raster = desc.raster;
+	put( raster.FillMode );
+	put( raster.CullMode );
+	put( raster.FrontCounterClockwise );
+	put( raster.DepthBias );
+	put( raster.DepthBiasClamp );
+	put( raster.SlopeScaledDepthBias );
+	put( raster.DepthClipEnable );
+	put( raster.MultisampleEnable );
+	put( raster.AntialiasedLineEnable );
+	put( raster.ForcedSampleCount );
+	put( raster.ConservativeRaster );
+	const D3D12_DEPTH_STENCIL_DESC1 & depth = desc.depthStencil;
+	put( depth.DepthEnable );
+	put( depth.DepthWriteMask );
+	put( depth.DepthFunc );
+	put( depth.StencilEnable );
+	put( depth.StencilReadMask );
+	put( depth.StencilWriteMask );
+	for ( const D3D12_DEPTH_STENCILOP_DESC & face : { depth.FrontFace, depth.BackFace } ) {
+		put( face.StencilFailOp );
+		put( face.StencilDepthFailOp );
+		put( face.StencilPassOp );
+		put( face.StencilFunc );
+	}
+	put( depth.DepthBoundsTestEnable );
+	put( desc.topology );
+	put( desc.colorFormat );
+	put( desc.sample.Count );
+	put( desc.sample.Quality );
+	put( desc.numInputs );
+	put( desc.defaultAttribs );
+	for ( uint32 i = 0; i < desc.numInputs; i++ ) {
+		const D3D12_INPUT_ELEMENT_DESC & input = desc.inputs[i];
+		out += input.SemanticName;
+		put( input.SemanticIndex );
+		put( input.Format );
+		put( input.InputSlot );
+		put( input.AlignedByteOffset );
+		put( input.InputSlotClass );
+		put( input.InstanceDataStepRate );
+	}
+	return out;
+}
+
+void Test_PipelineBlend() {
+	for ( uint64 src = 0; src < 8; src++ ) {
+		for ( uint64 dst = 0; dst < 8; dst++ ) {
+			const D3D12_RENDER_TARGET_BLEND_DESC target = Desc( Key( src | ( dst << 3 ) ) ).blend.RenderTarget[0];
+			const bool colorFactor = target.SrcBlendAlpha == D3D12_BLEND_SRC_COLOR || target.SrcBlendAlpha == D3D12_BLEND_INV_SRC_COLOR
+				|| target.SrcBlendAlpha == D3D12_BLEND_DEST_COLOR || target.SrcBlendAlpha == D3D12_BLEND_INV_DEST_COLOR
+				|| target.DestBlendAlpha == D3D12_BLEND_SRC_COLOR || target.DestBlendAlpha == D3D12_BLEND_INV_SRC_COLOR
+				|| target.DestBlendAlpha == D3D12_BLEND_DEST_COLOR || target.DestBlendAlpha == D3D12_BLEND_INV_DEST_COLOR;
+			Check( !colorFactor, va( "src %llu dst %llu: a *_COLOR alpha factor", src, dst ) );
+			Check( ( target.BlendEnable != FALSE ) == ( src != 0 || dst != 0 ), va( "src %llu dst %llu: blending on unless ONE, ZERO", src, dst ) );
+			Check( target.BlendOp == D3D12_BLEND_OP_ADD && target.BlendOpAlpha == D3D12_BLEND_OP_ADD && !target.LogicOpEnable, "ADD, no logic op" );
+		}
+	}
+	const D3D12_RENDER_TARGET_BLEND_DESC modulate = Desc( Key( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO ) ).blend.RenderTarget[0];
+	Check( modulate.SrcBlend == D3D12_BLEND_DEST_COLOR && modulate.SrcBlendAlpha == D3D12_BLEND_DEST_ALPHA && modulate.DestBlend == D3D12_BLEND_ZERO
+		&& modulate.DestBlendAlpha == D3D12_BLEND_ZERO, "DST_COLOR, ZERO: DEST_ALPHA for alpha" );
+	const D3D12_RENDER_TARGET_BLEND_DESC inverse = Desc( Key( GLS_SRCBLEND_ONE_MINUS_DST_COLOR | GLS_DSTBLEND_ONE_MINUS_SRC_COLOR ) ).blend.RenderTarget[0];
+	Check( inverse.SrcBlend == D3D12_BLEND_INV_DEST_COLOR && inverse.SrcBlendAlpha == D3D12_BLEND_INV_DEST_ALPHA
+		&& inverse.DestBlend == D3D12_BLEND_INV_SRC_COLOR && inverse.DestBlendAlpha == D3D12_BLEND_INV_SRC_ALPHA, "the inverse colour factors" );
+	const D3D12_RENDER_TARGET_BLEND_DESC color = Desc( Key( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_SRC_COLOR ) ).blend.RenderTarget[0];
+	Check( color.SrcBlend == D3D12_BLEND_ZERO && color.DestBlend == D3D12_BLEND_SRC_COLOR && color.DestBlendAlpha == D3D12_BLEND_SRC_ALPHA, "SRC_COLOR" );
+	const D3D12_RENDER_TARGET_BLEND_DESC alpha = Desc( Key( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA ) ).blend.RenderTarget[0];
+	Check( alpha.BlendEnable && alpha.SrcBlend == D3D12_BLEND_SRC_ALPHA && alpha.SrcBlendAlpha == D3D12_BLEND_SRC_ALPHA
+		&& alpha.DestBlend == D3D12_BLEND_INV_SRC_ALPHA && alpha.DestBlendAlpha == D3D12_BLEND_INV_SRC_ALPHA, "the GUI's alpha blend" );
+	const D3D12_RENDER_TARGET_BLEND_DESC opaque = Desc( Key( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO ) ).blend.RenderTarget[0];
+	Check( !opaque.BlendEnable && opaque.SrcBlend == D3D12_BLEND_ONE && opaque.DestBlend == D3D12_BLEND_ZERO, "ONE, ZERO: off, as GL disables GL_BLEND" );
+
+	struct mask_t {
+		uint64	bits;
+		UINT8	writeMask;
+	};
+	const mask_t masks[] = {
+		{ 0, D3D12_COLOR_WRITE_ENABLE_ALL },
+		{ GLS_COLORMASK, D3D12_COLOR_WRITE_ENABLE_ALPHA },
+		{ GLS_ALPHAMASK, D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE },
+		{ GLS_REDMASK | GLS_BLUEMASK, D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_ALPHA },
+		{ GLS_COLORMASK | GLS_ALPHAMASK, 0 },
+	};
+	for ( const mask_t & mask : masks ) {
+		const D3D12_BLEND_DESC blend = Desc( Key( mask.bits ) ).blend;
+		Check( blend.RenderTarget[0].RenderTargetWriteMask == mask.writeMask, va( "mask bits 0x%llx: write mask 0x%x", mask.bits,
+			blend.RenderTarget[0].RenderTargetWriteMask ) );
+		Check( !blend.IndependentBlendEnable && !blend.AlphaToCoverageEnable, "one blend for every target, no alpha to coverage" );
+	}
+}
+
+void Test_PipelineDepth() {
+	struct row_t {
+		uint64					bits;
+		int						raster;
+		D3D12_COMPARISON_FUNC	func;
+	};
+	const row_t rows[] = {
+		{ GLS_DEPTHFUNC_LESS, 0, D3D12_COMPARISON_FUNC_LESS_EQUAL },
+		{ GLS_DEPTHFUNC_ALWAYS, 0, D3D12_COMPARISON_FUNC_ALWAYS },
+		{ GLS_DEPTHFUNC_GREATER, 0, D3D12_COMPARISON_FUNC_GREATER_EQUAL },
+		{ GLS_DEPTHFUNC_EQUAL, 0, D3D12_COMPARISON_FUNC_EQUAL },
+		{ GLS_DEPTHFUNC_LESS, D3D12_KEY_STRICT_DEPTH, D3D12_COMPARISON_FUNC_LESS },
+		{ GLS_DEPTHFUNC_EQUAL, D3D12_KEY_STRICT_DEPTH, D3D12_COMPARISON_FUNC_LESS },	// GL_LESS from SetDefaultState until a State changes it
+	};
+	for ( const row_t & row : rows ) {
+		for ( const uint64 depthMask : { uint64( 0 ), GLS_DEPTHMASK } ) {
+			const D3D12_DEPTH_STENCIL_DESC1 depth = Desc( Key( row.bits | depthMask, row.raster ) ).depthStencil;
+			Check( depth.DepthEnable && depth.DepthFunc == row.func, va( "depth bits 0x%llx, raster 0x%x: func %d", row.bits, row.raster, depth.DepthFunc ) );
+			Check( depth.DepthWriteMask == ( depthMask != 0 ? D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL ), "GLS_DEPTHMASK stops writes only" );
+		}
+	}
+	Check( D3D12_NormalizeKey( Key( GLS_DEPTHFUNC_EQUAL, D3D12_KEY_STRICT_DEPTH ) ) == D3D12_NormalizeKey( Key( 0, D3D12_KEY_STRICT_DEPTH ) ),
+		"under the strict bit the depth function bits do not count" );
+	Check( Desc( Key( 0 ), GUI_ATTRIBS, true ).depthStencil.DepthBoundsTestEnable && !Desc( Key( 0 ) ).depthStencil.DepthBoundsTestEnable,
+		"depth bounds in every PSO when the device has them" );
+}
+
+void Test_PipelineStencil() {
+	const D3D12_DEPTH_STENCIL_DESC1 off = Desc( Key( GLS_STENCIL_MAKE_MASK( 0x0F ) | GLS_STENCIL_MAKE_REF( 5 ) ) ).depthStencil;
+	Check( !off.StencilEnable, "no function and no front ops: no stencil test" );
+	Check( D3D12_NormalizeKey( Key( GLS_STENCIL_MAKE_MASK( 0x0F ) | GLS_SEPARATE_STENCIL ) ) == D3D12_NormalizeKey( Key( 0 ) ),
+		"with the test off the mask and the back ops do not count" );
+	// GLS:316-322 reads the front ops only: back ops alone leave GL's test off
+	const D3D12_DEPTH_STENCIL_DESC1 backOnly = Desc( Key( GLS_SEPARATE_STENCIL | GLS_BackStencilOps( GLS_STENCIL_OP_PASS_INCR ) ) ).depthStencil;
+	Check( !backOnly.StencilEnable, "back ops alone: no stencil test, as in GL" );
+
+	const D3D12_DEPTH_STENCIL_DESC1 swf = Desc( Key( GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_REF( 129 ) | GLS_STENCIL_MAKE_MASK( 255 ) ) ).depthStencil;
+	Check( swf.StencilEnable && swf.StencilReadMask == 255 && swf.StencilWriteMask == 255 && swf.FrontFace.StencilFunc == D3D12_COMPARISON_FUNC_EQUAL
+		&& swf.FrontFace.StencilPassOp == D3D12_STENCIL_OP_KEEP && swf.BackFace.StencilFunc == D3D12_COMPARISON_FUNC_EQUAL, "a function alone turns the test on" );
+	const D3D12_DEPTH_STENCIL_DESC1 incr = Desc( Key( GLS_STENCIL_OP_PASS_INCR ) ).depthStencil;
+	Check( incr.StencilEnable && incr.FrontFace.StencilFunc == D3D12_COMPARISON_FUNC_ALWAYS && incr.FrontFace.StencilPassOp == D3D12_STENCIL_OP_INCR_SAT
+		&& incr.BackFace.StencilPassOp == D3D12_STENCIL_OP_INCR_SAT, "front ops alone turn the test on; GL's INCR saturates" );
+	const D3D12_DEPTH_STENCILOP_DESC wrap = Desc( Key( GLS_STENCIL_OP_FAIL_INCR_WRAP | GLS_STENCIL_OP_ZFAIL_DECR_WRAP | GLS_STENCIL_OP_PASS_DECR ) ).depthStencil.FrontFace;
+	Check( wrap.StencilFailOp == D3D12_STENCIL_OP_INCR && wrap.StencilDepthFailOp == D3D12_STENCIL_OP_DECR && wrap.StencilPassOp == D3D12_STENCIL_OP_DECR_SAT,
+		"INCR_WRAP, DECR_WRAP, DECR: INCR, DECR, DECR_SAT" );
+	const D3D12_DEPTH_STENCILOP_DESC others = Desc( Key( GLS_STENCIL_OP_FAIL_ZERO | GLS_STENCIL_OP_ZFAIL_REPLACE | GLS_STENCIL_OP_PASS_INVERT ) ).depthStencil.FrontFace;
+	Check( others.StencilFailOp == D3D12_STENCIL_OP_ZERO && others.StencilDepthFailOp == D3D12_STENCIL_OP_REPLACE && others.StencilPassOp == D3D12_STENCIL_OP_INVERT,
+		"ZERO, REPLACE, INVERT" );
+	const D3D12_COMPARISON_FUNC funcs[8] = { D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_LESS, D3D12_COMPARISON_FUNC_LESS_EQUAL,
+		D3D12_COMPARISON_FUNC_GREATER, D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_EQUAL, D3D12_COMPARISON_FUNC_NOT_EQUAL,
+		D3D12_COMPARISON_FUNC_NEVER };
+	for ( uint64 func = 1; func < 8; func++ ) {
+		const D3D12_DEPTH_STENCIL_DESC1 depth = Desc( Key( ( func << 36 ) | GLS_STENCIL_MAKE_MASK( 0x3C ) ) ).depthStencil;
+		Check( depth.FrontFace.StencilFunc == funcs[func] && depth.BackFace.StencilFunc == funcs[func] && depth.StencilReadMask == 0x3C,
+			va( "stencil func %llu", func ) );
+	}
+
+	struct separate_t {
+		const char *		name;
+		uint64				bits;
+		D3D12_STENCIL_OP	front[3];
+		D3D12_STENCIL_OP	back[3];
+	};
+	const separate_t separates[] = {
+		{ "Z-pass", GLS_STENCIL_SHADOW_ZPASS, { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_INCR_SAT },
+			{ D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_DECR_SAT } },
+		{ "preload", GLS_STENCIL_SHADOW_PRELOAD, { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_DECR_SAT, D3D12_STENCIL_OP_DECR_SAT },
+			{ D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_INCR_SAT, D3D12_STENCIL_OP_INCR_SAT } },
+		{ "light select", GLS_STENCIL_LIGHT_SELECT, { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_REPLACE, D3D12_STENCIL_OP_ZERO },
+			{ D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_ZERO, D3D12_STENCIL_OP_REPLACE } },
+	};
+	for ( const separate_t & row : separates ) {
+		const D3D12_DEPTH_STENCIL_DESC1 depth = Desc( Key( row.bits | GLS_STENCIL_FUNC_ALWAYS | GLS_STENCIL_MAKE_MASK( 255 ) ) ).depthStencil;
+		const D3D12_DEPTH_STENCILOP_DESC & front = depth.FrontFace;
+		const D3D12_DEPTH_STENCILOP_DESC & back = depth.BackFace;
+		Check( depth.StencilEnable && front.StencilFailOp == row.front[0] && front.StencilDepthFailOp == row.front[1] && front.StencilPassOp == row.front[2],
+			va( "%s: front", row.name ) );
+		Check( back.StencilFailOp == row.back[0] && back.StencilDepthFailOp == row.back[1] && back.StencilPassOp == row.back[2], va( "%s: back", row.name ) );
+	}
+	const uint64 front = GLS_STENCIL_OP_ZFAIL_INCR | GLS_STENCIL_OP_PASS_ZERO;
+	Check( D3D12_NormalizeKey( Key( front | GLS_BackStencilOps( GLS_STENCIL_OP_PASS_DECR ) ) ) == D3D12_NormalizeKey( Key( front ) ),
+		"without SEPARATE_STENCIL the back ops do not count" );
+	Check( D3D12_NormalizeKey( Key( front | GLS_SEPARATE_STENCIL | GLS_BackStencilOps( front ) ) ) == D3D12_NormalizeKey( Key( front ) ),
+		"separate ops equal to the front ones are no separate ops" );
+	Check( D3D12_NormalizeKey( Key( GLS_STENCIL_FUNC_LESS | GLS_STENCIL_MAKE_REF( 1 ) ) ) == D3D12_NormalizeKey( Key( GLS_STENCIL_FUNC_LESS | GLS_STENCIL_MAKE_REF( 200 ) ) ),
+		"the reference is dynamic" );
+}
+
+void Test_PipelineRaster() {
+	Check( R_PipelineCull( CT_FRONT_SIDED, true, false ) == 1 && R_PipelineCull( CT_BACK_SIDED, true, false ) == 2, "front-sided culls GL_FRONT, back-sided GL_BACK" );
+	Check( R_PipelineCull( CT_FRONT_SIDED, true, true ) == 2 && R_PipelineCull( CT_BACK_SIDED, true, true ) == 1, "a mirror swaps them" );
+	Check( R_PipelineCull( CT_TWO_SIDED, true, false ) == 0 && R_PipelineCull( CT_FRONT_SIDED, false, true ) == 0, "two-sided, or culling still off" );
+	const D3D12_CULL_MODE modes[3] = { D3D12_CULL_MODE_NONE, D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_BACK };
+	for ( int cull = 0; cull < 3; cull++ ) {
+		const D3D12_RASTERIZER_DESC raster = Desc( Key( 0, cull ) ).raster;
+		Check( raster.CullMode == modes[cull] && !raster.FrontCounterClockwise, va( "raster cull %d: CullMode %d, clockwise front faces", cull, raster.CullMode ) );
+		Check( Desc( Key( 0, cull | D3D12_KEY_LINES ) ).raster.CullMode == D3D12_CULL_MODE_NONE, "lines are not culled" );
+	}
+	Check( D3D12_NormalizeKey( Key( 0, 1 | D3D12_KEY_LINES ) ) == D3D12_NormalizeKey( Key( 0, D3D12_KEY_LINES ) ), "a line key has no cull" );
+
+	const d3d12PipelineDesc_t wire = Desc( Key( GLS_POLYMODE_LINE ) );
+	Check( wire.raster.FillMode == D3D12_FILL_MODE_WIREFRAME && wire.topology == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, "POLYMODE_LINE: wireframe triangles" );
+	const d3d12PipelineDesc_t lines = Desc( Key( GLS_POLYMODE_LINE, D3D12_KEY_LINES ) );
+	Check( lines.raster.FillMode == D3D12_FILL_MODE_SOLID && lines.topology == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE, "lines: LINE topology" );
+
+	pipelineKey_t biased = Key( GLS_POLYGON_OFFSET );
+	biased.depthBias = 1;
+	const D3D12_RASTERIZER_DESC offset = Desc( biased ).raster;
+	Check( offset.DepthBias == TEST_BIAS.bias && offset.SlopeScaledDepthBias == TEST_BIAS.slope && offset.DepthBiasClamp == 0.0f, "the slot's bias" );
+	Check( Desc( Key( GLS_POLYGON_OFFSET ) ).raster.DepthBias == 0, "slot 0: no bias, whatever the GLS bit" );
+	biased.raster = D3D12_KEY_LINES;
+	Check( D3D12_NormalizeKey( biased ).depthBias == 0 && Desc( biased ).raster.DepthBias == 0 && Desc( biased ).raster.SlopeScaledDepthBias == 0.0f,
+		"no depth bias on lines: GL offsets polygons only" );
+	Check( D3D12_DepthBiasFor( -2.0f, -100.4f ) == d3d12DepthBias_t{ -100, -2.0f } && D3D12_DepthBiasFor( 1.5f, 2.5f ).bias == 3, "units round to an INT" );
+
+	const d3d12PipelineDesc_t plain = Desc( Key( 0, d3d12TargetId_t::Of( false, 1 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	Check( plain.colorFormat == DXGI_FORMAT_R8G8B8A8_UNORM && plain.sample.Count == 1 && plain.sample.Quality == 0, "target 0: UNORM, one sample" );
+	const d3d12PipelineDesc_t srgb = Desc( Key( 0, d3d12TargetId_t::Of( true, 4 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	Check( srgb.colorFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && srgb.sample.Count == 4, "the target id: the sRGB view, 4 samples" );
+	Check( plain.raster.DepthClipEnable && !plain.raster.MultisampleEnable && !plain.raster.AntialiasedLineEnable, "depth clip, aliased lines" );
+}
+
+void Test_PipelineInputs() {
+	const d3d12PipelineDesc_t gui = Desc( Key( 0 ) );
+	Check( gui.numInputs == 3 && !gui.defaultAttribs, "gui: three inputs from the draw vert" );
+	if ( gui.numInputs == 3 ) {
+		const D3D12_INPUT_ELEMENT_DESC * inputs = gui.inputs.data();
+		Check( idStr::Cmp( inputs[0].SemanticName, "POSITION" ) == 0 && inputs[0].Format == DXGI_FORMAT_R32G32B32_FLOAT && inputs[0].AlignedByteOffset == DRAWVERT_XYZ_OFFSET
+			&& inputs[0].InputSlot == 0, "POSITION" );
+		Check( idStr::Cmp( inputs[1].SemanticName, "TEXCOORD" ) == 0 && inputs[1].SemanticIndex == 0 && inputs[1].Format == DXGI_FORMAT_R16G16_FLOAT
+			&& inputs[1].AlignedByteOffset == DRAWVERT_ST_OFFSET, "TEXCOORD0: two halves" );
+		Check( idStr::Cmp( inputs[2].SemanticName, "COLOR" ) == 0 && inputs[2].SemanticIndex == 0 && inputs[2].Format == DXGI_FORMAT_R8G8B8A8_UNORM
+			&& inputs[2].AlignedByteOffset == DRAWVERT_COLOR_OFFSET && inputs[2].InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, "COLOR0" );
+	}
+	Check( Desc( Key( 0 ), static_cast<uint16>( vertexLayouts[LAYOUT_DRAW_VERT].attribMask ) ).numInputs == 6, "all six of a draw vert" );
+
+	const uint16 positionColor = ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_COLOR );
+	const d3d12PipelineDesc_t shadow = Desc( Key( 0, 0, LAYOUT_DRAW_SHADOW_VERT ), positionColor );
+	Check( shadow.numInputs == 2 && shadow.defaultAttribs, "a shadow vert lacks the colour" );
+	if ( shadow.numInputs == 2 ) {
+		Check( shadow.inputs[0].Format == DXGI_FORMAT_R32G32B32A32_FLOAT && shadow.inputs[0].InputSlot == 0, "the shadow vert's xyzw" );
+		Check( shadow.inputs[1].InputSlot == 1 && shadow.inputs[1].AlignedByteOffset == 0 && shadow.inputs[1].Format == DXGI_FORMAT_R32G32B32A32_FLOAT,
+			"the missing colour reads (0, 0, 0, 1) from slot 1" );
+	}
+	const uint16 skinnedAttribs = positionColor | ( 1 << PC_ATTRIB_INDEX_COLOR2 );
+	const d3d12PipelineDesc_t skinned = Desc( Key( 0, 0, LAYOUT_DRAW_SHADOW_VERT_SKINNED ), skinnedAttribs );
+	Check( skinned.numInputs == 3 && !skinned.defaultAttribs && skinned.inputs[2].SemanticIndex == 1
+		&& skinned.inputs[2].AlignedByteOffset == SHADOWVERTSKINNED_COLOR2_OFFSET, "the skinned shadow vert: COLOR1 at its offset" );
+}
+
+// What a PSO of the key is: its program, its layout (the IA's stride) and its description.
+[[nodiscard]] std::string PipelineBytes( const pipelineKey_t & key ) {
+	const uint16 program = key.program;
+	const uint16 attribs = static_cast<uint16>( ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( ( program & 1 ) ? 1 << PC_ATTRIB_INDEX_ST : 0 )
+		| ( ( program & 2 ) ? 1 << PC_ATTRIB_INDEX_COLOR : 0 ) | ( ( program & 4 ) ? 1 << PC_ATTRIB_INDEX_NORMAL : 0 )
+		| ( ( program & 8 ) ? 1 << PC_ATTRIB_INDEX_COLOR2 : 0 ) | ( ( program & 16 ) ? 1 << PC_ATTRIB_INDEX_TANGENT : 0 ) );
+	const d3d12DepthBias_t bias = ( key.depthBias == 0 ) ? d3d12DepthBias_t() : d3d12DepthBias_t{ key.depthBias, key.depthBias * 0.5f };
+	const uint8 layout = ( key.layout < NUM_VERTEX_LAYOUTS ) ? key.layout : static_cast<uint8>( LAYOUT_UNKNOWN );
+	std::string bytes( reinterpret_cast<const char *>( &program ), sizeof( program ) );
+	bytes.push_back( static_cast<char>( layout ) );
+	return bytes + DescBytes( D3D12_PipelineDescFor( key, attribs, bias, true ) );
+}
+
+class idTestRandom {
+public:
+	explicit idTestRandom( uint64 seed ) : state( seed ) {}
+	uint32 Next() {
+		state = state * 6364136223846793005ull + 1442695040888963407ull;
+		return static_cast<uint32>( state >> 33 );
+	}
+	uint64 Bits( int count ) { return ( ( static_cast<uint64>( Next() ) << 32 ) | Next() ) & ( ( count == 64 ) ? ~0ull : ( 1ull << count ) - 1 ); }
+	bool OneIn( uint32 n ) { return Next() % n == 0; }
+private:
+	uint64 state;
+};
+
+// Mostly the values shared code sends, sometimes anything: the stencil test on and off, separate ops equal to the front ones.
+[[nodiscard]] pipelineKey_t RandomKey( idTestRandom & random ) {
+	uint64 bits = random.Bits( 15 );		// blend, masks, polygon mode and offset, depth function
+	bits |= random.OneIn( 4 ) ? random.Bits( 5 ) << 15 : 0;
+	bits |= random.Bits( 8 ) << GLS_STENCIL_FUNC_REF_SHIFT;
+	bits |= ( random.OneIn( 2 ) ? 0xFFull : random.Bits( 8 ) ) << GLS_STENCIL_FUNC_MASK_SHIFT;
+	if ( !random.OneIn( 3 ) ) {
+		bits |= ( random.OneIn( 3 ) ? 0 : random.Bits( 3 ) ) << 36;
+		for ( int op = 0; op < 3; op++ ) {
+			bits |= ( random.OneIn( 2 ) ? 0 : random.Bits( 3 ) ) << ( 39 + op * 3 );
+		}
+	}
+	bits |= ( random.OneIn( 3 ) ? GLS_BackStencilOps( bits ) : random.Bits( 9 ) << 48 ) | ( random.OneIn( 2 ) ? GLS_SEPARATE_STENCIL : 0 );
+	bits |= random.OneIn( 4 ) ? random.Bits( 6 ) << 58 : 0;
+	pipelineKey_t key = {};
+	key.stateBits = bits;
+	key.program = static_cast<uint16>( random.Bits( 5 ) );
+	key.layout = static_cast<uint8>( random.OneIn( 8 ) ? random.Bits( 8 ) : 1 + random.Next() % 3 );
+	key.raster = static_cast<uint8>( random.Bits( random.OneIn( 4 ) ? 8 : 7 ) );
+	key.depthBias = static_cast<uint8>( random.OneIn( 2 ) ? 0 : random.OneIn( 4 ) ? random.Bits( 8 ) : 1 + random.Next() % 2 );
+	if ( random.OneIn( 4 ) ) {
+		key.pad[random.Next() % 3] = static_cast<uint8>( random.Bits( 8 ) );
+	}
+	return key;
+}
+
+// Equal PSO descriptions ⇔ equal normalized keys: every single-bit change of random keys, and field changes that
+// make the back ops equal to the front ones or turn the stencil test off.
+void Test_PipelineNormalize() {
+	idTestRandom random( 0x5EED );
+	int compared = 0;
+	int samePipeline = 0;
+	for ( int i = 0; i < 2000; i++ ) {
+		const pipelineKey_t key = RandomKey( random );
+		const pipelineKey_t normal = D3D12_NormalizeKey( key );
+		const std::string bytes = PipelineBytes( key );
+		Check( D3D12_NormalizeKey( normal ) == normal, "normalizing twice changes nothing" );
+		Check( PipelineBytes( normal ) == bytes, va( "key %d: normalizing changed the PSO", i ) );
+		std::vector<pipelineKey_t> variants;
+		for ( int bit = 0; bit < 128; bit++ ) {
+			pipelineKey_t flipped = key;
+			reinterpret_cast<byte *>( &flipped )[bit / 8] ^= static_cast<byte>( 1 << ( bit % 8 ) );
+			variants.push_back( flipped );
+		}
+		pipelineKey_t copied = key;
+		copied.stateBits = ( copied.stateBits & ~GLS_STENCIL_BACK_OP_BITS ) | GLS_BackStencilOps( copied.stateBits );
+		variants.push_back( copied );
+		pipelineKey_t stencilOff = key;
+		stencilOff.stateBits &= ~( GLS_STENCIL_FUNC_BITS | GLS_STENCIL_FRONT_OP_BITS );
+		variants.push_back( stencilOff );
+		for ( const pipelineKey_t & variant : variants ) {
+			const bool sameKey = ( D3D12_NormalizeKey( variant ) == normal );
+			const bool sameBytes = ( PipelineBytes( variant ) == bytes );
+			if ( !Check( sameKey == sameBytes, va( "key %d: equal normalized keys %d, equal PSOs %d (0x%016llx %04x %02x %02x %02x vs 0x%016llx %02x)", i, sameKey,
+					sameBytes, key.stateBits, key.program, key.layout, key.raster, key.depthBias, variant.stateBits, variant.raster ) ) ) {
+				continue;
+			}
+			compared++;
+			samePipeline += sameBytes ? 1 : 0;
+		}
+	}
+	Check( samePipeline > compared / 10 && samePipeline < compared - compared / 10, va( "%d of %d variants the same PSO: both sides tested", samePipeline, compared ) );
+}
+
+void Test_DepthBiasTable() {
+	idD3D12DepthBiasTable table;
+	Check( table.Slot( 0.0f, 0.0f ) == 0 && table.Slot( 0.0f, 0.3f ) == 0 && table.Num() == 0, "no bias, no slot" );
+	const uint8 first = table.Slot( -2.0f, -100.0f );
+	Check( first == 1 && table[first] == d3d12DepthBias_t{ -100, -2.0f }, "the first bias takes slot 1" );
+	Check( table.Slot( -2.0f, -100.4f ) == first, "units that round to the same INT share the slot" );
+	const uint8 second = table.Slot( -1.0f, -100.0f );
+	Check( second == 2 && table.Slot( -2.0f, -100.0f ) == first && table.Num() == 2, "another factor, another slot; the first is found again" );
+	Check( table[0] == d3d12DepthBias_t(), "slot 0 is no bias" );
+	for ( int i = 3; i <= 255; i++ ) {
+		static_cast<void>( table.Slot( static_cast<float>( i ), 0.0f ) );
+	}
+	Check( table.Num() == 255 && table[255] == d3d12DepthBias_t{ 0, 255.0f }, "255 slots" );
+	Check( table.NearestThisFrame() == 0, "nothing reused while the table has room" );
+
+	Check( table.Slot( 1000.0f, 0.0f ) == 255 && table.Slot( 1000.0f, 0.0f ) == 255 && table.Num() == 255,
+		"a full table gives the nearest bias, also to the cached pair" );
+	Check( table.Slot( 2.4f, -99.0f ) == 2, "the nearest by factor and units: slot 2 (-1, -100)" );
+	Check( table.Slot( 0.0f, -1.0f ) == 0, "no bias is a candidate too" );
+	Check( table.Slot( -2.0f, -100.0f ) == first, "a bias the table has is still exact" );
+	Check( table.NearestThisFrame() == 4, va( "each draw with a nearest bias counts: %d of 4", table.NearestThisFrame() ) );
+	table.ResetFrameCounters();
+	Check( table.NearestThisFrame() == 0, "the count is per frame" );
+}
+
+// The gui program and shadow.vertex alone (no PS) against WARP's runtime and debug layer: every family of keys.
+void Test_WarpPipelines() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12ShaderCompiler compiler( gpu->library, false );
+	const auto build = [&compiler]( const char * name, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
+		const std::optional<renderProgSource_t> source = RepoSource( name, type );
+		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
+	};
+	const auto guiVertex = build( "gui.vertex", shaderStageType_t::VERTEX );
+	const auto guiPixel = build( "gui.pixel", shaderStageType_t::FRAGMENT );
+	const auto shadowVertex = build( "shadow.vertex", shaderStageType_t::VERTEX );
+	if ( !Check( guiVertex && guiPixel && shadowVertex, "the stages compile" ) ) {
+		return;
+	}
+	auto gui = D3D12_LinkProgram( compiler, *guiVertex, &*guiPixel );
+	auto shadow = D3D12_LinkProgram( compiler, *shadowVertex, nullptr );
+	if ( !Check( gui && shadow, "the programs link" ) ) {
+		return;
+	}
+	idD3D12RootSignature root( gpu->device, gpu->library );
+	idD3D12PipelineFactory factory( gpu->device, root );
+	const uint8 slot = factory.Bias().Slot( -2.0f, -100.0f );
+
+	std::vector<pipelineKey_t> keys = {
+		Key( 0, D3D12_KEY_STRICT_DEPTH ),
+		Key( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS, 0 ),
+		Key( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE_MINUS_SRC_COLOR | GLS_COLORMASK, 1 ),
+		Key( GLS_SRCBLEND_ONE_MINUS_DST_COLOR | GLS_DSTBLEND_SRC_COLOR | GLS_ALPHAMASK | GLS_DEPTHFUNC_EQUAL, 2 ),
+		Key( GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_MASK( 255 ) | GLS_DEPTHFUNC_GREATER, 2 ),
+		Key( GLS_STENCIL_OP_PASS_INCR_WRAP | GLS_STENCIL_OP_FAIL_DECR_WRAP | GLS_STENCIL_OP_ZFAIL_INVERT, 1 ),
+		Key( GLS_STENCIL_SHADOW_ZPASS | GLS_STENCIL_FUNC_ALWAYS | GLS_COLORMASK | GLS_ALPHAMASK | GLS_DEPTHMASK, 0 ),
+		Key( GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET, 2 ),
+		Key( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, D3D12_KEY_LINES ),
+	};
+	keys[7].depthBias = slot;
+	for ( int samples = 1, index = 0; samples <= 8; samples *= 2, index++ ) {
+		if ( gpu->device.Features().samples[static_cast<size_t>( index )] ) {
+			keys.push_back( Key( 0, d3d12TargetId_t::Of( true, static_cast<UINT>( samples ) ).value << D3D12_KEY_TARGET_SHIFT ) );
+		}
+	}
+	int pipelines = 0;
+	for ( pipelineKey_t key : keys ) {
+		key.program = gui->dense;
+		Check( factory.Get( *gui, D3D12_NormalizeKey( key ) ) != nullptr, va( "gui: key 0x%016llx raster 0x%02x", key.stateBits, key.raster ) );
+		pipelines++;
+		pipelineKey_t shadowKey = key;
+		shadowKey.layout = LAYOUT_DRAW_SHADOW_VERT;
+		Check( factory.Get( *shadow, D3D12_NormalizeKey( shadowKey ) ) != nullptr, va( "shadow: key 0x%016llx", key.stateBits ) );
+		pipelines++;
+	}
+	Check( factory.CreatedThisFrame() == pipelines && static_cast<int>( gui->pipelines.size() + shadow->pipelines.size() ) == pipelines, "one PSO per key" );
+	const pipelineKey_t again = D3D12_NormalizeKey( keys[1] );
+	Check( factory.Get( *gui, again ) == gui->pipelines[1].pso.Get() && factory.CreatedThisFrame() == pipelines, "a kept key is not created again" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// r_pix 2: nested groups outlive a submit (ended in the list it closes, begun again in the next one);
+// pushes past MAX_DEPTH and their pops are ignored, so the stack stays balanced.
+void Test_WarpDebugGroups() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12DebugGroups groups;
+	groups.Push( gpu->List(), "frame" );
+	groups.Push( gpu->List(), "MRB_DRAW_INTERACTIONS" );
+	Check( groups.Depth() == 2 && groups.PushedThisFrame() == 2, "two nested groups" );
+	groups.CloseAll( gpu->List() );
+	gpu->SubmitChunk();
+	groups.Reopen( gpu->List() );
+	groups.Pop( &gpu->List() );
+	Check( groups.Depth() == 1, "the inner group ends in the next list" );
+
+	constexpr int PUSHES = idD3D12DebugGroups::MAX_DEPTH + 2;
+	const std::string longName( idD3D12DebugGroups::MAX_NAME * 2, 'x' );
+	for ( int i = 0; i < PUSHES; i++ ) {
+		groups.Push( gpu->List(), longName.c_str() );
+	}
+	Check( groups.Depth() == idD3D12DebugGroups::MAX_DEPTH, "the stack stops at MAX_DEPTH" );
+	for ( int i = 0; i < PUSHES; i++ ) {
+		groups.Pop( &gpu->List() );
+	}
+	Check( groups.Depth() == 1, "the pops of the ignored pushes are ignored" );
+	groups.Pop( &gpu->List() );
+	groups.Pop( &gpu->List() );
+	Check( groups.Depth() == 0, "a pop of an empty stack does nothing" );
+	groups.ResetFrameCounters();
+	Check( groups.PushedThisFrame() == 0, "the frame counter restarts" );
+	gpu->WaitIdle();
+	CheckNoLayerErrors( *gpu );
+}
+
 struct testCase_t {
 	const char *	name;
 	void			( *run )();
@@ -1719,6 +2209,15 @@ constexpr testCase_t TESTS[] = {
 	{ "Hlsl_Golden", Test_HlslGolden },
 	{ "Hlsl_AllSources", Test_HlslAllSources },
 	{ "Hlsl_ReflectionMatchesGl", Test_HlslReflectionMatchesGl },
+	{ "Pipeline_Blend", Test_PipelineBlend },
+	{ "Pipeline_Depth", Test_PipelineDepth },
+	{ "Pipeline_Stencil", Test_PipelineStencil },
+	{ "Pipeline_Raster", Test_PipelineRaster },
+	{ "Pipeline_Inputs", Test_PipelineInputs },
+	{ "Pipeline_Normalize", Test_PipelineNormalize },
+	{ "Pipeline_DepthBiasTable", Test_DepthBiasTable },
+	{ "Warp_Pipelines", Test_WarpPipelines },
+	{ "Warp_DebugGroups", Test_WarpDebugGroups },
 };
 
 }	// namespace

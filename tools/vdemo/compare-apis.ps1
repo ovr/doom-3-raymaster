@@ -19,11 +19,13 @@ The summary is printed and written to <OutRoot>\d3d12-<Stage>-summary.md.
 
 -Api opengl runs the same gate on OpenGL, a check of the tools themselves (no GBV there).
 -ExtraArgs go to every run.
+-Layer <name> takes the "args" of that layer of -Bars into every run, runs OpenGL with them as the
+baseline (<OutRoot>\opengl-<Stage>-<name>) instead of -Baseline, and checks the layer's bars.
 
 Exit code 0 when every check passed, 1 otherwise.
 
 .EXAMPLE
-tools\vdemo\compare-apis.ps1 -Stage s8 -Demos _x4_gui -Gbv
+tools\vdemo\compare-apis.ps1 -Stage s8 -Demos _x4_gui -Layer clear -Gbv
 tools\vdemo\compare-apis.ps1 -Stage selftest -Demos 01_camera,_x4_gui -Api opengl
 #>
 [CmdletBinding()]
@@ -35,6 +37,7 @@ param(
 	[ValidateSet( 'opengl', 'd3d12' )] [string] $Api = 'd3d12',
 	[string] $Baseline,
 	[string] $Bars,
+	[string] $Layer,
 	[string] $OutRoot
 )
 
@@ -54,16 +57,24 @@ $runVdemos = Join-Path $PSScriptRoot 'run-vdemos.ps1'
 $cmpFrames = Join-Path $PSScriptRoot 'cmp-frames.py'
 $analyze = Join-Path $PSScriptRoot 'analyze.py'
 $prefix = Join-Path $OutRoot "$Api-$Stage"
+if ( $Layer ) {
+	$layerData = ( Get-Content $Bars -Raw | ConvertFrom-Json ).layers.$Layer
+	if ( -not $layerData ) {
+		Write-Error "no layer '$Layer' in $Bars"
+		exit 1
+	}
+	$ExtraArgs = @( $layerData.args ) + $ExtraArgs
+}
 
 $results = New-Object System.Collections.Generic.List[object]
 function Add-Result( [string] $check, [bool] $passed, [string] $detail ) {
 	$results.Add( [pscustomobject]@{ check = $check; result = $( if ( $passed ) { 'pass' } else { 'FAIL' } ); detail = $detail } )
 }
 
-function Invoke-Run( [string] $name, [hashtable] $options ) {
-	$outDir = "$prefix-$name"
+function Invoke-Run( [string] $name, [hashtable] $options, [string] $runApi = $Api ) {
+	$outDir = Join-Path $OutRoot "$runApi-$Stage-$name"
 	$options['OutDir'] = $outDir
-	$options['Api'] = $Api
+	$options['Api'] = $runApi
 	$options['Demos'] = $Demos
 	$options['ExtraArgs'] = $ExtraArgs
 	$code = 2
@@ -83,7 +94,7 @@ function Invoke-Run( [string] $name, [hashtable] $options ) {
 		$detail = "exit $code, api $( $run.api ), game exit $( $run.exitCode ), validation errors $( $v.errors ) corruption $( $v.corruption ) warnings $( $v.warnings ) live $( $v.live )"
 		if ( $failed ) { $detail += ", failed: $( $failed -join '; ' )" }
 	}
-	Add-Result "run $name" ( $code -eq 0 ) $detail
+	Add-Result "run $( if ( $runApi -ne $Api ) { "$runApi " } )$name" ( $code -eq 0 ) $detail
 	return $outDir
 }
 
@@ -97,18 +108,25 @@ function Invoke-Python( [string] $check, [string[]] $arguments ) {
 	Add-Result $check ( $code -eq 0 ) "exit $code, $last"
 }
 
+if ( $Layer ) {
+	$Baseline = Invoke-Run $Layer @{} 'opengl'
+}
 $a = Invoke-Run 'a' @{ DebugLevel = 1; KeepShaderCache = $true }
 $b = Invoke-Run 'b' @{ DebugLevel = 0; KeepShaderCache = $true }
-Invoke-Python 'frames a = b' @( $cmpFrames, $a, $b )
+Invoke-Python 'frames a = b' ( @( $cmpFrames, $a, $b ) + $Demos )
 
 $analysisArgs = @( $analyze, $a, '--baseline', $Baseline, '--demos', $demoList, '--bars', $Bars, '--all-steps',
 	'--heatmaps', '5', '--sheets', ( Join-Path $OutRoot "sheets-$Stage" ), '--sheet-prefix', "$Stage-" )
+if ( $Layer ) {
+	$analysisArgs += @( '--layer', $Layer )
+}
 Invoke-Python 'bars of a against the baseline' $analysisArgs
 
 if ( $Gbv ) {
 	if ( $Api -eq 'd3d12' ) {
 		$g = Invoke-Run 'gbv' @{ DebugLevel = 2; TimeoutScale = 6; KeepShaderCache = $true }
-		Invoke-Python 'frames a = gbv' @( $cmpFrames, $a, $g )
+		# the demos only: analyze.py has written its heat maps into a\analysis
+		Invoke-Python 'frames a = gbv' ( @( $cmpFrames, $a, $g ) + $Demos )
 	} else {
 		Add-Result 'run gbv' $true 'skipped: GPU-based validation is a D3D12 layer'
 	}
@@ -116,7 +134,8 @@ if ( $Gbv ) {
 
 $passed = -not ( $results | Where-Object { $_.result -ne 'pass' } )
 $lines = @( "# compare-apis $Stage ($Api): $( if ( $passed ) { 'PASS' } else { 'FAIL' } )", '',
-	"Demos: $demoList. Baseline: $Baseline. Bars: $Bars.", '', '| check | result | detail |', '|---|---|---|' )
+	"Demos: $demoList. Baseline: $Baseline. Bars: $Bars$( if ( $Layer ) { ", layer $Layer" } ). Extra args: $( $ExtraArgs -join ' ' ).", '',
+	'| check | result | detail |', '|---|---|---|' )
 $lines += $results | ForEach-Object { "| $( $_.check ) | $( $_.result ) | $( $_.detail ) |" }
 $summary = "$prefix-summary.md"
 [System.IO.File]::WriteAllLines( $summary, [string[]] $lines, ( New-Object System.Text.UTF8Encoding $false ) )

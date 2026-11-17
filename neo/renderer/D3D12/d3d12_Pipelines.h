@@ -28,7 +28,8 @@ If you have questions concerning this license or the applicable additional terms
 
 #pragma once
 
-#include "d3d12_Device.h"
+#include "d3d12_Programs.h"
+#include "d3d12_StateMap.h"
 
 /*
 	The one root signature of every program and every internal pass, version 1.1, 8 DWORDs:
@@ -46,4 +47,50 @@ public:
 
 private:
 	idComPtr<ID3D12RootSignature>	signature;
+};
+
+// pipelineKey_t::depthBias → a D3D12 bias. Each slot holds a distinct bias and none holds no bias, so
+// equal slots ⇔ equal PSOs; slots live as long as the backend.
+class idD3D12DepthBiasTable {
+public:
+	// 0 for no bias. A full table warns once and gives the nearest bias it has, no bias included.
+	[[nodiscard]] uint8				Slot( float factor, float units );
+	[[nodiscard]] d3d12DepthBias_t	operator[]( uint8 slot ) const;		// slot 0: none
+	[[nodiscard]] int				Num() const { return count; }
+	[[nodiscard]] int				NearestThisFrame() const { return nearest; }	// draws whose own bias did not fit
+	void							ResetFrameCounters() { nearest = 0; }
+
+private:
+	[[nodiscard]] uint8				NearestSlot( const d3d12DepthBias_t & wanted ) const;
+
+	std::array<d3d12DepthBias_t, 255>	biases = {};	// slot - 1
+	int								count = 0;
+	float							lastFactor = 0.0f;	// shared code sets one pair for many draws
+	float							lastUnits = 0.0f;
+	uint8							lastSlot = 0;
+	bool							lastNearest = false;
+	bool							reportedFull = false;
+	int								nearest = 0;
+};
+
+// The PSOs of every program, by normalized key, created on first use; they die with their program.
+class idD3D12PipelineFactory {
+public:
+									idD3D12PipelineFactory( const idD3D12Device & device, const idD3D12RootSignature & root );
+	// nullptr only on a lost device.
+	[[nodiscard]] ID3D12PipelineState *	Get( d3d12Program_t & program, const pipelineKey_t & key );
+	[[nodiscard]] idD3D12DepthBiasTable &	Bias() { return bias; }
+	[[nodiscard]] const idD3D12DepthBiasTable &	Bias() const { return bias; }
+	[[nodiscard]] int				CreatedThisFrame() const { return created; }
+	[[nodiscard]] int				Num() const { return total; }
+	void							ResetFrameCounters() { created = 0; bias.ResetFrameCounters(); }
+
+private:
+	[[nodiscard]] idComPtr<ID3D12PipelineState>	Create( const d3d12Program_t & program, const pipelineKey_t & key ) const;
+
+	const idD3D12Device &			device;
+	const idD3D12RootSignature &	root;
+	idD3D12DepthBiasTable			bias;
+	int								created = 0;
+	int								total = 0;		// created since Init; DestroyProgram does not count down
 };

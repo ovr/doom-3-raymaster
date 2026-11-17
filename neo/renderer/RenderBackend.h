@@ -447,14 +447,18 @@ ID_INLINE void idRenderBackend::DrawIndexed( const drawCall_t & dc ) {
 
 // raster cull: 1 = cull the faces GL calls GL_FRONT (the engine winds clockwise), 2 = GL_BACK; a mirror
 // swaps them. A one-sided cull counts only while latch.cullEnabled, as in GL.
+constexpr int R_PipelineCull( int cullType, bool cullEnabled, bool viewIsMirror ) {
+	if ( !cullEnabled || cullType == CT_TWO_SIDED ) {
+		return 0;
+	}
+	return ( ( cullType == CT_BACK_SIDED ) != viewIsMirror ) ? 2 : 1;
+}
+
 ID_INLINE pipelineKey_t idRenderBackend::PipelineKey( const drawCall_t & dc ) const {
 	pipelineKey_t key = {};
 	key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
 	key.layout = dc.layout;
-	int cull = 0;
-	if ( latch.cullEnabled && latch.cull != CT_TWO_SIDED ) {
-		cull = ( ( latch.cull == CT_BACK_SIDED ) != latch.viewIsMirror ) ? 2 : 1;
-	}
+	const int cull = R_PipelineCull( latch.cull, latch.cullEnabled, latch.viewIsMirror );
 	key.raster = static_cast<uint8>( cull | ( dc.topology == primitive_t::LINES ? 4 : 0 ) | ( latch.depthFuncStrict ? 64 : 0 ) );
 	return key;
 }

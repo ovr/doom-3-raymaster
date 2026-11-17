@@ -28,23 +28,9 @@ If you have questions concerning this license or the applicable additional terms
 
 #pragma once
 
-#include <bit>
-
 #include "d3d12_Descriptors.h"
 #include "d3d12_Memory.h"
-
-// Raster bits 3-5 of pipelineKey_t: the sRGB view and the sample count of the scene target.
-struct d3d12TargetId_t {
-	uint8							value = 0;
-	[[nodiscard]] static constexpr d3d12TargetId_t	Of( bool srgb, UINT samples ) {	// samples 1, 2, 4 or 8
-		return { static_cast<uint8>( ( srgb ? 1 : 0 ) | ( std::countr_zero( samples ) << 1 ) ) };
-	}
-	[[nodiscard]] constexpr bool	Srgb() const { return ( value & 1 ) != 0; }
-	[[nodiscard]] constexpr UINT	Samples() const { return 1u << ( value >> 1 ); }
-	[[nodiscard]] constexpr DXGI_FORMAT	ColorView() const { return Srgb() ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM; }
-	static constexpr int			COUNT = 8;
-	static constexpr DXGI_FORMAT	DEPTH = DXGI_FORMAT_D24_UNORM_S8_UINT;
-};
+#include "d3d12_StateMap.h"
 
 // The frame every draw, clear, copy and readback works on, in GL row order: memory row 0 is the bottom of
 // the screen, so the rectangles of shared code are used as they are and only the present blit flips rows.

@@ -270,6 +270,7 @@ set(D3D12_SOURCES
 	renderer/D3D12/d3d12_ShaderCompiler.cpp
 	renderer/D3D12/d3d12_StateMap.cpp
 	renderer/D3D12/d3d12_Textures.cpp
+	renderer/D3D12/d3d12_Timers.cpp
 )
 
 

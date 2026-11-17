@@ -111,29 +111,23 @@ static void RB_EndFrame() {
 	renderBackend->EndFrame();
 }
 
-/*
-=============
-RB_SetBuffer
-=============
-*/
-static void	RB_SetBuffer() {
+// The colour clear at the start of a frame, or of a stereo eye, which is always cleared (black by default).
+// r_clear 0 leaves a mono frame what the frame before left in the target, as the mono path always did:
+// GL's swap chain buffer, D3D12's scene target. r_singleArea leaves pixels unrendered, so it clears too.
+static void RB_SetBuffer( bool stereoEye ) {
+	const bool requested = r_clear.GetFloat() != 0.0f || idStr::Length( r_clear.GetString() ) != 1 || r_singleArea.GetBool();
+	if ( !requested && !stereoEye ) {
+		return;
+	}
 	RENDERLOG_PRINTF( "---------- RB_SetBuffer ----------\n" );
 
 	renderBackend->Scissor( 0, 0, tr.GetWidth(), tr.GetHeight() );
-
-	// clear screen for debugging
-	// automatically enable this with several other debug tools
-	// that might leave unrendered portions of the screen
-	if ( r_clear.GetFloat() || idStr::Length( r_clear.GetString() ) != 1 || r_singleArea.GetBool() ) {
-		float c[3];
-		if ( sscanf( r_clear.GetString(), "%f %f %f", &c[0], &c[1], &c[2] ) == 3 ) {
-			renderBackend->Clear( true, false, false, 0, c[0], c[1], c[2], 1.0f );
-		} else if ( r_clear.GetInteger() == 2 ) {
-			renderBackend->Clear( true, false, false, 0, 0.0f, 0.0f,  0.0f, 1.0f );
-		} else {
-			renderBackend->Clear( true, false, false, 0, 0.4f, 0.0f, 0.25f, 1.0f );
-		}
+	idVec3 c( 0.0f, 0.0f, 0.0f );
+	if ( requested && sscanf( r_clear.GetString(), "%f %f %f", &c.x, &c.y, &c.z ) != 3 ) {
+		// a partial parse has written c.x ("2" gives red): r_clear 2 is black, anything else the debug purple
+		c = r_clear.GetInteger() == 2 ? idVec3( 0.0f, 0.0f, 0.0f ) : idVec3( 0.4f, 0.0f, 0.25f );
 	}
+	renderBackend->Clear( true, false, false, 0, c.x, c.y, c.z, 1.0f );
 }
 
 /*
@@ -237,7 +231,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 				}
 				break;
 			case RC_SET_BUFFER:
-				RB_SetBuffer();
+				RB_SetBuffer( true );
 				break;
 			case RC_COPY_RENDER:
 				RB_CopyRender( cmds );
@@ -483,6 +477,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			}
 			break;
 		case RC_SET_BUFFER:
+			RB_SetBuffer( false );
 			c_setBuffers++;
 			break;
 		case RC_COPY_RENDER:

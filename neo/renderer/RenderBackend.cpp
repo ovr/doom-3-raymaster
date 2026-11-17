@@ -41,60 +41,6 @@ idRenderBackendFactory * idRenderBackendFactory::staticFactories = nullptr;
 
 /*
 ========================
-vertexLayouts
-
-The vertex inputs of every layout, in the order the OpenGL path sets them up.
-========================
-*/
-namespace {
-
-constexpr uint16 AttribBit( int index ) {
-	return static_cast<uint16>( 1 << index );
-}
-
-}	// namespace
-
-static_assert( sizeof( idDrawVert ) == 32 && sizeof( idShadowVert ) == 16 && sizeof( idShadowVertSkinned ) == 32 );
-
-const vertexLayoutDesc_t vertexLayouts[NUM_VERTEX_LAYOUTS] = {
-	// LAYOUT_UNKNOWN
-	{},
-	// LAYOUT_DRAW_VERT
-	{
-		sizeof( idDrawVert ), 6,
-		AttribBit( PC_ATTRIB_INDEX_VERTEX ) | AttribBit( PC_ATTRIB_INDEX_NORMAL ) | AttribBit( PC_ATTRIB_INDEX_COLOR )
-			| AttribBit( PC_ATTRIB_INDEX_COLOR2 ) | AttribBit( PC_ATTRIB_INDEX_ST ) | AttribBit( PC_ATTRIB_INDEX_TANGENT ),
-		{
-			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT3,		DRAWVERT_XYZ_OFFSET },
-			{ PC_ATTRIB_INDEX_NORMAL,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_NORMAL_OFFSET },
-			{ PC_ATTRIB_INDEX_COLOR,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_COLOR_OFFSET },
-			{ PC_ATTRIB_INDEX_COLOR2,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_COLOR2_OFFSET },
-			{ PC_ATTRIB_INDEX_ST,		vertexAttribFormat_t::HALF2,		DRAWVERT_ST_OFFSET },
-			{ PC_ATTRIB_INDEX_TANGENT,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_TANGENT_OFFSET }
-		}
-	},
-	// LAYOUT_DRAW_SHADOW_VERT
-	{
-		sizeof( idShadowVert ), 1,
-		AttribBit( PC_ATTRIB_INDEX_VERTEX ),
-		{
-			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT4,		SHADOWVERT_XYZW_OFFSET }
-		}
-	},
-	// LAYOUT_DRAW_SHADOW_VERT_SKINNED
-	{
-		sizeof( idShadowVertSkinned ), 3,
-		AttribBit( PC_ATTRIB_INDEX_VERTEX ) | AttribBit( PC_ATTRIB_INDEX_COLOR ) | AttribBit( PC_ATTRIB_INDEX_COLOR2 ),
-		{
-			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT4,		SHADOWVERTSKINNED_XYZW_OFFSET },
-			{ PC_ATTRIB_INDEX_COLOR,	vertexAttribFormat_t::UBYTE4_NORM,	SHADOWVERTSKINNED_COLOR_OFFSET },
-			{ PC_ATTRIB_INDEX_COLOR2,	vertexAttribFormat_t::UBYTE4_NORM,	SHADOWVERTSKINNED_COLOR2_OFFSET }
-		}
-	}
-};
-
-/*
-========================
 idRenderBackendFactory::idRenderBackendFactory
 
 Runs before main: only links the instance into the list.

@@ -168,6 +168,14 @@ void idD3D12BufferStore::Unmap( bufferHandle_t handle, int dirtyOffset, int dirt
 	uploader.BufferRange( *buffer->resource.Get(), buffer->state, UseState( buffer->type ), static_cast<uint64>( dirtyOffset ), dirty );
 }
 
+const d3d12Buffer_t * idD3D12BufferStore::Use( bufferHandle_t handle ) {
+	d3d12Buffer_t * buffer = table.Find( handle );
+	if ( buffer != nullptr && buffer->placement == d3d12BufferPlacement_t::STAGED ) {
+		barriers.Transition( *buffer->resource.Get(), buffer->state, UseState( buffer->type ) );
+	}
+	return buffer;
+}
+
 D3D12_GPU_VIRTUAL_ADDRESS idD3D12BufferStore::ZeroJoints() const {
 	return zeroJoints ? zeroJoints->GetGPUVirtualAddress() : 0;
 }

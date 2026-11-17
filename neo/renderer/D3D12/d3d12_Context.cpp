@@ -85,10 +85,11 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	compiler( library, r_d3d12ShaderCache.GetBool() ),
 	shaders( compiler, graveyard ),
 	rootSignature( device, library ),
+	pipelines( device, rootSignature ),
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
 	passes( device, rootSignature, compiler, *this, barriers, constants, descriptors, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
-	recorder( *this, barriers, scene, passes ) {
+	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, srvPool, constants, descriptors, samplers ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The members then die in
@@ -132,6 +133,7 @@ ID3D12GraphicsCommandList1 & idD3D12Context::List() {
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( rootSignature.Get() );
 	recorder.Invalidate();
+	groups.Reopen( list );
 	return list;
 }
 
@@ -140,6 +142,7 @@ uint64 idD3D12Context::SubmitChunk() {
 		return queue.LastSignaled();
 	}
 	barriers.Flush();
+	groups.CloseAll( commands.List() );
 	const uint64 fence = commands.CloseAndExecute();
 	constants.CloseChunk( fence );
 	staging.CloseChunk( fence );
@@ -209,16 +212,30 @@ presentResult_t idD3D12Context::Present( presentMode_t mode ) {
 }
 
 void idD3D12Context::EndFrameStats() {
+	frame.draw = recorder.TakeStats();
+	frame.psoCreated = pipelines.CreatedThisFrame();
+	frame.nearestBiases = pipelines.Bias().NearestThisFrame();
 	frame.barriers = barriers.IssuedThisFrame();
 	frame.uploadBytes = uploader.BytesThisFrame();
 	frame.inPlaceBytes = buffers.InPlaceBytesThisFrame();
 	frame.samplerTables = samplers.BuiltThisFrame();
+	frame.debugGroups = groups.PushedThisFrame();
 	lastFrame = frame;
 	frame = {};
+	pipelines.ResetFrameCounters();
 	barriers.ResetFrameCounters();
 	uploader.ResetFrameCounters();
 	buffers.ResetFrameCounters();
 	samplers.ResetFrameCounters();
+	groups.ResetFrameCounters();
+}
+
+void idD3D12Context::PushGroup( const char * name ) {
+	groups.Push( List(), name );
+}
+
+void idD3D12Context::PopGroup() {
+	groups.Pop( commands.IsOpen() ? &commands.List() : nullptr );
 }
 
 // Over everything the frame drew, in the scene target, so ReadOutputPixels captures it.
@@ -276,6 +293,8 @@ void idD3D12Context::PrintInfo() const {
 	common->Printf( "D3D12 shader compiler: d3dcompiler_47.dll %u.%u.%u.%u, compiled %d, %d from the cache; %d stages, %d programs\n",
 		static_cast<unsigned>( version >> 48 ), static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ), static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ),
 		static_cast<unsigned>( version & 0xFFFF ), compiler.Compiled(), compiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
+	common->Printf( "D3D12 pipelines: %d PSOs created, %d depth biases; depth bounds %s\n", pipelines.Num(), pipelines.Bias().Num(),
+		device.Features().depthBounds ? "in every PSO" : "unsupported" );
 	if ( swapChain ) {
 		common->Printf( "D3D12 swap chain: %d x %d, %u flip-discard buffers\n", swapChain->Width(), swapChain->Height(), idD3D12SwapChain::BUFFERS );
 	}

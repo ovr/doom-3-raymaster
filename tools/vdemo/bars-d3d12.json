@@ -9,7 +9,8 @@
 		"stage that first runs the demo on D3D12. The first pass of stages 8-12 may tighten a bar to the",
 		"worst value seen (SSIM - 0.005, fractions x 1.5, blob x 2); a bar is relaxed only with a heat map",
 		"and a named difference in the commit message.",
-		"layers: bars of runs with the same extra cvars on both APIs, replacing the plain bars of a demo.",
+		"layers: bars of runs with the same extra cvars (args) on both APIs, replacing the plain bars of a demo;",
+		"compare-apis.ps1 -Layer runs OpenGL with the args as the baseline.",
 		"_x3_perf has no bar: it only measures time."
 	],
 	"demos": {
@@ -31,8 +32,16 @@
 		"_x7_heathaze":       { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1 O9, run alone: loadAttempts 2 on both APIs", "stage": 9 }
 	},
 	"layers": {
+		"clear": {
+			"comment": "r_clear 2 on both APIs: a mono frame is never cleared otherwise, so 2D alone shows what earlier frames left (GL: the swap chain buffer, D3D12: the scene target)",
+			"args": [ "+set", "r_clear", "2" ],
+			"demos": {
+				"_x4_gui": { "ssimMin": 0.990, "ssimMean": 0.997, "frac8": 0.003, "blob": 16, "differences": "O2 O7 O1", "stage": 8 }
+			}
+		},
 		"msaa4": {
 			"comment": "r_multiSamples 4 on both APIs",
+			"args": [ "+set", "r_multiSamples", "4" ],
 			"demos": {
 				"01_camera":  { "ssimMin": 0.960, "ssimMean": 0.985, "frac8": 0.015, "blob": 128, "differences": "O1 O16", "stage": 12 },
 				"05_weapons": { "ssimMin": 0.960, "ssimMean": 0.985, "frac8": 0.015, "blob": 128, "differences": "O1 O16", "stage": 12 }

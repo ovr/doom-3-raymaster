@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../tr_local.h"
 #include "d3d12_Descriptors.h"
+#include "d3d12_Timers.h"
 
 namespace {
 
@@ -335,14 +336,14 @@ void idD3D12Device::FillCaps( renderCaps_t & caps ) const {
 		}
 	}
 	caps.depthBits = 24;
-	caps.maxDebugGroupDepth = 64;
+	caps.maxDebugGroupDepth = idD3D12DebugGroups::MAX_DEPTH;
 	caps.depthBoundsTest = features.depthBounds;
 	caps.maskedColorClear = true;
 	caps.quadBufferStereo = false;
 	caps.adaptiveSync = false;
 	caps.gpuTimer = false;
 	caps.timestamps = false;
-	caps.debugGroups = false;
+	caps.debugGroups = true;
 }
 
 int idD3D12Device::DrainMessages() const {

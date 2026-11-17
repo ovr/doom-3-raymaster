@@ -232,6 +232,7 @@ bufferHandle_t idRenderBackendD3D12::CreateBuffer( bufferType_t type, bufferUsag
 // After Shutdown there is nothing to destroy: every older handle is invalid (contract).
 void idRenderBackendD3D12::DestroyBuffer( bufferHandle_t buffer ) {
 	if ( context ) {
+		context->recorder.ForgetBuffer( buffer );
 		context->buffers.Destroy( buffer );
 	}
 }
@@ -274,11 +275,12 @@ void idRenderBackendD3D12::DestroyProgram( programHandle_t program ) {
 		latch.program = programHandle_t::NONE;
 	}
 	if ( context ) {
+		context->recorder.ForgetProgram( program );
 		context->shaders.DestroyProgram( program );
 	}
 }
 
-// caps.timestamps and caps.debugGroups are false: shared code does not call these.
+// caps.timestamps is false: shared code does not call these.
 void idRenderBackendD3D12::WriteTimestamp( int, int ) {
 	D3D12_Unimplemented( "WriteTimestamp" );
 }
@@ -296,19 +298,23 @@ void idRenderBackendD3D12::ReadTimestamps( int, int count, uint64 * nanoseconds 
 void idRenderBackendD3D12::FreeTimestamps() {
 }
 
-void idRenderBackendD3D12::PushDebugGroup( const char * ) {
-	D3D12_Unimplemented( "PushDebugGroup" );
+void idRenderBackendD3D12::PushDebugGroup( const char * name ) {
+	context->PushGroup( name );
 }
 
 void idRenderBackendD3D12::PopDebugGroup() {
-	D3D12_Unimplemented( "PopDebugGroup" );
+	context->PopGroup();
 }
 
 void idRenderBackendD3D12::API_Clear( const clearDesc_t & clear ) {
 	context->recorder.Clear( latch, clear );
 }
 
-// Counted and skipped.
-void idRenderBackendD3D12::API_DrawIndexed( const drawCall_t & ) {
-	D3D12_Unimplemented( "DrawIndexed" );
+// R12: a draw without a program is counted and skipped.
+void idRenderBackendD3D12::API_DrawIndexed( const drawCall_t & dc ) {
+	if ( latch.program == programHandle_t::NONE ) {
+		context->recorder.SkippedDraw();
+		return;
+	}
+	context->recorder.Draw( latch, PipelineKey( dc ), dc );
 }

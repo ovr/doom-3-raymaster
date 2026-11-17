@@ -42,6 +42,7 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12Queue                    ID3D12CommandQueue, ID3D12Fence; Waited() = the last explicit wait
 	      ├── idD3D12Graveyard                GPU objects that die after the fence of their last list
 	      ├── idD3D12CommandStream            ID3D12GraphicsCommandList1 + allocators reused by fence
+	      ├── idD3D12DebugGroups              r_pix 2: the group stack, ended at a submit and begun again in the next list
 	      ├── idD3D12Barriers                 transitions batched until the next draw, clear, copy or submit
 	      ├── idD3D12DescriptorPool x 3       SRV, RTV, DSV: the permanent views, never shader visible
 	      ├── idD3D12DescriptorRing           the shader-visible CBV/SRV heap, 8-slot tables reused by fence
@@ -54,11 +55,12 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12ShaderCompiler           FXC with constant flags, the DXBC cache in renderprogs/dxbc
 	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → emitted stages, DXBC pairs, their PSOs
 	      ├── idD3D12RootSignature            the 5 parameters of every PSO
+	      ├── idD3D12PipelineFactory          normalized pipelineKey_t → a PSO kept with its program; the depth bias slots
 	      ├── idD3D12SceneTarget              colour + depth in GL row order, the MSAA resolve texture
 	      ├── optional<idD3D12SwapChain>      IDXGISwapChain3, 3 back buffers + RTVs, latency object
 	      ├── idD3D12InternalPasses           the present blit, the masked clear and r_d3d12ShowImage
 	      ├── idD3D12Readback                 copies into a READBACK buffer for ReadOutputPixels
-	      └── idD3D12DrawRecorder             clears (and later draws) into the open pass
+	      └── idD3D12DrawRecorder             clears and draws into the open pass: Prepare, Reserve, Record
 
 	Sync points: every wait is explicit, and everything that frees or reuses memory reads
 	idD3D12Queue::Waited(), never the fence, so two runs record the same commands.
@@ -74,6 +76,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "d3d12_Draw.h"
 #include "d3d12_Programs.h"
 #include "d3d12_Textures.h"
+#include "d3d12_Timers.h"
 
 class idD3D12Context final : public idD3D12Submitter {
 public:
@@ -100,6 +103,8 @@ public:
 	void							ShowImage( textureHandle_t texture );	// r_d3d12ShowImage into the scene, before EndFrame
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
+	void							PushGroup( const char * name );			// r_pix 2, in a frame
+	void							PopGroup();
 	// The frame before the last Present.
 	[[nodiscard]] const d3d12FrameStats_t &	LastFrameStats() const { return lastFrame; }
 
@@ -109,6 +114,7 @@ public:
 	idD3D12Queue					queue;
 	idD3D12Graveyard				graveyard;
 	idD3D12CommandStream			commands;
+	idD3D12DebugGroups				groups;
 	idD3D12Barriers					barriers;
 	idD3D12DescriptorPool			srvPool;
 	idD3D12DescriptorPool			rtvPool;
@@ -123,6 +129,7 @@ public:
 	idD3D12ShaderCompiler			compiler;
 	idD3D12ShaderLibrary			shaders;
 	idD3D12RootSignature			rootSignature;
+	idD3D12PipelineFactory			pipelines;
 	idD3D12SceneTarget				scene;
 	std::optional<idD3D12SwapChain>	swapChain;
 	idD3D12InternalPasses			passes;
