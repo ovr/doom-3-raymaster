@@ -38,26 +38,34 @@ class idD3D12InternalPasses {
 public:
 									idD3D12InternalPasses( const idD3D12Device & device, const idD3D12RootSignature & root, idD3D12ShaderCompiler & compiler,
 										idD3D12Submitter & submitter, idD3D12Barriers & barriers, idD3D12UploadRing & constants,
-										idD3D12DescriptorRing & descriptors, idD3D12DescriptorPool & srvPool );
-	void							CreateDefaults();	// the shaders and the blit PSO: device work, so after construction
+										idD3D12DescriptorRing & descriptors, idD3D12SamplerHeap & samplers, idD3D12DescriptorPool & srvPool );
+	// The shaders and the blit PSO: device work, so after construction. The black views fill the unused table slots.
+	void							CreateDefaults( d3d12Descriptor_t black2D, d3d12Descriptor_t blackCube );
 	// Scene → back buffer (in RENDER_TARGET), the rows flipped. An exact Load and an identity gamma copy the bytes.
 	void							PresentBlit( d3d12Descriptor_t sceneSrv, D3D12_CPU_DESCRIPTOR_HANDLE backBuffer, int width, int height );
 	// A colour clear with a partial write mask: the target (in RENDER_TARGET) inside rect, which lies inside it.
 	void							MaskedClear( D3D12_CPU_DESCRIPTOR_HANDLE target, d3d12TargetId_t id, const renderRect_t & rect,
 										const float rgba[4], uint8 mask );
+	// r_d3d12ShowImage over the target (in RENDER_TARGET): a 2D image as RGB and alpha panels, a cube as a
+	// cross of its faces (+Y above, -X +Z +X -Z, -Y below), each upright as GL samples it. The image is readable.
+	void							ShowImage( d3d12Descriptor_t imageSrv, textureKind_t kind, int imageWidth, int imageHeight,
+										D3D12_CPU_DESCRIPTOR_HANDLE target, d3d12TargetId_t id, int targetWidth, int targetHeight );
 
 private:
 	struct room_t {
 		d3d12UploadSpan_t			parms;			// 256 bytes for root CBV b1
 		std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	table;
+		std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	samplerTable;
 	};
-	[[nodiscard]] std::optional<room_t>	TryRoom( std::span<const d3d12Descriptor_t> textures );
+	[[nodiscard]] std::optional<room_t>	TryRoom( std::span<const d3d12Descriptor_t> textures, const d3d12SamplerTableKey_t * samplerKey );
 	// Full rings: submit, wait for the oldest chunk and take again, before anything is recorded.
-	[[nodiscard]] room_t			Room( std::span<const d3d12Descriptor_t> textures );
+	[[nodiscard]] room_t			Room( std::span<const d3d12Descriptor_t> textures, const d3d12SamplerTableKey_t * samplerKey = nullptr );
 	[[nodiscard]] idComPtr<ID3D12PipelineState>	CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
 										uint8 writeMask, const wchar_t * name ) const;
 	void							Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
 										const renderRect_t & viewport, const room_t & room );
+	void							ShowPanel( ID3D12PipelineState & pso, std::span<const d3d12Descriptor_t> textures, D3D12_CPU_DESCRIPTOR_HANDLE target,
+										const renderRect_t & panel, bool alpha, float level );
 
 	const idD3D12Device &			device;
 	const idD3D12RootSignature &	root;
@@ -66,9 +74,12 @@ private:
 	idD3D12Barriers &				barriers;
 	idD3D12UploadRing &				constants;
 	idD3D12DescriptorRing &			descriptors;
+	idD3D12SamplerHeap &			samplers;
 	idD3D12DescriptorPool &			srvPool;
-	d3d12Descriptor_t				nullSrv;		// the table slots a pass does not sample
-	d3d12Bytecode_t					triangleVs, blitPs, clearPs;
+	std::array<d3d12Descriptor_t, 2>	black;		// by textureKind_t: the table slots a pass does not sample
+	d3d12SamplerTableKey_t			showSamplers;	// s0 trilinear, s1 point, both clamped
+	d3d12Bytecode_t					triangleVs, blitPs, clearPs, show2DPs, showCubePs;
 	idComPtr<ID3D12PipelineState>	blit;
 	std::array<idComPtr<ID3D12PipelineState>, d3d12TargetId_t::COUNT * 16>	maskedClear;	// [target id * 16 + mask], on first use
+	std::array<idComPtr<ID3D12PipelineState>, d3d12TargetId_t::COUNT * 2>	showImage;		// [target id * 2 + kind], on first use
 };

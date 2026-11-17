@@ -31,9 +31,14 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../renderer/tr_local.h"
 #include "../renderer/D3D12/d3d12_Buffers.h"
+#include "../renderer/D3D12/d3d12_StateMap.h"
+#include "../renderer/D3D12/d3d12_Textures.h"
+#include "../renderer/DXT/DXTCodec.h"
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <source_location>
@@ -41,8 +46,10 @@ If you have questions concerning this license or the applicable additional terms
 #include <vector>
 
 /*
-	d3d12Tests: the parts of the Direct3D 12 backend that run without a window. The ring and the handle
-	table are pure arithmetic; the uploader and the buffer store run on a WARP device with the debug layer.
+	d3d12Tests: the parts of the Direct3D 12 backend that run without a window. The ring, the handle
+	table and the format and sampler tables are pure arithmetic; the uploader, the buffer and texture
+	stores and the sampler heap run on a WARP device with the debug layer. The texture tests that a
+	driver could get wrong (Q3's border, RGB565, BC decoding) also run on the GPU, when there is one.
 
 	Usage: d3d12Tests [filter]     filter: run the tests whose name contains it; "all" runs every test
 	D3D12_TESTS_VERBOSE=1 prints every failed check, not only the first 20 of a test.
@@ -261,15 +268,19 @@ public:
 		graveyard( queue ),
 		commands( device, queue ),
 		barriers( *this ),
+		srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ),
+		rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
 		staging( device, stagingSize, L"test staging ring" ),
 		uploader( device, *this, staging, barriers, graveyard ),
-		buffers( device, graveyard, uploader, barriers, d3d12BufferPlacement_t::UPLOAD ) {
+		buffers( device, graveyard, uploader, barriers, d3d12BufferPlacement_t::UPLOAD ),
+		textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ) {
 	}
 	~idTestGpu() {
 		if ( !device.IsLost() ) {
 			WaitIdle();
 		}
 		buffers.DestroyAll();
+		textures.DestroyAll();
 		graveyard.CollectAll();
 	}
 	idTestGpu( const idTestGpu & ) = delete;
@@ -312,9 +323,12 @@ public:
 	idD3D12Graveyard				graveyard;
 	idD3D12CommandStream			commands;
 	idD3D12Barriers					barriers;
+	idD3D12DescriptorPool			srvPool;
+	idD3D12DescriptorPool			rtvPool;
 	idD3D12UploadRing				staging;
 	idD3D12Uploader					uploader;
 	idD3D12BufferStore				buffers;
+	idD3D12TextureStore				textures;
 	int								submits = 0;
 	int								waits = 0;
 };
@@ -365,6 +379,22 @@ void idTestGpu::FinishUnwaited() {
 	if ( device->DebugLevel() == 0 ) {
 		printf( "  no debug layer (Graphics Tools): the API usage is not validated\n" );
 	}
+	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize );
+}
+
+// The high-performance adapter; nullptr (the test skipped, not failed) on a machine without one.
+[[nodiscard]] std::unique_ptr<idTestGpu> CreateHardware( uint64 stagingSize ) {
+	auto library = idD3D12Library::Load();
+	if ( !library ) {
+		Check( false, va( "idD3D12Library::Load: %s", library.error().c_str() ) );
+		return nullptr;
+	}
+	auto device = idD3D12Device::Create( *library, "", 1 );
+	if ( !device || device->Features().warp ) {
+		printf( "  skipped: no hardware adapter\n" );
+		return nullptr;
+	}
+	printf( "  adapter %s\n", device->Features().adapterName.c_str() );
 	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize );
 }
 
@@ -513,6 +543,844 @@ void Test_WarpRingRetiresByWaited() {
 	CheckNoLayerErrors( *gpu );
 }
 
+// ---- the format table and the sampler map --------------------------------------------------------------------
+
+enum testMap_t : UINT { R = 0, G = 1, B = 2, A = 3, ZERO = 4, ONE = 5 };
+
+[[nodiscard]] constexpr UINT Mapping( testMap_t r, testMap_t g, testMap_t b, testMap_t a ) {
+	return D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING( r, g, b, a );
+}
+
+struct formatRow_t {
+	const char *		name;
+	textureFormat_t		format;
+	textureColor_t		color;
+	textureRole_t		role;
+	int					width, height;
+	bool				unalignedBlocks;
+	DXGI_FORMAT			resource;
+	DXGI_FORMAT			rtv;
+	UINT				mapping;
+	uint8				blockBytes, sourceBytes;
+	bool				compressed, sourceBlocks;
+	d3d12Convert_t		convert;
+};
+
+void Test_FormatTable() {
+	using enum d3d12Convert_t;
+	constexpr textureRole_t SAMPLED = textureRole_t::SAMPLED;
+	const UINT IDENTITY = Mapping( R, G, B, A );
+	const formatRow_t rows[] = {
+		{ "RGBA8", FMT_RGBA8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 4, 4, false, false, NONE },
+		{ "COLOR_COPY", FMT_DXT5, CFM_DEFAULT, textureRole_t::COLOR_COPY, 64, 64, true, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 4, 4,
+			false, false, NONE },
+		{ "DEPTH_COPY wins over RGBA8", FMT_RGBA8, CFM_DEFAULT, textureRole_t::DEPTH_COPY, 64, 64, true, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT,
+			Mapping( R, R, R, ONE ), 4, 4, false, false, NONE },
+		{ "XRGB8", FMT_XRGB8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, G, B, ONE ), 4, 4,
+			false, false, NONE },
+		{ "ALPHA", FMT_ALPHA, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( ONE, ONE, ONE, R ), 1, 1,
+			false, false, NONE },
+		{ "L8A8", FMT_L8A8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, R, R, G ), 2, 2,
+			false, false, NONE },
+		{ "LUM8", FMT_LUM8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, R, R, ONE ), 1, 1,
+			false, false, NONE },
+		{ "INT8 (Q3: R8, the mapping applies to the border)", FMT_INT8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN,
+			Mapping( R, R, R, R ), 1, 1, false, false, NONE },
+		{ "DXT1", FMT_DXT1, CFM_DEFAULT, SAMPLED, 64, 64, false, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 8, 8, true, true, NONE },
+		{ "DXT1 green alpha", FMT_DXT1, CFM_GREEN_ALPHA, SAMPLED, 64, 64, false, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( ONE, ONE, ONE, G ),
+			8, 8, true, true, NONE },
+		{ "DXT5", FMT_DXT5, CFM_NORMAL_DXT5, SAMPLED, 64, 64, false, DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 16, 16, true, true, NONE },
+		{ "DXT1 6x6 with OPTIONS8", FMT_DXT1, CFM_DEFAULT, SAMPLED, 6, 6, true, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 8, 8,
+			true, true, NONE },
+		{ "DXT1 6x8 without OPTIONS8", FMT_DXT1, CFM_DEFAULT, SAMPLED, 6, 8, false, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 4, 8,
+			false, true, DECODE_DXT1 },
+		{ "DXT5 8x2 without OPTIONS8", FMT_DXT5, CFM_DEFAULT, SAMPLED, 8, 2, false, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 4, 16,
+			false, true, DECODE_DXT5 },
+		{ "DXT1 decoded, green alpha", FMT_DXT1, CFM_GREEN_ALPHA, SAMPLED, 2, 2, false, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
+			Mapping( ONE, ONE, ONE, G ), 4, 8, false, true, DECODE_DXT1 },
+		{ "RGB565", FMT_RGB565, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, G, B, ONE ), 2, 2,
+			false, false, SWAP_565 },
+		{ "DEPTH", FMT_DEPTH, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT, Mapping( R, R, R, ONE ), 4, 4,
+			false, false, NONE },
+		{ "X16", FMT_X16, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, R, R, R ), 2, 2, false, false, NONE },
+		{ "Y16_X16", FMT_Y16_X16, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, R, R, G ), 4, 4,
+			false, false, NONE },
+		{ "NONE", FMT_NONE, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, 0, 0,
+			false, false, NONE },
+	};
+	for ( const formatRow_t & row : rows ) {
+		const d3d12FormatInfo_t info = D3D12_FormatFor( row.format, row.color, row.role, row.width, row.height, row.unalignedBlocks );
+		Check( info.resource == row.resource && info.srv == row.resource, va( "%s: resource and view format %d", row.name, info.resource ) );
+		Check( info.rtv == row.rtv, va( "%s: render target view", row.name ) );
+		Check( info.mapping == row.mapping, va( "%s: mapping 0x%x, expected 0x%x", row.name, info.mapping, row.mapping ) );
+		Check( info.blockBytes == row.blockBytes && info.sourceBytes == row.sourceBytes, va( "%s: bytes %d / %d", row.name, info.blockBytes,
+			info.sourceBytes ) );
+		Check( info.compressed == row.compressed && info.sourceBlocks == row.sourceBlocks, va( "%s: blocks", row.name ) );
+		Check( info.convert == row.convert, va( "%s: conversion %d", row.name, static_cast<int>( info.convert ) ) );
+	}
+}
+
+void Test_SamplerPacking() {
+	constexpr samplerDesc_t DEFAULT_SAMPLER = { samplerFilter_t::NEAREST, samplerAddress_t::REPEAT, 1.0f, 0.0f };
+	Check( D3D12_PackSampler( DEFAULT_SAMPLER ) == 0, "point, repeat, no anisotropy, no bias packs to 0" );
+	Check( D3D12_UnpackSampler( 0 ) == DEFAULT_SAMPLER, "0 unpacks to it" );
+	const samplerDesc_t samplers[] = {
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::BORDER_TRANSPARENT, 16.0f, -0.5f },
+		{ samplerFilter_t::LINEAR_MIP_NEAREST, samplerAddress_t::CLAMP, 8.0f, 0.25f },
+		{ samplerFilter_t::LINEAR, samplerAddress_t::BORDER_BLACK, 1.0f, 3.0f },
+	};
+	for ( const samplerDesc_t & sampler : samplers ) {
+		Check( D3D12_UnpackSampler( D3D12_PackSampler( sampler ) ) == sampler, va( "filter %d address %d: the round trip",
+			static_cast<int>( sampler.filter ), static_cast<int>( sampler.address ) ) );
+	}
+	Check( D3D12_PackSampler( samplers[0] ) != D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::BORDER_TRANSPARENT, 16.0f, 0.5f } ),
+		"the bias is part of the key" );
+	Check( D3D12_UnpackSampler( D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 99.0f, 0.0f } ) ).maxAnisotropy == 16.0f,
+		"anisotropy is clamped to 16" );
+}
+
+void Test_SamplerMap() {
+	struct row_t {
+		samplerFilter_t		filter;
+		float				anisotropy;
+		bool				anisoPointMip;
+		D3D12_FILTER		expected;
+		float				maxLod;
+	};
+	const row_t rows[] = {
+		{ samplerFilter_t::NEAREST, 1.0f, false, D3D12_FILTER_MIN_MAG_MIP_POINT, 0.0f },
+		{ samplerFilter_t::LINEAR, 1.0f, false, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, 0.0f },
+		{ samplerFilter_t::LINEAR_MIP_NEAREST, 1.0f, true, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_NEAREST, 8.0f, true, D3D12_FILTER_MIN_MAG_ANISOTROPIC_MIP_POINT, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_NEAREST, 8.0f, false, D3D12_FILTER_ANISOTROPIC, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, 1.0f, true, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, 4.0f, true, D3D12_FILTER_ANISOTROPIC, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, 4.0f, false, D3D12_FILTER_ANISOTROPIC, D3D12_FLOAT32_MAX },
+	};
+	for ( const row_t & row : rows ) {
+		const D3D12_SAMPLER_DESC desc = D3D12_SamplerFor( D3D12_PackSampler( { row.filter, samplerAddress_t::REPEAT, row.anisotropy, 0.0f } ),
+			row.anisoPointMip );
+		Check( desc.Filter == row.expected, va( "filter %d, anisotropy %g, OPTIONS19 %d: D3D12 filter 0x%x", static_cast<int>( row.filter ),
+			row.anisotropy, row.anisoPointMip, desc.Filter ) );
+		Check( desc.MaxLOD == row.maxLod && desc.MinLOD == 0.0f, va( "filter %d: MaxLOD %g", static_cast<int>( row.filter ), desc.MaxLOD ) );
+		Check( desc.MaxAnisotropy == static_cast<UINT>( row.anisotropy ), "MaxAnisotropy" );
+	}
+	struct address_t {
+		samplerAddress_t			address;
+		D3D12_TEXTURE_ADDRESS_MODE	mode;
+		float						alpha;
+	};
+	const address_t addresses[] = {
+		{ samplerAddress_t::REPEAT, D3D12_TEXTURE_ADDRESS_MODE_WRAP, 0.0f },
+		{ samplerAddress_t::CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, 0.0f },
+		{ samplerAddress_t::BORDER_BLACK, D3D12_TEXTURE_ADDRESS_MODE_BORDER, 1.0f },
+		{ samplerAddress_t::BORDER_TRANSPARENT, D3D12_TEXTURE_ADDRESS_MODE_BORDER, 0.0f },
+	};
+	for ( const address_t & row : addresses ) {
+		const D3D12_SAMPLER_DESC desc = D3D12_SamplerFor( D3D12_PackSampler( { samplerFilter_t::LINEAR, row.address, 1.0f, 0.0f } ), false );
+		Check( desc.AddressU == row.mode && desc.AddressV == row.mode && desc.AddressW == row.mode, va( "address %d", static_cast<int>( row.address ) ) );
+		Check( desc.BorderColor[0] == 0.0f && desc.BorderColor[1] == 0.0f && desc.BorderColor[2] == 0.0f && desc.BorderColor[3] == row.alpha,
+			va( "address %d: border colour", static_cast<int>( row.address ) ) );
+	}
+	const D3D12_SAMPLER_DESC biased = D3D12_SamplerFor( D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 1.0f, 40.0f } ), false );
+	Check( biased.MipLODBias == D3D12_MIP_LOD_BIAS_MAX, "the bias is clamped to D3D12's range" );
+	Check( D3D12_SamplerFor( D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 1.0f, -0.5f } ), false ).MipLODBias == -0.5f,
+		"the bias" );
+}
+
+[[nodiscard]] d3d12SamplerTableKey_t TableKey( uint32 seed ) {
+	d3d12SamplerTableKey_t key;
+	for ( size_t slot = 0; slot < key.samplers.size(); slot++ ) {
+		key.samplers[slot] = D3D12_PackSampler( { static_cast<samplerFilter_t>( ( seed + slot ) & 3 ), static_cast<samplerAddress_t>( slot & 3 ), 1.0f,
+			static_cast<float>( seed ) * 0.125f } );
+	}
+	return key;
+}
+
+// Tables are kept by key and rewritten only after their last use was waited for: the oldest use first.
+void Test_WarpSamplerTables() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12SamplerHeap heap( gpu->device );
+	const auto first = heap.TryTable( TableKey( 0 ), 5, 0 );
+	const auto again = heap.TryTable( TableKey( 0 ), 6, 0 );
+	Check( first && again && first->ptr == again->ptr && heap.BuiltThisFrame() == 1, "the same key finds its table" );
+	std::vector<uint64> tables = { first ? first->ptr : 0 };
+	for ( uint32 i = 1; i < idD3D12SamplerHeap::TABLES; i++ ) {
+		const auto table = heap.TryTable( TableKey( i ), 10 + i, 0 );
+		tables.push_back( table ? table->ptr : 0 );
+	}
+	Check( heap.Used() == static_cast<int>( idD3D12SamplerHeap::TABLES ) && heap.BuiltThisFrame() == static_cast<int>( idD3D12SamplerHeap::TABLES ),
+		"256 keys, 256 tables" );
+	std::vector<uint64> sorted = tables;
+	std::ranges::sort( sorted );
+	Check( std::ranges::adjacent_find( sorted ) == sorted.end() && sorted.front() != 0, "distinct tables" );
+	Check( !heap.TryTable( TableKey( 1000 ), 300, 5 ), "every table used after fence 5: no room" );
+	Check( heap.OldestUse() == 6, "the oldest use: table 0, used by fence 6" );
+	const auto evicted = heap.TryTable( TableKey( 1000 ), 300, 11 );
+	Check( evicted && evicted->ptr == tables[0], "fence 11 waited: the oldest use (fence 6, table 0) goes first" );
+	const auto next = heap.TryTable( TableKey( 1001 ), 301, 11 );
+	Check( next && next->ptr == tables[1], "then table 1 (fence 11)" );
+	Check( heap.TryTable( TableKey( 2 ), 302, 11 ).has_value() && heap.BuiltThisFrame() == static_cast<int>( idD3D12SamplerHeap::TABLES ) + 2,
+		"a kept key is not built again" );
+	Check( !heap.TryTable( TableKey( 1 ), 303, 11 ), "the evicted key 1 needs a table, and none is free" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// ---- textures, sampled as a shader sees them -----------------------------------------------------------------
+
+constexpr std::string_view SAMPLE_HLSL = R"(
+cbuffer points : register( b0 ) {
+	float4 coords[16];		// xy: uv, or xyz: a direction; w: the mip level
+};
+Texture2D<float4> image : register( t0 );
+TextureCube<float4> cube : register( t1 );
+SamplerState imageSampler : register( s0 );
+float4 vsMain( uint vertexId : SV_VertexID ) : SV_Position {
+	float2 corner = float2( ( vertexId << 1 ) & 2, vertexId & 2 );
+	return float4( corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0 );
+}
+float4 psImage( float4 position : SV_Position ) : SV_Target {
+	float4 c = coords[uint( position.x )];
+	return image.SampleLevel( imageSampler, c.xy, c.w );
+}
+float4 psCube( float4 position : SV_Position ) : SV_Target {
+	float4 c = coords[uint( position.x )];
+	return cube.SampleLevel( imageSampler, c.xyz, c.w );
+}
+)";
+
+// Draws one pixel per point into a float target and reads them back.
+class idTestSampler {
+public:
+	static constexpr int			POINTS = 16;
+	explicit						idTestSampler( idTestGpu & gpu );
+	[[nodiscard]] bool				Ready() const { return pipelines[0] && pipelines[1] && mapped != nullptr; }
+	// The view must be in PIXEL_SHADER_RESOURCE once the batch is flushed.
+	[[nodiscard]] std::vector<idVec4>	Sample( d3d12Descriptor_t view, textureKind_t kind, const D3D12_SAMPLER_DESC & sampler,
+										std::span<const idVec4> points );
+
+private:
+	[[nodiscard]] idComPtr<ID3DBlob>	Compile( const char * entry, const char * profile );
+
+	idTestGpu &						gpu;
+	idComPtr<ID3D12RootSignature>	root;
+	std::array<idComPtr<ID3D12PipelineState>, 2>	pipelines;	// by textureKind_t
+	idComPtr<ID3D12DescriptorHeap>	viewHeap, samplerHeap, rtvHeap;
+	idComPtr<ID3D12Resource>		target, constants, readback;
+	d3d12ResourceState_t			targetState;
+	idVec4 *						mapped = nullptr;
+};
+
+idComPtr<ID3DBlob> idTestSampler::Compile( const char * entry, const char * profile ) {
+	idComPtr<ID3DBlob> code;
+	idComPtr<ID3DBlob> errors;
+	const HRESULT hr = gpu.library.compile( SAMPLE_HLSL.data(), SAMPLE_HLSL.size(), "d3d12 test sampler", nullptr, nullptr, entry, profile,
+		D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors );
+	Check( SUCCEEDED( hr ), va( "compile %s: %s", entry, errors ? static_cast<const char *>( errors->GetBufferPointer() ) : "" ) );
+	return SUCCEEDED( hr ) ? code : nullptr;
+}
+
+idTestSampler::idTestSampler( idTestGpu & owner ) : gpu( owner ) {
+	ID3D12Device2 & device = gpu.device.Get();
+	D3D12_DESCRIPTOR_RANGE1 views = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 0 };
+	D3D12_DESCRIPTOR_RANGE1 samplers = { D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, 0 };
+	std::array<D3D12_ROOT_PARAMETER1, 3> parameters = {};
+	parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	parameters[1].DescriptorTable = { 1, &views };
+	parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	parameters[2].DescriptorTable = { 1, &samplers };
+	parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc = {};
+	desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+	desc.Desc_1_1.NumParameters = static_cast<UINT>( parameters.size() );
+	desc.Desc_1_1.pParameters = parameters.data();
+	idComPtr<ID3DBlob> blob;
+	idComPtr<ID3DBlob> error;
+	if ( !Check( SUCCEEDED( gpu.library.serializeRootSignature( &desc, &blob, &error ) ), "serialize the test root signature" )
+		|| !gpu.device.Check( device.CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &root ) ),
+			"CreateRootSignature (test)" ) ) {
+		return;
+	}
+
+	const idComPtr<ID3DBlob> vertex = Compile( "vsMain", "vs_5_0" );
+	for ( const textureKind_t kind : { textureKind_t::TEX_2D, textureKind_t::TEX_CUBE } ) {
+		const idComPtr<ID3DBlob> pixel = Compile( ( kind == textureKind_t::TEX_2D ) ? "psImage" : "psCube", "ps_5_0" );
+		if ( !vertex || !pixel ) {
+			return;
+		}
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+		pso.pRootSignature = root.Get();
+		pso.VS = { vertex->GetBufferPointer(), vertex->GetBufferSize() };
+		pso.PS = { pixel->GetBufferPointer(), pixel->GetBufferSize() };
+		pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		pso.SampleMask = UINT_MAX;
+		pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		pso.NumRenderTargets = 1;
+		pso.RTVFormats[0] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		pso.SampleDesc.Count = 1;
+		gpu.device.Check( device.CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( &pipelines[static_cast<size_t>( kind )] ) ), "CreateGraphicsPipelineState (test)" );
+	}
+
+	const auto heap = [&]( D3D12_DESCRIPTOR_HEAP_TYPE type, UINT count, bool visible ) {
+		const D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { type, count, visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
+		idComPtr<ID3D12DescriptorHeap> created;
+		gpu.device.Check( device.CreateDescriptorHeap( &heapDesc, IID_PPV_ARGS( &created ) ), "CreateDescriptorHeap (test)" );
+		return created;
+	};
+	viewHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, true );
+	samplerHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 1, true );
+	rtvHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, false );
+
+	D3D12_HEAP_PROPERTIES defaultHeap = {};
+	defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC targetDesc = {};
+	targetDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	targetDesc.Width = POINTS;
+	targetDesc.Height = 1;
+	targetDesc.DepthOrArraySize = 1;
+	targetDesc.MipLevels = 1;
+	targetDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	targetDesc.SampleDesc.Count = 1;
+	targetDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	if ( !gpu.device.Check( device.CreateCommittedResource( &defaultHeap, D3D12_HEAP_FLAG_NONE, &targetDesc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+			IID_PPV_ARGS( &target ) ), "CreateCommittedResource (test target)" ) ) {
+		return;
+	}
+	targetState.current = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	device.CreateRenderTargetView( target.Get(), nullptr, rtvHeap->GetCPUDescriptorHandleForHeapStart() );
+	constants = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_UPLOAD, POINTS * sizeof( idVec4 ), D3D12_RESOURCE_STATE_GENERIC_READ, L"test points" );
+	readback = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_READBACK, POINTS * sizeof( idVec4 ), D3D12_RESOURCE_STATE_COPY_DEST, L"test sampled" );
+	const D3D12_RANGE nothingRead = { 0, 0 };
+	void * cpu = nullptr;
+	if ( constants && readback && gpu.device.Check( constants->Map( 0, &nothingRead, &cpu ), "Map (test points)" ) ) {
+		mapped = static_cast<idVec4 *>( cpu );
+	}
+}
+
+std::vector<idVec4> idTestSampler::Sample( d3d12Descriptor_t view, textureKind_t kind, const D3D12_SAMPLER_DESC & sampler, std::span<const idVec4> points ) {
+	if ( !Ready() || points.size() > POINTS ) {
+		Check( false, "the test sampler is not ready" );
+		return {};
+	}
+	ID3D12Device2 & device = gpu.device.Get();
+	const UINT increment = device.GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+	const UINT slot = ( kind == textureKind_t::TEX_CUBE ) ? 1 : 0;
+	D3D12_CPU_DESCRIPTOR_HANDLE views = viewHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_SHADER_RESOURCE_VIEW_DESC none = {};
+	none.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	none.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	none.ViewDimension = ( slot == 0 ) ? D3D12_SRV_DIMENSION_TEXTURECUBE : D3D12_SRV_DIMENSION_TEXTURE2D;
+	none.Texture2D.MipLevels = 1;
+	D3D12_CPU_DESCRIPTOR_HANDLE other = views;
+	other.ptr += static_cast<SIZE_T>( 1 - slot ) * increment;
+	device.CreateShaderResourceView( nullptr, &none, other );
+	D3D12_CPU_DESCRIPTOR_HANDLE mine = views;
+	mine.ptr += static_cast<SIZE_T>( slot ) * increment;
+	device.CopyDescriptorsSimple( 1, mine, gpu.srvPool.Cpu( view ), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+	device.CreateSampler( &sampler, samplerHeap->GetCPUDescriptorHandleForHeapStart() );
+	std::fill_n( mapped, POINTS, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) );
+	std::copy( points.begin(), points.end(), mapped );
+
+	gpu.barriers.Transition( *target.Get(), targetState, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	gpu.barriers.Flush();
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { viewHeap.Get(), samplerHeap.Get() };
+	list.SetDescriptorHeaps( 2, heaps );
+	list.SetGraphicsRootSignature( root.Get() );
+	list.SetPipelineState( pipelines[slot].Get() );
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	list.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+	const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>( POINTS ), 1.0f, 0.0f, 1.0f };
+	const D3D12_RECT scissor = { 0, 0, POINTS, 1 };
+	list.RSSetViewports( 1, &viewport );
+	list.RSSetScissorRects( 1, &scissor );
+	list.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	list.SetGraphicsRootConstantBufferView( 0, constants->GetGPUVirtualAddress() );
+	list.SetGraphicsRootDescriptorTable( 1, viewHeap->GetGPUDescriptorHandleForHeapStart() );
+	list.SetGraphicsRootDescriptorTable( 2, samplerHeap->GetGPUDescriptorHandleForHeapStart() );
+	list.DrawInstanced( 3, 1, 0, 0 );
+
+	gpu.barriers.Transition( *target.Get(), targetState, D3D12_RESOURCE_STATE_COPY_SOURCE );
+	gpu.barriers.Flush();
+	D3D12_TEXTURE_COPY_LOCATION destination = {};
+	destination.pResource = readback.Get();
+	destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	destination.PlacedFootprint.Footprint = { DXGI_FORMAT_R32G32B32A32_FLOAT, POINTS, 1, 1, POINTS * sizeof( idVec4 ) };
+	D3D12_TEXTURE_COPY_LOCATION source = {};
+	source.pResource = target.Get();
+	source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	list.CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+	gpu.WaitIdle();
+
+	std::vector<idVec4> result( points.size() );
+	const D3D12_RANGE everything = { 0, POINTS * sizeof( idVec4 ) };
+	void * read = nullptr;
+	if ( gpu.device.Check( readback->Map( 0, &everything, &read ), "Map (test sampled)" ) ) {
+		memcpy( result.data(), read, result.size() * sizeof( idVec4 ) );
+		const D3D12_RANGE nothingWritten = { 0, 0 };
+		readback->Unmap( 0, &nothingWritten );
+	}
+	return result;
+}
+
+[[nodiscard]] D3D12_SAMPLER_DESC SamplerOf( samplerFilter_t filter, samplerAddress_t address ) {
+	return D3D12_SamplerFor( D3D12_PackSampler( { filter, address, 1.0f, 0.0f } ), false );
+}
+
+[[nodiscard]] bool Near( const idVec4 & a, const idVec4 & b, float tolerance ) {
+	for ( int i = 0; i < 4; i++ ) {
+		if ( !( std::fabs( a[i] - b[i] ) <= tolerance ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+[[nodiscard]] const char * Text( const idVec4 & v ) {
+	return va( "(%.4f %.4f %.4f %.4f)", v.x, v.y, v.z, v.w );
+}
+
+[[nodiscard]] idImageOpts Opts( textureFormat_t format, int width, int height, int levels, textureType_t type = TT_2D,
+	textureColor_t color = CFM_DEFAULT ) {
+	idImageOpts opts;
+	opts.textureType = type;
+	opts.format = format;
+	opts.colorFormat = color;
+	opts.width = width;
+	opts.height = height;
+	opts.numLevels = levels;
+	return opts;
+}
+
+constexpr samplerDesc_t POINT_CLAMP = { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f };
+
+// The 16 texel centres of a 4 x 4 level.
+[[nodiscard]] std::vector<idVec4> TexelCentres4x4( float level = 0.0f ) {
+	std::vector<idVec4> points;
+	for ( int y = 0; y < 4; y++ ) {
+		for ( int x = 0; x < 4; x++ ) {
+			points.emplace_back( ( x + 0.5f ) / 4.0f, ( y + 0.5f ) / 4.0f, 0.0f, level );
+		}
+	}
+	return points;
+}
+
+[[nodiscard]] float Unorm8( byte b ) {
+	return b / 255.0f;
+}
+
+[[nodiscard]] float Unorm16( const byte * p ) {
+	return static_cast<float>( p[0] | ( p[1] << 8 ) ) / 65535.0f;
+}
+
+// What GL samples from one texel of the uploaded data: its internal format, then the swizzle of GL_SetTexParameters.
+[[nodiscard]] idVec4 GlTexel( textureFormat_t format, const byte * p ) {
+	switch ( format ) {
+		case FMT_RGBA8:		return idVec4( Unorm8( p[0] ), Unorm8( p[1] ), Unorm8( p[2] ), Unorm8( p[3] ) );
+		case FMT_XRGB8:		return idVec4( Unorm8( p[0] ), Unorm8( p[1] ), Unorm8( p[2] ), 1.0f );
+		case FMT_ALPHA:		return idVec4( 1.0f, 1.0f, 1.0f, Unorm8( p[0] ) );
+		case FMT_L8A8:		return idVec4( Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[1] ) );
+		case FMT_LUM8:		return idVec4( Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[0] ), 1.0f );
+		case FMT_INT8:		return idVec4( Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[0] ) );
+		case FMT_X16:		return idVec4( Unorm16( p ), Unorm16( p ), Unorm16( p ), Unorm16( p ) );
+		case FMT_Y16_X16:	return idVec4( Unorm16( p ), Unorm16( p ), Unorm16( p ), Unorm16( p + 2 ) );
+		case FMT_DEPTH: {
+			float depth;
+			memcpy( &depth, p, sizeof( depth ) );
+			return idVec4( depth, depth, depth, 1.0f );
+		}
+		case FMT_RGB565: {
+			// UNPACK_SWAP_BYTES: the words of the file are big-endian
+			const int word = ( p[0] << 8 ) | p[1];
+			return idVec4( ( word >> 11 ) / 31.0f, ( ( word >> 5 ) & 63 ) / 63.0f, ( word & 31 ) / 31.0f, 1.0f );
+		}
+		default:			return idVec4( 0.0f, 0.0f, 0.0f, 0.0f );
+	}
+}
+
+[[nodiscard]] int TexelBytes( textureFormat_t format ) {
+	switch ( format ) {
+		case FMT_ALPHA: case FMT_LUM8: case FMT_INT8:		return 1;
+		case FMT_L8A8: case FMT_RGB565: case FMT_X16:		return 2;
+		default:											return 4;
+	}
+}
+
+[[nodiscard]] std::vector<byte> TexelData( textureFormat_t format, int texels, uint32 seed ) {
+	std::vector<byte> data = Pattern( static_cast<size_t>( texels ) * TexelBytes( format ), seed );
+	if ( format == FMT_DEPTH ) {
+		for ( int i = 0; i < texels; i++ ) {
+			const float depth = static_cast<float>( i ) / texels;
+			memcpy( data.data() + i * 4, &depth, sizeof( depth ) );
+		}
+	}
+	return data;
+}
+
+// Every uncompressed format: 4 x 4 texels uploaded and sampled at their centres equal GL's swizzled texels.
+void TextureFormats( idTestGpu & gpu ) {
+	idTestSampler sampler( gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	const D3D12_SAMPLER_DESC point = SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP );
+	constexpr textureFormat_t FORMATS[] = { FMT_RGBA8, FMT_XRGB8, FMT_ALPHA, FMT_L8A8, FMT_LUM8, FMT_INT8, FMT_RGB565, FMT_DEPTH, FMT_X16, FMT_Y16_X16 };
+	for ( const textureFormat_t format : FORMATS ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( format, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test format" );
+		if ( !Check( handle != textureHandle_t::NONE, va( "Create format %d", format ) ) ) {
+			continue;
+		}
+		const std::vector<byte> data = TexelData( format, 16, 10 + format );
+		gpu.textures.Upload( handle, 0, 0, 4, 4, data.data(), 0 );
+		gpu.textures.MakeReadable( handle );
+		const std::vector<idVec4> points = TexelCentres4x4();
+		const std::vector<idVec4> sampled = sampler.Sample( gpu.textures.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D, point, points );
+		const int bytes = TexelBytes( format );
+		const float tolerance = ( format == FMT_X16 || format == FMT_Y16_X16 || format == FMT_DEPTH ) ? 1e-5f : 0.5f / 255.0f;
+		for ( size_t i = 0; i < sampled.size(); i++ ) {
+			const idVec4 expected = GlTexel( format, data.data() + i * bytes );
+			Check( Near( sampled[i], expected, tolerance ), va( "format %d texel %d: %s, GL %s", format, static_cast<int>( i ), Text( sampled[i] ),
+				Text( expected ) ) );
+		}
+		gpu.textures.Destroy( handle );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+void Test_WarpTextureFormats() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		TextureFormats( *gpu );
+	}
+}
+
+void Test_GpuTextureFormats() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20 ) ) {
+		TextureFormats( *gpu );
+	}
+}
+
+// Q3: GL swizzles the border colour, so outside the texture a BORDER sampler gives swizzle( base format( border ) ).
+void Borders( idTestGpu & gpu ) {
+	idTestSampler sampler( gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	struct row_t {
+		textureFormat_t		format;
+		samplerAddress_t	address;
+		idVec4				gl;
+	};
+	const row_t rows[] = {
+		{ FMT_INT8, samplerAddress_t::BORDER_BLACK, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) },		// _noFalloff
+		{ FMT_INT8, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) },
+		{ FMT_ALPHA, samplerAddress_t::BORDER_BLACK, idVec4( 1.0f, 1.0f, 1.0f, 0.0f ) },
+		{ FMT_L8A8, samplerAddress_t::BORDER_BLACK, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) },
+		{ FMT_LUM8, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) },
+		{ FMT_RGB565, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) },	// lights with alphazeroclamp
+		{ FMT_XRGB8, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) },
+		{ FMT_RGBA8, samplerAddress_t::BORDER_BLACK, idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) },
+		{ FMT_RGBA8, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) },
+	};
+	for ( const row_t & row : rows ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( row.format, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test border" );
+		const std::vector<byte> data( 16 * 4, 200 );
+		gpu.textures.Upload( handle, 0, 0, 4, 4, data.data(), 0 );
+		gpu.textures.MakeReadable( handle );
+		const idVec4 points[] = { idVec4( -0.5f, 0.5f, 0.0f, 0.0f ), idVec4( 0.5f, 1.5f, 0.0f, 0.0f ), idVec4( 0.5f, 0.5f, 0.0f, 0.0f ) };
+		const std::vector<idVec4> sampled = sampler.Sample( gpu.textures.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D,
+			SamplerOf( samplerFilter_t::NEAREST, row.address ), points );
+		if ( sampled.size() == 3 ) {
+			printf( "  format %2d address %d: border %s, inside %s\n", row.format, static_cast<int>( row.address ), Text( sampled[0] ), Text( sampled[2] ) );
+			Check( Near( sampled[0], row.gl, 1e-6f ) && Near( sampled[1], row.gl, 1e-6f ), va( "format %d address %d: border %s, GL %s", row.format,
+				static_cast<int>( row.address ), Text( sampled[0] ), Text( row.gl ) ) );
+			Check( Near( sampled[2], GlTexel( row.format, data.data() ), 0.5f / 255.0f ), va( "format %d: inside %s", row.format, Text( sampled[2] ) ) );
+		}
+		gpu.textures.Destroy( handle );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+void Test_WarpBorders() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		Borders( *gpu );
+	}
+}
+
+void Test_GpuBorders() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20 ) ) {
+		Borders( *gpu );
+	}
+}
+
+// DXT blocks the decoder and the GPU agree on, a few LSB apart (hardware interpolates exactly).
+[[nodiscard]] std::vector<byte> Decoded( textureFormat_t format, const std::vector<byte> & blocks, int width, int height ) {
+	std::vector<byte> rgba( static_cast<size_t>( width ) * height * 4 );
+	idDxtDecoder decoder;
+	if ( format == FMT_DXT1 ) {
+		decoder.DecompressImageDXT1( blocks.data(), rgba.data(), width, height );
+	} else {
+		decoder.DecompressImageDXT5( blocks.data(), rgba.data(), width, height );
+	}
+	return rgba;
+}
+
+// A 6 x 6 DXT1 and DXT5 base (whole blocks: 8 x 8 of data), native with OPTIONS8, decoded into RGBA8 without.
+void UnalignedBlocks( idTestGpu & gpu ) {
+	idTestSampler sampler( gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	idD3D12TextureStore decoding( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool, gpu.uploader, gpu.barriers, false );
+	decoding.RecordUploads( true );
+	gpu.textures.RecordUploads( true );
+	const D3D12_SAMPLER_DESC point = SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP );
+	for ( const textureFormat_t format : { FMT_DXT1, FMT_DXT5 } ) {
+		const std::vector<byte> blocks = Pattern( 4 * ( ( format == FMT_DXT1 ) ? 8 : 16 ), 20 + format );
+		const std::vector<byte> rgba = Decoded( format, blocks, 8, 8 );
+		for ( const bool native : { false, true } ) {
+			idD3D12TextureStore & store = native ? gpu.textures : decoding;
+			if ( native && !gpu.device.Features().unalignedBlocks ) {
+				printf( "  no OPTIONS8: format %d 6 x 6 is decoded here too\n", format );
+			}
+			const textureHandle_t handle = store.Create( Opts( format, 6, 6, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test unaligned" );
+			if ( !Check( handle != textureHandle_t::NONE, "Create 6 x 6" ) ) {
+				continue;
+			}
+			const bool decoded = store.Get( handle ).format.convert != d3d12Convert_t::NONE;
+			Check( decoded == ( !native || !gpu.device.Features().unalignedBlocks ), va( "format %d native %d: decoded %d", format, native, decoded ) );
+			store.Upload( handle, 0, 0, 6, 6, blocks.data(), 0 );
+			store.MakeReadable( handle );
+			std::vector<idVec4> points;
+			for ( int i = 0; i < 16; i++ ) {
+				const int x = ( i * 5 ) % 6;
+				const int y = ( i * 7 + i / 6 ) % 6;
+				points.emplace_back( ( x + 0.5f ) / 6.0f, ( y + 0.5f ) / 6.0f, static_cast<float>( x ), static_cast<float>( y ) );
+			}
+			std::vector<idVec4> lookups = points;
+			for ( idVec4 & p : lookups ) {
+				p.z = 0.0f;
+				p.w = 0.0f;
+			}
+			const std::vector<idVec4> sampled = sampler.Sample( store.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D, point, lookups );
+			// the decoded copy is the decoder's output exactly; the GPU's BC decoding may round differently
+			const float tolerance = decoded ? 0.5f / 255.0f : 3.5f / 255.0f;
+			for ( size_t i = 0; i < sampled.size(); i++ ) {
+				const byte * texel = rgba.data() + ( static_cast<int>( points[i].w ) * 8 + static_cast<int>( points[i].z ) ) * 4;
+				const idVec4 expected( Unorm8( texel[0] ), Unorm8( texel[1] ), Unorm8( texel[2] ), Unorm8( texel[3] ) );
+				Check( Near( sampled[i], expected, tolerance ), va( "format %d native %d texel %d,%d: %s, decoder %s", format, native,
+					static_cast<int>( points[i].z ), static_cast<int>( points[i].w ), Text( sampled[i] ), Text( expected ) ) );
+			}
+		}
+	}
+	idD3D12TextureCheck check( gpu.device, gpu, gpu.barriers, gpu.graveyard );
+	const d3d12TextureCheckResult_t decodedCheck = check.Run( decoding );
+	Check( decodedCheck.subresources == 2 && decodedCheck.mismatches == 0, "the decoded copies read back as the decoder wrote them" );
+	const d3d12TextureCheckResult_t nativeCheck = check.Run( gpu.textures );
+	Check( nativeCheck.subresources == 2 && nativeCheck.mismatches == 0, "the blocks read back as uploaded" );
+	gpu.WaitIdle();
+	decoding.DestroyAll();
+	CheckNoLayerErrors( gpu );
+}
+
+void Test_WarpUnalignedBlocks() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		UnalignedBlocks( *gpu );
+	}
+}
+
+void Test_GpuUnalignedBlocks() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20 ) ) {
+		UnalignedBlocks( *gpu );
+	}
+}
+
+// GL's face order and orientation: face f texel ( i, j ) is what the GL direction of its centre samples.
+[[nodiscard]] idVec3 CubeDirection( int face, float s, float t ) {
+	const float sc = s * 2.0f - 1.0f;
+	const float tc = t * 2.0f - 1.0f;
+	switch ( face ) {
+		case 0:		return idVec3( 1.0f, -tc, -sc );
+		case 1:		return idVec3( -1.0f, -tc, sc );
+		case 2:		return idVec3( sc, 1.0f, tc );
+		case 3:		return idVec3( sc, -1.0f, -tc );
+		case 4:		return idVec3( sc, -tc, 1.0f );
+		default:	return idVec3( -sc, -tc, -1.0f );
+	}
+}
+
+void Test_WarpCubeFaces() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idTestSampler sampler( *gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	gpu->textures.CreateDefaults();
+	const textureHandle_t handle = gpu->textures.Create( Opts( FMT_RGBA8, 2, 0, 2, TT_CUBIC ), textureRole_t::SAMPLED, POINT_CLAMP, "test cube" );
+	if ( !Check( handle != textureHandle_t::NONE, "Create a cube" ) ) {
+		return;
+	}
+	const d3d12Texture_t & cube = gpu->textures.Get( handle );
+	Check( cube.surface.faces == 6 && cube.surface.width == 2 && cube.surface.height == 2 && cube.surface.levels == 2, "6 faces of 2 x 2, 2 levels" );
+	for ( int face = 0; face < 6; face++ ) {
+		byte texels[4][4];
+		for ( int i = 0; i < 4; i++ ) {
+			texels[i][0] = static_cast<byte>( 40 * face + 10 * i );
+			texels[i][1] = static_cast<byte>( 255 - 30 * face );
+			texels[i][2] = static_cast<byte>( 60 * i );
+			texels[i][3] = 255;
+		}
+		gpu->textures.Upload( handle, 0, face, 2, 2, texels, 0 );
+		const byte level1[4] = { static_cast<byte>( face ), 1, 2, 255 };
+		gpu->textures.Upload( handle, 1, face, 1, 1, level1, 0 );
+	}
+	gpu->textures.MakeReadable( handle );
+	const D3D12_SAMPLER_DESC point = SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP );
+	for ( int firstFace = 0; firstFace < 6; firstFace += 4 ) {
+		std::vector<idVec4> points;
+		std::vector<idVec4> expected;
+		for ( int face = firstFace; face < Min( firstFace + 4, 6 ); face++ ) {
+			for ( int i = 0; i < 4; i++ ) {
+				const idVec3 direction = CubeDirection( face, ( ( i & 1 ) + 0.5f ) / 2.0f, ( ( i >> 1 ) + 0.5f ) / 2.0f );
+				points.emplace_back( direction.x, direction.y, direction.z, 0.0f );
+				expected.emplace_back( ( 40 * face + 10 * i ) / 255.0f, ( 255 - 30 * face ) / 255.0f, ( 60 * i ) / 255.0f, 1.0f );
+			}
+		}
+		const std::vector<idVec4> sampled = sampler.Sample( gpu->textures.SampledView( handle, textureKind_t::TEX_CUBE ), textureKind_t::TEX_CUBE, point,
+			points );
+		for ( size_t i = 0; i < sampled.size(); i++ ) {
+			Check( Near( sampled[i], expected[i], 0.5f / 255.0f ), va( "face %d texel %d: %s, expected %s", firstFace + static_cast<int>( i ) / 4,
+				static_cast<int>( i ) % 4, Text( sampled[i] ), Text( expected[i] ) ) );
+		}
+	}
+	const D3D12_SAMPLER_DESC mips = SamplerOf( samplerFilter_t::LINEAR_MIP_NEAREST, samplerAddress_t::CLAMP );
+	const idVec4 level1[] = { idVec4( 0.0f, 0.0f, -1.0f, 1.0f ), idVec4( 1.0f, 0.0f, 0.0f, 1.0f ) };
+	const std::vector<idVec4> sampledLevel = sampler.Sample( gpu->textures.SampledView( handle, textureKind_t::TEX_CUBE ), textureKind_t::TEX_CUBE, mips,
+		level1 );
+	Check( sampledLevel.size() == 2 && Near( sampledLevel[0], idVec4( 5 / 255.0f, 1 / 255.0f, 2 / 255.0f, 1.0f ), 0.5f / 255.0f )
+		&& Near( sampledLevel[1], idVec4( 0.0f, 1 / 255.0f, 2 / 255.0f, 1.0f ), 0.5f / 255.0f ), "level 1 of -Z and +X" );
+
+	// R11: the fallbacks, and a view of the other kind, read opaque black
+	const idVec4 centre[] = { idVec4( 0.5f, 0.5f, 1.0f, 0.0f ) };
+	const idVec4 black( 0.0f, 0.0f, 0.0f, 1.0f );
+	const std::vector<idVec4> none2D = sampler.Sample( gpu->textures.SampledView( textureHandle_t::NONE, textureKind_t::TEX_2D ), textureKind_t::TEX_2D,
+		point, centre );
+	const std::vector<idVec4> cubeAs2D = sampler.Sample( gpu->textures.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D, point, centre );
+	const std::vector<idVec4> noneCube = sampler.Sample( gpu->textures.SampledView( textureHandle_t::NONE, textureKind_t::TEX_CUBE ),
+		textureKind_t::TEX_CUBE, point, centre );
+	Check( none2D.size() == 1 && Near( none2D[0], black, 0.0f ), va( "NONE as 2D: %s", none2D.empty() ? "-" : Text( none2D[0] ) ) );
+	Check( cubeAs2D.size() == 1 && Near( cubeAs2D[0], black, 0.0f ), "a cube bound as 2D samples the black 2D fallback" );
+	Check( noneCube.size() == 1 && Near( noneCube[0], black, 0.0f ), "NONE as a cube" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// BC levels under 4 pixels come as whole blocks, a cube's with width 4; mips and the round trip of every subresource.
+void Test_WarpTextureLevels() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idTestSampler sampler( *gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	gpu->textures.RecordUploads( true );
+	const textureHandle_t bc = gpu->textures.Create( Opts( FMT_DXT1, 8, 8, 4 ), textureRole_t::SAMPLED, POINT_CLAMP, "test bc levels" );
+	const textureHandle_t rgba = gpu->textures.Create( Opts( FMT_RGBA8, 8, 4, 4 ), textureRole_t::SAMPLED, POINT_CLAMP, "test rgba levels" );
+	const textureHandle_t lum = gpu->textures.Create( Opts( FMT_LUM8, 5, 3, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test pitch" );
+	if ( !Check( bc != textureHandle_t::NONE && rgba != textureHandle_t::NONE && lum != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	for ( int level = 0; level < 4; level++ ) {
+		const int size = Max( 4, 8 >> level );
+		const std::vector<byte> blocks = Pattern( static_cast<size_t>( size / 4 ) * ( size / 4 ) * 8, 30 + level );
+		gpu->textures.Upload( bc, level, 0, size, size, blocks.data(), 0 );
+		const byte colour[4] = { static_cast<byte>( 50 * level ), 7, 9, 255 };
+		std::vector<byte> rgbaLevel;
+		for ( int i = 0; i < Max( 1, 8 >> level ) * Max( 1, 4 >> level ); i++ ) {
+			rgbaLevel.insert( rgbaLevel.end(), colour, colour + 4 );
+		}
+		gpu->textures.Upload( rgba, level, 0, Max( 1, 8 >> level ), Max( 1, 4 >> level ), rgbaLevel.data(), 0 );
+	}
+	// a cinematic plane: 5 x 3 of a buffer 8 pixels wide
+	const std::vector<byte> plane = Pattern( 8 * 3, 40 );
+	gpu->textures.Upload( lum, 0, 0, 5, 3, plane.data(), 8 );
+	gpu->textures.MakeReadable( rgba );
+	gpu->textures.MakeReadable( lum );
+
+	const D3D12_SAMPLER_DESC mips = SamplerOf( samplerFilter_t::LINEAR_MIP_NEAREST, samplerAddress_t::CLAMP );
+	std::vector<idVec4> levelPoints;
+	for ( int level = 0; level < 4; level++ ) {
+		levelPoints.emplace_back( 0.5f, 0.5f, 0.0f, static_cast<float>( level ) );
+	}
+	const std::vector<idVec4> levels = sampler.Sample( gpu->textures.SampledView( rgba, textureKind_t::TEX_2D ), textureKind_t::TEX_2D, mips, levelPoints );
+	for ( size_t level = 0; level < levels.size(); level++ ) {
+		Check( Near( levels[level], idVec4( 50 * level / 255.0f, 7 / 255.0f, 9 / 255.0f, 1.0f ), 0.5f / 255.0f ), va( "RGBA8 level %d: %s",
+			static_cast<int>( level ), Text( levels[level] ) ) );
+	}
+	std::vector<idVec4> pitchPoints;
+	for ( int i = 0; i < 15; i++ ) {
+		pitchPoints.emplace_back( ( i % 5 + 0.5f ) / 5.0f, ( i / 5 + 0.5f ) / 3.0f, 0.0f, 0.0f );
+	}
+	const std::vector<idVec4> pitched = sampler.Sample( gpu->textures.SampledView( lum, textureKind_t::TEX_2D ), textureKind_t::TEX_2D,
+		SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP ), pitchPoints );
+	for ( size_t i = 0; i < pitched.size(); i++ ) {
+		const float l = Unorm8( plane[( i / 5 ) * 8 + i % 5] );
+		Check( Near( pitched[i], idVec4( l, l, l, 1.0f ), 0.5f / 255.0f ), va( "LUM8 with a pitch, texel %d: %s", static_cast<int>( i ), Text( pitched[i] ) ) );
+	}
+
+	idD3D12TextureCheck check( gpu->device, *gpu, gpu->barriers, gpu->graveyard );
+	const d3d12TextureCheckResult_t result = check.Run( gpu->textures );
+	Check( result.textures == 3 && result.subresources == 9 && result.mismatches == 0 && result.unrecorded == 0,
+		va( "the round trip: %d textures, %d subresources, %d mismatches", result.textures, result.subresources, result.mismatches ) );
+	gpu->textures.Get( rgba ).uploads[2].hash ^= 1;
+	const d3d12TextureCheckResult_t broken = check.Run( gpu->textures );
+	Check( broken.mismatches == 1, "a wrong hash is one mismatch" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// R3: the resource and its view slot die after an explicit wait for the open list; the slot is reused.
+void Test_WarpTextureGraves() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	const textureHandle_t first = gpu->textures.Create( Opts( FMT_RGBA8, 64, 64, 7 ), textureRole_t::SAMPLED, POINT_CLAMP, "test grave" );
+	const textureHandle_t depth = gpu->textures.Create( Opts( FMT_RGBA8, 32, 32, 1 ), textureRole_t::DEPTH_COPY, POINT_CLAMP, "test depth copy" );
+	if ( !Check( first != textureHandle_t::NONE && depth != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	Check( gpu->textures.Get( depth ).surface.rtv.IsValid() && !gpu->textures.Get( first ).surface.rtv.IsValid(), "only DEPTH_COPY has an RTV" );
+	const uint64 bytes = gpu->textures.Bytes();
+	Check( gpu->textures.Num() == 2 && bytes >= 64 * 64 * 4 + 32 * 32 * 4, va( "%llu bytes", static_cast<unsigned long long>( bytes ) ) );
+	const d3d12Descriptor_t slot = gpu->textures.Get( first ).surface.srv;
+	const std::vector<byte> data = Pattern( 64 * 64 * 4, 50 );
+	gpu->textures.Upload( first, 0, 0, 64, 64, data.data(), 0 );
+	gpu->textures.Destroy( first );
+	gpu->textures.Destroy( depth );
+	Check( gpu->textures.Find( first ) == nullptr && gpu->textures.Num() == 0 && gpu->textures.Bytes() == 0, "the handles die at once" );
+	Check( gpu->graveyard.Pending() == 5, va( "%d graves: two resources, two views and an RTV", gpu->graveyard.Pending() ) );
+	const textureHandle_t early = gpu->textures.Create( Opts( FMT_RGBA8, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test early" );
+	Check( gpu->textures.Get( early ).surface.srv != slot, "the slot is not reused before the wait" );
+	gpu->textures.Destroy( early );
+	gpu->WaitIdle();
+	Check( gpu->graveyard.Pending() == 0, "collected after the wait" );
+	const textureHandle_t again = gpu->textures.Create( Opts( FMT_RGBA8, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test again" );
+	Check( gpu->textures.Get( again ).surface.srv == slot, "the lowest slot again" );
+	Check( gpu->textures.Create( Opts( FMT_NONE, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test none" ) == textureHandle_t::NONE, "FMT_NONE" );
+	CheckNoLayerErrors( *gpu );
+}
+
 struct testCase_t {
 	const char *	name;
 	void			( *run )();
@@ -533,6 +1401,19 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_LargeStage", Test_WarpLargeStage },
 	{ "Warp_GravesWaitForWaited", Test_WarpGravesWaitForWaited },
 	{ "Warp_RingRetiresByWaited", Test_WarpRingRetiresByWaited },
+	{ "Format_Table", Test_FormatTable },
+	{ "Sampler_Packing", Test_SamplerPacking },
+	{ "Sampler_Map", Test_SamplerMap },
+	{ "Warp_SamplerTables", Test_WarpSamplerTables },
+	{ "Warp_TextureFormats", Test_WarpTextureFormats },
+	{ "Gpu_TextureFormats", Test_GpuTextureFormats },
+	{ "Warp_Borders", Test_WarpBorders },
+	{ "Gpu_Borders", Test_GpuBorders },
+	{ "Warp_UnalignedBlocks", Test_WarpUnalignedBlocks },
+	{ "Gpu_UnalignedBlocks", Test_GpuUnalignedBlocks },
+	{ "Warp_CubeFaces", Test_WarpCubeFaces },
+	{ "Warp_TextureLevels", Test_WarpTextureLevels },
+	{ "Warp_TextureGraves", Test_WarpTextureGraves },
 };
 
 }	// namespace

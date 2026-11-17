@@ -37,6 +37,7 @@ struct d3d12FrameStats_t {
 	int								barriers = 0;		// transitions that reached a list
 	uint64							uploadBytes = 0;	// copied through the staging ring
 	uint64							inPlaceBytes = 0;	// written into FRAME buffers the GPU reads in place
+	int								samplerTables = 0;	// sampler tables built
 };
 
 // What the open list has bound. Empty means unknown: a new list and every internal pass clear it.

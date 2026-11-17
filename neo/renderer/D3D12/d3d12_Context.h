@@ -45,15 +45,17 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12Barriers                 transitions batched until the next draw, clear, copy or submit
 	      ├── idD3D12DescriptorPool x 3       SRV, RTV, DSV: the permanent views, never shader visible
 	      ├── idD3D12DescriptorRing           the shader-visible CBV/SRV heap, 8-slot tables reused by fence
+	      ├── idD3D12SamplerHeap              the shader-visible sampler heap, 256 tables of 8 kept by key
 	      ├── idD3D12UploadRing               "constants": 16 MB UPLOAD for the root CBVs, reused by fence
 	      ├── idD3D12UploadRing               "staging": 64 MB UPLOAD, the copy sources of buffers and textures
 	      ├── idD3D12Uploader                 copies through "staging" into the open list, a submit every 16 MB
 	      ├── idD3D12BufferStore              bufferHandle_t → FRAME in UPLOAD heaps, STATIC in DEFAULT + a CPU mirror
+	      ├── idD3D12TextureStore             textureHandle_t → a committed texture + SRV, the black fallbacks
 	      ├── idD3D12ShaderCompiler           FXC with constant flags
 	      ├── idD3D12RootSignature            the 5 parameters of every PSO
 	      ├── idD3D12SceneTarget              colour + depth in GL row order, the MSAA resolve texture
 	      ├── optional<idD3D12SwapChain>      IDXGISwapChain3, 3 back buffers + RTVs, latency object
-	      ├── idD3D12InternalPasses           the present blit and the masked clear
+	      ├── idD3D12InternalPasses           the present blit, the masked clear and r_d3d12ShowImage
 	      ├── idD3D12Readback                 copies into a READBACK buffer for ReadOutputPixels
 	      └── idD3D12DrawRecorder             clears (and later draws) into the open pass
 
@@ -69,6 +71,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "d3d12_Buffers.h"
 #include "d3d12_Draw.h"
+#include "d3d12_Textures.h"
 
 class idD3D12Context final : public idD3D12Submitter {
 public:
@@ -92,6 +95,8 @@ public:
 	[[nodiscard]] presentResult_t	Present( presentMode_t mode );			// blit, submit, present, wait, retire, latency
 	void							ReadOutputPixels( int x, int y, int width, int height, byte * rgb );	// R8: after EndFrame
 	void							Resize( int width, int height );		// between frames; 0 x 0 (minimized) is ignored
+	void							ShowImage( textureHandle_t texture );	// r_d3d12ShowImage into the scene, before EndFrame
+	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	// The frame before the last Present.
 	[[nodiscard]] const d3d12FrameStats_t &	LastFrameStats() const { return lastFrame; }
@@ -107,10 +112,12 @@ public:
 	idD3D12DescriptorPool			rtvPool;
 	idD3D12DescriptorPool			dsvPool;
 	idD3D12DescriptorRing			descriptors;
+	idD3D12SamplerHeap				samplers;
 	idD3D12UploadRing				constants;
 	idD3D12UploadRing				staging;
 	idD3D12Uploader					uploader;
 	idD3D12BufferStore				buffers;
+	idD3D12TextureStore				textures;
 	idD3D12ShaderCompiler			compiler;
 	idD3D12RootSignature			rootSignature;
 	idD3D12SceneTarget				scene;
@@ -122,7 +129,7 @@ public:
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );
 	[[nodiscard]] std::expected<void, idStr>	CreateOutput( HWND window, int width, int height );
-	void							CreateDefaults();	// the internal passes and the default buffers
+	void							CreateDefaults();	// the fallback textures, the internal passes and the default buffers
 	void							Retire( uint64 waitedFence );	// ring chunks and graves up to an explicitly waited fence
 	// The scene, resolved, into the back buffer through the present blit; leaves it in RENDER_TARGET.
 	void							BlitToBackBuffer( idD3D12SwapChain::backBuffer_t & back );

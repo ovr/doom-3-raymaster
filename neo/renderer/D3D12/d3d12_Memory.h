@@ -104,6 +104,10 @@ public:
 	// bytes → buffer at offset, in copies of at most PIECE; leaves the buffer in useState.
 	void							BufferRange( ID3D12Resource & buffer, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES useState,
 										uint64 offset, std::span<const byte> bytes );
+	// The rows a Stage( RowPitch * Height, 512 ) span holds → the region of one subresource at (0, 0); the
+	// texture stays in COPY_DEST. Call it right after filling the span, before anything submits.
+	void							TextureRegion( ID3D12Resource & texture, d3d12ResourceState_t & state, UINT subresource,
+										const d3d12UploadSpan_t & span, const D3D12_SUBRESOURCE_FOOTPRINT & footprint, UINT rows );
 	[[nodiscard]] uint64			BytesThisFrame() const { return bytesThisFrame; }
 	void							ResetFrameCounters() { bytesThisFrame = 0; }
 

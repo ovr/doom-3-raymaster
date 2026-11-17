@@ -28,6 +28,8 @@ If you have questions concerning this license or the applicable additional terms
 
 #pragma once
 
+#include <unordered_map>
+
 #include "d3d12_Device.h"
 #include "d3d12_RingAllocator.h"
 
@@ -69,4 +71,46 @@ private:
 	D3D12_GPU_DESCRIPTOR_HANDLE		gpuStart = {};
 	uint32							increment;
 	idD3D12RingAllocator			ring;
+};
+
+// The packed samplers (D3D12_PackSampler) of the 8 slots of one draw.
+struct d3d12SamplerTableKey_t {
+	std::array<uint64, MAX_TEXTURE_SLOTS>	samplers = {};
+	constexpr bool					operator==( const d3d12SamplerTableKey_t & ) const = default;
+};
+struct d3d12SamplerTableHash_t {
+	[[nodiscard]] size_t			operator()( const d3d12SamplerTableKey_t & key ) const;
+};
+
+// The one shader-visible sampler heap: 256 tables of 8, each built once for its key and kept while it is
+// used. A table is rewritten only when its last use has been waited for: the oldest use first, then the
+// lowest index, so two runs build the same tables.
+class idD3D12SamplerHeap {
+public:
+	static constexpr uint32			TABLES = 256;
+	explicit						idD3D12SamplerHeap( const idD3D12Device & device );
+	[[nodiscard]] ID3D12DescriptorHeap *	Heap() const { return heap.Get(); }
+	// The table of key, used by the list that signals useFence; nullopt when every table is used after waitedFence.
+	[[nodiscard]] std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	TryTable( const d3d12SamplerTableKey_t & key, uint64 useFence, uint64 waitedFence );
+	[[nodiscard]] uint64			OldestUse() const;		// the fence to wait for when TryTable failed; 0 = nothing used
+	[[nodiscard]] int				Used() const { return static_cast<int>( used ); }
+	[[nodiscard]] int				BuiltThisFrame() const { return built; }
+	void							ResetFrameCounters() { built = 0; }
+
+private:
+	struct table_t {
+		d3d12SamplerTableKey_t		key;
+		uint64						lastUse = 0;
+	};
+	void							Build( uint32 index, const d3d12SamplerTableKey_t & key );
+
+	const idD3D12Device &			device;
+	idComPtr<ID3D12DescriptorHeap>	heap;
+	D3D12_CPU_DESCRIPTOR_HANDLE		cpuStart = {};
+	D3D12_GPU_DESCRIPTOR_HANDLE		gpuStart = {};
+	uint32							increment;
+	std::unordered_map<d3d12SamplerTableKey_t, uint32, d3d12SamplerTableHash_t>	lookup;
+	std::array<table_t, TABLES>		tables = {};
+	uint32							used = 0;			// tables 0 .. used - 1 hold a key
+	int								built = 0;
 };

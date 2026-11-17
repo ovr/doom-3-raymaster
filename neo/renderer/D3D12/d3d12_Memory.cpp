@@ -212,3 +212,21 @@ void idD3D12Uploader::BufferRange( ID3D12Resource & buffer, d3d12ResourceState_t
 		Pace( piece );
 	}
 }
+
+// Consecutive copies into a texture need no barrier between them: it stays in COPY_DEST until a bind.
+void idD3D12Uploader::TextureRegion( ID3D12Resource & texture, d3d12ResourceState_t & state, UINT subresource, const d3d12UploadSpan_t & span,
+	const D3D12_SUBRESOURCE_FOOTPRINT & footprint, UINT rows ) {
+	barriers.Transition( texture, state, D3D12_RESOURCE_STATE_COPY_DEST );
+	barriers.Flush();
+	D3D12_TEXTURE_COPY_LOCATION destination = {};
+	destination.pResource = &texture;
+	destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	destination.SubresourceIndex = subresource;
+	D3D12_TEXTURE_COPY_LOCATION source = {};
+	source.pResource = span.buffer;
+	source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	source.PlacedFootprint.Offset = span.offset;
+	source.PlacedFootprint.Footprint = footprint;
+	submitter.List().CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+	Pace( static_cast<uint64>( footprint.RowPitch ) * rows );
+}

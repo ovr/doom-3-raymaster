@@ -34,6 +34,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../tr_local.h"
 #include "d3d12_Descriptors.h"
+#include "d3d12_StateMap.h"
 
 namespace {
 
@@ -118,4 +119,78 @@ std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> idD3D12DescriptorRing::TryCopyTable( 
 	D3D12_GPU_DESCRIPTOR_HANDLE table = gpuStart;
 	table.ptr += *slot * increment;
 	return table;
+}
+
+size_t d3d12SamplerTableHash_t::operator()( const d3d12SamplerTableKey_t & key ) const {
+	uint64 hash = 0xCBF29CE484222325ull;
+	for ( const uint64 sampler : key.samplers ) {
+		hash = ( hash ^ sampler ) * 0x100000001B3ull;
+		hash ^= hash >> 29;
+	}
+	return static_cast<size_t>( hash );
+}
+
+idD3D12SamplerHeap::idD3D12SamplerHeap( const idD3D12Device & owner ) :
+	device( owner ),
+	heap( CreateHeap( owner, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, TABLES * MAX_TEXTURE_SLOTS, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+		L"doom3 shader-visible sampler tables" ) ),
+	increment( owner.Get().GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ) ) {
+	if ( heap ) {
+		cpuStart = heap->GetCPUDescriptorHandleForHeapStart();
+		gpuStart = heap->GetGPUDescriptorHandleForHeapStart();
+	}
+	lookup.reserve( TABLES );
+}
+
+std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> idD3D12SamplerHeap::TryTable( const d3d12SamplerTableKey_t & key, uint64 useFence, uint64 waitedFence ) {
+	if ( !heap ) {
+		return std::nullopt;
+	}
+	uint32 index = TABLES;
+	if ( const auto found = lookup.find( key ); found != lookup.end() ) {
+		index = found->second;
+	} else {
+		if ( used < TABLES ) {
+			index = used++;
+		} else {
+			uint64 oldest = UINT64_MAX;
+			for ( uint32 i = 0; i < TABLES; i++ ) {
+				if ( tables[i].lastUse <= waitedFence && tables[i].lastUse < oldest ) {
+					index = i;
+					oldest = tables[i].lastUse;
+				}
+			}
+			if ( index == TABLES ) {
+				return std::nullopt;
+			}
+			lookup.erase( tables[index].key );
+		}
+		Build( index, key );
+		lookup.emplace( key, index );
+	}
+	tables[index].lastUse = Max( tables[index].lastUse, useFence );
+	D3D12_GPU_DESCRIPTOR_HANDLE table = gpuStart;
+	table.ptr += static_cast<uint64>( index ) * MAX_TEXTURE_SLOTS * increment;
+	return table;
+}
+
+uint64 idD3D12SamplerHeap::OldestUse() const {
+	uint64 oldest = 0;
+	for ( uint32 i = 0; i < used; i++ ) {
+		oldest = ( i == 0 ) ? tables[i].lastUse : Min( oldest, tables[i].lastUse );
+	}
+	return oldest;
+}
+
+void idD3D12SamplerHeap::Build( uint32 index, const d3d12SamplerTableKey_t & key ) {
+	tables[index].key = key;
+	tables[index].lastUse = 0;
+	D3D12_CPU_DESCRIPTOR_HANDLE slot = cpuStart;
+	slot.ptr += static_cast<SIZE_T>( index ) * MAX_TEXTURE_SLOTS * increment;
+	for ( const uint64 sampler : key.samplers ) {
+		const D3D12_SAMPLER_DESC desc = D3D12_SamplerFor( sampler, device.Features().anisoPointMip );
+		device.Get().CreateSampler( &desc, slot );
+		slot.ptr += increment;
+	}
+	built++;
 }

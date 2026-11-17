@@ -30,7 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../idlib/precompiled.h"
 
 #include "../tr_local.h"
-#include "d3d12_Device.h"
+#include "d3d12_Descriptors.h"
 
 namespace {
 
@@ -525,13 +525,32 @@ void idD3D12Graveyard::Bury( idComPtr<ID3D12Pageable> object ) {
 	}
 }
 
+// A view recorded into a list (OMSetRenderTargets) or copied into a table is read then, but the slot
+// still waits: R3 releases every descriptor slot after the next Present.
+void idD3D12Graveyard::Bury( idD3D12DescriptorPool & pool, d3d12Descriptor_t slot ) {
+	if ( slot.IsValid() ) {
+		graves.push_back( { queue.LastSignaled() + 1, nullptr, &pool, slot } );
+	}
+}
+
+void idD3D12Graveyard::Release( grave_t & grave ) {
+	if ( grave.pool != nullptr ) {
+		grave.pool->Free( grave.slot );
+		grave.pool = nullptr;
+	}
+}
+
 void idD3D12Graveyard::Collect() {
 	while ( !graves.empty() && graves.front().fence <= queue.Waited() ) {
+		Release( graves.front() );
 		graves.pop_front();
 	}
 }
 
 void idD3D12Graveyard::CollectAll() {
+	for ( grave_t & grave : graves ) {
+		Release( grave );
+	}
 	graves.clear();
 }
 

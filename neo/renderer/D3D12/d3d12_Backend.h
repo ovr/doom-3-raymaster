@@ -37,13 +37,30 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "d3d12_Context.h"
 
-// Distinct non-zero handles that keep shared code running until the texture and program stores exist.
+// Distinct non-zero handles that keep shared code running until the program store exists.
 class idD3D12Placeholders {
 public:
 	template<typename Handle>
 	[[nodiscard]] Handle			NewHandle() { return static_cast<Handle>( ++lastHandle ); }
 private:
 	uintptr_t						lastHandle = 0;
+};
+
+extern idCVar					r_d3d12CheckImages;
+
+// The console commands of d3d12_Diagnostics.cpp act on this context; nullptr outside Init .. Shutdown.
+void							D3D12_SetActiveContext( idD3D12Context * context );
+
+// r_d3d12ShowImage: looks the texture up by name when the name changes or the texture dies, draws it each frame.
+class idD3D12ImageViewer {
+public:
+	void							Frame( idD3D12Context & context );	// before the context's EndFrame
+	void							Reset();
+
+private:
+	idStr							name;
+	textureHandle_t					texture = textureHandle_t::NONE;
+	bool							reported = false;	// "no texture named" once per name
 };
 
 // r_d3d12Stats: sums the frames of the context and prints them once a second; the com_showFPS line.
@@ -87,6 +104,7 @@ public:
 	void							SetTextureSampler( textureHandle_t texture, const samplerDesc_t & sampler ) override;
 	void							CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) override;
 	void							CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) override;
+	void							EndLevelLoad() override;			// r_d3d12CheckImages 1: d3d12_checkImages
 
 	bufferHandle_t					CreateBuffer( bufferType_t type, bufferUsage_t usage, int size, const void * data ) override;
 	void							DestroyBuffer( bufferHandle_t buffer ) override;
@@ -114,4 +132,5 @@ private:
 	std::unique_ptr<idD3D12Context>	context;
 	idD3D12Placeholders				placeholders;
 	idD3D12StatsReport				report;
+	idD3D12ImageViewer				viewer;
 };

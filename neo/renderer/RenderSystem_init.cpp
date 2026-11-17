@@ -1590,6 +1590,9 @@ idRenderSystemLocal::EndLevelLoad
 void idRenderSystemLocal::EndLevelLoad() {
 	renderModelManager->EndLevelLoad();
 	globalImages->EndLevelLoad();
+	if ( renderBackend != nullptr && renderBackend->IsOwnerThread() ) {
+		renderBackend->EndLevelLoad();
+	}
 }
 
 /*

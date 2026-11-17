@@ -90,6 +90,8 @@ bool idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 	}
 	context = std::move( *created );
 	context->device.FillCaps( caps );
+	context->textures.RecordUploads( r_d3d12CheckImages.GetBool() );
+	D3D12_SetActiveContext( context.get() );
 	outputWidth = init.width;
 	outputHeight = init.height;
 
@@ -102,9 +104,11 @@ bool idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 void idRenderBackendD3D12::Shutdown() {
 	if ( context ) {
 		D3D12_PrintUnimplemented();
+		D3D12_SetActiveContext( nullptr );
 		context.reset();
 	}
 	report.Reset();
+	viewer.Reset();
 	inFrame = false;
 }
 
@@ -147,11 +151,13 @@ void idRenderBackendD3D12::PrintInfo() const {
 void idRenderBackendD3D12::BeginFrame() {
 	assert( !inFrame );
 	inFrame = true;
+	context->textures.RecordUploads( r_d3d12CheckImages.GetBool() );
 	context->BeginFrame( renderSystem->GetWidth(), renderSystem->GetHeight() );
 }
 
 void idRenderBackendD3D12::EndFrame() {
 	assert( inFrame );
+	viewer.Frame( *context );
 	context->EndFrame();
 	inFrame = false;
 }
@@ -179,17 +185,28 @@ void idRenderBackendD3D12::ReadOutputPixels( int x, int y, int width, int height
 	context->ReadOutputPixels( x, y, width, height, rgb );
 }
 
-textureHandle_t idRenderBackendD3D12::CreateTexture( const idImageOpts &, textureRole_t, const samplerDesc_t &, const char * ) {
-	D3D12_Unimplemented( "CreateTexture" );
-	return placeholders.NewHandle<textureHandle_t>();
+// Legal at any time (R2); before Init and after Shutdown there is no texture.
+textureHandle_t idRenderBackendD3D12::CreateTexture( const idImageOpts & opts, textureRole_t role, const samplerDesc_t & sampler, const char * debugName ) {
+	return context ? context->textures.Create( opts, role, sampler, debugName ) : textureHandle_t::NONE;
 }
 
-void idRenderBackendD3D12::UploadTexture( textureHandle_t, int, int, int, int, const void *, int ) {
-	D3D12_Unimplemented( "UploadTexture" );
+void idRenderBackendD3D12::UploadTexture( textureHandle_t texture, int mipLevel, int face, int width, int height, const void * pixels, int pixelPitch ) {
+	if ( context ) {
+		context->textures.Upload( texture, mipLevel, face, width, height, pixels, pixelPitch );
+	}
 }
 
-void idRenderBackendD3D12::SetTextureSampler( textureHandle_t, const samplerDesc_t & ) {
-	D3D12_Unimplemented( "SetTextureSampler" );
+void idRenderBackendD3D12::SetTextureSampler( textureHandle_t texture, const samplerDesc_t & sampler ) {
+	if ( context ) {
+		context->textures.SetSampler( texture, sampler );
+	}
+}
+
+// Main thread, between frames: the check submits and waits.
+void idRenderBackendD3D12::EndLevelLoad() {
+	if ( context && r_d3d12CheckImages.GetBool() && !context->device.IsLost() ) {
+		static_cast<void>( context->CheckTextures() );
+	}
 }
 
 void idRenderBackendD3D12::CopyOutputToTexture( textureHandle_t, int, int, int, int ) {
@@ -200,8 +217,11 @@ void idRenderBackendD3D12::CopyDepthToTexture( textureHandle_t, int, int, int, i
 	D3D12_Unimplemented( "CopyDepthToTexture" );
 }
 
-void idRenderBackendD3D12::API_DestroyTexture( textureHandle_t ) {
-	D3D12_Unimplemented( "DestroyTexture" );
+// After Shutdown there is nothing to destroy: every older handle is invalid (contract).
+void idRenderBackendD3D12::API_DestroyTexture( textureHandle_t texture ) {
+	if ( context ) {
+		context->textures.Destroy( texture );
+	}
 }
 
 bufferHandle_t idRenderBackendD3D12::CreateBuffer( bufferType_t type, bufferUsage_t usage, int size, const void * data ) {

@@ -34,10 +34,17 @@ If you have questions concerning this license or the applicable additional terms
 
 idCVar r_d3d12Stats( "r_d3d12Stats", "0", CVAR_RENDERER | CVAR_BOOL,
 	"1 = print the buffer memory and the uploads, submits, waits and barriers per frame of Direct3D 12 once a second, and show them under com_showFPS" );
+idCVar r_d3d12ShowImage( "r_d3d12ShowImage", "", CVAR_RENDERER,
+	"the name of a texture (case-insensitive) Direct3D 12 draws over every frame: RGB and alpha panels, a cube as a cross of its faces" );
+idCVar r_d3d12CheckImages( "r_d3d12CheckImages", "0", CVAR_RENDERER | CVAR_BOOL,
+	"1 = Direct3D 12 hashes every texture upload and runs d3d12_checkImages after each level load" );
 
 namespace {
 
 constexpr int REPORT_MSEC = 1000;
+
+// The commands reach the backend through this; Init sets it, Shutdown clears it.
+idD3D12Context *	activeContext = nullptr;
 
 [[nodiscard]] constexpr double Megabytes( uint64 bytes ) {
 	return static_cast<double>( bytes ) / ( 1024.0 * 1024.0 );
@@ -48,6 +55,54 @@ constexpr int REPORT_MSEC = 1000;
 }
 
 }	// namespace
+
+void D3D12_SetActiveContext( idD3D12Context * context ) {
+	activeContext = context;
+}
+
+CONSOLE_COMMAND( d3d12_checkImages, "reads every texture upload recorded under r_d3d12CheckImages 1 back from the GPU and compares it", nullptr ) {
+	if ( activeContext == nullptr ) {
+		common->Printf( "d3d12_checkImages: Direct3D 12 is not running\n" );
+		return;
+	}
+	if ( !r_d3d12CheckImages.GetBool() ) {
+		common->Printf( "d3d12_checkImages: uploads are hashed only with r_d3d12CheckImages 1; reload the map after setting it\n" );
+	}
+	static_cast<void>( activeContext->CheckTextures() );
+}
+
+void idD3D12ImageViewer::Reset() {
+	name.Clear();
+	texture = textureHandle_t::NONE;
+	reported = false;
+}
+
+// A texture recreated under the same name (a reload, vid_restart, a resize) is found again.
+void idD3D12ImageViewer::Frame( idD3D12Context & context ) {
+	const char * wanted = r_d3d12ShowImage.GetString();
+	if ( wanted[0] == '\0' || idStr::Cmp( wanted, "0" ) == 0 ) {
+		if ( !name.IsEmpty() ) {
+			Reset();
+		}
+		return;
+	}
+	if ( name.Icmp( wanted ) != 0 ) {
+		name = wanted;
+		texture = textureHandle_t::NONE;
+		reported = false;
+	}
+	if ( context.textures.Find( texture ) == nullptr ) {
+		texture = context.textures.FindByName( name.c_str() );
+		if ( texture == textureHandle_t::NONE ) {
+			if ( !reported ) {
+				common->Printf( "r_d3d12ShowImage: no texture named '%s'\n", name.c_str() );
+				reported = true;
+			}
+			return;
+		}
+	}
+	context.ShowImage( texture );
+}
 
 void idD3D12StatsReport::Reset() {
 	sum = {};
@@ -74,6 +129,7 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 	sum.barriers += last.barriers;
 	sum.uploadBytes += last.uploadBytes;
 	sum.inPlaceBytes += last.inPlaceBytes;
+	sum.samplerTables += last.samplerTables;
 	maxUploadBytes = Max( maxUploadBytes, last.uploadBytes );
 	frames++;
 	if ( now - startMsec < REPORT_MSEC ) {
@@ -83,11 +139,13 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 	const double perFrame = 1.0 / frames;
 	const idD3D12BufferStore & buffers = context.buffers;
 	common->Printf( "d3d12 stats: %d frames; per frame: uploads %.1f KB staged (max %.1f KB) + %.1f KB in place, %.1f submits, %.1f waits, "
-		"%.1f barriers; buffers %d: FRAME %.1f MB, STATIC %.1f MB + %.1f MB mirror; staging %.1f of %.0f MB, constants %.1f of %.0f MB\n",
+		"%.1f barriers, %.1f sampler tables built; buffers %d: FRAME %.1f MB, STATIC %.1f MB + %.1f MB mirror; textures %d: %.1f MB; "
+		"staging %.1f of %.0f MB, constants %.1f of %.0f MB\n",
 		frames, Kilobytes( sum.uploadBytes ) * perFrame, Kilobytes( maxUploadBytes ), Kilobytes( sum.inPlaceBytes ) * perFrame,
-		sum.submits * perFrame, sum.waits * perFrame, sum.barriers * perFrame, buffers.Num(), Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ),
-		Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ), Megabytes( buffers.MirrorBytes() ), Megabytes( context.staging.Used() ),
-		Megabytes( context.staging.Size() ), Megabytes( context.constants.Used() ), Megabytes( context.constants.Size() ) );
+		sum.submits * perFrame, sum.waits * perFrame, sum.barriers * perFrame, sum.samplerTables * perFrame, buffers.Num(),
+		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ), Megabytes( buffers.MirrorBytes() ),
+		context.textures.Num(), Megabytes( context.textures.Bytes() ), Megabytes( context.staging.Used() ), Megabytes( context.staging.Size() ),
+		Megabytes( context.constants.Used() ), Megabytes( context.constants.Size() ) );
 	idStr::snPrintf( overlay, sizeof( overlay ), "F %.1f  S %.1f  up %.2f MB", Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ),
 		Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ), Megabytes( sum.uploadBytes + sum.inPlaceBytes ) * perFrame );
 	sum = {};

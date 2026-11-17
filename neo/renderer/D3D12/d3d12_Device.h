@@ -142,19 +142,25 @@ private:
 	uint64							waited = 0;
 };
 
+class idD3D12DescriptorPool;
+
 // The only place a GPU object dies: after the fence of the last list that could use it (R3).
 class idD3D12Graveyard {
 public:
 	explicit						idD3D12Graveyard( const idD3D12Queue & queue ) : queue( queue ) {}
 	void							Bury( idComPtr<ID3D12Pageable> object );	// tagged LastSignaled() + 1: the open list
+	void							Bury( idD3D12DescriptorPool & pool, d3d12Descriptor_t slot );	// back into the pool then
 	void							Collect();		// graves whose fence <= queue.Waited()
-	void							CollectAll();	// Shutdown, after WaitIdle or device loss
+	void							CollectAll();	// Shutdown, after WaitIdle or device loss; slots go back too
 	[[nodiscard]] int				Pending() const { return static_cast<int>( graves.size() ); }
 private:
 	struct grave_t {
 		uint64						fence;
 		idComPtr<ID3D12Pageable>	object;
+		idD3D12DescriptorPool *		pool = nullptr;		// the pools outlive the graveyard's last CollectAll
+		d3d12Descriptor_t			slot;
 	};
+	static void						Release( grave_t & grave );
 	const idD3D12Queue &			queue;
 	std::deque<grave_t>				graves;			// fence order
 };

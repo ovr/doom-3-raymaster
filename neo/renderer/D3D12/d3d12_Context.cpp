@@ -74,14 +74,16 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
 	dsvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
 	descriptors( device ),
+	samplers( device ),
 	constants( device, CONSTANTS_RING_SIZE, L"doom3 constants ring" ),
 	staging( device, STAGING_RING_SIZE, L"doom3 staging ring" ),
 	uploader( device, *this, staging, barriers, graveyard ),
 	buffers( device, graveyard, uploader, barriers, d3d12BufferPlacement_t::UPLOAD ),
+	textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ),
 	compiler( library ),
 	rootSignature( device, library ),
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
-	passes( device, rootSignature, compiler, *this, barriers, constants, descriptors, srvPool ),
+	passes( device, rootSignature, compiler, *this, barriers, constants, descriptors, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
 	recorder( *this, barriers, scene, passes ) {
 }
@@ -95,6 +97,7 @@ idD3D12Context::~idD3D12Context() {
 		WaitIdle();
 	}
 	buffers.DestroyAll();
+	textures.DestroyAll();
 	graveyard.CollectAll();
 	device.DrainMessages();
 }
@@ -111,7 +114,8 @@ std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width,
 }
 
 void idD3D12Context::CreateDefaults() {
-	passes.CreateDefaults();
+	textures.CreateDefaults();
+	passes.CreateDefaults( textures.Fallback( textureKind_t::TEX_2D ), textures.Fallback( textureKind_t::TEX_CUBE ) );
 	buffers.CreateDefaults();
 }
 
@@ -120,8 +124,8 @@ ID3D12GraphicsCommandList1 & idD3D12Context::List() {
 		return commands.List();
 	}
 	ID3D12GraphicsCommandList1 & list = commands.Open();
-	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap() };
-	list.SetDescriptorHeaps( 1, heaps );
+	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
+	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( rootSignature.Get() );
 	recorder.Invalidate();
 	return list;
@@ -204,11 +208,34 @@ void idD3D12Context::EndFrameStats() {
 	frame.barriers = barriers.IssuedThisFrame();
 	frame.uploadBytes = uploader.BytesThisFrame();
 	frame.inPlaceBytes = buffers.InPlaceBytesThisFrame();
+	frame.samplerTables = samplers.BuiltThisFrame();
 	lastFrame = frame;
 	frame = {};
 	barriers.ResetFrameCounters();
 	uploader.ResetFrameCounters();
 	buffers.ResetFrameCounters();
+	samplers.ResetFrameCounters();
+}
+
+// Over everything the frame drew, in the scene target, so ReadOutputPixels captures it.
+void idD3D12Context::ShowImage( textureHandle_t handle ) {
+	const d3d12Texture_t * texture = textures.Find( handle );
+	if ( texture == nullptr || !swapChain ) {
+		return;
+	}
+	recorder.EndPass();
+	textures.MakeReadable( handle );
+	idD3D12SceneTarget::surface_t & color = scene.Color();
+	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	passes.ShowImage( textures.SampledView( handle, texture->kind ), texture->kind, texture->surface.width, texture->surface.height,
+		scene.Rtv( false ), scene.Target( false ), scene.Width(), scene.Height() );
+	recorder.Invalidate();
+}
+
+d3d12TextureCheckResult_t idD3D12Context::CheckTextures() {
+	recorder.EndPass();
+	idD3D12TextureCheck check( device, *this, barriers, graveyard );
+	return check.Run( textures );
 }
 
 // r_d3d12CaptureBackBuffer reads what Present would show, so a wrong row flip in the blit makes the
@@ -253,4 +280,7 @@ void idD3D12Context::PrintInfo() const {
 	common->Printf( "D3D12 buffers: %d, FRAME %.1f MB in UPLOAD heaps, STATIC %.1f MB in DEFAULT heaps + %.1f MB CPU mirrors\n", buffers.Num(),
 		buffers.Bytes( bufferUsage_t::FRAME ) / ( 1024.0 * 1024.0 ), buffers.Bytes( bufferUsage_t::STATIC ) / ( 1024.0 * 1024.0 ),
 		buffers.MirrorBytes() / ( 1024.0 * 1024.0 ) );
+	common->Printf( "D3D12 textures: %d, %.1f MB; sampler tables %d of %u; unaligned BC %s, anisotropic point mips %s\n", textures.Num(),
+		textures.Bytes() / ( 1024.0 * 1024.0 ), samplers.Used(), idD3D12SamplerHeap::TABLES, device.Features().unalignedBlocks ? "yes" : "decoded",
+		device.Features().anisoPointMip ? "yes" : "no" );
 }

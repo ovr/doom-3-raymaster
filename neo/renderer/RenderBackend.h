@@ -238,6 +238,8 @@ public:
 	virtual void			CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) = 0;
 	// The same for a DEPTH_COPY texture and the depth buffer.
 	virtual void			CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) = 0;
+	// The images of a level are loaded (idRenderSystem::EndLevelLoad), outside a frame: a backend may check them.
+	virtual void			EndLevelLoad() {}
 	// What the draws that follow sample on this slot for this kind. A slot keeps one 2D and one cube entry.
 	void					BindTexture( int slot, textureKind_t kind, textureHandle_t texture );
 	// The next BindTexture of every slot reaches the API hook even when the handle is unchanged.
