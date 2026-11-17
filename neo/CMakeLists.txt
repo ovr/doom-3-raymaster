@@ -70,6 +70,9 @@ set_source_files_properties(
 	TARGET_DIRECTORY Doom3BFG
 	PROPERTIES SKIP_PRECOMPILE_HEADERS ON
 )
+# renderer/D3D12/ is new code without warnings: /WX in every config, with no build option. Its DLLs are
+# loaded from System32 at Init (idD3D12Library), so no d3d12, dxgi or d3dcompiler import library is linked.
+set_source_files_properties(${D3D12_SOURCES} TARGET_DIRECTORY Doom3BFG PROPERTIES COMPILE_OPTIONS /WX)
 
 target_link_libraries(Doom3BFG PRIVATE
 	idLib
@@ -163,6 +166,7 @@ target_link_options(idlibTests PRIVATE /LARGEADDRESSAWARE /DEBUG)
 set_target_properties(idlibTests PROPERTIES FOLDER "tests")
 add_test(NAME idlibTests COMMAND idlibTests)
 
-# renderApiLeaks: no OpenGL name outside neo/renderer/OpenGL/ and the two WGL files
+# renderApiLeaks: no OpenGL name outside neo/renderer/OpenGL/ and the two WGL files, no D3D12 or DXGI
+# name outside neo/renderer/D3D12/
 add_test(NAME renderApiLeaks
 	COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/check-render-api-leaks.ps1")
