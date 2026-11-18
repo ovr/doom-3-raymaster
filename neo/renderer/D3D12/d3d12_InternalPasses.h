@@ -50,6 +50,10 @@ public:
 	// cross of its faces (+Y above, -X +Z +X -Z, -Y below), each upright as GL samples it. The image is readable.
 	void							ShowImage( d3d12Descriptor_t imageSrv, textureKind_t kind, int imageWidth, int imageHeight,
 										D3D12_CPU_DESCRIPTOR_HANDLE target, d3d12TargetId_t id, int targetWidth, int targetHeight );
+	// The depth box at (x, y) of the scene (its R24 view, sample 0 with MSAA, in DEPTH_READ | PIXEL_SHADER_RESOURCE)
+	// into the whole width x height R32_FLOAT target (in RENDER_TARGET), rows in order. Texels outside the scene read 0.
+	void							CopyDepth( d3d12Descriptor_t depthSrv, UINT samples, D3D12_CPU_DESCRIPTOR_HANDLE target, int x, int y,
+										int width, int height );
 
 private:
 	struct room_t {
@@ -79,7 +83,9 @@ private:
 	std::array<d3d12Descriptor_t, 2>	black;		// by textureKind_t: the table slots a pass does not sample
 	d3d12SamplerTableKey_t			showSamplers;	// s0 trilinear, s1 point, both clamped
 	d3d12Bytecode_t					triangleVs, blitPs, clearPs, show2DPs, showCubePs;
+	std::array<d3d12Bytecode_t, 2>	depthCopyPs;	// a single-sample and a multisampled depth view
 	idComPtr<ID3D12PipelineState>	blit;
+	std::array<idComPtr<ID3D12PipelineState>, 2>	depthCopy;	// [multisampled], on first use
 	std::array<idComPtr<ID3D12PipelineState>, d3d12TargetId_t::COUNT * 16>	maskedClear;	// [target id * 16 + mask], on first use
 	std::array<idComPtr<ID3D12PipelineState>, d3d12TargetId_t::COUNT * 2>	showImage;		// [target id * 2 + kind], on first use
 };

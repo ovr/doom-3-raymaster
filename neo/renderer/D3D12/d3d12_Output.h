@@ -51,8 +51,10 @@ public:
 	[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE	Dsv() const { return dsvPool.Cpu( dsv ); }
 	[[nodiscard]] surface_t &		Color() { return color; }
 	[[nodiscard]] surface_t &		Depth() { return depth; }
-	// One sample: Color(). MSAA: the colour resolved into the resolve texture first.
-	[[nodiscard]] surface_t &		Resolved( idD3D12Barriers & barriers, idD3D12Submitter & submitter );
+	// One sample: Color(). MSAA: the colour resolved into the resolve texture first, only inside region when
+	// there is one (a copy's box), which must lie inside the scene.
+	[[nodiscard]] surface_t &		Resolved( idD3D12Barriers & barriers, idD3D12Submitter & submitter,
+										std::optional<D3D12_RECT> region = std::nullopt );
 	[[nodiscard]] int				Width() const { return width; }
 	[[nodiscard]] int				Height() const { return height; }
 	[[nodiscard]] UINT				Samples() const { return samples; }

@@ -119,6 +119,27 @@ float4 psMain( float4 position : SV_Position ) : SV_Target {
 }
 )";
 
+// Target row r is scene row y + r, as glCopyTexImage2D lays the rows of its box out. The value is the
+// one GL's GL_DEPTH_COMPONENT copy keeps: the 24-bit depth as a float, which shaders read in .x.
+constexpr std::string_view DEPTH_COPY_PS = R"(
+cbuffer depthCopyParms : register( b1 ) {
+	int4 origin;		// x, y of the box in the scene
+};
+#ifdef MULTISAMPLED
+Texture2DMS<float> depth : register( t0 );
+#else
+Texture2D<float> depth : register( t0 );
+#endif
+float psMain( float4 position : SV_Position ) : SV_Target {
+	int2 pixel = int2( position.xy ) + origin.xy;
+#ifdef MULTISAMPLED
+	return depth.Load( pixel, 0 );
+#else
+	return depth.Load( int3( pixel, 0 ) );
+#endif
+}
+)";
+
 constexpr uint64 PARM_BYTES = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 constexpr int SHOW_MARGIN = 16;
 
@@ -168,6 +189,8 @@ void idD3D12InternalPasses::CreateDefaults( d3d12Descriptor_t black2D, d3d12Desc
 	clearPs = compile( CLEAR_PS, shaderStageType_t::FRAGMENT, "d3d12 masked clear" );
 	show2DPs = compile( std::string( SHOW_PARMS ).append( SHOW_2D_PS ), shaderStageType_t::FRAGMENT, "d3d12 show image 2D" );
 	showCubePs = compile( std::string( SHOW_PARMS ).append( SHOW_CUBE_PS ), shaderStageType_t::FRAGMENT, "d3d12 show image cube" );
+	depthCopyPs[0] = compile( DEPTH_COPY_PS, shaderStageType_t::FRAGMENT, "d3d12 depth copy" );
+	depthCopyPs[1] = compile( std::string( "#define MULTISAMPLED\n" ).append( DEPTH_COPY_PS ), shaderStageType_t::FRAGMENT, "d3d12 depth copy MSAA" );
 	blit = CreatePipeline( blitPs, idD3D12SwapChain::FORMAT, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ), L"doom3 present blit" );
 }
 
@@ -322,6 +345,24 @@ void idD3D12InternalPasses::ShowImage( d3d12Descriptor_t imageSrv, textureKind_t
 	const int y = SHOW_MARGIN + ( areaHeight - height ) / 2;
 	ShowPanel( *pso.Get(), textures, target, { SHOW_MARGIN + ( areaWidth - width ) / 2, y, width, height }, false, level );
 	ShowPanel( *pso.Get(), textures, target, { 2 * SHOW_MARGIN + areaWidth + ( areaWidth - width ) / 2, y, width, height }, true, level );
+}
+
+void idD3D12InternalPasses::CopyDepth( d3d12Descriptor_t depthSrv, UINT samples, D3D12_CPU_DESCRIPTOR_HANDLE target, int x, int y, int width,
+	int height ) {
+	const size_t multisampled = ( samples > 1 ) ? 1 : 0;
+	idComPtr<ID3D12PipelineState> & pso = depthCopy[multisampled];
+	if ( !pso ) {
+		pso = CreatePipeline( depthCopyPs[multisampled], DXGI_FORMAT_R32_FLOAT, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ),
+			L"doom3 depth copy" );
+		if ( !pso ) {
+			return;		// a lost device
+		}
+	}
+	const std::array textures = { depthSrv };
+	const room_t room = Room( textures );
+	const int32 origin[4] = { x, y, 0, 0 };
+	memcpy( room.parms.cpu, origin, sizeof( origin ) );
+	Record( submitter.List(), target, *pso.Get(), { 0, 0, width, height }, room );
 }
 
 void idD3D12InternalPasses::ShowPanel( ID3D12PipelineState & pso, std::span<const d3d12Descriptor_t> textures, D3D12_CPU_DESCRIPTOR_HANDLE target,

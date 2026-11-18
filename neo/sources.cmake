@@ -254,6 +254,7 @@ set(GAME_D3XP_SOURCES
 set(D3D12_SOURCES
 	renderer/D3D12/d3d12_Buffers.cpp
 	renderer/D3D12/d3d12_Context.cpp
+	renderer/D3D12/d3d12_Copies.cpp
 	renderer/D3D12/d3d12_Descriptors.cpp
 	renderer/D3D12/d3d12_Device.cpp
 	renderer/D3D12/d3d12_Diagnostics.cpp

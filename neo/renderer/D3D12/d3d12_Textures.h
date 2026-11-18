@@ -42,6 +42,13 @@ If you have questions concerning this license or the applicable additional terms
 	With RecordUploads( true ) every upload keeps a hash of the bytes it copied after conversion (the
 	blocks, idDxtDecoder's output, the swapped 565 words), and idD3D12TextureCheck reads every such
 	subresource back and hashes it again: d3d12_checkImages and r_d3d12CheckImages.
+
+	A copy (CopyOutputToTexture, CopyDepthToTexture) redefines level 0 at the size of its box, as
+	glCopyTexImage2D does. The texture keeps the surfaces of its last two sizes: the current one and a
+	spare, swapped back in when a copy has its size again, so resolution scaling never recreates one.
+	A third size buries the spare after the open list (R5). Levels 1 and up of GL's texture keep the
+	size of its creation, so after a copy at another size GL sees an incomplete texture under a mipmap
+	filter and samples (0,0,0,1): SampledView gives the black fallback then (T6).
 */
 
 // 64-bit hash of bytes, continued from hash; 8 bytes a step. The upload and the check hash the same rows.
@@ -65,19 +72,30 @@ struct d3d12TextureSurface_t {
 	int								height = 0;
 	int								levels = 0;
 	int								faces = 0;
+	uint64							bytes = 0;		// GPU memory of the resource
+};
+
+// What a copy writes into its target.
+enum class d3d12CopyKind_t : uint8 {
+	COLOR,		// the scene's colour: an R8G8B8A8_UNORM 2D texture (COLOR_COPY)
+	DEPTH		// the scene's depth through the depth-copy pass: an R32_FLOAT 2D texture with an RTV (DEPTH_COPY)
 };
 
 // What a textureHandle_t names.
 struct d3d12Texture_t {
-	idImageOpts						opts;
+	idImageOpts						opts;			// as created: a copy changes the surface only
 	textureRole_t					role = textureRole_t::SAMPLED;
 	textureKind_t					kind = textureKind_t::TEX_2D;
 	d3d12FormatInfo_t				format;
-	d3d12TextureSurface_t			surface;
-	uint64							sampler = 0;	// D3D12_PackSampler of the last SetSampler
-	uint64							bytes = 0;		// GPU memory of the resource
+	d3d12TextureSurface_t			surface;		// what draws sample
+	d3d12TextureSurface_t			spare;			// copy targets: the surface of the other recent size
+	uint64							sampler = 0;	// D3D12_PackSampler of the last SetSampler; a colour copy makes it LINEAR + CLAMP
+	bool							copiedResized = false;	// the last copy had another size than the creation (T6)
 	idStr							name;
-	std::vector<d3d12UploadRecord_t>	uploads;	// by subresource, while uploads are recorded
+	std::vector<d3d12UploadRecord_t>	uploads;	// by subresource of surface, while uploads are recorded
+
+	// GL's texture is incomplete: level 0 does not match the mips a mipmap filter reads.
+	[[nodiscard]] bool				IncompleteCopy() const;
 };
 
 class idD3D12TextureStore {
@@ -96,7 +114,11 @@ public:
 	[[nodiscard]] d3d12Texture_t *	Find( textureHandle_t texture ) { return table.Find( texture ); }
 	[[nodiscard]] d3d12Texture_t &	Get( textureHandle_t texture ) { return table.Get( texture ); }
 	[[nodiscard]] textureHandle_t	FindByName( const char * name );	// case-insensitive; NONE when there is none
-	// The view a slot of this kind samples: the texture's, or the black fallback for NONE, a dead handle or the other kind.
+	// The surface a copy of a width x height box writes: the current one, the spare, or a new one-level surface.
+	// A colour copy sets LINEAR and CLAMP, as GL's copy does. nullptr for a dead handle or a texture of another kind.
+	[[nodiscard]] d3d12TextureSurface_t *	PrepareCopyTarget( textureHandle_t texture, d3d12CopyKind_t kind, int width, int height );
+	// The view a slot of this kind samples: the texture's, or the black fallback for NONE, a dead handle, the
+	// other kind or an incomplete copy.
 	[[nodiscard]] d3d12Descriptor_t	SampledView( textureHandle_t texture, textureKind_t kind );
 	[[nodiscard]] d3d12Descriptor_t	Fallback( textureKind_t kind ) const { return fallbacks[static_cast<size_t>( kind )].srv; }
 	void							MakeReadable( textureHandle_t texture );	// PIXEL_SHADER_RESOURCE, batched
@@ -106,10 +128,13 @@ public:
 	void							DestroyAll();		// Shutdown, the GPU idle
 	[[nodiscard]] int				Num() const { return table.Num(); }
 	[[nodiscard]] uint64			Bytes() const { return bytes; }
+	[[nodiscard]] int				CopySurfacesThisFrame() const { return copySurfaces; }	// P1: 0 while the copy sizes repeat
+	void							ResetFrameCounters() { copySurfaces = 0; }
 
 private:
 	[[nodiscard]] bool				CreateSurface( d3d12TextureSurface_t & surface, const d3d12FormatInfo_t & format, textureKind_t kind,
 										int width, int height, int levels, const char * name );
+	void							BurySurface( d3d12TextureSurface_t & surface );	// after the open list; its bytes leave the total
 	// The rows of one region, converted, into staging and the copy; returns what the check compares.
 	[[nodiscard]] d3d12UploadRecord_t	CopyRegion( d3d12TextureSurface_t & surface, const d3d12FormatInfo_t & format, UINT subresource,
 										bool wholeLevel, int width, int height, const byte * source, size_t sourcePitch, bool record );
@@ -127,6 +152,7 @@ private:
 	std::vector<byte>				scratch;		// a converted row, or a decoded DXT level
 	std::vector<byte>				rowScratch;
 	uint64							bytes = 0;
+	int								copySurfaces = 0;	// created by PrepareCopyTarget this frame
 };
 
 struct d3d12TextureCheckResult_t {

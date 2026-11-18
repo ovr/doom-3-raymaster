@@ -176,7 +176,9 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 	}
 	prepared.defaultAttribs = ( program.info.attribMask & ~vertexLayouts[dc.layout].attribMask ) != 0;
 
-	// R11: a sampled slot without a texture of its kind reads the black fallback, with sampler 0
+	// R11: a sampled slot without a texture of its kind reads the black fallback, with sampler 0; so does an
+	// incomplete copy (T6), with its own sampler
+	bool unbound = false;
 	bool incomplete = false;
 	for ( int slot = 0; slot < MAX_TEXTURE_SLOTS; slot++ ) {
 		const int bit = 1 << slot;
@@ -187,9 +189,10 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 			const d3d12Texture_t * texture = textures.Find( handle );
 			if ( texture != nullptr && texture->kind == kind ) {
 				prepared.signature.samplers.samplers[slot] = texture->sampler;
+				incomplete |= texture->IncompleteCopy();
 			} else {
 				handle = textureHandle_t::NONE;
-				incomplete = true;
+				unbound = true;
 			}
 		}
 		prepared.textures[slot] = handle;
@@ -197,6 +200,7 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 		prepared.signature.srvs[slot] = view.index;
 		prepared.sources[slot] = srvPool.Cpu( view );
 	}
+	stats.unboundSlots += unbound ? 1 : 0;
 	stats.incompleteBinds += incomplete ? 1 : 0;
 	prepared.vertexParmBytes = ParmBytes( program.vertexInfo );
 	prepared.fragmentParmBytes = ParmBytes( program.fragmentInfo );

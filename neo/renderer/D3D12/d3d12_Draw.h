@@ -50,7 +50,8 @@ struct d3d12DrawStats_t {
 	int								skipped = 0;		// program NONE or dead, a dead buffer, a lost device, no scissor left
 	int								psoBinds = 0;
 	int								tableCopies = 0;	// SRV tables copied into the ring
-	int								incompleteBinds = 0;	// draws with a sampled slot that reads black (R11)
+	int								unboundSlots = 0;	// draws with a sampled slot without a texture of its kind (R11)
+	int								incompleteBinds = 0;	// draws sampling a copy GL sees as incomplete, black (T6)
 	int								chunkSubmits = 0;	// lists submitted because they had their draws
 	int								reserveWaits = 0;	// full rings: Reserve waited for an older list
 	uint64							parmBytes = 0;		// taken from "constants"
@@ -68,6 +69,9 @@ struct d3d12FrameStats_t {
 	uint64							inPlaceBytes = 0;	// written into FRAME buffers the GPU reads in place
 	int								samplerTables = 0;	// sampler tables built
 	int								debugGroups = 0;	// pushed
+	int								colorCopies = 0;	// CopyOutputToTexture
+	int								depthCopies = 0;	// CopyDepthToTexture
+	int								copySurfaces = 0;	// copy targets created for a new size
 };
 
 // The SRV pool slots and the packed samplers of the 8 slots of a draw.

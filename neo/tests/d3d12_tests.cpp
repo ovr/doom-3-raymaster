@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../renderer/tr_local.h"
 #include "../renderer/D3D12/d3d12_Buffers.h"
+#include "../renderer/D3D12/d3d12_Copies.h"
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
@@ -59,7 +60,8 @@ If you have questions concerning this license or the applicable additional terms
 	The HLSL emitter and FXC run on the repo's base/renderprogs: the texture and gui pairs against
 	neo/tests/d3d12_golden/*.hlsl (D3D12_TESTS_WRITE_GOLDEN=1 writes them), every source through FXC,
 	and the reflection of every program against what GL reported on mars_city1 (renderProgInfo-gl.txt).
-	The pipeline state map runs per GLS family and on random keys; the PSO factory on WARP.
+	The pipeline state map runs per GLS family and on random keys; the PSO factory on WARP. The screen
+	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU.
 
 	Usage: d3d12Tests [filter]     filter: run the tests whose name contains it; "all" runs every test
 	D3D12_TESTS_VERBOSE=1 prints every failed check, not only the first 20 of a test.
@@ -2812,6 +2814,415 @@ void RasterDepthBias( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+// ---- screen copies -----------------------------------------------------------------------------------------
+
+// P1 and T6 without a draw: the two surfaces of a copy target, the sampler GL's colour copy sets, and the
+// incomplete texture a mipmap filter makes of a copy at another size.
+void Test_WarpCopyTargets() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12TextureStore & store = gpu->textures;
+	store.CreateDefaults();
+	const uint64 bytesBefore = store.Bytes();
+	const samplerDesc_t trilinear = { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::REPEAT, 4.0f, -0.5f };
+	const textureHandle_t color = store.Create( Opts( FMT_RGBA8, 16, 16, 5 ), textureRole_t::COLOR_COPY, trilinear, "_currentRender" );
+	const textureHandle_t depth = store.Create( Opts( FMT_DEPTH, 16, 16, 1 ), textureRole_t::DEPTH_COPY, POINT_CLAMP, "_currentDepth" );
+	if ( !Check( color != textureHandle_t::NONE && depth != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	const d3d12Texture_t & texture = store.Get( color );
+	const ID3D12Resource * created = texture.surface.resource.Get();
+
+	store.RecordUploads( true );
+	const std::vector<byte> pixels = Pattern( 16 * 16 * 4, 7 );
+	store.Upload( color, 0, 0, 16, 16, pixels.data(), 16 );
+	Check( !texture.uploads.empty(), "the upload is recorded" );
+	Check( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 16, 16 ) == &store.Get( color ).surface, "a copy target" );
+	Check( texture.surface.resource.Get() == created && texture.surface.levels == 5 && !texture.copiedResized,
+		"a copy of the creation size goes into the created surface, its mips kept" );
+	Check( texture.uploads.empty(), "a copy forgets the recorded uploads: level 0 is no upload now" );
+	Check( texture.sampler == D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::CLAMP, 4.0f, -0.5f } ),
+		"a colour copy sets LINEAR and CLAMP and keeps the anisotropy and the LOD bias, as GL's copy" );
+
+	const d3d12TextureSurface_t * big = store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 1280, 720 );
+	Check( big != nullptr && big->width == 1280 && big->height == 720 && big->levels == 1, "another size: a new one-level surface" );
+	Check( texture.spare.resource.Get() == created && store.CopySurfacesThisFrame() == 1, "the created surface is the spare" );
+	Check( texture.copiedResized && !texture.IncompleteCopy() && store.SampledView( color, textureKind_t::TEX_2D ) == texture.surface.srv,
+		"a resized copy under LINEAR is complete: it samples its surface" );
+	store.SetSampler( color, trilinear );
+	Check( texture.IncompleteCopy() && store.SampledView( color, textureKind_t::TEX_2D ) == store.Fallback( textureKind_t::TEX_2D ),
+		"a mipmap filter on a resized copy: GL's incomplete texture reads black (T6)" );
+	store.SetSampler( color, { samplerFilter_t::LINEAR_MIP_NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } );
+	Check( texture.IncompleteCopy(), "LINEAR_MIP_NEAREST reads the mips too" );
+	store.SetSampler( color, POINT_CLAMP );
+	Check( !texture.IncompleteCopy(), "NEAREST reads level 0 only" );
+
+	const ID3D12Resource * bigResource = texture.surface.resource.Get();
+	Check( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 960, 540 ) != nullptr && texture.spare.resource.Get() == bigResource
+		&& store.CopySurfacesThisFrame() == 2, "a third size: a new surface, the last one is the spare and the created one is buried" );
+	const ID3D12Resource * smallResource = texture.surface.resource.Get();
+	for ( int i = 0; i < 3; i++ ) {
+		static_cast<void>( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 1280, 720 ) );
+		Check( texture.surface.resource.Get() == bigResource && texture.spare.resource.Get() == smallResource, "the spare swaps in" );
+		static_cast<void>( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 960, 540 ) );
+		Check( texture.surface.resource.Get() == smallResource && texture.spare.resource.Get() == bigResource, "and back" );
+	}
+	Check( store.CopySurfacesThisFrame() == 2, "resolution scaling between two sizes creates nothing (P1)" );
+	Check( store.Bytes() == bytesBefore + texture.surface.bytes + texture.spare.bytes + store.Get( depth ).surface.bytes,
+		"the bytes count both surfaces, not the buried one" );
+	static_cast<void>( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 16, 16 ) );
+	Check( texture.surface.levels == 1 && !texture.copiedResized, "the creation size again, after a third size: a one-level surface, complete" );
+	store.ResetFrameCounters();
+	Check( store.CopySurfacesThisFrame() == 0, "the frame counter restarts" );
+
+	const d3d12TextureSurface_t * depthTarget = store.PrepareCopyTarget( depth, d3d12CopyKind_t::DEPTH, 32, 24 );
+	Check( depthTarget != nullptr && depthTarget->rtv.IsValid() && depthTarget->width == 32 && depthTarget->height == 24,
+		"a depth copy target has an RTV for the depth-copy pass" );
+	Check( store.Get( depth ).sampler == D3D12_PackSampler( POINT_CLAMP ), "a depth copy keeps the sampler, as GL's copy" );
+	printf( "  three warnings follow: copies into the wrong kind of texture\n" );
+	Check( store.PrepareCopyTarget( depth, d3d12CopyKind_t::COLOR, 8, 8 ) == nullptr, "a depth texture is no colour copy target" );
+	Check( store.PrepareCopyTarget( color, d3d12CopyKind_t::DEPTH, 8, 8 ) == nullptr, "a colour texture is no depth copy target" );
+	const textureHandle_t cube = store.Create( Opts( FMT_RGBA8, 4, 4, 1, TT_CUBIC ), textureRole_t::COLOR_COPY, POINT_CLAMP, "cube" );
+	Check( store.PrepareCopyTarget( cube, d3d12CopyKind_t::COLOR, 4, 4 ) == nullptr, "a cube is no copy target" );
+	Check( store.PrepareCopyTarget( textureHandle_t::NONE, d3d12CopyKind_t::COLOR, 8, 8 ) == nullptr, "NONE" );
+	Check( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 0, 8 ) == nullptr, "an empty box" );
+
+	store.Destroy( color );
+	store.Destroy( depth );
+	store.Destroy( cube );
+	Check( store.Bytes() == bytesBefore, "Destroy buries both surfaces" );
+	gpu->WaitIdle();
+	CheckNoLayerErrors( *gpu );
+}
+
+// The context's copy path over a test GPU: a SIZE x SIZE scene target, the internal passes and the screen
+// copies. The context's List() gives a new list the heaps and the root signature; here Bind() does, before a pass.
+class idTestCopies {
+public:
+	static constexpr int			SIZE = 64;
+	struct box_t {
+		int							x, y, width, height;
+	};
+	// inside, the whole scene, past the right and top, past the left and bottom (GL's coordinates)
+	static constexpr std::array<box_t, 4>	BOXES = { { { 5, 3, 20, 11 }, { 0, 0, SIZE, SIZE }, { 50, 40, 30, 30 }, { -6, -2, 16, 12 } } };
+
+									idTestCopies( idTestGpu & gpu, UINT samples );
+									~idTestCopies();
+									idTestCopies( const idTestCopies & ) = delete;
+	idTestCopies &					operator=( const idTestCopies & ) = delete;
+	[[nodiscard]] bool				Ready() const { return ready; }
+	void							Bind();
+	// The scene colour: a different RGBA per pixel with one sample (an upload), per 4 x 4 block with MSAA (clears).
+	void							FillColor();
+	[[nodiscard]] uint32			ColorAt( int column, int row ) const;	// what FillColor wrote, R | G << 8 | B << 16 | A << 24
+	// The scene depth: a different value per 4 x 4 block (clears).
+	void							FillDepth();
+	[[nodiscard]] static float		DepthAt( int column, int row );
+	// Level 0 of a single-sample texture as 32-bit texels, rows in memory order.
+	[[nodiscard]] std::vector<uint32>	Read( ID3D12Resource & resource, d3d12ResourceState_t & state );
+	[[nodiscard]] static bool		InScene( int column, int row ) { return column >= 0 && row >= 0 && column < SIZE && row < SIZE; }
+
+	idTestGpu &						gpu;
+	UINT							samples;
+	idD3D12ShaderCompiler			compiler;
+	idD3D12RootSignature			root;
+	idD3D12DescriptorPool			dsvPool;
+	idD3D12UploadRing				constants;
+	idD3D12DescriptorRing			descriptors;
+	idD3D12SamplerHeap				samplers;
+	idD3D12SceneTarget				scene;
+	idD3D12InternalPasses			passes;
+	idD3D12ScreenCopies				copies;
+	idD3D12Readback					readback;
+
+private:
+	bool							ready = false;
+};
+
+idTestCopies::idTestCopies( idTestGpu & owner, UINT sampleCount ) :
+	gpu( owner ),
+	samples( sampleCount ),
+	compiler( owner.library, false ),
+	root( owner.device, owner.library ),
+	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
+	constants( owner.device, 1 << 20, L"test constants ring" ),
+	descriptors( owner.device ),
+	samplers( owner.device ),
+	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
+	passes( owner.device, root, compiler, owner, owner.barriers, constants, descriptors, samplers, owner.srvPool ),
+	copies( owner, owner.barriers, scene, owner.textures, passes, owner.rtvPool ),
+	readback( owner.device, owner, owner.barriers, owner.graveyard ) {
+	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
+		gpu.textures.CreateDefaults();
+	}
+	if ( !root.Get() ) {
+		Check( false, "the root signature" );
+		return;
+	}
+	scene.Create( SIZE, SIZE, samples );
+	passes.CreateDefaults( gpu.textures.Fallback( textureKind_t::TEX_2D ), gpu.textures.Fallback( textureKind_t::TEX_CUBE ) );
+	ready = Check( scene.Color().resource && scene.Depth().resource, va( "a %u-sample scene target", samples ) );
+}
+
+idTestCopies::~idTestCopies() {
+	if ( !gpu.device.IsLost() ) {
+		gpu.WaitIdle();
+	}
+}
+
+void idTestCopies::Bind() {
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
+	list.SetDescriptorHeaps( 2, heaps );
+	list.SetGraphicsRootSignature( root.Get() );
+}
+
+[[nodiscard]] uint32 ScenePattern( int column, int row ) {
+	const uint32 r = static_cast<uint32>( column * 4 );
+	const uint32 g = static_cast<uint32>( row * 4 );
+	const uint32 b = static_cast<uint32>( ( column * 7 + row * 3 ) & 0xFF );
+	const uint32 a = static_cast<uint32>( ( 255 - column - row * 2 ) & 0xFF );
+	return r | ( g << 8 ) | ( b << 16 ) | ( a << 24 );
+}
+
+uint32 idTestCopies::ColorAt( int column, int row ) const {
+	return ( samples == 1 ) ? ScenePattern( column, row ) : ScenePattern( column & ~3, row & ~3 );
+}
+
+float idTestCopies::DepthAt( int column, int row ) {
+	return static_cast<float>( ( row / 4 ) * ( SIZE / 4 ) + column / 4 + 1 ) / 257.0f;
+}
+
+// A multisampled texture takes no copy from a buffer, and a clear sets every sample.
+void idTestCopies::FillColor() {
+	idD3D12SceneTarget::surface_t & color = scene.Color();
+	if ( samples == 1 ) {
+		const D3D12_RESOURCE_DESC desc = color.resource->GetDesc();
+		D3D12_PLACED_SUBRESOURCE_FOOTPRINT placed = {};
+		UINT rows = 0;
+		UINT64 total = 0;
+		gpu.device.Get().GetCopyableFootprints( &desc, 0, 1, 0, &placed, &rows, nullptr, &total );
+		const std::optional<d3d12UploadSpan_t> span = gpu.uploader.Stage( total, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT );
+		if ( !Check( span.has_value(), "staging for the scene pattern" ) ) {
+			return;
+		}
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const uint32 texel = ScenePattern( column, row );
+				memcpy( span->cpu + static_cast<size_t>( row ) * placed.Footprint.RowPitch + column * 4, &texel, 4 );
+			}
+		}
+		gpu.uploader.TextureRegion( *color.resource.Get(), color.state, 0, *span, placed.Footprint, rows );
+		return;
+	}
+	gpu.barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	gpu.barriers.Flush();
+	for ( int row = 0; row < SIZE; row += 4 ) {
+		for ( int column = 0; column < SIZE; column += 4 ) {
+			const uint32 texel = ScenePattern( column, row );
+			const float rgba[4] = { Unorm8( static_cast<byte>( texel ) ), Unorm8( static_cast<byte>( texel >> 8 ) ), Unorm8( static_cast<byte>( texel >> 16 ) ),
+				Unorm8( static_cast<byte>( texel >> 24 ) ) };
+			const D3D12_RECT rect = { column, row, column + 4, row + 4 };
+			gpu.List().ClearRenderTargetView( scene.Rtv( false ), rgba, 1, &rect );
+		}
+	}
+}
+
+void idTestCopies::FillDepth() {
+	idD3D12SceneTarget::surface_t & depth = scene.Depth();
+	gpu.barriers.Transition( *depth.resource.Get(), depth.state, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	gpu.barriers.Flush();
+	for ( int row = 0; row < SIZE; row += 4 ) {
+		for ( int column = 0; column < SIZE; column += 4 ) {
+			const D3D12_RECT rect = { column, row, column + 4, row + 4 };
+			gpu.List().ClearDepthStencilView( scene.Dsv(), D3D12_CLEAR_FLAG_DEPTH, DepthAt( column, row ), 0, 1, &rect );
+		}
+	}
+}
+
+std::vector<uint32> idTestCopies::Read( ID3D12Resource & resource, d3d12ResourceState_t & state ) {
+	const D3D12_RESOURCE_DESC desc = resource.GetDesc();
+	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+	UINT rows = 0;
+	UINT64 total = 0;
+	gpu.device.Get().GetCopyableFootprints( &desc, 0, 1, 0, &footprint, &rows, nullptr, &total );
+	const idComPtr<ID3D12Resource> buffer = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_READBACK, total, D3D12_RESOURCE_STATE_COPY_DEST,
+		L"test copy readback" );
+	if ( !Check( buffer != nullptr, "the readback buffer" ) ) {
+		return {};
+	}
+	gpu.barriers.Transition( resource, state, D3D12_RESOURCE_STATE_COPY_SOURCE );
+	gpu.barriers.Flush();
+	D3D12_TEXTURE_COPY_LOCATION destination = {};
+	destination.pResource = buffer.Get();
+	destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	destination.PlacedFootprint = footprint;
+	D3D12_TEXTURE_COPY_LOCATION source = {};
+	source.pResource = &resource;
+	source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	gpu.List().CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+	gpu.WaitIdle();
+
+	const size_t width = static_cast<size_t>( desc.Width );
+	std::vector<uint32> texels( width * rows );
+	const D3D12_RANGE everything = { 0, static_cast<SIZE_T>( total ) };
+	void * mapped = nullptr;
+	if ( gpu.device.Check( buffer->Map( 0, &everything, &mapped ), "Map (test copy readback)" ) ) {
+		for ( UINT row = 0; row < rows; row++ ) {
+			memcpy( &texels[row * width], static_cast<const byte *>( mapped ) + static_cast<size_t>( row ) * footprint.Footprint.RowPitch, width * 4 );
+		}
+		const D3D12_RANGE nothingWritten = { 0, 0 };
+		buffer->Unmap( 0, &nothingWritten );
+	}
+	return texels;
+}
+
+// Every box into one texture, which takes the box's size: texel (c, r) is the scene pixel (x + c, y + r),
+// GL's row order, and the same as idD3D12Readback reads from the (resolved) scene. Texels off the scene are undefined.
+void CopyColorBoxes( idTestGpu & gpu, UINT samples ) {
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const textureHandle_t handle = gpu.textures.Create( Opts( FMT_RGBA8, 16, 16, 5 ), textureRole_t::COLOR_COPY,
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::REPEAT, 1.0f, 0.0f }, "_currentRender" );
+	if ( !Check( handle != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	fixture.FillColor();
+	for ( const idTestCopies::box_t & box : idTestCopies::BOXES ) {
+		fixture.copies.Color( handle, box.x, box.y, box.width, box.height );
+		d3d12TextureSurface_t & surface = gpu.textures.Get( handle ).surface;
+		const std::vector<uint32> texels = fixture.Read( *surface.resource.Get(), surface.state );
+		std::vector<byte> rgb( static_cast<size_t>( box.width ) * box.height * 3 );
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		fixture.readback.Read( *resolved.resource.Get(), resolved.state, box.x, box.y, box.width, box.height, rgb.data(), false );
+		if ( !Check( surface.width == box.width && surface.height == box.height && texels.size() == rgb.size() / 3,
+				va( "the texture is the box's %d x %d", box.width, box.height ) ) ) {
+			continue;
+		}
+		int wrong = 0;
+		int unlikeReadback = 0;
+		int compared = 0;
+		for ( int row = 0; row < box.height; row++ ) {
+			for ( int column = 0; column < box.width; column++ ) {
+				if ( !idTestCopies::InScene( box.x + column, box.y + row ) ) {
+					continue;
+				}
+				const size_t at = static_cast<size_t>( row ) * box.width + column;
+				const uint32 texel = texels[at];
+				wrong += ( texel != fixture.ColorAt( box.x + column, box.y + row ) ) ? 1 : 0;
+				const uint32 read = rgb[at * 3] | ( rgb[at * 3 + 1] << 8 ) | ( rgb[at * 3 + 2] << 16 );
+				unlikeReadback += ( ( texel & 0xFFFFFF ) != read ) ? 1 : 0;
+				compared++;
+			}
+		}
+		Check( compared > 0 && wrong == 0, va( "box %d %d %d x %d: %d of %d texels are not the scene pixel of their GL row", box.x, box.y, box.width,
+			box.height, wrong, compared ) );
+		Check( unlikeReadback == 0, va( "box %d %d %d x %d: %d texels unlike the readback", box.x, box.y, box.width, box.height, unlikeReadback ) );
+	}
+	const idD3D12ScreenCopies::stats_t stats = fixture.copies.TakeStats();
+	Check( stats.color == static_cast<int>( idTestCopies::BOXES.size() ) && stats.depth == 0, "the copies are counted" );
+	gpu.textures.Destroy( handle );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+// The depth-copy pass: texel (c, r) holds the depth of scene pixel (x + c, y + r) as the float of its 24 bits,
+// sample 0 under MSAA; 0 off the scene. With one sample the 24 bits are read back as well.
+void CopyDepthBoxes( idTestGpu & gpu, UINT samples ) {
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const textureHandle_t handle = gpu.textures.Create( Opts( FMT_DEPTH, 16, 16, 1 ), textureRole_t::DEPTH_COPY, POINT_CLAMP, "_currentDepth" );
+	if ( !Check( handle != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	fixture.FillDepth();
+	std::vector<uint32> written;
+	if ( samples == 1 ) {
+		idD3D12SceneTarget::surface_t & depth = fixture.scene.Depth();
+		written = fixture.Read( *depth.resource.Get(), depth.state );
+		for ( uint32 & value : written ) {
+			value &= 0xFFFFFFu;
+		}
+	}
+	constexpr double STEPS = 16777215.0;
+	double maxSteps = 0.0;
+	for ( const idTestCopies::box_t & box : idTestCopies::BOXES ) {
+		fixture.Bind();
+		fixture.copies.Depth( handle, box.x, box.y, box.width, box.height );
+		d3d12TextureSurface_t & surface = gpu.textures.Get( handle ).surface;
+		const std::vector<uint32> texels = fixture.Read( *surface.resource.Get(), surface.state );
+		if ( !Check( surface.width == box.width && surface.height == box.height && texels.size() == static_cast<size_t>( box.width ) * box.height,
+				va( "the texture is the box's %d x %d", box.width, box.height ) ) ) {
+			continue;
+		}
+		int wrong = 0;
+		int unlikeWritten = 0;
+		int offScene = 0;
+		for ( int row = 0; row < box.height; row++ ) {
+			for ( int column = 0; column < box.width; column++ ) {
+				const int px = box.x + column;
+				const int py = box.y + row;
+				const float value = std::bit_cast<float>( texels[static_cast<size_t>( row ) * box.width + column] );
+				if ( !idTestCopies::InScene( px, py ) ) {
+					offScene += ( value != 0.0f ) ? 1 : 0;
+					continue;
+				}
+				wrong += ( std::fabs( static_cast<double>( value ) - idTestCopies::DepthAt( px, py ) ) > 1.0 / STEPS ) ? 1 : 0;
+				if ( !written.empty() ) {
+					// a float holds 24 bits near 1 only to half a step, and AMD converts R24 to float within one ulp
+					const double steps = std::fabs( value * STEPS - written[static_cast<size_t>( py ) * idTestCopies::SIZE + px] );
+					maxSteps = Max( maxSteps, steps );
+					unlikeWritten += ( steps > 1.0 ) ? 1 : 0;
+				}
+			}
+		}
+		Check( wrong == 0, va( "box %d %d %d x %d: %d texels are not the depth of their GL row", box.x, box.y, box.width, box.height, wrong ) );
+		Check( unlikeWritten == 0, va( "box %d %d %d x %d: %d texels are not the 24 bits read back", box.x, box.y, box.width, box.height, unlikeWritten ) );
+		Check( offScene == 0, va( "box %d %d %d x %d: %d texels off the scene are not 0", box.x, box.y, box.width, box.height, offScene ) );
+	}
+	if ( !written.empty() ) {
+		printf( "  the copy is at most %.3f D24 steps from the 24 bits read back\n", maxSteps );
+	}
+
+	// shaders read the copy as R R R 1, like GL's depth texture
+	idTestSampler sampler( gpu );
+	if ( sampler.Ready() ) {
+		gpu.textures.MakeReadable( handle );
+		const idTestCopies::box_t & last = idTestCopies::BOXES.back();
+		const std::array<idVec4, 1> centre = { idVec4( ( 8 + 0.5f ) / last.width, ( 5 + 0.5f ) / last.height, 0.0f, 0.0f ) };
+		const std::vector<idVec4> sampled = sampler.Sample( gpu.textures.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D,
+			SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP ), centre );
+		const float expected = idTestCopies::DepthAt( last.x + 8, last.y + 5 );
+		Check( !sampled.empty() && Near( sampled[0], idVec4( expected, expected, expected, 1.0f ), 1.5f / 16777215.0f ),
+			va( "sampled %s, depth %.7f", sampled.empty() ? "nothing" : Text( sampled[0] ), expected ) );
+	}
+	gpu.textures.Destroy( handle );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void CopyColor1( idTestGpu & gpu ) {
+	CopyColorBoxes( gpu, 1 );
+}
+
+void CopyColor4( idTestGpu & gpu ) {
+	CopyColorBoxes( gpu, 4 );
+}
+
+void CopyDepth1( idTestGpu & gpu ) {
+	CopyDepthBoxes( gpu, 1 );
+}
+
+void CopyDepth4( idTestGpu & gpu ) {
+	CopyDepthBoxes( gpu, 4 );
+}
+
 template <void ( *RULE )( idTestGpu & )>
 void OnWarp() {
 	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
@@ -2887,6 +3298,15 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_RasterDepthBounds", OnGpu<RasterDepthBounds> },
 	{ "Warp_RasterDepthBias", OnWarp<RasterDepthBias> },
 	{ "Gpu_RasterDepthBias", OnGpu<RasterDepthBias> },
+	{ "Warp_CopyTargets", Test_WarpCopyTargets },
+	{ "Warp_CopyColor", OnWarp<CopyColor1> },
+	{ "Gpu_CopyColor", OnGpu<CopyColor1> },
+	{ "Warp_CopyColorMsaa", OnWarp<CopyColor4> },
+	{ "Gpu_CopyColorMsaa", OnGpu<CopyColor4> },
+	{ "Warp_CopyDepth", OnWarp<CopyDepth1> },
+	{ "Gpu_CopyDepth", OnGpu<CopyDepth1> },
+	{ "Warp_CopyDepthMsaa", OnWarp<CopyDepth4> },
+	{ "Gpu_CopyDepthMsaa", OnGpu<CopyDepth4> },
 };
 
 }	// namespace

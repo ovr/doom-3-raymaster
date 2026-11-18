@@ -89,6 +89,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
 	passes( device, rootSignature, compiler, *this, barriers, constants, descriptors, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
+	copies( *this, barriers, scene, textures, passes, rtvPool ),
 	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, srvPool, constants, descriptors, samplers ) {
 }
 
@@ -221,8 +222,13 @@ void idD3D12Context::EndFrameStats() {
 	frame.inPlaceBytes = buffers.InPlaceBytesThisFrame();
 	frame.samplerTables = samplers.BuiltThisFrame();
 	frame.debugGroups = groups.PushedThisFrame();
+	const idD3D12ScreenCopies::stats_t copied = copies.TakeStats();
+	frame.colorCopies = copied.color;
+	frame.depthCopies = copied.depth;
+	frame.copySurfaces = textures.CopySurfacesThisFrame();
 	lastFrame = frame;
 	frame = {};
+	textures.ResetFrameCounters();
 	pipelines.ResetFrameCounters();
 	barriers.ResetFrameCounters();
 	uploader.ResetFrameCounters();
@@ -251,6 +257,23 @@ void idD3D12Context::ShowImage( textureHandle_t handle ) {
 	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	passes.ShowImage( textures.SampledView( handle, texture->kind ), texture->kind, texture->surface.width, texture->surface.height,
 		scene.Rtv( false ), scene.Target( false ), scene.Width(), scene.Height() );
+	recorder.Invalidate();
+}
+
+void idD3D12Context::CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
+	if ( device.IsLost() ) {
+		return;
+	}
+	recorder.EndPass();
+	copies.Color( texture, x, y, width, height );
+}
+
+void idD3D12Context::CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
+	if ( device.IsLost() ) {
+		return;
+	}
+	recorder.EndPass();
+	copies.Depth( texture, x, y, width, height );
 	recorder.Invalidate();
 }
 

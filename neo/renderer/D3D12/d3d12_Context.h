@@ -58,8 +58,9 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12PipelineFactory          normalized pipelineKey_t → a PSO kept with its program; the depth bias slots
 	      ├── idD3D12SceneTarget              colour + depth in GL row order, the MSAA resolve texture
 	      ├── optional<idD3D12SwapChain>      IDXGISwapChain3, 3 back buffers + RTVs, latency object
-	      ├── idD3D12InternalPasses           the present blit, the masked clear and r_d3d12ShowImage
+	      ├── idD3D12InternalPasses           the present blit, the masked clear, the depth copy and r_d3d12ShowImage
 	      ├── idD3D12Readback                 copies into a READBACK buffer for ReadOutputPixels
+	      ├── idD3D12ScreenCopies             CopyOutputToTexture, CopyDepthToTexture: scene boxes into textures
 	      └── idD3D12DrawRecorder             clears and draws into the open pass: Prepare, Reserve, Record
 
 	Sync points: every wait is explicit, and everything that frees or reuses memory reads
@@ -73,6 +74,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 #include "d3d12_Buffers.h"
+#include "d3d12_Copies.h"
 #include "d3d12_Draw.h"
 #include "d3d12_Programs.h"
 #include "d3d12_Textures.h"
@@ -101,6 +103,9 @@ public:
 	void							ReadOutputPixels( int x, int y, int width, int height, byte * rgb );	// R8: after EndFrame
 	void							Resize( int width, int height );		// between frames; 0 x 0 (minimized) is ignored
 	void							ShowImage( textureHandle_t texture );	// r_d3d12ShowImage into the scene, before EndFrame
+	// glCopyTexImage2D of a scene box, in a frame; the next draw opens the pass again.
+	void							CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height );
+	void							CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height );
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	void							PushGroup( const char * name );			// r_pix 2, in a frame
@@ -134,6 +139,7 @@ public:
 	std::optional<idD3D12SwapChain>	swapChain;
 	idD3D12InternalPasses			passes;
 	idD3D12Readback					readback;
+	idD3D12ScreenCopies				copies;
 	idD3D12DrawRecorder				recorder;
 
 private:

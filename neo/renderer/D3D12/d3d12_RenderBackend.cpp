@@ -210,12 +210,12 @@ void idRenderBackendD3D12::EndLevelLoad() {
 	}
 }
 
-void idRenderBackendD3D12::CopyOutputToTexture( textureHandle_t, int, int, int, int ) {
-	D3D12_Unimplemented( "CopyOutputToTexture" );
+void idRenderBackendD3D12::CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
+	context->CopyOutputToTexture( texture, x, y, width, height );
 }
 
-void idRenderBackendD3D12::CopyDepthToTexture( textureHandle_t, int, int, int, int ) {
-	D3D12_Unimplemented( "CopyDepthToTexture" );
+void idRenderBackendD3D12::CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
+	context->CopyDepthToTexture( texture, x, y, width, height );
 }
 
 // After Shutdown there is nothing to destroy: every older handle is invalid (contract).

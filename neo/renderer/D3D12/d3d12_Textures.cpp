@@ -150,6 +150,7 @@ bool idD3D12TextureStore::CreateSurface( d3d12TextureSurface_t & surface, const 
 	surface.height = height;
 	surface.levels = levels;
 	surface.faces = faces;
+	surface.bytes = device.Get().GetResourceAllocationInfo( 0, 1, &desc ).SizeInBytes;
 
 	D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
 	view.Format = format.srv;
@@ -194,20 +195,21 @@ textureHandle_t idD3D12TextureStore::Create( const idImageOpts & opts, textureRo
 	if ( !CreateSurface( texture.surface, format, kind, width, height, levels, debugName ) ) {
 		return textureHandle_t::NONE;
 	}
-	const D3D12_RESOURCE_DESC desc = texture.surface.resource->GetDesc();
-	texture.bytes = device.Get().GetResourceAllocationInfo( 0, 1, &desc ).SizeInBytes;
-
-	const uint64 textureBytes = texture.bytes;
+	bytes += texture.surface.bytes;
 	const textureHandle_t handle = table.Add( std::move( texture ) );
 	if ( handle == textureHandle_t::NONE ) {
 		common->Warning( "d3d12: no room for texture '%s' in the handle table", debugName );
-		graveyard.Bury( std::move( texture.surface.resource ) );
-		graveyard.Bury( srvPool, texture.surface.srv );
-		graveyard.Bury( rtvPool, texture.surface.rtv );
-		return textureHandle_t::NONE;
+		BurySurface( texture.surface );
 	}
-	bytes += textureBytes;
 	return handle;
+}
+
+void idD3D12TextureStore::BurySurface( d3d12TextureSurface_t & surface ) {
+	bytes -= surface.bytes;
+	graveyard.Bury( std::move( surface.resource ) );
+	graveyard.Bury( srvPool, surface.srv );
+	graveyard.Bury( rtvPool, surface.rtv );
+	surface = {};
 }
 
 // A batched barrier points at the state inside the record, so it goes into the list before the record moves.
@@ -216,14 +218,53 @@ void idD3D12TextureStore::Destroy( textureHandle_t handle ) {
 	if ( texture == nullptr ) {
 		return;
 	}
-	if ( texture->surface.state.pending >= 0 ) {
+	if ( texture->surface.state.pending >= 0 || texture->spare.state.pending >= 0 ) {
 		barriers.Flush();
 	}
 	d3d12Texture_t dead = table.Remove( handle );
-	bytes -= dead.bytes;
-	graveyard.Bury( std::move( dead.surface.resource ) );
-	graveyard.Bury( srvPool, dead.surface.srv );
-	graveyard.Bury( rtvPool, dead.surface.rtv );
+	BurySurface( dead.surface );
+	BurySurface( dead.spare );
+}
+
+// Swapping surfaces moves their states, which a batched barrier points at: the batch goes into the list first.
+d3d12TextureSurface_t * idD3D12TextureStore::PrepareCopyTarget( textureHandle_t handle, d3d12CopyKind_t copy, int width, int height ) {
+	d3d12Texture_t * texture = table.Find( handle );
+	if ( texture == nullptr || width <= 0 || height <= 0 ) {
+		return nullptr;
+	}
+	const bool fits = ( copy == d3d12CopyKind_t::COLOR ) ? ( texture->format.resource == DXGI_FORMAT_R8G8B8A8_UNORM )
+		: ( texture->format.rtv == DXGI_FORMAT_R32_FLOAT );
+	if ( texture->kind != textureKind_t::TEX_2D || !fits ) {
+		common->Warning( "d3d12: '%s' is no target of a %s copy", texture->name.c_str(), ( copy == d3d12CopyKind_t::COLOR ) ? "colour" : "depth" );
+		return nullptr;
+	}
+	if ( texture->surface.width != width || texture->surface.height != height ) {
+		if ( texture->surface.state.pending >= 0 || texture->spare.state.pending >= 0 ) {
+			barriers.Flush();
+		}
+		if ( texture->spare.resource && texture->spare.width == width && texture->spare.height == height ) {
+			std::swap( texture->surface, texture->spare );
+		} else {
+			d3d12TextureSurface_t created;
+			if ( !CreateSurface( created, texture->format, textureKind_t::TEX_2D, width, height, 1, texture->name.c_str() ) ) {
+				return nullptr;
+			}
+			bytes += created.bytes;
+			copySurfaces++;
+			BurySurface( texture->spare );
+			texture->spare = std::move( texture->surface );
+			texture->surface = std::move( created );
+		}
+	}
+	texture->copiedResized = ( width != Max( 1, texture->opts.width ) || height != Max( 1, texture->opts.height ) );
+	texture->uploads.clear();	// level 0 holds no upload now, and the surface may be another one
+	if ( copy == d3d12CopyKind_t::COLOR ) {
+		samplerDesc_t sampler = D3D12_UnpackSampler( texture->sampler );
+		sampler.filter = samplerFilter_t::LINEAR;
+		sampler.address = samplerAddress_t::CLAMP;
+		texture->sampler = D3D12_PackSampler( sampler );
+	}
+	return &texture->surface;
 }
 
 // DXT levels come padded to whole blocks, a cube level under 4 pixels says 4: the copy takes the level's
@@ -347,7 +388,16 @@ textureHandle_t idD3D12TextureStore::FindByName( const char * name ) {
 
 d3d12Descriptor_t idD3D12TextureStore::SampledView( textureHandle_t handle, textureKind_t kind ) {
 	const d3d12Texture_t * texture = table.Find( handle );
-	return ( texture != nullptr && texture->kind == kind ) ? texture->surface.srv : Fallback( kind );
+	return ( texture != nullptr && texture->kind == kind && !texture->IncompleteCopy() ) ? texture->surface.srv : Fallback( kind );
+}
+
+// GL_TEXTURE_MAX_LEVEL is numLevels - 1, and glCopyTexImage2D redefines level 0 only.
+bool d3d12Texture_t::IncompleteCopy() const {
+	if ( !copiedResized || opts.numLevels <= 1 ) {
+		return false;
+	}
+	const samplerFilter_t filter = D3D12_UnpackSampler( sampler ).filter;
+	return filter == samplerFilter_t::LINEAR_MIP_NEAREST || filter == samplerFilter_t::LINEAR_MIP_LINEAR;
 }
 
 void idD3D12TextureStore::MakeReadable( textureHandle_t handle ) {

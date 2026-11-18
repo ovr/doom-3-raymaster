@@ -146,14 +146,21 @@ void idD3D12SceneTarget::CreateDepth() {
 	CreateShaderView( device, *depth.resource.Get(), DEPTH_SHADER_VIEW, samples, srvPool.Cpu( depth.srv ) );
 }
 
-idD3D12SceneTarget::surface_t & idD3D12SceneTarget::Resolved( idD3D12Barriers & barriers, idD3D12Submitter & submitter ) {
+idD3D12SceneTarget::surface_t & idD3D12SceneTarget::Resolved( idD3D12Barriers & barriers, idD3D12Submitter & submitter,
+	std::optional<D3D12_RECT> region ) {
 	if ( samples == 1 ) {
 		return color;
 	}
 	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE );
 	barriers.Transition( *resolved.resource.Get(), resolved.state, D3D12_RESOURCE_STATE_RESOLVE_DEST );
 	barriers.Flush();
-	submitter.List().ResolveSubresource( resolved.resource.Get(), 0, color.resource.Get(), 0, COLOR_UNORM );
+	if ( region ) {
+		assert( region->left >= 0 && region->top >= 0 && region->right <= width && region->bottom <= height );
+		submitter.List().ResolveSubresourceRegion( resolved.resource.Get(), 0, static_cast<UINT>( region->left ), static_cast<UINT>( region->top ),
+			color.resource.Get(), 0, &*region, COLOR_UNORM, D3D12_RESOLVE_MODE_AVERAGE );
+	} else {
+		submitter.List().ResolveSubresource( resolved.resource.Get(), 0, color.resource.Get(), 0, COLOR_UNORM );
+	}
 	return resolved;
 }
 
