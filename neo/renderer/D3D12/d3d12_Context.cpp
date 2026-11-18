@@ -71,6 +71,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	queue( device ),
 	graveyard( queue ),
 	commands( device, queue ),
+	timers( device, queue ),
 	barriers( *this ),
 	srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ),
 	rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
@@ -173,17 +174,24 @@ void idD3D12Context::Retire( uint64 waitedFence ) {
 	graveyard.Collect();
 }
 
-// Dragging the border resizes the window without ResizeOutput; nothing is recorded yet, so the
-// output can follow here.
+// Dragging the border resizes the window without ResizeOutput; nothing of the frame is recorded yet,
+// so the output can follow here. The frame timer's first stamp then opens the frame's list.
 void idD3D12Context::BeginFrame( int width, int height ) {
 	if ( swapChain && ( width != swapChain->Width() || height != swapChain->Height() ) ) {
 		Resize( width, height );
 	}
 	recorder.BeginFrame();
+	if ( !device.IsLost() ) {
+		timers.BeginFrame( List() );
+	}
 }
 
+// The resolves go into the list submitted here, so the Present that follows waits for them too.
 void idD3D12Context::EndFrame() {
 	recorder.EndPass();
+	if ( !device.IsLost() ) {
+		timers.EndFrame( List() );
+	}
 	SubmitChunk();
 }
 
@@ -222,6 +230,8 @@ void idD3D12Context::EndFrameStats() {
 	frame.inPlaceBytes = buffers.InPlaceBytesThisFrame();
 	frame.samplerTables = samplers.BuiltThisFrame();
 	frame.debugGroups = groups.PushedThisFrame();
+	frame.timestamps = timers.WrittenThisFrame();
+	frame.gpuMicroseconds = timers.FrameMicroseconds();
 	const idD3D12ScreenCopies::stats_t copied = copies.TakeStats();
 	frame.colorCopies = copied.color;
 	frame.depthCopies = copied.depth;
@@ -235,6 +245,7 @@ void idD3D12Context::EndFrameStats() {
 	buffers.ResetFrameCounters();
 	samplers.ResetFrameCounters();
 	groups.ResetFrameCounters();
+	timers.ResetFrameCounters();
 }
 
 void idD3D12Context::PushGroup( const char * name ) {
@@ -319,6 +330,8 @@ void idD3D12Context::PrintInfo() const {
 		static_cast<unsigned>( version & 0xFFFF ), compiler.Compiled(), compiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
 	common->Printf( "D3D12 pipelines: %d PSOs created, %d depth biases; depth bounds %s\n", pipelines.Num(), pipelines.Bias().Num(),
 		device.Features().depthBounds ? "in every PSO" : "unsupported" );
+	common->Printf( "D3D12 GPU timers: %s, %.3f MHz; the frame timer and %d x %d r_pix slots\n", timers.Available() ? "on" : "off",
+		static_cast<double>( timers.Frequency() ) / 1.0e6, TIMESTAMP_SETS, idD3D12GpuTimers::SLOTS_PER_SET );
 	if ( swapChain ) {
 		common->Printf( "D3D12 swap chain: %d x %d, %u flip-discard buffers\n", swapChain->Width(), swapChain->Height(), idD3D12SwapChain::BUFFERS );
 	}

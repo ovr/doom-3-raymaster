@@ -167,8 +167,8 @@ set_target_properties(idlibTests PROPERTIES FOLDER "tests")
 add_test(NAME idlibTests COMMAND idlibTests)
 
 # d3d12Tests: the ring, the handle table, the format, sampler and pipeline state tables, the uploader, buffer
-# and texture stores, the PSO factory, the debug groups and the screen copies on a WARP device (the texture
-# border, decoding and copy tests also on the GPU), and the HLSL emitter and FXC over base/renderprogs against
+# and texture stores, the PSO factory, the debug groups, the GPU timers and the screen copies on a WARP device (the
+# texture border, decoding, timer and copy tests also on the GPU), and the HLSL emitter and FXC over base/renderprogs against
 # neo/tests/d3d12_golden
 #   bin/<config>/d3d12Tests.exe [filter]
 add_executable(d3d12Tests

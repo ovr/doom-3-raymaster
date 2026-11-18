@@ -68,14 +68,15 @@
 			}
 		},
 		"copyfilter": {
-			"comment": "filter with the screen copies and post-process on: 01_camera and _x1_resscale miss their plain bars only by O19, so this layer tells a defect of a copy, the depth copy or the resolution scaling stretch from it; bars from the first pass of stage 10",
+			"comment": "filter with the screen copies and post-process on: 01_camera, _x1_resscale and _x5_tools miss their plain bars only by O19, so this layer tells a defect of a copy, the depth copy, the resolution scaling stretch or a debug tool from it; bars from the first pass of stage 10 (_x5_tools: stage 11)",
 			"args": [ "+set", "r_maxAnisotropicFiltering", "1", "+set", "r_useTrilinearFiltering", "0" ],
 			"demos": {
 				"01_camera":          { "ssimMin": 0.9942, "ssimMean": 0.9946, "frac8": 0.00020, "blob": 2,  "differences": "O1 O4 O5", "stage": 10 },
 				"06_particles":       { "ssimMin": 0.9919, "ssimMean": 0.9947, "frac8": 0.00156, "blob": 0,  "differences": "O1, blending +-1, an edge row", "stage": 10 },
 				"07_cinematic":       { "ssimMin": 0.9945, "ssimMean": 0.9948, "frac8": 0.00018, "blob": 0,  "differences": "O2 O7",    "stage": 10 },
 				"_x1_resscale":       { "ssimMin": 0.9942, "ssimMean": 0.9946, "frac8": 0.00030, "blob": 4,  "differences": "O1",       "stage": 10 },
-				"_x2_motionblur":     { "ssimMin": 0.9945, "ssimMean": 0.9947, "frac8": 0.00041, "blob": 82, "differences": "O1, accumulation", "stage": 10 }
+				"_x2_motionblur":     { "ssimMin": 0.9945, "ssimMean": 0.9947, "frac8": 0.00041, "blob": 82, "differences": "O1, accumulation", "stage": 10 },
+				"_x5_tools":          { "ssimMin": 0.9943, "ssimMean": 0.9948, "frac8": 0.00016, "blob": 2,  "differences": "O6",       "stage": 11 }
 			}
 		},
 		"nointeractions": {

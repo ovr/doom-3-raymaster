@@ -61,7 +61,8 @@ If you have questions concerning this license or the applicable additional terms
 	neo/tests/d3d12_golden/*.hlsl (D3D12_TESTS_WRITE_GOLDEN=1 writes them), every source through FXC,
 	and the reflection of every program against what GL reported on mars_city1 (renderProgInfo-gl.txt).
 	The pipeline state map runs per GLS family and on random keys; the PSO factory on WARP. The screen
-	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU.
+	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU, and so do the
+	GPU timers of r_pix.
 
 	Usage: d3d12Tests [filter]     filter: run the tests whose name contains it; "all" runs every test
 	D3D12_TESTS_VERBOSE=1 prints every failed check, not only the first 20 of a test.
@@ -2189,6 +2190,47 @@ void Test_WarpDebugGroups() {
 	CheckNoLayerErrors( *gpu );
 }
 
+// r_pix 1 and the frame timer: a frame across two lists, a gap in the written slots. Ready reads Waited()
+// only, so a finished GPU is not enough, and a slot not written in the set's last frame is never ready.
+void Timestamps( idTestGpu & gpu ) {
+	idD3D12GpuTimers timers( gpu.device, gpu.queue );
+	if ( !Check( timers.Available() && timers.Frequency() > 0, "a direct queue has timestamps" ) ) {
+		return;
+	}
+	constexpr int SET = 2;
+	timers.BeginFrame( gpu.List() );
+	timers.Write( gpu.List(), SET, 0 );
+	gpu.SubmitChunk();
+	timers.Write( gpu.List(), SET, 1 );
+	timers.Write( gpu.List(), SET, 3 );
+	timers.EndFrame( gpu.List() );
+	Check( timers.WrittenThisFrame() == 3, "three slots written" );
+	Check( !timers.Ready( SET, 0 ) && timers.FrameMicroseconds() == 0, "nothing is ready before its list is submitted" );
+	const uint64 fence = gpu.SubmitChunk();
+	gpu.FinishUnwaited();
+	Check( !timers.Ready( SET, 1 ) && timers.FrameMicroseconds() == 0, "a finished GPU is not enough: Ready reads Waited() only" );
+	std::array<uint64, 4> nanoseconds = {};
+	timers.Read( SET, nanoseconds );
+	Check( nanoseconds == std::array<uint64, 4>{}, "a set not ready reads zeros" );
+
+	gpu.WaitFor( fence );
+	Check( timers.Ready( SET, 0 ) && timers.Ready( SET, 1 ) && timers.Ready( SET, 3 ), "ready once the list is waited for" );
+	Check( !timers.Ready( SET, 2 ) && !timers.Ready( SET - 1, 0 ) && !timers.Ready( SET, idD3D12GpuTimers::SLOTS_PER_SET ),
+		"a slot not written is never ready" );
+	timers.Read( SET, nanoseconds );
+	Check( nanoseconds[0] > 0 && nanoseconds[0] <= nanoseconds[1] && nanoseconds[1] <= nanoseconds[3] && nanoseconds[2] == 0,
+		"GPU order across the two lists; the unwritten slot reads 0" );
+	const uint64 frameMicroseconds = timers.FrameMicroseconds();
+	Check( frameMicroseconds * 1000 + 2000 >= nanoseconds[3] - nanoseconds[0], "the frame timer spans the stamps inside it, to its rounding" );
+
+	timers.ResetFrameCounters();
+	timers.Free();
+	Check( !timers.Ready( SET, 0 ) && timers.WrittenThisFrame() == 0, "Free forgets the r_pix slots" );
+	Check( timers.FrameMicroseconds() == frameMicroseconds, "the frame timer stays" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
 // ---- GL's rasterization rules through the real root signature, programs and PSOs -----------------------------
 
 // A SIZE x SIZE RGBA8 + D24S8 target drawn as the recorder draws: base/renderprogs programs, GL clip space through
@@ -3284,6 +3326,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Pipeline_DepthBiasTable", Test_DepthBiasTable },
 	{ "Warp_Pipelines", Test_WarpPipelines },
 	{ "Warp_DebugGroups", Test_WarpDebugGroups },
+	{ "Warp_Timestamps", OnWarp<Timestamps> },
+	{ "Gpu_Timestamps", OnGpu<Timestamps> },
 	{ "Warp_RasterGlRows", OnWarp<RasterGlRows> },
 	{ "Gpu_RasterGlRows", OnGpu<RasterGlRows> },
 	{ "Warp_RasterCull", OnWarp<RasterCull> },

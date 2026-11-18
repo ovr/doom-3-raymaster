@@ -323,6 +323,7 @@ bool idD3D12Device::Check( HRESULT hr, const char * what ) const {
 }
 
 // Every capability the backend does not implement yet stays false, so shared code never asks for it.
+// gpuTimer and timestamps belong to the queue's timers: the backend's Init sets them.
 void idD3D12Device::FillCaps( renderCaps_t & caps ) const {
 	caps = {};
 	caps.apiName = "Direct3D 12";
@@ -343,8 +344,6 @@ void idD3D12Device::FillCaps( renderCaps_t & caps ) const {
 	caps.maskedColorClear = true;
 	caps.quadBufferStereo = false;
 	caps.adaptiveSync = false;
-	caps.gpuTimer = false;
-	caps.timestamps = false;
 	caps.debugGroups = true;
 }
 

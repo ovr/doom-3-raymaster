@@ -43,6 +43,7 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12Graveyard                GPU objects that die after the fence of their last list
 	      ├── idD3D12CommandStream            ID3D12GraphicsCommandList1 + allocators reused by fence
 	      ├── idD3D12DebugGroups              r_pix 2: the group stack, ended at a submit and begun again in the next list
+	      ├── idD3D12GpuTimers                r_pix 1 and the frame's GPU time: a TIMESTAMP query heap resolved in EndFrame
 	      ├── idD3D12Barriers                 transitions batched until the next draw, clear, copy or submit
 	      ├── idD3D12DescriptorPool x 3       SRV, RTV, DSV: the permanent views, never shader visible
 	      ├── idD3D12DescriptorRing           the shader-visible CBV/SRV heap, 8-slot tables reused by fence
@@ -97,8 +98,8 @@ public:
 	uint64							ListSerial() const override { return commands.IsOpen() ? commands.Serial() : commands.Serial() + 1; }
 	uint64							WaitedFence() const override { return queue.Waited(); }
 
-	void							BeginFrame( int width, int height );	// follows a window that changed size on its own
-	void							EndFrame();								// ends the pass and submits; no wait
+	void							BeginFrame( int width, int height );	// follows a window resized on its own, starts the frame timer
+	void							EndFrame();								// ends the pass, resolves the timers, submits; no wait
 	[[nodiscard]] presentResult_t	Present( presentMode_t mode );			// blit, submit, present, wait, retire, latency
 	void							ReadOutputPixels( int x, int y, int width, int height, byte * rgb );	// R8: after EndFrame
 	void							Resize( int width, int height );		// between frames; 0 x 0 (minimized) is ignored
@@ -120,6 +121,7 @@ public:
 	idD3D12Graveyard				graveyard;
 	idD3D12CommandStream			commands;
 	idD3D12DebugGroups				groups;
+	idD3D12GpuTimers				timers;
 	idD3D12Barriers					barriers;
 	idD3D12DescriptorPool			srvPool;
 	idD3D12DescriptorPool			rtvPool;

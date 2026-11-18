@@ -90,6 +90,8 @@ bool idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 	}
 	context = std::move( *created );
 	context->device.FillCaps( caps );
+	caps.gpuTimer = context->timers.Available();
+	caps.timestamps = context->timers.Available();
 	context->textures.RecordUploads( r_d3d12CheckImages.GetBool() );
 	D3D12_SetActiveContext( context.get() );
 	outputWidth = init.width;
@@ -169,9 +171,9 @@ presentResult_t idRenderBackendD3D12::Present( presentMode_t mode ) {
 	return result;
 }
 
+// Present has waited for the frame, so unlike GL's query this never blocks.
 uint64 idRenderBackendD3D12::GetFrameGpuMicroseconds() {
-	D3D12_Unimplemented( "GetFrameGpuMicroseconds" );
-	return 0;
+	return context ? context->timers.FrameMicroseconds() : 0;
 }
 
 void idRenderBackendD3D12::SelectOutput( outputEye_t ) {
@@ -280,22 +282,31 @@ void idRenderBackendD3D12::DestroyProgram( programHandle_t program ) {
 	}
 }
 
-// caps.timestamps is false: shared code does not call these.
-void idRenderBackendD3D12::WriteTimestamp( int, int ) {
-	D3D12_Unimplemented( "WriteTimestamp" );
+void idRenderBackendD3D12::WriteTimestamp( int set, int index ) {
+	assert( inFrame );
+	if ( !context->device.IsLost() ) {
+		context->timers.Write( context->List(), set, index );
+	}
 }
 
-bool idRenderBackendD3D12::TimestampReady( int, int ) {
-	D3D12_Unimplemented( "TimestampReady" );
-	return false;
+bool idRenderBackendD3D12::TimestampReady( int set, int index ) {
+	return context && context->timers.Ready( set, index );
 }
 
-void idRenderBackendD3D12::ReadTimestamps( int, int count, uint64 * nanoseconds ) {
-	D3D12_Unimplemented( "ReadTimestamps" );
-	std::fill_n( nanoseconds, Max( count, 0 ), uint64( 0 ) );
+void idRenderBackendD3D12::ReadTimestamps( int set, int count, uint64 * nanoseconds ) {
+	const std::span<uint64> slots( nanoseconds, static_cast<size_t>( Max( count, 0 ) ) );
+	if ( context ) {
+		context->timers.Read( set, slots );
+	} else {
+		std::ranges::fill( slots, uint64( 0 ) );
+	}
 }
 
+// RenderLog frees them before Shutdown; after it there is nothing left to free.
 void idRenderBackendD3D12::FreeTimestamps() {
+	if ( context ) {
+		context->timers.Free();
+	}
 }
 
 void idRenderBackendD3D12::PushDebugGroup( const char * name ) {

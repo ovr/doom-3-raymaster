@@ -33,7 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "d3d12_Backend.h"
 
 idCVar r_d3d12Stats( "r_d3d12Stats", "0", CVAR_RENDERER | CVAR_BOOL,
-	"1 = print the draws, PSOs, depth biases, buffer memory, uploads, submits, waits and barriers per frame of Direct3D 12 once a second, and show them under com_showFPS" );
+	"1 = print the draws, PSOs, depth biases, buffer memory, uploads, submits, waits, barriers and GPU time per frame of Direct3D 12 once a second, and show them under com_showFPS" );
 idCVar r_d3d12ShowImage( "r_d3d12ShowImage", "", CVAR_RENDERER,
 	"the name of a texture (case-insensitive) Direct3D 12 draws over every frame: RGB and alpha panels, a cube as a cross of its faces" );
 idCVar r_d3d12CheckImages( "r_d3d12CheckImages", "0", CVAR_RENDERER | CVAR_BOOL,
@@ -52,6 +52,10 @@ idD3D12Context *	activeContext = nullptr;
 
 [[nodiscard]] constexpr double Kilobytes( uint64 bytes ) {
 	return static_cast<double>( bytes ) / 1024.0;
+}
+
+[[nodiscard]] constexpr double Milliseconds( uint64 microseconds ) {
+	return static_cast<double>( microseconds ) / 1000.0;
 }
 
 }	// namespace
@@ -116,6 +120,7 @@ void idD3D12ImageViewer::Frame( idD3D12Context & context ) {
 void idD3D12StatsReport::Reset() {
 	sum = {};
 	maxUploadBytes = 0;
+	maxGpuMicroseconds = 0;
 	frames = 0;
 	overlay[0] = '\0';
 }
@@ -145,6 +150,8 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 	sum.psoCreated += last.psoCreated;
 	sum.nearestBiases += last.nearestBiases;
 	sum.debugGroups += last.debugGroups;
+	sum.timestamps += last.timestamps;
+	sum.gpuMicroseconds += last.gpuMicroseconds;
 	sum.submits += last.submits;
 	sum.waits += last.waits;
 	sum.barriers += last.barriers;
@@ -155,6 +162,7 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 	sum.depthCopies += last.depthCopies;
 	sum.copySurfaces += last.copySurfaces;
 	maxUploadBytes = Max( maxUploadBytes, last.uploadBytes );
+	maxGpuMicroseconds = Max( maxGpuMicroseconds, last.gpuMicroseconds );
 	frames++;
 	if ( now - startMsec < REPORT_MSEC ) {
 		return;
@@ -169,7 +177,7 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 		"%.1f submits (%.1f after their draws), %.1f waits (%.1f in Reserve), "
 		"%.1f barriers, %.1f sampler tables built; copies %.1f colour + %.1f depth, %d new surfaces; "
 		"buffers %d: FRAME %.1f MB, STATIC %.1f MB + %.1f MB mirror; textures %d: %.1f MB; "
-		"staging %.1f of %.0f MB, constants %.1f of %.0f MB\n",
+		"staging %.1f of %.0f MB, constants %.1f of %.0f MB; GPU %.2f ms (max %.2f ms), %.1f timestamps\n",
 		frames, draw.draws * perFrame, draw.skipped * perFrame, draw.unboundSlots * perFrame, draw.incompleteBinds * perFrame, draw.psoBinds * perFrame,
 		sum.psoCreated * perFrame, context.pipelines.Bias().Num(), sum.nearestBiases * perFrame, draw.tableCopies * perFrame,
 		Kilobytes( draw.parmBytes ) * perFrame, sum.debugGroups * perFrame,
@@ -178,11 +186,13 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 		sum.samplerTables * perFrame, sum.colorCopies * perFrame, sum.depthCopies * perFrame, sum.copySurfaces, buffers.Num(),
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ), Megabytes( buffers.MirrorBytes() ),
 		context.textures.Num(), Megabytes( context.textures.Bytes() ), Megabytes( context.staging.Used() ), Megabytes( context.staging.Size() ),
-		Megabytes( context.constants.Used() ), Megabytes( context.constants.Size() ) );
+		Megabytes( context.constants.Used() ), Megabytes( context.constants.Size() ),
+		Milliseconds( sum.gpuMicroseconds ) * perFrame, Milliseconds( maxGpuMicroseconds ), sum.timestamps * perFrame );
 	idStr::snPrintf( overlay, sizeof( overlay ), "draws %.0f  pso %.0f  F %.1f  S %.1f  up %.2f MB", draw.draws * perFrame, draw.psoBinds * perFrame,
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ),
 		Megabytes( sum.uploadBytes + sum.inPlaceBytes ) * perFrame );
 	sum = {};
 	maxUploadBytes = 0;
+	maxGpuMicroseconds = 0;
 	frames = 0;
 }

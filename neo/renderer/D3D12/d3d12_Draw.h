@@ -69,6 +69,8 @@ struct d3d12FrameStats_t {
 	uint64							inPlaceBytes = 0;	// written into FRAME buffers the GPU reads in place
 	int								samplerTables = 0;	// sampler tables built
 	int								debugGroups = 0;	// pushed
+	int								timestamps = 0;		// r_pix slots written
+	uint64							gpuMicroseconds = 0;	// the frame timer: BeginFrame to EndFrame on the GPU
 	int								colorCopies = 0;	// CopyOutputToTexture
 	int								depthCopies = 0;	// CopyDepthToTexture
 	int								copySurfaces = 0;	// copy targets created for a new size

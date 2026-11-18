@@ -64,6 +64,7 @@ public:
 private:
 	d3d12FrameStats_t				sum;
 	uint64							maxUploadBytes = 0;
+	uint64							maxGpuMicroseconds = 0;
 	int								frames = 0;
 	int								startMsec = 0;
 	char							overlay[96] = {};
