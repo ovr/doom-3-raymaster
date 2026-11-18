@@ -43,7 +43,8 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 - The runner enables FTZ/DAZ by default, like the engine, and `noftz` turns that off.
 - Set `IDLIB_TESTS_VERBOSE=1` to print every failed check. By default each test prints its first 20.
 - `lcp_generic.cpp` recompiles `Lcp.cpp` under renamed classes (`idLCP_*_Generic`) with the SSE macros undefined, so the solvers can be compared. Right now both copies are the same code (see SIMD below).
-- `ctest` also runs `renderApiLeaks` (`tools/check-render-api-leaks.ps1`): it fails when a file outside `neo/renderer/OpenGL/`, `win_glimp.cpp` and `win_qgl.cpp` uses an OpenGL name. `precompiled.h` does not include `qgl.h`, so GL types don't compile there either.
+- `ctest` also runs `renderApiLeaks` (`tools/check-render-api-leaks.ps1`): it fails when a file outside `neo/renderer/OpenGL/`, `win_glimp.cpp` and `win_qgl.cpp` uses an OpenGL name, or a file outside `neo/renderer/D3D12/` and `neo/tests/d3d12_*` a Direct3D 12, DXGI or D3DCompiler name. `precompiled.h` includes neither API's headers, so their types don't compile there either.
+- `ctest` also runs `d3d12Tests` (see Direct3D 12 below).
 - There is no lint step and no other test suite. Game code is checked by running the game and the visual demos (below).
 
 ## Architecture
@@ -55,14 +56,14 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 **Layout of `neo/`:**
 - `idlib/`: the base library (math, containers, strings, the `idSIMD` processor, the parallel job system).
 - `framework/`: common, cvars, the console, the file system, and the main frame loop (`common_frame.cpp`).
-- `renderer/`: the frontend and an OpenGL backend. Shaders are loaded at runtime from `base/renderprogs/gl/`.
+- `renderer/`: the frontend, the backend interface `RenderBackend.h` (its contract is the comment at its top) and two backends: `OpenGL/` (the default; it converts `base/renderprogs/*.vertex` and `*.pixel` to GLSL, kept in `renderprogs/glsl/`) and `D3D12/` (below).
 - `d3xp/`: game logic (entities, AI, physics, scripts), compiled into the same exe rather than as a game DLL.
 - `cm/`: the collision model.
 - `aas/`: bot/AI navigation.
 - `sound/`: XAudio2.
 - `swf/`: the Flash-based UI.
 - `ui/`: legacy GUIs.
-- `sys/win32/`: the platform layer (window/GL creation in `win_glimp.cpp`, input, the wndproc, the sampling profiler `win_profiler.cpp`).
+- `sys/win32/`: the platform layer (the window in `win_window.cpp`, the WGL context in `win_glimp.cpp`, input, the wndproc, the sampling profiler `win_profiler.cpp`).
 
 **Threading and frame loop.**
 - With `com_smp 1` (the default), `idGameThread` (`framework/Common_local.h`) runs game logic and the renderer frontend, while the main thread runs the render backend for the previous frame.
@@ -76,6 +77,18 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 - `idPhysics_AF` (`d3xp/physics/Physics_AF.cpp`) builds row-padded `idMatX` systems with `MATX_ALLOCA`, whose padding is uninitialized, and solves them with `idLCP`.
 - `idLCP::Solve` leaves the matrix columns permuted, so callers must not reuse the matrix.
 - `af_checkInvalid 1` (the default) reports the first solver stage that produced a non-finite AF state.
+
+## Direct3D 12
+
+- `+set r_renderApi d3d12` runs the renderer on `neo/renderer/D3D12/`; OpenGL stays the default. `r_renderApi` is read once at startup and archived, so `set r_renderApi d3d12` in the console takes effect at the next start. It needs a GPU with feature level 11_0. `d3d12.dll`, `dxgi.dll` and `d3dcompiler_47.dll` are loaded from System32 at its Init, never linked, so an OpenGL run never loads the HLSL compiler.
+- The backend emits HLSL from the render program sources `base/renderprogs/*.vertex` and `*.pixel` and compiles it with FXC, so copy `base/renderprogs` into the game install with the exe (`run-vdemos.ps1 -Api d3d12` does).
+- Its caches live in `fs_savepath/base/renderprogs/dxbc`: the DXBC of every shader (`r_d3d12ShaderCache 1`), the PSO keys of earlier runs (`pipelines.journal`, made again when their program is created at Init or a level load) and the driver's pipeline library (`pipelines.bin`, `r_d3d12PipelineLibrary 1`). Delete the folder for a cold start; a stale or broken file is rebuilt on its own.
+- `r_debugContext` (read at Init): 1 = the debug layer, whose messages appear in the log as `d3d12 debug: <SEVERITY> ...` (it needs the Windows optional feature Graphics Tools); 2 = plus GPU-based validation, several times slower (give the demo scripts `-TimeoutScale 6`); 3 = plus DRED, which prints where the GPU stopped when the device is lost.
+- Cvars: `r_d3d12Adapter` (empty = the high-performance GPU, `warp`, or an index), `r_d3d12Stats 1` (draws, PSOs, uploads, submits, waits and GPU ms once a second, and a `com_showFPS` line), `r_d3d12SubmitDraws` (256), `r_d3d12FrameBuffers` (0: the per-frame vertex cache stays in UPLOAD heaps), `r_d3d12ShowImage <texture>`, `r_d3d12DumpHLSL 1`, `r_d3d12CaptureBackBuffer 1`, `r_d3d12CheckImages 1`. Commands: `d3d12_compileAll`, `d3d12_checkImages`, `d3d12_removeDevice`. `r_pix` works on both APIs.
+- `d3d12Tests` (`neo/tests/d3d12_tests.cpp`, in ctest) runs the backend's parts without a window, on a WARP device with the debug layer (the ones a driver could get wrong also on the GPU), and the HLSL emitter and FXC over every render program against `neo/tests/d3d12_golden` (`D3D12_TESTS_WRITE_GOLDEN=1` rewrites them). `build/vs2022-x64/bin/Release/d3d12Tests.exe <filter>` runs the tests whose names contain the filter, `all` every test.
+- The visual gate is `tools\vdemo\compare-apis.ps1 -Stage <name> -Demos <list> [-Gbv] [-Layer <layer>]`. Two D3D12 runs, with and without the debug layer (and with `-Gbv` a third under GPU-based validation), must give byte-identical frames and no layer message. `analyze.py` then holds the frames to the bars of `tools/vdemo/bars-d3d12.json` against the OpenGL reference (`-Baseline`, by default `research/vdemo/gl-ref`, a local OpenGL run of the same demos; `research/vdemo/d3d12-ref` keeps the D3D12 frames of the last gate). Run `_x4_gui` with `-Layer clear`, and `_x7_heathaze` in a call of its own. A lone 2x2 or 4x2 brighter block in one frame of one run is a known AMD driver flake: run the pair again, it must not repeat.
+- Direct3D 12 has to look no worse than OpenGL, not the same: driver filtering differences, compiler last-bit noise and thin edge lines are fine. Judge a bar miss by eye on the heat maps and contact sheets that analyze.py writes. OpenGL's own frames stay byte-identical when shared code changes.
+- Names stay in their folder: Direct3D 12, DXGI and D3DCompiler names only in `neo/renderer/D3D12/` and `neo/tests/d3d12_*`, OpenGL names never there (renderApiLeaks). Shared code calls `renderBackend` only.
 
 ## Code conventions that bite
 

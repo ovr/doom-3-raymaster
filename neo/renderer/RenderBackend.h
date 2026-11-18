@@ -52,7 +52,7 @@ If you have questions concerning this license or the applicable additional terms
 	  |   idRenderBackendFactory + r_renderApi (one backend per run)                      |
 	  +---------------+---------------------------+---------------------------+-----------+
 	                  v                           v                           v
-	  renderer/OpenGL/                     renderer/D3D12/ (later)     renderer/Vulkan/ (later)
+	  renderer/OpenGL/                     renderer/D3D12/             renderer/Vulkan/ (later)
 	                  |                           |                           |
 	                  v                           v                           v
 	  sys/win32/win_glimp.cpp, win_qgl.cpp        the window (HWND) of the platform layer
@@ -77,10 +77,13 @@ If you have questions concerning this license or the applicable additional terms
 	draws without handles and buffer offsets (two runs of a visual demo print the same hashes),
 	r_testClearPattern 1 ends every frame with a fixed pattern of clears (tools/vdemo/check-pattern.py).
 
-	Where OpenGL lives. Only the files of renderer/OpenGL/ and sys/win32/win_glimp.cpp and
-	win_qgl.cpp include the GL headers; the precompiled header does not, so a GL type or a qgl call in
-	shared code does not compile. tools/check-render-api-leaks.ps1 finds the rest (gl* functions
-	that windows.h declares, GL includes, code no config builds) and fails when it finds a name:
+	Where the APIs live. Only the files of renderer/OpenGL/ and sys/win32/win_glimp.cpp and
+	win_qgl.cpp include the GL headers, and only renderer/D3D12/ (and its tests, neo/tests/d3d12_*)
+	includes the Direct3D 12, DXGI and D3DCompiler headers. The precompiled header includes neither,
+	so an API type or call in shared code does not compile. The D3D12 backend loads its DLLs from
+	System32 in its Init, so an OpenGL run never loads the HLSL compiler. The script
+	tools/check-render-api-leaks.ps1 finds the rest (gl* functions that windows.h declares, API
+	includes, code no config builds) and fails when it finds a name:
 
 	  ctest --test-dir build/vs2022-x64 -C Release -R renderApiLeaks
 
@@ -120,7 +123,8 @@ If you have questions concerning this license or the applicable additional terms
 		code that the program and the parm values are those of the previous DrawIndexed.
 	R8	Present blocks. ReadOutputPixels is legal after EndFrame and before Present and reads the
 		frame just drawn.
-	R9	One backend per run: r_renderApi is CVAR_INIT, vid_restart does not change the API.
+	R9	One backend per run: r_renderApi is CVAR_INIT, vid_restart does not change the API. The cvar is
+		archived, so "set r_renderApi d3d12" in the console takes effect at the next start.
 	R10	A pipeline backend opens its pass at the first draw or clear after BeginFrame or after a
 		copy, and closes it at a copy and in EndFrame. SetDefaultState does not close the pass.
 	R11	A slot the program samples and shared code did not bind reads as opaque black, from a 2D
