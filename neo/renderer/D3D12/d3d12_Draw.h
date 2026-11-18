@@ -114,6 +114,10 @@ public:
 	// key: idRenderBackend::PipelineKey; the target and the depth bias slot are added here.
 	void							Draw( const renderLatch_t & latch, const pipelineKey_t & key, const drawCall_t & dc );
 	void							SkippedDraw() { stats.skipped++; }	// R12: program NONE
+	// GL_FRAMEBUFFER_SRGB: draws and clears write through the scene's sRGB view, which blends in linear space and
+	// encodes. Copies, the readback and the blit move the stored bytes as they are. Ends the pass.
+	void							SetSrgb( bool enable );
+	[[nodiscard]] bool				Srgb() const { return srgb; }
 	void							EndPass() { bound.passOpen = false; }	// R10: before a copy, a readback, the blit and in EndFrame
 	void							Invalidate() { bound = {}; }			// after an internal pass
 	void							NewList() { bound = {}; drawsInList = 0; }	// the submitter opened a list
@@ -175,4 +179,5 @@ private:
 	d3d12DrawStats_t				stats;
 	int								drawsInList = 0;
 	bool							firstChunk = true;	// the frame has not submitted a full list yet
+	bool							srgb = false;
 };

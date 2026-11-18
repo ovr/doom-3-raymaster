@@ -2993,7 +2993,7 @@ idTestCopies::idTestCopies( idTestGpu & owner, UINT sampleCount ) :
 	descriptors( owner.device ),
 	samplers( owner.device ),
 	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
-	passes( owner.device, root, compiler, owner, owner.barriers, constants, descriptors, samplers, owner.srvPool ),
+	passes( owner.device, root, compiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
 	copies( owner, owner.barriers, scene, owner.textures, passes, owner.rtvPool ),
 	readback( owner.device, owner, owner.barriers, owner.graveyard ) {
 	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
@@ -3265,6 +3265,183 @@ void CopyDepth4( idTestGpu & gpu ) {
 	CopyDepthBoxes( gpu, 4 );
 }
 
+// The path of d3d12_removeDevice on WARP with DRED (debug level 3): work in flight, RemoveDevice, every wait
+// returns, the next failing call reports the loss, and the device stays lost. The runtime completes the lists of
+// a device the application removes, so DRED has no unfinished one here; only a real GPU fault leaves one.
+void Test_DeviceLoss() {
+	auto library = idD3D12Library::Load();
+	if ( !Check( library.has_value(), "idD3D12Library::Load" ) ) {
+		return;
+	}
+	auto created = idD3D12Device::Create( *library, "warp", 3 );
+	if ( !Check( created.has_value(), "idD3D12Device::Create( warp, 3 )" ) ) {
+		return;
+	}
+	idTestGpu gpu( std::move( *library ), std::move( *created ), 4 << 20 );
+	constexpr uint64 BYTES = 16 << 20;
+	idComPtr<ID3D12Resource> from = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, BYTES, D3D12_RESOURCE_STATE_COMMON, L"test loss from" );
+	idComPtr<ID3D12Resource> to = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, BYTES, D3D12_RESOURCE_STATE_COMMON, L"test loss to" );
+	if ( !Check( from && to, "the buffers" ) ) {
+		return;
+	}
+	for ( int i = 0; i < 16; i++ ) {
+		gpu.List().CopyBufferRegion( to.Get(), 0, from.Get(), 0, BYTES );
+	}
+	const uint64 fence = gpu.SubmitChunk();
+	Check( !gpu.device.IsLost(), "the device works before the removal" );
+	gpu.device.RemoveDevice();
+	gpu.WaitFor( fence );	// returns: a removed device completes every fence
+	Check( gpu.queue.Waited() >= fence, "the wait for the work in flight returned" );
+	Check( !gpu.device.Check( gpu.device.Get().GetDeviceRemovedReason(), "GetDeviceRemovedReason (test)" ), "the removed reason is a failure" );
+	Check( gpu.device.IsLost(), "the device is lost" );
+	gpu.WaitFor( gpu.SubmitChunk() );
+	Check( gpu.device.IsLost(), "a submit and a wait after the loss return, the device stays lost" );
+}
+
+// The line ReportDred prints for a list: the names, the progress and the operation the GPU stopped before.
+void Test_BreadcrumbText() {
+	const D3D12_AUTO_BREADCRUMB_OP history[] = { D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT, D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED,
+		D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER, D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED, D3D12_AUTO_BREADCRUMB_OP_ENDEVENT };
+	UINT done = 2;
+	D3D12_AUTO_BREADCRUMB_NODE node = {};
+	node.pCommandListDebugNameA = "doom3 frame list";
+	node.pCommandQueueDebugNameA = "doom3 direct queue";
+	node.pLastBreadcrumbValue = &done;
+	node.pCommandHistory = history;
+	node.BreadcrumbCount = static_cast<UINT>( std::size( history ) );
+	const idStr stopped = D3D12_BreadcrumbText( node );
+	Check( stopped == "list doom3 frame list on doom3 direct queue: 2 of 5 operations done, stopped before ResourceBarrier", stopped.c_str() );
+	done = node.BreadcrumbCount;
+	node.pCommandListDebugNameA = nullptr;
+	const idStr finished = D3D12_BreadcrumbText( node );
+	Check( finished == "list (unnamed) on doom3 direct queue: 5 of 5 operations done, the last EndEvent", finished.c_str() );
+	const D3D12_AUTO_BREADCRUMB_OP later[] = { static_cast<D3D12_AUTO_BREADCRUMB_OP>( 48 ) };
+	node.pCommandHistory = later;
+	node.BreadcrumbCount = 1;
+	done = 0;
+	const idStr unknown = D3D12_BreadcrumbText( node );
+	Check( unknown == "list (unnamed) on doom3 direct queue: 0 of 1 operations done, stopped before operation 48", unknown.c_str() );
+}
+
+// R_SetColorMappings' ramp, in its float arithmetic.
+[[nodiscard]] d3d12GammaRamp_t ColorMappings( float gamma, float brightness ) {
+	d3d12GammaRamp_t ramp;
+	const float invGamma = 1.0f / gamma;
+	float j = 0.0f;
+	for ( int i = 0; i < 256; i++, j += brightness ) {
+		const int value = idMath::ClampInt( 0, 0xFFFF, idMath::Ftoi( 0xffff * pow( j / 255.0f, invGamma ) + 0.5f ) );
+		ramp.red[i] = ramp.green[i] = ramp.blue[i] = static_cast<uint16>( value );
+	}
+	return ramp;
+}
+
+void Test_GammaIdentity() {
+	Check( D3D12_GammaIsIdentity( D3D12_IdentityGamma() ), "i * 257 is the identity" );
+	Check( D3D12_GammaIsIdentity( ColorMappings( 1.0f, 1.0f ) ), "r_gamma 1, r_brightness 1 (the defaults) build the identity" );
+	Check( !D3D12_GammaIsIdentity( ColorMappings( 1.5f, 1.0f ) ), "r_gamma 1.5 is no identity" );
+	Check( !D3D12_GammaIsIdentity( ColorMappings( 1.0f, 1.2f ) ), "r_brightness 1.2 is no identity" );
+	d3d12GammaRamp_t ramp = D3D12_IdentityGamma();
+	ramp.green[100] = static_cast<uint16>( 100 * 257 + 128 );
+	Check( D3D12_GammaIsIdentity( ramp ), "a value that still rounds to its byte keeps the identity" );
+	ramp.green[100] = static_cast<uint16>( 100 * 257 + 129 );
+	Check( !D3D12_GammaIsIdentity( ramp ), "one value that rounds to the next byte, in one channel, is no identity" );
+}
+
+void Test_SceneSamples() {
+	constexpr std::array<bool, 4> ALL = { true, true, true, true };
+	constexpr std::array<bool, 4> NO_8 = { true, true, true, false };
+	constexpr std::array<bool, 4> ONLY_1 = { true, false, false, false };
+	constexpr std::array<bool, 4> NO_2 = { true, false, true, true };
+	const struct {
+		int							requested;
+		const std::array<bool, 4> *	supported;
+		UINT						samples;
+	} CASES[] = { { 0, &ALL, 1 }, { 1, &ALL, 1 }, { -4, &ALL, 1 }, { 2, &ALL, 2 }, { 3, &ALL, 2 }, { 4, &ALL, 4 }, { 8, &ALL, 8 }, { 16, &ALL, 8 },
+		{ 8, &NO_8, 4 }, { 4, &ONLY_1, 1 }, { 2, &NO_2, 1 }, { 4, &NO_2, 4 } };
+	for ( const auto & c : CASES ) {
+		const UINT samples = D3D12_SceneSamples( c.requested, *c.supported );
+		Check( samples == c.samples, va( "r_multiSamples %d: %u samples, expected %u", c.requested, samples, c.samples ) );
+	}
+}
+
+// The present blit into a stand-in back buffer: rows flipped, the bytes exact under an identity ramp, each colour
+// channel through its LUT under r_gamma 1.5 and alpha kept. With MSAA it reads the resolved scene.
+void PresentBlitRamps( idTestGpu & gpu, UINT samples ) {
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	constexpr int SIZE = idTestCopies::SIZE;
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = SIZE;
+	desc.Height = SIZE;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = idD3D12SwapChain::FORMAT;
+	desc.SampleDesc.Count = 1;
+	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	const D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
+	idComPtr<ID3D12Resource> back;
+	if ( !Check( SUCCEEDED( gpu.device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+			IID_PPV_ARGS( &back ) ) ), "the stand-in back buffer" ) ) {
+		return;
+	}
+	d3d12ResourceState_t backState;
+	backState.current = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	const d3d12Descriptor_t rtv = gpu.rtvPool.Allocate();
+	gpu.device.Get().CreateRenderTargetView( back.Get(), nullptr, gpu.rtvPool.Cpu( rtv ) );
+	fixture.FillColor();
+
+	const d3d12GammaRamp_t identity = ColorMappings( 1.0f, 1.0f );
+	const d3d12GammaRamp_t gamma = ColorMappings( 1.5f, 1.0f );
+	const struct {
+		const char *				name;
+		const d3d12GammaRamp_t *	ramp;
+	} RAMPS[] = { { "identity", &identity }, { "r_gamma 1.5", &gamma }, { "identity again", &identity } };
+	for ( const auto & step : RAMPS ) {
+		fixture.passes.SetGamma( *step.ramp );
+		Check( fixture.passes.GammaIsIdentity() == ( step.ramp == &identity ), va( "%s: GammaIsIdentity", step.name ) );
+		idD3D12SceneTarget::surface_t & source = fixture.scene.Resolved( gpu.barriers, gpu );
+		gpu.barriers.Transition( *source.resource.Get(), source.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		gpu.barriers.Transition( *back.Get(), backState, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		fixture.Bind();
+		fixture.passes.PresentBlit( source.srv, gpu.rtvPool.Cpu( rtv ), SIZE, SIZE );
+		const std::vector<uint32> texels = fixture.Read( *back.Get(), backState );
+		if ( !Check( texels.size() == static_cast<size_t>( SIZE ) * SIZE, va( "%s: the back buffer is read", step.name ) ) ) {
+			continue;
+		}
+		int wrong = 0;
+		int offByOne = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const uint32 scene = fixture.ColorAt( column, SIZE - 1 - row );	// back buffer row 0 is the top of the screen
+				const uint32 shown = texels[static_cast<size_t>( row ) * SIZE + column];
+				for ( int channel = 0; channel < 4; channel++ ) {
+					const uint32 in = ( scene >> ( channel * 8 ) ) & 0xFF;
+					const std::array<uint16, 256> & lut = ( channel == 0 ) ? step.ramp->red : ( ( channel == 1 ) ? step.ramp->green : step.ramp->blue );
+					const uint32 expected = ( channel == 3 ) ? in : ( lut[in] * 255u + 32767u ) / 65535u;
+					const int delta = std::abs( static_cast<int>( ( shown >> ( channel * 8 ) ) & 0xFF ) - static_cast<int>( expected ) );
+					wrong += ( delta > 1 || ( delta == 1 && step.ramp == &identity ) ) ? 1 : 0;
+					offByOne += ( delta == 1 ) ? 1 : 0;
+				}
+			}
+		}
+		Check( wrong == 0, va( "%s, %u sample(s): %d channels unlike the scene through the ramp (%d off by one)", step.name, samples, wrong, offByOne ) );
+	}
+	gpu.WaitIdle();
+	gpu.rtvPool.Free( rtv );
+	CheckNoLayerErrors( gpu );
+}
+
+void PresentBlit1( idTestGpu & gpu ) {
+	PresentBlitRamps( gpu, 1 );
+}
+
+void PresentBlit4( idTestGpu & gpu ) {
+	PresentBlitRamps( gpu, 4 );
+}
+
 template <void ( *RULE )( idTestGpu & )>
 void OnWarp() {
 	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
@@ -3351,6 +3528,14 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_CopyDepth", OnGpu<CopyDepth1> },
 	{ "Warp_CopyDepthMsaa", OnWarp<CopyDepth4> },
 	{ "Gpu_CopyDepthMsaa", OnGpu<CopyDepth4> },
+	{ "Warp_DeviceLoss", Test_DeviceLoss },
+	{ "Output_BreadcrumbText", Test_BreadcrumbText },
+	{ "Output_GammaIdentity", Test_GammaIdentity },
+	{ "Output_SceneSamples", Test_SceneSamples },
+	{ "Warp_PresentBlit", OnWarp<PresentBlit1> },
+	{ "Gpu_PresentBlit", OnGpu<PresentBlit1> },
+	{ "Warp_PresentBlitMsaa", OnWarp<PresentBlit4> },
+	{ "Gpu_PresentBlitMsaa", OnGpu<PresentBlit4> },
 };
 
 }	// namespace

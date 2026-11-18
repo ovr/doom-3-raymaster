@@ -84,6 +84,19 @@ CONSOLE_COMMAND( d3d12_compileAll, "emits and compiles every renderprogs/*.verte
 	static_cast<void>( activeContext->shaders.CompileAll( verbose ) );
 }
 
+#ifdef _DEBUG
+// Tests the loss path: the next Present fails, and shared code ends the game with "The graphics device was lost".
+// The runtime completes every list of a device the application removes, so DRED shows no unfinished one.
+CONSOLE_COMMAND( d3d12_removeDevice, "Debug: removes the Direct3D 12 device, as a driver reset would; r_debugContext 3 adds the DRED report", nullptr ) {
+	if ( activeContext == nullptr ) {
+		common->Printf( "d3d12_removeDevice: Direct3D 12 is not running\n" );
+		return;
+	}
+	common->Printf( "d3d12_removeDevice: removing the device\n" );
+	activeContext->device.RemoveDevice();
+}
+#endif
+
 void idD3D12ImageViewer::Reset() {
 	name.Clear();
 	texture = textureHandle_t::NONE;

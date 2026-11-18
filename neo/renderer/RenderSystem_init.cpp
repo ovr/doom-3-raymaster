@@ -294,7 +294,7 @@ void R_SetNewMode( const bool fullInit ) {
 		}
 
 		if ( i == 2 ) {
-			common->FatalError( "Unable to initialize OpenGL" );
+			common->FatalError( "Unable to initialize the render backend (r_renderApi \"%s\")", r_renderApi.GetString() );
 		}
 
 		if ( i == 0 ) {

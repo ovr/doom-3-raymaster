@@ -76,6 +76,16 @@ constexpr uint32 AlignUp( uint32 value, uint32 align ) {
 
 }	// namespace
 
+UINT D3D12_SceneSamples( int requested, std::span<const bool, 4> supported ) {
+	for ( size_t level = supported.size() - 1; level >= 1; level-- ) {
+		const int samples = 1 << level;
+		if ( samples <= requested && supported[level] ) {
+			return static_cast<UINT>( samples );
+		}
+	}
+	return 1;
+}
+
 idD3D12SceneTarget::idD3D12SceneTarget( const idD3D12Device & owner, idD3D12Graveyard & graves, idD3D12DescriptorPool & srvs,
 	idD3D12DescriptorPool & rtvs, idD3D12DescriptorPool & dsvs ) :
 	device( owner ),

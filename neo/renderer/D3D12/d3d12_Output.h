@@ -32,6 +32,10 @@ If you have questions concerning this license or the applicable additional terms
 #include "d3d12_Memory.h"
 #include "d3d12_StateMap.h"
 
+// r_multiSamples → the scene's sample count: the largest of 2, 4, 8 at most requested that the adapter
+// has for RGBA8 and D24S8 together (d3d12Features_t::samples, by log2); 1 below 2 or when none fits.
+[[nodiscard]] UINT					D3D12_SceneSamples( int requested, std::span<const bool, 4> supported );
+
 // The frame every draw, clear, copy and readback works on, in GL row order: memory row 0 is the bottom of
 // the screen, so the rectangles of shared code are used as they are and only the present blit flips rows.
 // Colour and depth are TYPELESS (UNORM + SRGB render target views, an R24 depth shader view); MSAA adds a resolve texture.

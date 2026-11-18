@@ -56,7 +56,11 @@ std::expected<std::unique_ptr<idD3D12Context>, idStr> idD3D12Context::Create( co
 		return std::unexpected( created.error() );
 	}
 	std::unique_ptr<idD3D12Context> context( new idD3D12Context( std::move( *loaded ), std::move( *created ) ) );
-	if ( auto output = context->CreateOutput( static_cast<HWND>( init.nativeWindow ), init.width, init.height ); !output ) {
+	const UINT samples = D3D12_SceneSamples( init.multiSamples, context->device.Features().samples );
+	if ( init.multiSamples > 1 && static_cast<int>( samples ) != init.multiSamples ) {
+		common->Printf( "d3d12: r_multiSamples %d is not a sample count the adapter has for RGBA8 + D24S8: %u\n", init.multiSamples, samples );
+	}
+	if ( auto output = context->CreateOutput( static_cast<HWND>( init.nativeWindow ), init.width, init.height, samples ); !output ) {
 		return std::unexpected( output.error() );
 	}
 	context->CreateDefaults();
@@ -88,7 +92,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	rootSignature( device, library ),
 	pipelines( device, rootSignature ),
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
-	passes( device, rootSignature, compiler, *this, barriers, constants, descriptors, samplers, srvPool ),
+	passes( device, rootSignature, compiler, *this, barriers, uploader, constants, descriptors, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
 	copies( *this, barriers, scene, textures, passes, rtvPool ),
 	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, srvPool, constants, descriptors, samplers ) {
@@ -109,14 +113,14 @@ idD3D12Context::~idD3D12Context() {
 	device.DrainMessages();
 }
 
-// MSAA comes with the sample-count option (stage 12): one sample until then.
-std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width, int height ) {
+// The sample count holds until Shutdown, as the contract says: resizes keep it.
+std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width, int height, UINT samples ) {
 	auto created = idD3D12SwapChain::Create( device, queue, rtvPool, window, width, height );
 	if ( !created ) {
 		return std::unexpected( created.error() );
 	}
 	swapChain.emplace( std::move( *created ) );
-	scene.Create( swapChain->Width(), swapChain->Height(), 1 );
+	scene.Create( swapChain->Width(), swapChain->Height(), samples );
 	return {};
 }
 
@@ -319,7 +323,20 @@ void idD3D12Context::Resize( int width, int height ) {
 	swapChain->Resize( width, height );
 	scene.Create( swapChain->Width(), swapChain->Height(), scene.Samples() );
 	recorder.Invalidate();
-	common->DPrintf( "d3d12: output resized to %d x %d\n", width, height );
+	// the old scene target dies after the next wait: a leak shows as memory that grows from resize to resize
+	const d3d12VideoMemory_t memory = device.VideoMemory();
+	common->DPrintf( "d3d12: output resized to %d x %d; %d graves, %.1f MB of video memory in use\n", width, height, graveyard.Pending(),
+		static_cast<double>( memory.used ) / ( 1024.0 * 1024.0 ) );
+}
+
+void idD3D12Context::SetSrgb( bool enable ) {
+	recorder.SetSrgb( enable );
+}
+
+void idD3D12Context::SetGamma( const d3d12GammaRamp_t & ramp ) {
+	if ( !device.IsLost() ) {
+		passes.SetGamma( ramp );
+	}
 }
 
 void idD3D12Context::PrintInfo() const {
@@ -335,8 +352,9 @@ void idD3D12Context::PrintInfo() const {
 	if ( swapChain ) {
 		common->Printf( "D3D12 swap chain: %d x %d, %u flip-discard buffers\n", swapChain->Width(), swapChain->Height(), idD3D12SwapChain::BUFFERS );
 	}
-	common->Printf( "D3D12 scene target: %d x %d, RGBA8 + D24S8, %u sample(s); constants ring %llu MB, staging ring %llu MB\n", scene.Width(),
-		scene.Height(), scene.Samples(), static_cast<unsigned long long>( constants.Size() >> 20 ), static_cast<unsigned long long>( staging.Size() >> 20 ) );
+	common->Printf( "D3D12 scene target: %d x %d, RGBA8 + D24S8, %u sample(s), %s writes, gamma %s; constants ring %llu MB, staging ring %llu MB\n",
+		scene.Width(), scene.Height(), scene.Samples(), recorder.Srgb() ? "sRGB" : "UNORM", passes.GammaIsIdentity() ? "identity" : "through the LUT",
+		static_cast<unsigned long long>( constants.Size() >> 20 ), static_cast<unsigned long long>( staging.Size() >> 20 ) );
 	common->Printf( "D3D12 buffers: %d, FRAME %.1f MB in UPLOAD heaps, STATIC %.1f MB in DEFAULT heaps + %.1f MB CPU mirrors\n", buffers.Num(),
 		buffers.Bytes( bufferUsage_t::FRAME ) / ( 1024.0 * 1024.0 ), buffers.Bytes( bufferUsage_t::STATIC ) / ( 1024.0 * 1024.0 ),
 		buffers.MirrorBytes() / ( 1024.0 * 1024.0 ) );

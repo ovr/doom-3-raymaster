@@ -66,6 +66,15 @@ struct d3d12Features_t {
 	bool							tearing = false;		// DXGI_FEATURE_PRESENT_ALLOW_TEARING
 };
 
+// One DRED list: its names, how far the GPU got through it and the operation it stopped before.
+[[nodiscard]] idStr					D3D12_BreadcrumbText( const D3D12_AUTO_BREADCRUMB_NODE & node );
+
+// The adapter's local memory as DXGI counts it for this process; zeros when it does not tell.
+struct d3d12VideoMemory_t {
+	uint64							used = 0;
+	uint64							budget = 0;
+};
+
 class idD3D12Device {
 public:
 	// adapter: "" = high performance, "warp", or an index. debugLevel: 1 layer + info queue, 2 + GBV, 3 + DRED.
@@ -82,6 +91,9 @@ public:
 	void							FillCaps( renderCaps_t & caps ) const;
 	int								DrainMessages() const;	// info queues → "d3d12 debug: <severity> #<id> <text>"; returns the errors
 	void							ReportLoss() const;		// reason, DRED breadcrumbs and page fault, once
+	// d3d12_removeDevice: the device is removed at once, and the next failing call reports the loss.
+	void							RemoveDevice() const;
+	[[nodiscard]] d3d12VideoMemory_t	VideoMemory() const;
 	void							PrintInfo() const;
 	// The messages of the teardown; Debug builds with the layer also print every object still alive.
 	void							ReportLiveObjects() const;

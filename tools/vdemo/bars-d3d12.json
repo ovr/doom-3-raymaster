@@ -92,11 +92,11 @@
 			"args": [ "+set", "r_skipCopyTexture", "1", "+set", "r_skipPostProcess", "1", "+set", "r_skipTranslucent", "1" ]
 		},
 		"msaa4": {
-			"comment": "r_multiSamples 4 on both APIs",
+			"comment": "r_multiSamples 4 on both APIs; bars from the first pass of stage 12 (01_camera keeps frac8 and blob: the rule would loosen them, O19 as in its plain bars)",
 			"args": [ "+set", "r_multiSamples", "4" ],
 			"demos": {
-				"01_camera":  { "ssimMin": 0.960, "ssimMean": 0.985, "frac8": 0.015, "blob": 128, "differences": "O1 O16", "stage": 12 },
-				"05_weapons": { "ssimMin": 0.960, "ssimMean": 0.985, "frac8": 0.015, "blob": 128, "differences": "O1 O16", "stage": 12 }
+				"01_camera":  { "ssimMin": 0.9925, "ssimMean": 0.9938, "frac8": 0.015, "blob": 128, "differences": "O1 O16 O19", "stage": 12 },
+				"05_weapons": { "ssimMin": 0.9918, "ssimMean": 0.9936, "frac8": 0.0080, "blob": 36, "differences": "O1 O16", "stage": 12 }
 			}
 		}
 	}

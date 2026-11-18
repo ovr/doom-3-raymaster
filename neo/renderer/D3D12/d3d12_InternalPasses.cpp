@@ -45,15 +45,24 @@ float4 vsMain( uint vertexId : SV_VertexID ) : SV_Position {
 }
 )";
 
-// Memory row 0 of the scene is the bottom of the screen, row 0 of a back buffer its top.
+// Memory row 0 of the scene is the bottom of the screen, row 0 of a back buffer its top. GAMMA looks each
+// channel's byte up in its channel of the LUT; alpha stays, the swap chain ignores it.
 constexpr std::string_view BLIT_PS = R"(
 cbuffer blitParms : register( b1 ) {
 	int4 sceneSize;		// x = width, y = height
 };
 Texture2D<float4> scene : register( t0 );
+#ifdef GAMMA
+Texture2D<float4> gammaLut : register( t1 );
+#endif
 float4 psMain( float4 position : SV_Position ) : SV_Target {
 	int2 pixel = int2( position.xy );
-	return scene.Load( int3( pixel.x, sceneSize.y - 1 - pixel.y, 0 ) );
+	float4 texel = scene.Load( int3( pixel.x, sceneSize.y - 1 - pixel.y, 0 ) );
+#ifdef GAMMA
+	int3 index = int3( texel.rgb * 255.0 + 0.5 );
+	texel.rgb = float3( gammaLut.Load( int3( index.r, 0, 0 ) ).r, gammaLut.Load( int3( index.g, 0, 0 ) ).g, gammaLut.Load( int3( index.b, 0, 0 ) ).b );
+#endif
+	return texel;
 }
 )";
 
@@ -142,6 +151,8 @@ float psMain( float4 position : SV_Position ) : SV_Target {
 
 constexpr uint64 PARM_BYTES = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 constexpr int SHOW_MARGIN = 16;
+constexpr DXGI_FORMAT GAMMA_LUT_FORMAT = DXGI_FORMAT_R16G16B16A16_UNORM;
+constexpr UINT GAMMA_LUT_ROW_BYTES = 256 * 4 * sizeof( uint16 );	// one row, already a multiple of the 256-byte pitch
 
 [[nodiscard]] d3d12SamplerTableKey_t ShowSamplers() {
 	d3d12SamplerTableKey_t key;
@@ -158,14 +169,35 @@ constexpr int SHOW_MARGIN = 16;
 
 }	// namespace
 
+d3d12GammaRamp_t D3D12_IdentityGamma() {
+	d3d12GammaRamp_t ramp;
+	for ( uint16 i = 0; i < 256; i++ ) {
+		ramp.red[i] = ramp.green[i] = ramp.blue[i] = static_cast<uint16>( i * 257 );
+	}
+	return ramp;
+}
+
+bool D3D12_GammaIsIdentity( const d3d12GammaRamp_t & ramp ) {
+	for ( const std::array<uint16, 256> * channel : { &ramp.red, &ramp.green, &ramp.blue } ) {
+		for ( uint32 i = 0; i < 256; i++ ) {
+			// no 16-bit value lies halfway between two bytes, so this rounding is the GPU's
+			if ( ( ( *channel )[i] * 255u + 32767u ) / 65535u != i ) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 idD3D12InternalPasses::idD3D12InternalPasses( const idD3D12Device & owner, const idD3D12RootSignature & signature, idD3D12ShaderCompiler & fxc,
-	idD3D12Submitter & submit, idD3D12Barriers & batch, idD3D12UploadRing & constantRing, idD3D12DescriptorRing & descriptorRing,
-	idD3D12SamplerHeap & samplerHeap, idD3D12DescriptorPool & srvs ) :
+	idD3D12Submitter & submit, idD3D12Barriers & batch, idD3D12Uploader & copies, idD3D12UploadRing & constantRing,
+	idD3D12DescriptorRing & descriptorRing, idD3D12SamplerHeap & samplerHeap, idD3D12DescriptorPool & srvs ) :
 	device( owner ),
 	root( signature ),
 	compiler( fxc ),
 	submitter( submit ),
 	barriers( batch ),
+	uploader( copies ),
 	constants( constantRing ),
 	descriptors( descriptorRing ),
 	samplers( samplerHeap ),
@@ -186,6 +218,7 @@ void idD3D12InternalPasses::CreateDefaults( d3d12Descriptor_t black2D, d3d12Desc
 	};
 	triangleVs = compile( TRIANGLE_VS, shaderStageType_t::VERTEX, "d3d12 triangle" );
 	blitPs = compile( BLIT_PS, shaderStageType_t::FRAGMENT, "d3d12 present blit" );
+	blitGammaPs = compile( std::string( "#define GAMMA\n" ).append( BLIT_PS ), shaderStageType_t::FRAGMENT, "d3d12 present blit with gamma" );
 	clearPs = compile( CLEAR_PS, shaderStageType_t::FRAGMENT, "d3d12 masked clear" );
 	show2DPs = compile( std::string( SHOW_PARMS ).append( SHOW_2D_PS ), shaderStageType_t::FRAGMENT, "d3d12 show image 2D" );
 	showCubePs = compile( std::string( SHOW_PARMS ).append( SHOW_CUBE_PS ), shaderStageType_t::FRAGMENT, "d3d12 show image cube" );
@@ -293,11 +326,70 @@ void idD3D12InternalPasses::Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU
 }
 
 void idD3D12InternalPasses::PresentBlit( d3d12Descriptor_t sceneSrv, D3D12_CPU_DESCRIPTOR_HANDLE backBuffer, int width, int height ) {
-	const std::array textures = { sceneSrv };
+	const bool mapped = !gammaIdentity && blitGamma;
+	if ( mapped ) {
+		barriers.Transition( *gammaLut.Get(), gammaLutState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+	}
+	const std::array textures = { sceneSrv, mapped ? gammaLutSrv : d3d12Descriptor_t() };
 	const room_t room = Room( textures );
 	const int32 sceneSize[4] = { width, height, 0, 0 };
 	memcpy( room.parms.cpu, sceneSize, sizeof( sceneSize ) );
-	Record( submitter.List(), backBuffer, *blit.Get(), { 0, 0, width, height }, room );
+	Record( submitter.List(), backBuffer, mapped ? *blitGamma.Get() : *blit.Get(), { 0, 0, width, height }, room );
+}
+
+// The upload goes into the open list, behind every blit that read the old ramp.
+void idD3D12InternalPasses::SetGamma( const d3d12GammaRamp_t & ramp ) {
+	if ( ramp == gamma ) {
+		return;
+	}
+	gamma = ramp;
+	gammaIdentity = D3D12_GammaIsIdentity( ramp );
+	if ( gammaIdentity || ( !gammaLut && !CreateGammaLut() ) ) {
+		return;		// an identity ramp never reads the LUT, so it waits for the next ramp that does
+	}
+	const std::optional<d3d12UploadSpan_t> span = uploader.Stage( GAMMA_LUT_ROW_BYTES, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT );
+	if ( !span ) {
+		return;
+	}
+	std::array<uint16, 256 * 4> texels;
+	for ( size_t i = 0; i < 256; i++ ) {
+		texels[i * 4 + 0] = ramp.red[i];
+		texels[i * 4 + 1] = ramp.green[i];
+		texels[i * 4 + 2] = ramp.blue[i];
+		texels[i * 4 + 3] = 0xFFFF;
+	}
+	memcpy( span->cpu, texels.data(), sizeof( texels ) );
+	const D3D12_SUBRESOURCE_FOOTPRINT footprint = { GAMMA_LUT_FORMAT, 256, 1, 1, GAMMA_LUT_ROW_BYTES };
+	uploader.TextureRegion( *gammaLut.Get(), gammaLutState, 0, *span, footprint, 1 );
+}
+
+bool idD3D12InternalPasses::CreateGammaLut() {
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = 256;
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = GAMMA_LUT_FORMAT;
+	desc.SampleDesc.Count = 1;
+	const D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
+	if ( !device.Check( device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+			IID_PPV_ARGS( &gammaLut ) ), "CreateCommittedResource (gamma LUT)" ) ) {
+		return false;
+	}
+	gammaLut->SetName( L"doom3 gamma LUT" );
+	gammaLutState = {};
+	gammaLutState.current = D3D12_RESOURCE_STATE_COPY_DEST;
+	D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+	view.Format = GAMMA_LUT_FORMAT;
+	view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	view.Texture2D.MipLevels = 1;
+	gammaLutSrv = srvPool.Allocate();
+	device.Get().CreateShaderResourceView( gammaLut.Get(), &view, srvPool.Cpu( gammaLutSrv ) );
+	blitGamma = CreatePipeline( blitGammaPs, idD3D12SwapChain::FORMAT, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ),
+		L"doom3 present blit with gamma" );
+	return blitGamma != nullptr;
 }
 
 void idD3D12InternalPasses::MaskedClear( D3D12_CPU_DESCRIPTOR_HANDLE target, d3d12TargetId_t id, const renderRect_t & rect,

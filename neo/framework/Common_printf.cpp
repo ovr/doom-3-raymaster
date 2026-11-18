@@ -608,6 +608,9 @@ void idCommonLocal::FatalError( const char *fmt, ... ) {
 	va_end( argptr );
 	errorMessage[sizeof(errorMessage)-1] = '\0';
 
+	// Sys_Error only shows the dialog: the log keeps the reason too
+	Printf( "********************\nFATAL ERROR: %s\n********************\n", errorMessage );
+
 	if ( cvarSystem->GetCVarBool( "r_fullscreen" ) ) {
 		cmdSystem->BufferCommandText( CMD_EXEC_NOW, "vid_restart partial windowed\n" );
 	}

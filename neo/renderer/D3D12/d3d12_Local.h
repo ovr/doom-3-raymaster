@@ -70,11 +70,6 @@ using idD3D12CpuBlock = std::unique_ptr<byte[], d3d12MemFree_t>;
 enum class d3d12RootSlot_t : UINT { VERTEX_PARMS, FRAGMENT_PARMS, JOINTS, TEXTURES, SAMPLERS, COUNT };
 [[nodiscard]] constexpr UINT D3D12_Root( d3d12RootSlot_t slot ) { return static_cast<UINT>( slot ); }
 
-// Until the backend is complete: warns once per name and counts the calls. Owner thread only.
-void D3D12_Unimplemented( const char * what );
-// One line with every name D3D12_Unimplemented has seen and its call count; nothing when there is none.
-void D3D12_PrintUnimplemented();
-
 // "0x887A0005 DXGI_ERROR_DEVICE_REMOVED", or the bare value for a code without a name here.
 [[nodiscard]] idStr D3D12_ErrorText( HRESULT hr );
 

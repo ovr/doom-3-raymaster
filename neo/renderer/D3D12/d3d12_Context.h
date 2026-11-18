@@ -59,7 +59,7 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12PipelineFactory          normalized pipelineKey_t → a PSO kept with its program; the depth bias slots
 	      ├── idD3D12SceneTarget              colour + depth in GL row order, the MSAA resolve texture
 	      ├── optional<idD3D12SwapChain>      IDXGISwapChain3, 3 back buffers + RTVs, latency object
-	      ├── idD3D12InternalPasses           the present blit, the masked clear, the depth copy and r_d3d12ShowImage
+	      ├── idD3D12InternalPasses           the present blit with the gamma LUT, the masked clear, the depth copy, r_d3d12ShowImage
 	      ├── idD3D12Readback                 copies into a READBACK buffer for ReadOutputPixels
 	      ├── idD3D12ScreenCopies             CopyOutputToTexture, CopyDepthToTexture: scene boxes into textures
 	      └── idD3D12DrawRecorder             clears and draws into the open pass: Prepare, Reserve, Record
@@ -71,7 +71,10 @@ If you have questions concerning this license or the applicable additional terms
 	  Present                        the fence of the frame        the vertex cache remaps the set the frame read (R3, R8)
 	  ReadOutputPixels               a signal after the copy       the CPU reads the readback buffer
 	  a full ring                    the fence of its oldest chunk  that room is taken again
-	  Resize, vid_restart, Shutdown  a signal after the last Present  ResizeBuffers and releasing a back buffer need an idle queue
+	  Resize, Shutdown               a signal after the last Present  ResizeBuffers and releasing a back buffer need an idle queue
+
+	vid_restart only changes the window (R_SetNewMode( false )) and reaches the context as a Resize; the
+	device, the sample count and every resource but the swap chain buffers and the scene target live on.
 */
 
 #include "d3d12_Buffers.h"
@@ -103,6 +106,8 @@ public:
 	[[nodiscard]] presentResult_t	Present( presentMode_t mode );			// blit, submit, present, wait, retire, latency
 	void							ReadOutputPixels( int x, int y, int width, int height, byte * rgb );	// R8: after EndFrame
 	void							Resize( int width, int height );		// between frames; 0 x 0 (minimized) is ignored
+	void							SetSrgb( bool enable );					// SRGB_OUTPUT: the scene's sRGB view for draws and clears
+	void							SetGamma( const d3d12GammaRamp_t & ramp );	// the present blit's LUT; captures stay before it
 	void							ShowImage( textureHandle_t texture );	// r_d3d12ShowImage into the scene, before EndFrame
 	// glCopyTexImage2D of a scene box, in a frame; the next draw opens the pass again.
 	void							CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height );
@@ -146,7 +151,7 @@ public:
 
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );
-	[[nodiscard]] std::expected<void, idStr>	CreateOutput( HWND window, int width, int height );
+	[[nodiscard]] std::expected<void, idStr>	CreateOutput( HWND window, int width, int height, UINT samples );
 	void							CreateDefaults();	// the fallback textures, the internal passes and the default buffers
 	void							Retire( uint64 waitedFence );	// ring chunks and graves up to an explicitly waited fence
 	// The scene, resolved, into the back buffer through the present blit; leaves it in RENDER_TARGET.

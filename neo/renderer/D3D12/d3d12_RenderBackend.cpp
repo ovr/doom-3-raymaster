@@ -34,43 +34,6 @@ If you have questions concerning this license or the applicable additional terms
 
 static idRenderBackendFactory d3d12Factory( "d3d12", []() -> idRenderBackend * { return new idRenderBackendD3D12; } );
 
-namespace {
-
-struct unimplementedCall_t {
-	const char *	name;
-	int				calls;
-};
-// constant-initialized: no constructor runs before main
-std::array<unimplementedCall_t, 64>	unimplementedCalls = {};
-int									numUnimplemented = 0;
-
-}	// namespace
-
-void D3D12_Unimplemented( const char * what ) {
-	for ( int i = 0; i < numUnimplemented; i++ ) {
-		unimplementedCall_t & call = unimplementedCalls[i];
-		if ( call.name == what || idStr::Cmp( call.name, what ) == 0 ) {
-			call.calls++;
-			return;
-		}
-	}
-	if ( numUnimplemented < static_cast<int>( unimplementedCalls.size() ) ) {
-		unimplementedCalls[numUnimplemented++] = { what, 1 };
-	}
-	common->Warning( "d3d12: %s is not implemented yet", what );
-}
-
-void D3D12_PrintUnimplemented() {
-	if ( numUnimplemented == 0 ) {
-		return;
-	}
-	idStr line = "d3d12: not implemented yet (calls):";
-	for ( int i = 0; i < numUnimplemented; i++ ) {
-		line += va( " %s %d%s", unimplementedCalls[i].name, unimplementedCalls[i].calls, ( i + 1 < numUnimplemented ) ? "," : "" );
-	}
-	common->Printf( "%s\n", line.c_str() );
-}
-
 idRenderBackendD3D12::idRenderBackendD3D12() {
 	ownerThread = Sys_GetCurrentThreadID();
 }
@@ -93,19 +56,21 @@ bool idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 	caps.gpuTimer = context->timers.Available();
 	caps.timestamps = context->timers.Available();
 	context->textures.RecordUploads( r_d3d12CheckImages.GetBool() );
+	context->SetSrgb( srgbOutput );
+	context->SetGamma( gamma );
 	D3D12_SetActiveContext( context.get() );
 	outputWidth = init.width;
 	outputHeight = init.height;
 
 	const d3d12Features_t & features = context->device.Features();
-	common->Printf( "d3d12: adapter %s, %llu MB, %s, debug level %d\n", features.adapterName.c_str(),
-		static_cast<unsigned long long>( features.dedicatedVideoMemory >> 20 ), features.versionString.c_str(), context->device.DebugLevel() );
+	common->Printf( "d3d12: adapter %s, %llu MB, %s, debug level %d, %u sample(s)\n", features.adapterName.c_str(),
+		static_cast<unsigned long long>( features.dedicatedVideoMemory >> 20 ), features.versionString.c_str(), context->device.DebugLevel(),
+		context->scene.Samples() );
 	return true;
 }
 
 void idRenderBackendD3D12::Shutdown() {
 	if ( context ) {
-		D3D12_PrintUnimplemented();
 		common->Printf( "d3d12 shaders: compiled %d, %d from the cache\n", context->compiler.Compiled(), context->compiler.CacheHits() );
 		D3D12_SetActiveContext( nullptr );
 		context.reset();
@@ -123,15 +88,27 @@ void idRenderBackendD3D12::ResizeOutput( int width, int height ) {
 	}
 }
 
-// Cube maps are always seamless in D3D12, and the sample count is fixed at Init.
+// Cube maps are always seamless in D3D12, and the sample count is fixed at Init (O18). The settings are
+// kept for the next Init.
 void idRenderBackendD3D12::SetOption( renderOption_t option, bool enable ) {
-	if ( option == renderOption_t::SRGB_OUTPUT && enable ) {
-		D3D12_Unimplemented( "SetOption( SRGB_OUTPUT )" );
+	if ( option != renderOption_t::SRGB_OUTPUT || enable == srgbOutput ) {
+		return;
+	}
+	common->Printf( "d3d12: the scene is written through its %s view\n", enable ? "sRGB" : "UNORM" );
+	srgbOutput = enable;
+	if ( context ) {
+		context->SetSrgb( enable );
 	}
 }
 
-void idRenderBackendD3D12::SetGammaRamp( const unsigned short [256], const unsigned short [256], const unsigned short [256] ) {
-	D3D12_Unimplemented( "SetGammaRamp" );
+// The window shows the ramp through the present blit; GL sets the desktop's hardware ramp instead (O14).
+void idRenderBackendD3D12::SetGammaRamp( const unsigned short red[256], const unsigned short green[256], const unsigned short blue[256] ) {
+	std::copy_n( red, 256, gamma.red.begin() );
+	std::copy_n( green, 256, gamma.green.begin() );
+	std::copy_n( blue, 256, gamma.blue.begin() );
+	if ( context ) {
+		context->SetGamma( gamma );
+	}
 }
 
 void idRenderBackendD3D12::CheckErrors() {
@@ -148,7 +125,6 @@ void idRenderBackendD3D12::PrintInfo() const {
 	if ( context ) {
 		context->PrintInfo();
 	}
-	D3D12_PrintUnimplemented();
 }
 
 void idRenderBackendD3D12::BeginFrame() {

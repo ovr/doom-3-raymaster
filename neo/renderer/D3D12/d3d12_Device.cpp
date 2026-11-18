@@ -159,7 +159,55 @@ bool Feature( ID3D12Device2 & device, D3D12_FEATURE feature, T & data ) {
 	return SUCCEEDED( device.CheckFeatureSupport( feature, &data, sizeof( data ) ) );
 }
 
+// D3D12_AUTO_BREADCRUMB_OP up to WRITEBUFFERIMMEDIATE: every operation this backend records.
+constexpr const char * BREADCRUMB_OPS[] = { "SetMarker", "BeginEvent", "EndEvent", "DrawInstanced", "DrawIndexedInstanced",
+	"ExecuteIndirect", "Dispatch", "CopyBufferRegion", "CopyTextureRegion", "CopyResource", "CopyTiles", "ResolveSubresource",
+	"ClearRenderTargetView", "ClearUnorderedAccessView", "ClearDepthStencilView", "ResourceBarrier", "ExecuteBundle", "Present",
+	"ResolveQueryData", "BeginSubmission", "EndSubmission", "DecodeFrame", "ProcessFrames", "AtomicCopyBufferUint",
+	"AtomicCopyBufferUint64", "ResolveSubresourceRegion", "WriteBufferImmediate" };
+
+idStr BreadcrumbOp( D3D12_AUTO_BREADCRUMB_OP op ) {
+	const size_t index = static_cast<size_t>( op );
+	return ( index < std::size( BREADCRUMB_OPS ) ) ? idStr( BREADCRUMB_OPS[index] ) : idStr( va( "operation %d", static_cast<int>( op ) ) );
+}
+
+const char * OrUnnamed( const char * name ) {
+	return ( name != nullptr && name[0] != '\0' ) ? name : "(unnamed)";
+}
+
+void PrintBreadcrumb( const D3D12_AUTO_BREADCRUMB_NODE & node ) {
+	common->Printf( "d3d12 dred: %s\n", D3D12_BreadcrumbText( node ).c_str() );
+}
+
+const char * DredDeviceState( D3D12_DRED_DEVICE_STATE state ) {
+	switch ( state ) {
+		case D3D12_DRED_DEVICE_STATE_HUNG:		return "hung";
+		case D3D12_DRED_DEVICE_STATE_FAULT:		return "faulted";
+		case D3D12_DRED_DEVICE_STATE_PAGEFAULT:	return "page fault";
+		default:								return "unknown (removed by the application or the driver)";
+	}
+}
+
+void PrintAllocations( const char * what, const D3D12_DRED_ALLOCATION_NODE * node ) {
+	constexpr int MAX_NAMES = 8;
+	for ( int i = 0; node != nullptr && i < MAX_NAMES; node = node->pNext, i++ ) {
+		common->Printf( "d3d12 dred: %s allocation %s (type %d)\n", what, OrUnnamed( node->ObjectNameA ), static_cast<int>( node->AllocationType ) );
+	}
+}
+
 }	// namespace
+
+idStr D3D12_BreadcrumbText( const D3D12_AUTO_BREADCRUMB_NODE & node ) {
+	const UINT done = ( node.pLastBreadcrumbValue != nullptr ) ? *node.pLastBreadcrumbValue : 0;
+	idStr where;
+	if ( done < node.BreadcrumbCount ) {
+		where = va( ", stopped before %s", BreadcrumbOp( node.pCommandHistory[done] ).c_str() );
+	} else if ( node.BreadcrumbCount > 0 ) {
+		where = va( ", the last %s", BreadcrumbOp( node.pCommandHistory[node.BreadcrumbCount - 1] ).c_str() );
+	}
+	return va( "list %s on %s: %u of %u operations done%s", OrUnnamed( node.pCommandListDebugNameA ), OrUnnamed( node.pCommandQueueDebugNameA ),
+		done, node.BreadcrumbCount, where.c_str() );
+}
 
 idStr D3D12_ErrorText( HRESULT hr ) {
 	const char * name = "";
@@ -400,32 +448,68 @@ void idD3D12Device::ReportLoss() const {
 	}
 }
 
+// The lists DRED still tracks: every unfinished one, which is where the GPU stopped, and the newest.
 void idD3D12Device::ReportDred() const {
 	idComPtr<ID3D12DeviceRemovedExtendedData> dred;
 	if ( FAILED( device.As( &dred ) ) ) {
+		common->Printf( "d3d12 dred: the device has no DRED data\n" );
 		return;
 	}
 	D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs = {};
-	if ( SUCCEEDED( dred->GetAutoBreadcrumbsOutput( &breadcrumbs ) ) ) {
+	if ( const HRESULT hr = dred->GetAutoBreadcrumbsOutput( &breadcrumbs ); FAILED( hr ) ) {
+		common->Printf( "d3d12 dred: no breadcrumbs: %s\n", D3D12_ErrorText( hr ).c_str() );
+	} else {
+		int lists = 0;
+		int unfinished = 0;
+		const D3D12_AUTO_BREADCRUMB_NODE * newest = nullptr;
 		for ( const D3D12_AUTO_BREADCRUMB_NODE * node = breadcrumbs.pHeadAutoBreadcrumbNode; node != nullptr; node = node->pNext ) {
+			lists++;
+			newest = node;
 			const UINT done = ( node->pLastBreadcrumbValue != nullptr ) ? *node->pLastBreadcrumbValue : 0;
-			if ( done >= node->BreadcrumbCount ) {
-				continue;	// this list finished
+			if ( done < node->BreadcrumbCount ) {
+				unfinished++;
+				PrintBreadcrumb( *node );
 			}
-			common->Printf( "d3d12 dred: list %s stopped after %u of %u operations, the next is operation %d\n",
-				( node->pCommandListDebugNameA != nullptr ) ? node->pCommandListDebugNameA : "?", done, node->BreadcrumbCount,
-				static_cast<int>( node->pCommandHistory[done] ) );
 		}
+		common->Printf( "d3d12 dred: breadcrumbs of %d command lists, %d unfinished%s\n", lists, unfinished, ( newest != nullptr ) ? "; the newest:" : "" );
+		if ( newest != nullptr ) {
+			PrintBreadcrumb( *newest );
+		}
+	}
+	if ( idComPtr<ID3D12DeviceRemovedExtendedData2> dred2; SUCCEEDED( dred.As( &dred2 ) ) ) {
+		common->Printf( "d3d12 dred: the device state is %s\n", DredDeviceState( dred2->GetDeviceState() ) );
 	}
 	D3D12_DRED_PAGE_FAULT_OUTPUT pageFault = {};
 	if ( SUCCEEDED( dred->GetPageFaultAllocationOutput( &pageFault ) ) && pageFault.PageFaultVA != 0 ) {
 		common->Printf( "d3d12 dred: page fault at GPU address 0x%llx\n", static_cast<unsigned long long>( pageFault.PageFaultVA ) );
+		PrintAllocations( "a live", pageFault.pHeadExistingAllocationNode );
+		PrintAllocations( "a freed", pageFault.pHeadRecentFreedAllocationNode );
 	}
+}
+
+void idD3D12Device::RemoveDevice() const {
+	idComPtr<ID3D12Device5> device5;
+	if ( FAILED( device.As( &device5 ) ) ) {
+		common->Printf( "d3d12: the device has no ID3D12Device5::RemoveDevice\n" );
+		return;
+	}
+	device5->RemoveDevice();
+}
+
+d3d12VideoMemory_t idD3D12Device::VideoMemory() const {
+	idComPtr<IDXGIAdapter3> adapter3;
+	DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+	if ( FAILED( adapter.As( &adapter3 ) ) || FAILED( adapter3->QueryVideoMemoryInfo( 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info ) ) ) {
+		return {};
+	}
+	return { info.CurrentUsage, info.Budget };
 }
 
 void idD3D12Device::PrintInfo() const {
 	common->Printf( "\nD3D12 adapter: %s (%s, vendor 0x%04x)%s\n", features.adapterName.c_str(), VendorName( features.vendorId ), features.vendorId, features.warp ? ", software (WARP)" : "" );
-	common->Printf( "D3D12 video memory: %llu MB\n", static_cast<unsigned long long>( features.dedicatedVideoMemory >> 20 ) );
+	const d3d12VideoMemory_t memory = VideoMemory();
+	common->Printf( "D3D12 video memory: %llu MB, %llu MB in use of a %llu MB budget\n", static_cast<unsigned long long>( features.dedicatedVideoMemory >> 20 ),
+		static_cast<unsigned long long>( memory.used >> 20 ), static_cast<unsigned long long>( memory.budget >> 20 ) );
 	common->Printf( "D3D12 driver: %s\n", VersionText( features.driverVersion ).c_str() );
 	idStr samples;
 	for ( size_t i = 0; i < features.samples.size(); i++ ) {
@@ -586,11 +670,12 @@ ID3D12GraphicsCommandList1 & idD3D12CommandStream::List() {
 	return *list.Get();
 }
 
+// A list that failed to close (the device was removed) is not executed; the fence still advances.
 uint64 idD3D12CommandStream::CloseAndExecute() {
 	assert( open );
 	open = false;
-	device.Check( list->Close(), "ID3D12GraphicsCommandList::Close" );
-	const uint64 fence = queue.Execute( *list.Get() );
+	const bool closed = device.Check( list->Close(), "ID3D12GraphicsCommandList::Close" );
+	const uint64 fence = closed ? queue.Execute( *list.Get() ) : queue.Signal();
 	retired.push_back( { std::move( current ), fence } );
 	return fence;
 }

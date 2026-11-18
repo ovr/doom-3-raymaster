@@ -124,4 +124,6 @@ private:
 	std::unique_ptr<idD3D12Context>	context;
 	idD3D12StatsReport				report;
 	idD3D12ImageViewer				viewer;
+	d3d12GammaRamp_t				gamma = D3D12_IdentityGamma();	// the last SetGammaRamp
+	bool							srgbOutput = false;				// the last SetOption( SRGB_OUTPUT )
 };

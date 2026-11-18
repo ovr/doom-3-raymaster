@@ -74,10 +74,18 @@ void idD3D12DrawRecorder::BeginPass( ID3D12GraphicsCommandList1 & list ) {
 	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	barriers.Transition( *depth.resource.Get(), depth.state, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 	barriers.Flush();
-	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = scene.Rtv( false );
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = scene.Rtv( srgb );
 	const D3D12_CPU_DESCRIPTOR_HANDLE dsv = scene.Dsv();
 	list.OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
 	bound.passOpen = true;
+}
+
+// The target id in the key changes with the view, so the next draw binds a PSO of the other format.
+void idD3D12DrawRecorder::SetSrgb( bool enable ) {
+	if ( srgb != enable ) {
+		srgb = enable;
+		EndPass();
+	}
 }
 
 // The scene is in GL row order, so the rectangle of shared code is used as it is. glClear obeys
@@ -106,7 +114,7 @@ void idD3D12DrawRecorder::Clear( const renderLatch_t & latch, const clearDesc_t 
 		}
 		const D3D12_RECT rect = { x0, y0, x1, y1 };
 		if ( mask == 0xF ) {
-			list.ClearRenderTargetView( scene.Rtv( false ), clear.rgba, 1, &rect );
+			list.ClearRenderTargetView( scene.Rtv( srgb ), clear.rgba, 1, &rect );
 		}
 		if ( depthStencil != 0 ) {
 			list.ClearDepthStencilView( scene.Dsv(), depthStencil, 1.0f, clear.stencilValue, 1, &rect );
@@ -115,7 +123,7 @@ void idD3D12DrawRecorder::Clear( const renderLatch_t & latch, const clearDesc_t 
 	if ( mask != 0 && mask != 0xF ) {
 		idD3D12SceneTarget::surface_t & color = scene.Color();
 		barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
-		passes.MaskedClear( scene.Rtv( false ), scene.Target( false ), { x0, y0, x1 - x0, y1 - y0 }, clear.rgba, mask );
+		passes.MaskedClear( scene.Rtv( srgb ), scene.Target( srgb ), { x0, y0, x1 - x0, y1 - y0 }, clear.rgba, mask );
 		Invalidate();
 	}
 }
@@ -165,7 +173,7 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 	prepared_t prepared;
 	pipelineKey_t key = sharedKey;
 	key.program = program.dense;
-	key.raster = static_cast<uint8>( key.raster | ( scene.Target( false ).value << D3D12_KEY_TARGET_SHIFT ) );
+	key.raster = static_cast<uint8>( key.raster | ( scene.Target( srgb ).value << D3D12_KEY_TARGET_SHIFT ) );
 	if ( ( latch.stateBits & GLS_POLYGON_OFFSET ) != 0 && dc.topology == primitive_t::TRIANGLES ) {
 		key.depthBias = pipelines.Bias().Slot( latch.polyOfsScale, latch.polyOfsBias );
 	}
