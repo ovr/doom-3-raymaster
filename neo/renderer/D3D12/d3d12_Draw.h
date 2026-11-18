@@ -38,8 +38,8 @@ If you have questions concerning this license or the applicable additional terms
 	  Prepare   the normalized key and its PSO, the views and samplers of the slots: no ring room, no command
 	  Reserve   the room the open list lacks: the parms in "constants", an SRV table, a sampler table; a full
 	            ring submits, waits for its oldest chunk and tries again in the new list
-	  Record    the pass, the PSO, the dynamic state, the root parameters, the barriers, DrawIndexedInstanced,
-	            each sent only when it differs from d3d12BoundState_t
+	  Record    the barriers of what the draw reads and the pass, then the PSO, the dynamic state, the root
+	            parameters and DrawIndexedInstanced, each sent only when it differs from d3d12BoundState_t
 
 	A list is submitted before its 65th draw of a frame, then before every r_d3d12SubmitDraws more, so the
 	GPU starts on a frame while the CPU still records it. That submit comes before Prepare: no draw is cut.
@@ -144,6 +144,11 @@ private:
 		std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	table;
 		std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	samplerTable;
 	};
+	struct used_t {								// what the draw reads, its transitions queued
+		const d3d12Buffer_t *		vertex = nullptr;
+		const d3d12Buffer_t *		index = nullptr;
+		std::optional<D3D12_GPU_VIRTUAL_ADDRESS>	joints;		// b2 of a program with usesJoints
+	};
 
 	[[nodiscard]] std::optional<prepared_t>	Prepare( const renderLatch_t & latch, const pipelineKey_t & key, const drawCall_t & dc,
 										d3d12Program_t & program );
@@ -157,9 +162,12 @@ private:
 	void							BindDynamicState( ID3D12GraphicsCommandList1 & list, const renderLatch_t & latch, primitive_t topology );
 	void							BindParms( ID3D12GraphicsCommandList1 & list, const reserved_t & reserved, const renderLatch_t & latch,
 										const drawCall_t & dc, const d3d12Program_t & program );
-	void							BindJoints( ID3D12GraphicsCommandList1 & list, const d3d12Program_t & program, const drawCall_t & dc );
+	// Queues the transitions, which Record flushes before it binds anything: the layer takes the state of a root
+	// CBV's buffer when SetGraphicsRootConstantBufferView is recorded, so a barrier after it mismatches (#527).
+	[[nodiscard]] used_t			Use( const prepared_t & prepared, const drawCall_t & dc, const d3d12Program_t & program );
+	void							BindJoints( ID3D12GraphicsCommandList1 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints );
 	void							BindTextures( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved );
-	void							BindGeometry( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const drawCall_t & dc );
+	void							BindGeometry( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const drawCall_t & dc, const used_t & used );
 	[[nodiscard]] int				ChunkLimit() const;	// the draws the open list takes before it is submitted
 
 	const idD3D12Device &			device;

@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../renderer/tr_local.h"
 #include "../renderer/D3D12/d3d12_Buffers.h"
 #include "../renderer/D3D12/d3d12_Copies.h"
+#include "../renderer/D3D12/d3d12_Draw.h"
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
@@ -60,9 +61,10 @@ If you have questions concerning this license or the applicable additional terms
 	The HLSL emitter and FXC run on the repo's base/renderprogs: the texture and gui pairs against
 	neo/tests/d3d12_golden/*.hlsl (D3D12_TESTS_WRITE_GOLDEN=1 writes them), every source through FXC,
 	and the reflection of every program against what GL reported on mars_city1 (renderProgInfo-gl.txt).
-	The pipeline state map runs per GLS family and on random keys; the PSO factory on WARP. The screen
+	The pipeline state map runs per GLS family and on random keys; the PSO factory, the journal replayed
+	into the next run and the pipeline library on WARP. The screen
 	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU, and so do the
-	GPU timers of r_pix.
+	GPU timers of r_pix and the draw recorder over every placement of the vertex cache's FRAME buffers.
 
 	Usage: d3d12Tests [filter]     filter: run the tests whose name contains it; "all" runs every test
 	D3D12_TESTS_VERBOSE=1 prints every failed check, not only the first 20 of a test.
@@ -273,7 +275,7 @@ void Test_HandleFindDuringAdd() {
 // explicit waits only.
 class idTestGpu final : public idD3D12Submitter {
 public:
-	idTestGpu( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice, uint64 stagingSize ) :
+	idTestGpu( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice, uint64 stagingSize, d3d12BufferPlacement_t framePlacement ) :
 		library( std::move( loadedLibrary ) ),
 		device( std::move( createdDevice ) ),
 		liveObjects( device ),
@@ -285,7 +287,7 @@ public:
 		rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
 		staging( device, stagingSize, L"test staging ring" ),
 		uploader( device, *this, staging, barriers, graveyard ),
-		buffers( device, graveyard, uploader, barriers, d3d12BufferPlacement_t::UPLOAD ),
+		buffers( device, graveyard, uploader, barriers, framePlacement ),
 		textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ) {
 	}
 	~idTestGpu() {
@@ -378,7 +380,7 @@ void idTestGpu::FinishUnwaited() {
 	device.Check( fence->SetEventOnCompletion( 1, nullptr ), "SetEventOnCompletion (test)" );	// no event: blocks
 }
 
-[[nodiscard]] std::unique_ptr<idTestGpu> CreateWarp( uint64 stagingSize ) {
+[[nodiscard]] std::unique_ptr<idTestGpu> CreateWarp( uint64 stagingSize, d3d12BufferPlacement_t framePlacement = d3d12BufferPlacement_t::UPLOAD ) {
 	auto library = idD3D12Library::Load();
 	if ( !library ) {
 		Check( false, va( "idD3D12Library::Load: %s", library.error().c_str() ) );
@@ -392,11 +394,11 @@ void idTestGpu::FinishUnwaited() {
 	if ( device->DebugLevel() == 0 ) {
 		printf( "  no debug layer (Graphics Tools): the API usage is not validated\n" );
 	}
-	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize );
+	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize, framePlacement );
 }
 
 // The high-performance adapter; nullptr (the test skipped, not failed) on a machine without one.
-[[nodiscard]] std::unique_ptr<idTestGpu> CreateHardware( uint64 stagingSize ) {
+[[nodiscard]] std::unique_ptr<idTestGpu> CreateHardware( uint64 stagingSize, d3d12BufferPlacement_t framePlacement = d3d12BufferPlacement_t::UPLOAD ) {
 	auto library = idD3D12Library::Load();
 	if ( !library ) {
 		Check( false, va( "idD3D12Library::Load: %s", library.error().c_str() ) );
@@ -408,7 +410,7 @@ void idTestGpu::FinishUnwaited() {
 		return nullptr;
 	}
 	printf( "  adapter %s\n", device->Features().adapterName.c_str() );
-	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize );
+	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize, framePlacement );
 }
 
 void CheckNoLayerErrors( const idTestGpu & gpu ) {
@@ -457,41 +459,71 @@ void Test_WarpStaticBuffer() {
 	CheckNoLayerErrors( *gpu );
 }
 
-void Test_WarpFrameBuffers() {
-	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
-	if ( !gpu ) {
-		return;
-	}
-	gpu->buffers.CreateDefaults();
-	Check( gpu->buffers.ZeroJoints() != 0, "the zero joints" );
-	const D3D12_VERTEX_BUFFER_VIEW attribs = gpu->buffers.DefaultAttribs();
+// A FRAME buffer in each place r_d3d12FrameBuffers has: what the CPU writes between Map and Unmap reaches the GPU;
+// only a STAGED one goes through the staging ring.
+void FrameBuffers( idTestGpu & gpu, d3d12BufferPlacement_t placement ) {
+	gpu.buffers.CreateDefaults();
+	Check( gpu.buffers.ZeroJoints() != 0, "the zero joints" );
+	const D3D12_VERTEX_BUFFER_VIEW attribs = gpu.buffers.DefaultAttribs();
 	Check( attribs.BufferLocation != 0 && attribs.SizeInBytes == 16 && attribs.StrideInBytes == 0, "the default attribute: stride 0" );
 
 	std::vector<byte> data = Pattern( 1024, 2 );
-	const bufferHandle_t handle = gpu->buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, 1024, data.data() );
+	const bufferHandle_t handle = gpu.buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, 1024, data.data() );
 	if ( !Check( handle != bufferHandle_t::NONE, "Create" ) ) {
 		return;
 	}
-	const d3d12Buffer_t & buffer = gpu->buffers.Get( handle );
+	const d3d12Buffer_t & buffer = gpu.buffers.Get( handle );
 	constexpr uint64 BYTES = 1024 + idD3D12BufferStore::JOINT_TAIL;
-	Check( buffer.placement == d3d12BufferPlacement_t::UPLOAD && buffer.bytes == BYTES, "FRAME is an UPLOAD buffer with the joint tail" );
-	Check( gpu->buffers.Bytes( bufferUsage_t::FRAME ) == BYTES, "the byte count" );
-	Check( gpu->uploader.BytesThisFrame() == 0 && gpu->submits == 0, "FRAME data is written in place" );
+	const bool staged = ( placement == d3d12BufferPlacement_t::STAGED );
+	Check( buffer.placement == placement && buffer.bytes == BYTES, va( "FRAME in %s, with the joint tail", D3D12_PlacementName( placement ) ) );
+	Check( gpu.buffers.Bytes( bufferUsage_t::FRAME ) == BYTES && gpu.buffers.MirrorBytes() == ( staged ? 1024u : 0u ), "the byte counts" );
+	Check( staged ? gpu.uploader.BytesThisFrame() == 1024 : ( gpu.uploader.BytesThisFrame() == 0 && gpu.submits == 0 ),
+		"the data is copied only when staged" );
 
-	byte * mapped = static_cast<byte *>( gpu->buffers.Map( handle ) );
-	Check( mapped == buffer.cpu, "Map gives the mapped heap" );
+	byte * mapped = static_cast<byte *>( gpu.buffers.Map( handle ) );
+	Check( mapped == buffer.cpu, "Map gives the mapped heap or the mirror" );
 	for ( int i = 0; i < 64; i++ ) {
 		mapped[i] = data[i] = static_cast<byte>( 0xA0 + i );
 	}
-	gpu->buffers.Unmap( handle, 0, 64 );
-	Check( gpu->buffers.InPlaceBytesThisFrame() == 64 && gpu->uploader.BytesThisFrame() == 0, "Unmap counts, copies nothing" );
-	const std::vector<byte> read = gpu->Read( *buffer.resource.Get(), nullptr, 0, BYTES );
+	gpu.uploader.ResetFrameCounters();
+	gpu.buffers.Unmap( handle, 0, 64 );
+	Check( staged ? ( gpu.buffers.InPlaceBytesThisFrame() == 0 && gpu.uploader.BytesThisFrame() == 64 )
+		: ( gpu.buffers.InPlaceBytesThisFrame() == 64 && gpu.uploader.BytesThisFrame() == 0 ), "Unmap copies the dirty range of a staged buffer only" );
+	gpu.WaitIdle();		// a staged buffer decays to COMMON
+	d3d12ResourceState_t decayed;
+	decayed.decays = true;
+	const std::vector<byte> read = gpu.Read( *buffer.resource.Get(), staged ? &decayed : nullptr, 0, BYTES );
 	Check( read.size() == BYTES && std::equal( data.begin(), data.end(), read.begin() ), "the GPU reads what the CPU wrote" );
 	Check( read.size() == BYTES && std::all_of( read.begin() + 1024, read.end(), []( byte b ) { return b == 0; } ),
 		"the tail is zero: committed memory starts cleared" );
-	gpu->buffers.Destroy( handle );
-	Check( gpu->buffers.Bytes( bufferUsage_t::FRAME ) == 0, "Destroy" );
-	CheckNoLayerErrors( *gpu );
+	gpu.buffers.Destroy( handle );
+	Check( gpu.buffers.Bytes( bufferUsage_t::FRAME ) == 0 && gpu.buffers.MirrorBytes() == 0, "Destroy" );
+	CheckNoLayerErrors( gpu );
+}
+
+void Test_WarpFrameBuffers() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		FrameBuffers( *gpu, d3d12BufferPlacement_t::UPLOAD );
+	}
+}
+
+void Test_WarpFrameBuffersStaged() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20, d3d12BufferPlacement_t::STAGED ) ) {
+		FrameBuffers( *gpu, d3d12BufferPlacement_t::STAGED );
+	}
+}
+
+// OPTIONS16: Resizable BAR; the context falls back to UPLOAD without it.
+void Test_GpuFrameBuffersGpuUpload() {
+	const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20, d3d12BufferPlacement_t::GPU_UPLOAD );
+	if ( !gpu ) {
+		return;
+	}
+	if ( !gpu->device.Features().gpuUploadHeap ) {
+		printf( "  skipped: the adapter has no GPU upload heap\n" );
+		return;
+	}
+	FrameBuffers( *gpu, d3d12BufferPlacement_t::GPU_UPLOAD );
 }
 
 // The biggest texture levels do not fit a ring piece: a temporary buffer that dies with the list.
@@ -2079,7 +2111,11 @@ void Test_DepthBiasTable() {
 	const uint8 second = table.Slot( -1.0f, -100.0f );
 	Check( second == 2 && table.Slot( -2.0f, -100.0f ) == first && table.Num() == 2, "another factor, another slot; the first is found again" );
 	Check( table[0] == d3d12DepthBias_t(), "slot 0 is no bias" );
-	for ( int i = 3; i <= 255; i++ ) {
+	Check( table.SlotOf( d3d12DepthBias_t{ -100, -1.0f } ) == second && table.SlotOf( d3d12DepthBias_t() ) == 0 && table.Num() == 2,
+		"a journal's bias finds its slot by value" );
+	Check( table.SlotOf( d3d12DepthBias_t{ -7, 0.5f } ) == 3 && table.Slot( 0.5f, -7.0f ) == 3 && table.Num() == 3,
+		"a journal's new bias takes a slot, and the draw that sets it finds it" );
+	for ( int i = 4; i <= 255; i++ ) {
 		static_cast<void>( table.Slot( static_cast<float>( i ), 0.0f ) );
 	}
 	Check( table.Num() == 255 && table[255] == d3d12DepthBias_t{ 0, 255.0f }, "255 slots" );
@@ -2090,18 +2126,68 @@ void Test_DepthBiasTable() {
 	Check( table.Slot( 2.4f, -99.0f ) == 2, "the nearest by factor and units: slot 2 (-1, -100)" );
 	Check( table.Slot( 0.0f, -1.0f ) == 0, "no bias is a candidate too" );
 	Check( table.Slot( -2.0f, -100.0f ) == first, "a bias the table has is still exact" );
-	Check( table.NearestThisFrame() == 4, va( "each draw with a nearest bias counts: %d of 4", table.NearestThisFrame() ) );
+	Check( table.SlotOf( d3d12DepthBias_t{ 0, 1000.0f } ) == 255, "a full table gives a journal's bias the nearest one too" );
+	Check( table.NearestThisFrame() == 4, va( "each draw with a nearest bias counts, a journal's bias does not: %d of 4", table.NearestThisFrame() ) );
 	table.ResetFrameCounters();
 	Check( table.NearestThisFrame() == 0, "the count is per frame" );
 }
 
-// The gui program and shadow.vertex alone (no PS) against WARP's runtime and debug layer: every family of keys.
-void Test_WarpPipelines() {
-	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
-	if ( !gpu ) {
-		return;
-	}
-	idD3D12ShaderCompiler compiler( gpu->library, false );
+void Test_PipelineJournal() {
+	idD3D12PipelineJournal journal;
+	Check( !journal.Dirty() && journal.NumEntries() == 0 && journal.EntriesFor( "gui|gui" ).empty(), "an empty journal" );
+	d3d12JournalEntry_t a;
+	a.key.stateBits = GLS_DEPTHFUNC_EQUAL | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+	a.key.layout = LAYOUT_DRAW_VERT;
+	a.key.raster = 2;
+	d3d12JournalEntry_t b = a;
+	b.bias = d3d12DepthBias_t{ -100, -2.0f };
+	d3d12JournalEntry_t c = a;
+	c.key.layout = LAYOUT_DRAW_SHADOW_VERT;
+	c.key.raster = D3D12_KEY_LINES | ( d3d12TargetId_t::Of( true, 4 ).value << D3D12_KEY_TARGET_SHIFT );
+	journal.Record( "interaction|interaction", a );
+	journal.Record( "interaction|interaction", b );
+	journal.Record( "shadow|-", c );
+	journal.Record( "interaction|interaction", a );
+	Check( journal.Dirty() && journal.NumPrograms() == 2 && journal.NumEntries() == 3, "a known key is ignored" );
+	const std::span<const d3d12JournalEntry_t> entries = journal.EntriesFor( "interaction|interaction" );
+	Check( entries.size() == 2 && entries[0] == a && entries[1] == b, "the keys of a program, in the order drawn" );
+	journal.MarkSaved();
+	journal.Record( "shadow|-", c );
+	Check( !journal.Dirty(), "a known key leaves a saved journal clean" );
+
+	const std::vector<byte> file = journal.Write();
+	idD3D12PipelineJournal read;
+	Check( read.Read( file ) && !read.Dirty() && read.NumPrograms() == 2 && read.NumEntries() == 3 && read.Write() == file,
+		"Write, Read and Write again: the same file" );
+	Check( read.EntriesFor( "shadow|-" ).size() == 1 && read.EntriesFor( "shadow|-" )[0] == c, "the keys come back" );
+	idD3D12PipelineJournal reordered;
+	reordered.Record( "shadow|-", c );
+	reordered.Record( "interaction|interaction", a );
+	reordered.Record( "interaction|interaction", b );
+	Check( reordered.Write() == file, "sorted by program: the same keys write the same file" );
+
+	std::vector<byte> stale = file;
+	stale[4] ^= 0xFF;
+	Check( !read.Read( stale ) && read.NumEntries() == 0 && read.EntriesFor( "shadow|-" ).empty(), "another VERSION is not read" );
+	Check( !read.Read( std::span( file ).first( file.size() - 1 ) ) && read.NumPrograms() == 0, "a file cut short is not read" );
+	std::vector<byte> longer = file;
+	longer.push_back( 0 );
+	Check( !read.Read( longer ), "nor one with bytes after its end" );
+	Check( !read.Read( {} ), "nor no file" );
+	idD3D12PipelineJournal foreign;
+	d3d12JournalEntry_t bad = a;
+	bad.key.raster = 0x80;
+	foreign.Record( "gui|gui", bad );
+	Check( !read.Read( foreign.Write() ), "a raster bit the backend never sets: not a journal this code wrote" );
+}
+
+// gui and shadow.vertex alone (no PS), from the repo's sources.
+struct testPrograms_t {
+	d3d12Program_t					gui;
+	d3d12Program_t					shadow;
+};
+
+[[nodiscard]] std::optional<testPrograms_t> LinkTestPrograms( idD3D12ShaderCompiler & compiler ) {
 	const auto build = [&compiler]( const char * name, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
 		const std::optional<renderProgSource_t> source = RepoSource( name, type );
 		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
@@ -2110,17 +2196,22 @@ void Test_WarpPipelines() {
 	const auto guiPixel = build( "gui.pixel", shaderStageType_t::FRAGMENT );
 	const auto shadowVertex = build( "shadow.vertex", shaderStageType_t::VERTEX );
 	if ( !Check( guiVertex && guiPixel && shadowVertex, "the stages compile" ) ) {
-		return;
+		return std::nullopt;
 	}
 	auto gui = D3D12_LinkProgram( compiler, *guiVertex, &*guiPixel );
 	auto shadow = D3D12_LinkProgram( compiler, *shadowVertex, nullptr );
 	if ( !Check( gui && shadow, "the programs link" ) ) {
-		return;
+		return std::nullopt;
 	}
-	idD3D12RootSignature root( gpu->device, gpu->library );
-	idD3D12PipelineFactory factory( gpu->device, root );
-	const uint8 slot = factory.Bias().Slot( -2.0f, -100.0f );
+	return testPrograms_t{ std::move( *gui ), std::move( *shadow ) };
+}
 
+[[nodiscard]] UINT KeySamples( const pipelineKey_t & key ) {
+	return d3d12TargetId_t{ static_cast<uint8>( ( key.raster & D3D12_KEY_TARGET_BITS ) >> D3D12_KEY_TARGET_SHIFT ) }.Samples();
+}
+
+// Every family of keys, the line key with the bias of slot, and a key per sample count the adapter has.
+[[nodiscard]] std::vector<pipelineKey_t> TestKeys( const idTestGpu & gpu, uint8 slot ) {
 	std::vector<pipelineKey_t> keys = {
 		Key( 0, D3D12_KEY_STRICT_DEPTH ),
 		Key( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS, 0 ),
@@ -2134,24 +2225,121 @@ void Test_WarpPipelines() {
 	};
 	keys[7].depthBias = slot;
 	for ( int samples = 1, index = 0; samples <= 8; samples *= 2, index++ ) {
-		if ( gpu->device.Features().samples[static_cast<size_t>( index )] ) {
+		if ( gpu.device.Features().samples[static_cast<size_t>( index )] ) {
 			keys.push_back( Key( 0, d3d12TargetId_t::Of( true, static_cast<UINT>( samples ) ).value << D3D12_KEY_TARGET_SHIFT ) );
 		}
 	}
+	return keys;
+}
+
+// Each key with gui and, on the shadow layout, with shadow; the PSOs drawn with.
+int DrawTestKeys( idD3D12PipelineFactory & factory, testPrograms_t & programs, std::span<const pipelineKey_t> keys ) {
 	int pipelines = 0;
 	for ( pipelineKey_t key : keys ) {
-		key.program = gui->dense;
-		Check( factory.Get( *gui, D3D12_NormalizeKey( key ) ) != nullptr, va( "gui: key 0x%016llx raster 0x%02x", key.stateBits, key.raster ) );
+		key.program = programs.gui.dense;
+		Check( factory.Get( programs.gui, D3D12_NormalizeKey( key ) ) != nullptr, va( "gui: key 0x%016llx raster 0x%02x", key.stateBits, key.raster ) );
 		pipelines++;
 		pipelineKey_t shadowKey = key;
 		shadowKey.layout = LAYOUT_DRAW_SHADOW_VERT;
-		Check( factory.Get( *shadow, D3D12_NormalizeKey( shadowKey ) ) != nullptr, va( "shadow: key 0x%016llx", key.stateBits ) );
+		Check( factory.Get( programs.shadow, D3D12_NormalizeKey( shadowKey ) ) != nullptr, va( "shadow: key 0x%016llx", key.stateBits ) );
 		pipelines++;
 	}
-	Check( factory.CreatedThisFrame() == pipelines && static_cast<int>( gui->pipelines.size() + shadow->pipelines.size() ) == pipelines, "one PSO per key" );
+	return pipelines;
+}
+
+// Against WARP's runtime and debug layer: every family of keys.
+void Test_WarpPipelines() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12ShaderCompiler compiler( gpu->library, false );
+	std::optional<testPrograms_t> programs = LinkTestPrograms( compiler );
+	if ( !programs ) {
+		return;
+	}
+	idD3D12RootSignature root( gpu->device, gpu->library );
+	idD3D12PipelineFactory factory( gpu->device, root, nullptr, nullptr );
+	const std::vector<pipelineKey_t> keys = TestKeys( *gpu, factory.Bias().Slot( -2.0f, -100.0f ) );
+	const int pipelines = DrawTestKeys( factory, *programs, keys );
+	Check( factory.CreatedThisFrame() == pipelines && static_cast<int>( programs->gui.pipelines.size() + programs->shadow.pipelines.size() ) == pipelines,
+		"one PSO per key" );
 	const pipelineKey_t again = D3D12_NormalizeKey( keys[1] );
-	Check( factory.Get( *gui, again ) == gui->pipelines[1].pso.Get() && factory.CreatedThisFrame() == pipelines, "a kept key is not created again" );
+	Check( factory.Get( programs->gui, again ) == programs->gui.pipelines[1].pso.Get() && factory.CreatedThisFrame() == pipelines,
+		"a kept key is not created again" );
+	Check( factory.TotalStats().drawn == pipelines && factory.TotalStats().warmed == 0 && factory.TotalStats().loaded == 0, "no journal, no library" );
 	CheckNoLayerErrors( *gpu );
+}
+
+// A run draws and records; the next one reads the journal and the library back, its bias slots in another
+// order, and warms every key of its sample count from the library, so its draws create none of them.
+void PipelineWarm( idTestGpu & gpu ) {
+	idD3D12ShaderCompiler compiler( gpu.library, false );
+	idD3D12RootSignature root( gpu.device, gpu.library );
+	std::optional<idD3D12PipelineLibrary> firstLibrary = idD3D12PipelineLibrary::Open( gpu.device, {} );
+	if ( !firstLibrary ) {
+		printf( "  the adapter keeps no pipeline library: the journal alone\n" );
+	}
+	Check( !firstLibrary || ( !firstLibrary->FromFile() && !firstLibrary->Dirty() ), "no file: a new, clean library" );
+	std::vector<byte> journalFile;
+	std::vector<byte> libraryFile;
+	int pipelines = 0;
+	int ofOneSample = 0;
+	{
+		std::optional<testPrograms_t> programs = LinkTestPrograms( compiler );
+		if ( !programs ) {
+			return;
+		}
+		idD3D12PipelineJournal journal;
+		idD3D12PipelineFactory factory( gpu.device, root, &journal, firstLibrary ? &*firstLibrary : nullptr );
+		const std::vector<pipelineKey_t> keys = TestKeys( gpu, factory.Bias().Slot( -2.0f, -100.0f ) );
+		pipelines = DrawTestKeys( factory, *programs, keys );
+		ofOneSample = 2 * static_cast<int>( std::ranges::count_if( keys, []( const pipelineKey_t & key ) { return KeySamples( key ) == 1; } ) );
+		Check( journal.Dirty() && journal.NumPrograms() == 2 && journal.NumEntries() == pipelines, "every key drawn is in the journal" );
+		Check( !firstLibrary || firstLibrary->Dirty(), "and every PSO in the library" );
+		journalFile = journal.Write();
+		if ( firstLibrary ) {
+			libraryFile = firstLibrary->Write();
+			Check( !libraryFile.empty(), "the library serializes" );
+		}
+	}
+
+	std::optional<testPrograms_t> programs = LinkTestPrograms( compiler );
+	if ( !programs ) {
+		return;
+	}
+	idD3D12PipelineJournal journal;
+	Check( journal.Read( journalFile ) && !journal.Dirty(), "the next run reads the journal" );
+	std::optional<idD3D12PipelineLibrary> library = firstLibrary ? idD3D12PipelineLibrary::Open( gpu.device, libraryFile ) : std::nullopt;
+	Check( !firstLibrary || ( library && library->FromFile() && !library->Dirty() ), "and opens the library over its file" );
+	idD3D12PipelineFactory factory( gpu.device, root, &journal, library ? &*library : nullptr );
+	Check( factory.Bias().Slot( 3.0f, 30.0f ) == 1, "another bias takes slot 1 first" );
+	factory.Warm( programs->gui, 1 );
+	factory.Warm( programs->shadow, 1 );
+	const idD3D12PipelineFactory::stats_t warm = factory.TotalStats();
+	Check( warm.warmed == ofOneSample && warm.drawn == 0 && warm.loaded == ( library ? ofOneSample : 0 ) && factory.CreatedThisFrame() == 0,
+		va( "the journal's %d keys of one sample warmed (%d), %d from the library", ofOneSample, warm.warmed, warm.loaded ) );
+	Check( factory.Bias().Num() == 2 && factory.Bias().SlotOf( d3d12DepthBias_t{ -100, -2.0f } ) == 2, "the journal's bias took slot 2" );
+	factory.Warm( programs->gui, 1 );
+	Check( factory.TotalStats().warmed == ofOneSample, "a warmed key is not made again" );
+
+	const std::vector<pipelineKey_t> keys = TestKeys( gpu, factory.Bias().Slot( -2.0f, -100.0f ) );
+	Check( DrawTestKeys( factory, *programs, keys ) == pipelines, "the same draws" );
+	Check( factory.CreatedThisFrame() == pipelines - ofOneSample, va( "only the keys of other sample counts are made by draws: %d of %d",
+		factory.CreatedThisFrame(), pipelines - ofOneSample ) );
+	Check( factory.TotalStats().loaded == ( library ? pipelines : 0 ), "and those come from the library too" );
+	Check( !journal.Dirty() && ( !library || !library->Dirty() ), "nothing new for the journal or the library" );
+
+	if ( library ) {
+		std::vector<byte> stale = libraryFile;
+		stale[8] ^= 1;	// the driver version
+		const std::optional<idD3D12PipelineLibrary> other = idD3D12PipelineLibrary::Open( gpu.device, stale );
+		Check( other && !other->FromFile() && other->Dirty(), "another driver's file: an empty library, written again" );
+		const std::optional<idD3D12PipelineLibrary> cut = idD3D12PipelineLibrary::Open( gpu.device,
+			std::vector<byte>( libraryFile.begin(), libraryFile.begin() + static_cast<ptrdiff_t>( libraryFile.size() / 2 ) ) );
+		Check( cut && !cut->FromFile() && cut->Dirty(), "a file cut short: the same" );
+	}
+	CheckNoLayerErrors( gpu );
 }
 
 // r_pix 2: nested groups outlive a submit (ended in the list it closes, begun again in the next one);
@@ -2293,7 +2481,7 @@ idTestRaster::idTestRaster( idTestGpu & owner ) :
 	gpu( owner ),
 	compiler( owner.library, false ),
 	root( owner.device, owner.library ),
-	factory( owner.device, root ),
+	factory( owner.device, root, nullptr, nullptr ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ) {
 	ID3D12Device2 & device = gpu.device.Get();
 	D3D12_HEAP_PROPERTIES defaultHeap = {};
@@ -3084,7 +3272,8 @@ void idTestCopies::FillDepth() {
 	}
 }
 
-std::vector<uint32> idTestCopies::Read( ID3D12Resource & resource, d3d12ResourceState_t & state ) {
+// Level 0 of a single-sample texture as 32-bit texels, rows in memory order; waits for the GPU.
+[[nodiscard]] std::vector<uint32> ReadTexels( idTestGpu & gpu, ID3D12Resource & resource, d3d12ResourceState_t & state ) {
 	const D3D12_RESOURCE_DESC desc = resource.GetDesc();
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
 	UINT rows = 0;
@@ -3119,6 +3308,10 @@ std::vector<uint32> idTestCopies::Read( ID3D12Resource & resource, d3d12Resource
 		buffer->Unmap( 0, &nothingWritten );
 	}
 	return texels;
+}
+
+std::vector<uint32> idTestCopies::Read( ID3D12Resource & resource, d3d12ResourceState_t & state ) {
+	return ReadTexels( gpu, resource, state );
 }
 
 // Every box into one texture, which takes the box's size: texel (c, r) is the scene pixel (x + c, y + r),
@@ -3277,7 +3470,7 @@ void Test_DeviceLoss() {
 	if ( !Check( created.has_value(), "idD3D12Device::Create( warp, 3 )" ) ) {
 		return;
 	}
-	idTestGpu gpu( std::move( *library ), std::move( *created ), 4 << 20 );
+	idTestGpu gpu( std::move( *library ), std::move( *created ), 4 << 20, d3d12BufferPlacement_t::UPLOAD );
 	constexpr uint64 BYTES = 16 << 20;
 	idComPtr<ID3D12Resource> from = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, BYTES, D3D12_RESOURCE_STATE_COMMON, L"test loss from" );
 	idComPtr<ID3D12Resource> to = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, BYTES, D3D12_RESOURCE_STATE_COMMON, L"test loss to" );
@@ -3442,6 +3635,230 @@ void PresentBlit4( idTestGpu & gpu ) {
 	PresentBlitRamps( gpu, 4 );
 }
 
+// ---- the draw recorder --------------------------------------------------------------------------------------
+
+// The recorder over a test GPU, on a SIZE x SIZE scene target, with a buffer store of its own in the FRAME placement
+// under test. The context's List() gives a new list the heaps, the root signature and an empty bound state; here NewList() does.
+class idTestRecorder {
+public:
+	static constexpr int			SIZE = 64;
+
+									idTestRecorder( idTestGpu & gpu, d3d12BufferPlacement_t framePlacement );
+									~idTestRecorder();
+									idTestRecorder( const idTestRecorder & ) = delete;
+	idTestRecorder &				operator=( const idTestRecorder & ) = delete;
+	[[nodiscard]] bool				Ready() const { return ready; }
+	// base/renderprogs/<name>.vertex and .pixel, linked into the library; NONE when they do not build.
+	[[nodiscard]] programHandle_t	Program( const char * name );
+	void							NewList();
+	void							NextList() { gpu.SubmitChunk(); NewList(); }	// a chunk boundary, as r_d3d12SubmitDraws makes one
+	[[nodiscard]] std::vector<uint32>	ReadColor();	// ends the pass and waits; rows in GL order
+
+	idTestGpu &						gpu;
+	idD3D12ShaderCompiler			compiler;
+	idD3D12RootSignature			root;
+	idD3D12DescriptorPool			dsvPool;
+	idD3D12UploadRing				constants;
+	idD3D12DescriptorRing			descriptors;
+	idD3D12SamplerHeap				samplers;
+	idD3D12BufferStore				buffers;
+	idD3D12ShaderLibrary			shaders;
+	idD3D12PipelineFactory			factory;
+	idD3D12SceneTarget				scene;
+	idD3D12InternalPasses			passes;
+	idD3D12DrawRecorder				recorder;
+
+private:
+	bool							ready = false;
+};
+
+idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t framePlacement ) :
+	gpu( owner ),
+	compiler( owner.library, false ),
+	root( owner.device, owner.library ),
+	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
+	constants( owner.device, 1 << 20, L"test constants ring" ),
+	descriptors( owner.device ),
+	samplers( owner.device ),
+	buffers( owner.device, owner.graveyard, owner.uploader, owner.barriers, framePlacement ),
+	shaders( compiler, owner.graveyard ),
+	factory( owner.device, root, nullptr, nullptr ),
+	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
+	passes( owner.device, root, compiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
+	recorder( owner.device, owner, owner.barriers, scene, passes, factory, shaders, buffers, owner.textures, owner.srvPool, constants, descriptors,
+		samplers ) {
+	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
+		gpu.textures.CreateDefaults();
+	}
+	if ( !root.Get() ) {
+		Check( false, "the root signature" );
+		return;
+	}
+	buffers.CreateDefaults();
+	scene.Create( SIZE, SIZE, 1 );
+	passes.CreateDefaults( gpu.textures.Fallback( textureKind_t::TEX_2D ), gpu.textures.Fallback( textureKind_t::TEX_CUBE ) );
+	ready = Check( scene.Color().resource && scene.Depth().resource && buffers.ZeroJoints() != 0, "the scene target and the zero joints" );
+}
+
+idTestRecorder::~idTestRecorder() {
+	if ( !gpu.device.IsLost() ) {
+		gpu.WaitIdle();
+	}
+	buffers.DestroyAll();
+	shaders.DestroyAll();
+}
+
+programHandle_t idTestRecorder::Program( const char * name ) {
+	const auto build = [&]( shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
+		const std::optional<renderProgSource_t> source = RepoSource( name, type );
+		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
+	};
+	const auto vertex = build( shaderStageType_t::VERTEX );
+	const auto fragment = build( shaderStageType_t::FRAGMENT );
+	if ( !Check( vertex && fragment, va( "%s builds", name ) ) ) {
+		return programHandle_t::NONE;
+	}
+	auto program = D3D12_LinkProgram( compiler, *vertex, &*fragment );
+	if ( !Check( program.has_value(), va( "%s links", name ) ) ) {
+		return programHandle_t::NONE;
+	}
+	return shaders.AddProgram( std::move( *program ) );
+}
+
+void idTestRecorder::NewList() {
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
+	list.SetDescriptorHeaps( 2, heaps );
+	list.SetGraphicsRootSignature( root.Get() );
+	recorder.NewList();
+}
+
+std::vector<uint32> idTestRecorder::ReadColor() {
+	recorder.EndPass();
+	idD3D12SceneTarget::surface_t & color = scene.Color();
+	return ReadTexels( gpu, *color.resource.Get(), color.state );
+}
+
+// A skinned quad per list from a FRAME set (vertices, indexes, joints) in one placement. A STAGED buffer decays to
+// COMMON with every list, so it transitions again in the next one, before the root CBV of its joints is set (the
+// layer's #527 otherwise). Joint set 0 moves the quad left, set 1 right; joints read as zeros would draw nothing.
+void DrawFrameBuffers( idTestGpu & gpu, d3d12BufferPlacement_t placement ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	constexpr float HALF_WIDTH = 0.45f;
+	constexpr float HALF_HEIGHT = 0.9f;
+	constexpr std::array<float, 2> SHIFT = { -0.5f, 0.5f };
+	constexpr int SET_BYTES = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;	// jointOffset steps
+	constexpr int SET_VECTORS = SET_BYTES / static_cast<int>( sizeof( idVec4 ) );
+
+	idTestRecorder fixture( gpu, placement );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const programHandle_t program = fixture.Program( "depth_skinned" );
+	const d3d12Program_t * linked = fixture.shaders.FindProgram( program );
+	if ( !Check( linked != nullptr && linked->info.usesJoints, "depth_skinned reads joints" ) ) {
+		return;
+	}
+
+	std::array<idDrawVert, 4> verts;
+	constexpr float CORNERS[4][2] = { { -HALF_WIDTH, -HALF_HEIGHT }, { HALF_WIDTH, -HALF_HEIGHT }, { HALF_WIDTH, HALF_HEIGHT }, { -HALF_WIDTH, HALF_HEIGHT } };
+	for ( size_t i = 0; i < verts.size(); i++ ) {
+		verts[i].Clear();
+		verts[i].xyz.Set( CORNERS[i][0], CORNERS[i][1], 0.0f );
+		verts[i].color2[0] = 255;		// joint 0 (color) with weight 1
+	}
+	constexpr std::array<triIndex_t, 6> INDEXES = { 0, 1, 2, 0, 2, 3 };
+	// idVec4's constructor leaves it uninitialized, so "= {}" would zero nothing
+	std::array<idVec4, 2 * SET_VECTORS> joints;		// one 3 x 4 joint per set: rows X, Y, Z
+	joints.fill( vec4_zero );
+	for ( size_t set = 0; set < SHIFT.size(); set++ ) {
+		idVec4 * rows = &joints[set * SET_VECTORS];
+		rows[0].Set( 1.0f, 0.0f, 0.0f, SHIFT[set] );
+		rows[1].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+		rows[2].Set( 0.0f, 0.0f, 1.0f, 0.0f );
+	}
+
+	fixture.NewList();
+	const auto create = [&]( bufferType_t type, std::span<const std::byte> data ) {
+		return fixture.buffers.Create( type, bufferUsage_t::FRAME, static_cast<int>( data.size() ), data.data() );
+	};
+	const bufferHandle_t vertexBuffer = create( bufferType_t::VERTEX, std::as_bytes( std::span( verts ) ) );
+	const bufferHandle_t indexBuffer = create( bufferType_t::INDEX, std::as_bytes( std::span( INDEXES ) ) );
+	const bufferHandle_t jointBuffer = create( bufferType_t::JOINT, std::as_bytes( std::span( joints ) ) );
+	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && jointBuffer != bufferHandle_t::NONE, "the FRAME set" ) ) {
+		return;
+	}
+	Check( fixture.buffers.Get( jointBuffer ).placement == placement, va( "the joints in %s", D3D12_PlacementName( placement ) ) );
+
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	for ( int row = 0; row < 4; row++ ) {
+		parms[RENDERPARM_MVPMATRIX_X + row][row] = 1.0f;	// the identity: the joints' positions are GL clip space
+	}
+	renderLatch_t latch;
+	latch.stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK;
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	latch.program = program;
+	renderLatch_t clearLatch = latch;	// glClear obeys glDepthMask: this one writes depth
+	clearLatch.stateBits = 0;
+	clearDesc_t clear = {};
+	clear.rect = latch.viewport;
+	clear.color = clear.depth = clear.stencil = true;
+	clear.colorWriteMask = 0xF;
+	std::fill( std::begin( clear.rgba ), std::end( clear.rgba ), 1.0f );
+	fixture.recorder.Clear( clearLatch, clear );
+
+	pipelineKey_t key = {};
+	key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+	key.layout = LAYOUT_DRAW_VERT;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.jointBuffer = jointBuffer;
+	dc.numIndexes = static_cast<int>( INDEXES.size() );
+	dc.numJoints = 1;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	fixture.recorder.Draw( latch, key, dc );
+	fixture.NextList();
+	dc.jointOffset = SET_BYTES;
+	fixture.recorder.Draw( latch, key, dc );
+	const d3d12DrawStats_t stats = fixture.recorder.TakeStats();
+	Check( stats.draws == 2 && stats.skipped == 0, va( "two draws recorded (%d, %d skipped)", stats.draws, stats.skipped ) );
+
+	const std::vector<uint32> texels = fixture.ReadColor();
+	if ( Check( texels.size() == static_cast<size_t>( SIZE ) * SIZE, "the scene is read" ) ) {
+		int wrong = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const float x = ( static_cast<float>( column ) + 0.5f ) * 2.0f / SIZE - 1.0f;
+				const float y = ( static_cast<float>( row ) + 0.5f ) * 2.0f / SIZE - 1.0f;
+				const bool covered = std::ranges::any_of( SHIFT, [&]( float shift ) { return idMath::Fabs( x - shift ) < HALF_WIDTH; } )
+					&& idMath::Fabs( y ) < HALF_HEIGHT;
+				wrong += ( texels[static_cast<size_t>( row ) * SIZE + column] != ( covered ? 0xFF000000u : 0xFFFFFFFFu ) ) ? 1 : 0;
+			}
+		}
+		Check( wrong == 0, va( "%s: %d pixels unlike both quads, black over white", D3D12_PlacementName( placement ), wrong ) );
+	}
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	fixture.buffers.Destroy( jointBuffer );
+	CheckNoLayerErrors( gpu );
+}
+
+// Every value of r_d3d12FrameBuffers the adapter has.
+void DrawFrameBufferPlacements( idTestGpu & gpu ) {
+	for ( const d3d12BufferPlacement_t placement : { d3d12BufferPlacement_t::UPLOAD, d3d12BufferPlacement_t::STAGED, d3d12BufferPlacement_t::GPU_UPLOAD } ) {
+		if ( placement == d3d12BufferPlacement_t::GPU_UPLOAD && !gpu.device.Features().gpuUploadHeap ) {
+			printf( "  %s skipped: the adapter has no GPU upload heap\n", D3D12_PlacementName( placement ) );
+			continue;
+		}
+		DrawFrameBuffers( gpu, placement );
+	}
+}
+
 template <void ( *RULE )( idTestGpu & )>
 void OnWarp() {
 	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
@@ -3473,6 +3890,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Handle_FindDuringAdd", Test_HandleFindDuringAdd },
 	{ "Warp_StaticBuffer", Test_WarpStaticBuffer },
 	{ "Warp_FrameBuffers", Test_WarpFrameBuffers },
+	{ "Warp_FrameBuffersStaged", Test_WarpFrameBuffersStaged },
+	{ "Gpu_FrameBuffersGpuUpload", Test_GpuFrameBuffersGpuUpload },
 	{ "Warp_LargeStage", Test_WarpLargeStage },
 	{ "Warp_GravesWaitForWaited", Test_WarpGravesWaitForWaited },
 	{ "Warp_RingRetiresByWaited", Test_WarpRingRetiresByWaited },
@@ -3501,7 +3920,10 @@ constexpr testCase_t TESTS[] = {
 	{ "Pipeline_Inputs", Test_PipelineInputs },
 	{ "Pipeline_Normalize", Test_PipelineNormalize },
 	{ "Pipeline_DepthBiasTable", Test_DepthBiasTable },
+	{ "Pipeline_Journal", Test_PipelineJournal },
 	{ "Warp_Pipelines", Test_WarpPipelines },
+	{ "Warp_PipelineWarm", OnWarp<PipelineWarm> },
+	{ "Gpu_PipelineWarm", OnGpu<PipelineWarm> },
 	{ "Warp_DebugGroups", Test_WarpDebugGroups },
 	{ "Warp_Timestamps", OnWarp<Timestamps> },
 	{ "Gpu_Timestamps", OnGpu<Timestamps> },
@@ -3536,6 +3958,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_PresentBlit", OnGpu<PresentBlit1> },
 	{ "Warp_PresentBlitMsaa", OnWarp<PresentBlit4> },
 	{ "Gpu_PresentBlitMsaa", OnGpu<PresentBlit4> },
+	{ "Warp_DrawFrameBuffers", OnWarp<DrawFrameBufferPlacements> },
+	{ "Gpu_DrawFrameBuffers", OnGpu<DrawFrameBufferPlacements> },
 };
 
 }	// namespace

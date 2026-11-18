@@ -190,7 +190,8 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 		"%.1f submits (%.1f after their draws), %.1f waits (%.1f in Reserve), "
 		"%.1f barriers, %.1f sampler tables built; copies %.1f colour + %.1f depth, %d new surfaces; "
 		"buffers %d: FRAME %.1f MB, STATIC %.1f MB + %.1f MB mirror; textures %d: %.1f MB; "
-		"staging %.1f of %.0f MB, constants %.1f of %.0f MB; GPU %.2f ms (max %.2f ms), %.1f timestamps\n",
+		"staging %.1f of %.0f MB, constants %.1f of %.0f MB; GPU %.2f ms (max %.2f ms), %.1f timestamps; "
+		"%d PSOs created by draws in these frames, %d warmed since Init\n",
 		frames, draw.draws * perFrame, draw.skipped * perFrame, draw.unboundSlots * perFrame, draw.incompleteBinds * perFrame, draw.psoBinds * perFrame,
 		sum.psoCreated * perFrame, context.pipelines.Bias().Num(), sum.nearestBiases * perFrame, draw.tableCopies * perFrame,
 		Kilobytes( draw.parmBytes ) * perFrame, sum.debugGroups * perFrame,
@@ -200,7 +201,8 @@ void idD3D12StatsReport::Frame( const idD3D12Context & context ) {
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ), Megabytes( buffers.MirrorBytes() ),
 		context.textures.Num(), Megabytes( context.textures.Bytes() ), Megabytes( context.staging.Used() ), Megabytes( context.staging.Size() ),
 		Megabytes( context.constants.Used() ), Megabytes( context.constants.Size() ),
-		Milliseconds( sum.gpuMicroseconds ) * perFrame, Milliseconds( maxGpuMicroseconds ), sum.timestamps * perFrame );
+		Milliseconds( sum.gpuMicroseconds ) * perFrame, Milliseconds( maxGpuMicroseconds ), sum.timestamps * perFrame, sum.psoCreated,
+		context.pipelines.TotalStats().warmed );
 	idStr::snPrintf( overlay, sizeof( overlay ), "draws %.0f  pso %.0f  F %.1f  S %.1f  up %.2f MB", draw.draws * perFrame, draw.psoBinds * perFrame,
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ),
 		Megabytes( sum.uploadBytes + sum.inPlaceBytes ) * perFrame );

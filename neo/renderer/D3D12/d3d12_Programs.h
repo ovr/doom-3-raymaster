@@ -74,6 +74,8 @@ public:
 	[[nodiscard]] shaderHandle_t	CreateStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info );
 	// A missing stage raises idLib::Error with GL's link text; a vertex stage NONE gives NONE.
 	[[nodiscard]] programHandle_t	CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * name, programInfo_t & info );
+	// A linked program under a new handle and dense index (CreateProgram, the tests); NONE on a full table.
+	[[nodiscard]] programHandle_t	AddProgram( d3d12Program_t && program );
 	void							DestroyStage( shaderHandle_t stage );
 	void							DestroyProgram( programHandle_t program );	// buries its PSOs
 	[[nodiscard]] d3d12Program_t &	Program( programHandle_t program ) { return programs.Get( program ); }

@@ -224,6 +224,8 @@ idStr D3D12_ErrorText( HRESULT hr ) {
 		case DXGI_ERROR_INVALID_CALL:			name = " DXGI_ERROR_INVALID_CALL"; break;
 		case DXGI_ERROR_UNSUPPORTED:			name = " DXGI_ERROR_UNSUPPORTED"; break;
 		case DXGI_ERROR_NOT_FOUND:				name = " DXGI_ERROR_NOT_FOUND"; break;
+		case D3D12_ERROR_ADAPTER_NOT_FOUND:		name = " D3D12_ERROR_ADAPTER_NOT_FOUND"; break;
+		case D3D12_ERROR_DRIVER_VERSION_MISMATCH:	name = " D3D12_ERROR_DRIVER_VERSION_MISMATCH"; break;
 		default:								break;
 	}
 	return va( "0x%08X%s", static_cast<unsigned>( hr ), name );

@@ -51,14 +51,36 @@ const wchar_t * BufferName( bufferType_t type, bufferUsage_t usage ) {
 	return NAMES[static_cast<size_t>( type )][static_cast<size_t>( usage )];
 }
 
-// A persistently mapped UPLOAD buffer; nullptr on a lost device.
+// A persistently mapped UPLOAD or GPU_UPLOAD buffer; nullptr on a lost device.
 byte * MapUpload( const idD3D12Device & device, ID3D12Resource & buffer ) {
 	const D3D12_RANGE nothingRead = { 0, 0 };
 	void * mapped = nullptr;
 	return device.Check( buffer.Map( 0, &nothingRead, &mapped ), "Map (upload buffer)" ) ? static_cast<byte *>( mapped ) : nullptr;
 }
 
+[[nodiscard]] constexpr D3D12_HEAP_TYPE HeapType( d3d12BufferPlacement_t placement ) {
+	switch ( placement ) {
+		case d3d12BufferPlacement_t::STAGED:		return D3D12_HEAP_TYPE_DEFAULT;
+		case d3d12BufferPlacement_t::GPU_UPLOAD:	return D3D12_HEAP_TYPE_GPU_UPLOAD;
+		default:									return D3D12_HEAP_TYPE_UPLOAD;
+	}
+}
+
+// An UPLOAD buffer must start in GENERIC_READ; any other starts in COMMON (the layer ignores what is asked).
+// A GPU_UPLOAD buffer is then promoted by every read and decays again, so its draws need no barrier.
+[[nodiscard]] constexpr D3D12_RESOURCE_STATES InitialState( d3d12BufferPlacement_t placement ) {
+	return ( placement == d3d12BufferPlacement_t::UPLOAD ) ? D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COMMON;
+}
+
 }	// namespace
+
+const char * D3D12_PlacementName( d3d12BufferPlacement_t placement ) {
+	switch ( placement ) {
+		case d3d12BufferPlacement_t::STAGED:		return "DEFAULT heaps + CPU mirrors";
+		case d3d12BufferPlacement_t::GPU_UPLOAD:	return "GPU_UPLOAD heaps";
+		default:									return "UPLOAD heaps";
+	}
+}
 
 idD3D12BufferStore::idD3D12BufferStore( const idD3D12Device & owner, idD3D12Graveyard & graves, idD3D12Uploader & copies,
 	idD3D12Barriers & batch, d3d12BufferPlacement_t frames ) :
@@ -97,14 +119,14 @@ bufferHandle_t idD3D12BufferStore::Create( bufferType_t type, bufferUsage_t usag
 	buffer.size = size;
 	buffer.bytes = static_cast<uint64>( size ) + ( ( type == bufferType_t::JOINT ) ? JOINT_TAIL : 0 );
 	const bool staged = ( buffer.placement == d3d12BufferPlacement_t::STAGED );
-	buffer.resource = D3D12_CreateBuffer( device, staged ? D3D12_HEAP_TYPE_DEFAULT : D3D12_HEAP_TYPE_UPLOAD, buffer.bytes,
-		staged ? D3D12_RESOURCE_STATE_COMMON : D3D12_RESOURCE_STATE_GENERIC_READ, BufferName( type, usage ) );
+	buffer.resource = D3D12_CreateBuffer( device, HeapType( buffer.placement ), buffer.bytes, InitialState( buffer.placement ), BufferName( type, usage ) );
 	if ( !buffer.resource ) {
 		return bufferHandle_t::NONE;
 	}
 	buffer.gpu = buffer.resource->GetGPUVirtualAddress();
 	if ( staged ) {
-		buffer.mirror.reset( static_cast<byte *>( Mem_ClearedAlloc( static_cast<size_t>( size ), TAG_RENDER_STATIC ) ) );
+		const memTag_t tag = ( usage == bufferUsage_t::STATIC ) ? TAG_RENDER_STATIC : TAG_RENDER;
+		buffer.mirror.reset( static_cast<byte *>( Mem_ClearedAlloc( static_cast<size_t>( size ), tag ) ) );
 		buffer.cpu = buffer.mirror.get();
 		buffer.state.decays = true;
 	} else {

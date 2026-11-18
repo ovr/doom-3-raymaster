@@ -31,10 +31,13 @@ If you have questions concerning this license or the applicable additional terms
 #include "d3d12_HandleTable.h"
 #include "d3d12_Memory.h"
 
+// Where FRAME buffers live is r_d3d12FrameBuffers: 0 UPLOAD, 1 STAGED, 2 GPU_UPLOAD. STATIC ones are always STAGED.
 enum class d3d12BufferPlacement_t : uint8 {
-	UPLOAD,			// a persistently mapped UPLOAD heap the GPU reads in place: FRAME
-	STAGED			// a DEFAULT heap and a CPU mirror, copied through "staging" at Unmap: STATIC
+	UPLOAD,			// a persistently mapped UPLOAD heap (system memory) the GPU reads in place
+	STAGED,			// a DEFAULT heap and a CPU mirror, copied through "staging" at Unmap
+	GPU_UPLOAD		// a persistently mapped GPU_UPLOAD heap (video memory the CPU writes, OPTIONS16) read in place
 };
+[[nodiscard]] const char *			D3D12_PlacementName( d3d12BufferPlacement_t placement );
 
 // What a bufferHandle_t names.
 struct d3d12Buffer_t {
@@ -76,7 +79,8 @@ public:
 	[[nodiscard]] uint64			Bytes( bufferUsage_t usage ) const { return bytes[static_cast<size_t>( usage )]; }
 	[[nodiscard]] uint64			MirrorBytes() const { return mirrorBytes; }
 	[[nodiscard]] int				Num() const { return table.Num(); }
-	[[nodiscard]] uint64			InPlaceBytesThisFrame() const { return inPlaceBytes; }	// the dirty bytes of UPLOAD buffers
+	[[nodiscard]] d3d12BufferPlacement_t	FramePlacement() const { return framePlacement; }
+	[[nodiscard]] uint64			InPlaceBytesThisFrame() const { return inPlaceBytes; }	// the dirty bytes of mapped buffers
 	void							ResetFrameCounters() { inPlaceBytes = 0; }
 
 private:

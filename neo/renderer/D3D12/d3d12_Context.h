@@ -51,11 +51,13 @@ If you have questions concerning this license or the applicable additional terms
 	      ├── idD3D12UploadRing               "constants": 16 MB UPLOAD for the root CBVs, reused by fence
 	      ├── idD3D12UploadRing               "staging": 64 MB UPLOAD, the copy sources of buffers and textures
 	      ├── idD3D12Uploader                 copies through "staging" into the open list, a submit every 16 MB
-	      ├── idD3D12BufferStore              bufferHandle_t → FRAME in UPLOAD heaps, STATIC in DEFAULT + a CPU mirror
+	      ├── idD3D12BufferStore              bufferHandle_t → FRAME where r_d3d12FrameBuffers says, STATIC in DEFAULT + a CPU mirror
 	      ├── idD3D12TextureStore             textureHandle_t → a committed texture + SRV, the black fallbacks
 	      ├── idD3D12ShaderCompiler           FXC with constant flags, the DXBC cache in renderprogs/dxbc
 	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → emitted stages, DXBC pairs, their PSOs
 	      ├── idD3D12RootSignature            the 5 parameters of every PSO
+	      ├── idD3D12PipelineJournal          every key drawn with, by program name: renderprogs/dxbc/pipelines.journal
+	      ├── optional<idD3D12PipelineLibrary>  ID3D12PipelineLibrary1 over renderprogs/dxbc/pipelines.bin
 	      ├── idD3D12PipelineFactory          normalized pipelineKey_t → a PSO kept with its program; the depth bias slots
 	      ├── idD3D12SceneTarget              colour + depth in GL row order, the MSAA resolve texture
 	      ├── optional<idD3D12SwapChain>      IDXGISwapChain3, 3 back buffers + RTVs, latency object
@@ -75,6 +77,10 @@ If you have questions concerning this license or the applicable additional terms
 
 	vid_restart only changes the window (R_SetNewMode( false )) and reaches the context as a Resize; the
 	device, the sample count and every resource but the swap chain buffers and the scene target live on.
+
+	PSOs: a draw's new key compiles its PSO in the frame and goes into the journal. The journal is written
+	after each level load and at Shutdown, the library at Shutdown; the next run's CreateProgram makes the
+	journal's PSOs of the program (from the library when it has them), so its frames compile none.
 */
 
 #include "d3d12_Buffers.h"
@@ -108,6 +114,9 @@ public:
 	void							Resize( int width, int height );		// between frames; 0 x 0 (minimized) is ignored
 	void							SetSrgb( bool enable );					// SRGB_OUTPUT: the scene's sRGB view for draws and clears
 	void							SetGamma( const d3d12GammaRamp_t & ramp );	// the present blit's LUT; captures stay before it
+	// The library's CreateProgram, then the PSOs of the program's journal keys.
+	[[nodiscard]] programHandle_t	CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * name, programInfo_t & info );
+	void							EndLevelLoad();							// prints what the load's PSOs cost, writes the journal
 	void							ShowImage( textureHandle_t texture );	// r_d3d12ShowImage into the scene, before EndFrame
 	// glCopyTexImage2D of a scene box, in a frame; the next draw opens the pass again.
 	void							CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height );
@@ -141,6 +150,8 @@ public:
 	idD3D12ShaderCompiler			compiler;
 	idD3D12ShaderLibrary			shaders;
 	idD3D12RootSignature			rootSignature;
+	idD3D12PipelineJournal			journal;
+	std::optional<idD3D12PipelineLibrary>	pipelineLibrary;
 	idD3D12PipelineFactory			pipelines;
 	idD3D12SceneTarget				scene;
 	std::optional<idD3D12SwapChain>	swapChain;
@@ -157,6 +168,7 @@ private:
 	// The scene, resolved, into the back buffer through the present blit; leaves it in RENDER_TARGET.
 	void							BlitToBackBuffer( idD3D12SwapChain::backBuffer_t & back );
 	void							EndFrameStats();	// at Present: the counters of the frame into lastFrame
+	void							SavePipelines( bool withLibrary );	// the journal when it changed; the library too
 
 	d3d12FrameStats_t				frame;
 	d3d12FrameStats_t				lastFrame;

@@ -142,15 +142,21 @@ programHandle_t idD3D12ShaderLibrary::CreateProgram( shaderHandle_t vertex, shad
 		common->Warning( "d3d12: program %s: %s", name, program.error().c_str() );
 		return programHandle_t::NONE;
 	}
-	program->dense = NewDense();
-	const uint16 dense = program->dense;
 	const programInfo_t linked = program->info;
-	const programHandle_t handle = programs.Add( std::move( *program ) );
+	const programHandle_t handle = AddProgram( std::move( *program ) );
+	if ( handle != programHandle_t::NONE ) {
+		info = linked;
+	}
+	return handle;
+}
+
+programHandle_t idD3D12ShaderLibrary::AddProgram( d3d12Program_t && program ) {
+	program.dense = NewDense();
+	const uint16 dense = program.dense;
+	const programHandle_t handle = programs.Add( std::move( program ) );
 	if ( handle == programHandle_t::NONE ) {
 		FreeDense( dense );
-		return handle;
 	}
-	info = linked;
 	return handle;
 }
 

@@ -268,11 +268,14 @@ idD3D12DrawRecorder::reserved_t idD3D12DrawRecorder::Reserve( const prepared_t &
 	return *reserved;
 }
 
+// The draw's barriers go into the list with the pass's, in one batch, before anything is bound.
 void idD3D12DrawRecorder::Record( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved,
 	const renderLatch_t & latch, const drawCall_t & dc, const d3d12Program_t & program ) {
+	const used_t used = Use( prepared, dc, program );
 	if ( !bound.passOpen ) {
 		BeginPass( list );
 	}
+	barriers.Flush();
 	if ( bound.key != prepared.key ) {
 		list.SetPipelineState( prepared.pso );
 		bound.key = prepared.key;
@@ -280,10 +283,9 @@ void idD3D12DrawRecorder::Record( ID3D12GraphicsCommandList1 & list, const prepa
 	}
 	BindDynamicState( list, latch, dc.topology );
 	BindParms( list, reserved, latch, dc, program );
-	BindJoints( list, program, dc );
+	BindJoints( list, used.joints );
 	BindTextures( list, prepared, reserved );
-	BindGeometry( list, prepared, dc );
-	barriers.Flush();
+	BindGeometry( list, prepared, dc, used );
 	list.DrawIndexedInstanced( static_cast<UINT>( dc.numIndexes ), 1, static_cast<UINT>( dc.indexOffset / static_cast<int>( sizeof( triIndex_t ) ) ),
 		dc.baseVertex, 0 );
 }
@@ -355,30 +357,38 @@ void idD3D12DrawRecorder::BindParms( ID3D12GraphicsCommandList1 & list, const re
 	bound.parmsProgram = latch.program;
 }
 
-// Root CBV b2 at the draw's joints, which the JOINT buffer's zero tail keeps readable for all 408 vectors. A skinned
-// program drawn without joints (heatHaze with rpEnableSkinning 0) reads the zero block; other programs bind nothing.
-void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList1 & list, const d3d12Program_t & program, const drawCall_t & dc ) {
-	if ( !program.info.usesJoints ) {
-		return;
+// A STAGED buffer decays to COMMON with every list, so it transitions in each list it is drawn from, also when it
+// stays bound, and an upload may have put a texture back into COPY_DEST. A skinned program drawn without joints
+// (heatHaze with rpEnableSkinning 0) reads the zero block.
+idD3D12DrawRecorder::used_t idD3D12DrawRecorder::Use( const prepared_t & prepared, const drawCall_t & dc, const d3d12Program_t & program ) {
+	used_t used;
+	used.vertex = buffers.Use( dc.vertexBuffer );
+	used.index = buffers.Use( dc.indexBuffer );
+	assert( used.vertex != nullptr && used.index != nullptr );
+	if ( program.info.usesJoints ) {
+		used.joints = buffers.ZeroJoints();
+		if ( const d3d12Buffer_t * joints = buffers.Use( dc.jointBuffer ) ) {
+			assert( dc.jointOffset >= 0 && dc.jointOffset < joints->size && ( dc.jointOffset % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT ) == 0 );
+			used.joints = joints->gpu + static_cast<uint64>( dc.jointOffset );
+		}
 	}
-	D3D12_GPU_VIRTUAL_ADDRESS joints = buffers.ZeroJoints();
-	if ( const d3d12Buffer_t * buffer = buffers.Use( dc.jointBuffer ) ) {
-		assert( dc.jointOffset >= 0 && dc.jointOffset < buffer->size && ( dc.jointOffset % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT ) == 0 );
-		joints = buffer->gpu + static_cast<uint64>( dc.jointOffset );
-	}
-	if ( bound.joints != joints ) {
-		list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), joints );
-		bound.joints = joints;
-	}
-}
-
-// An upload since the last draw may have put a texture back into COPY_DEST: every sampled one is made readable.
-void idD3D12DrawRecorder::BindTextures( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved ) {
 	for ( const textureHandle_t texture : prepared.textures ) {
 		if ( texture != textureHandle_t::NONE ) {
 			textures.MakeReadable( texture );
 		}
 	}
+	return used;
+}
+
+// Root CBV b2, which the JOINT buffer's zero tail keeps readable for all 408 vectors; nothing for other programs.
+void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList1 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints ) {
+	if ( joints && bound.joints != joints ) {
+		list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), *joints );
+		bound.joints = joints;
+	}
+}
+
+void idD3D12DrawRecorder::BindTextures( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved ) {
 	if ( reserved.table ) {
 		list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::TEXTURES ), *reserved.table );
 		bound.srvs = prepared.signature.srvs;
@@ -390,14 +400,10 @@ void idD3D12DrawRecorder::BindTextures( ID3D12GraphicsCommandList1 & list, const
 	}
 }
 
-// A STAGED buffer transitions in every list it is drawn from (it decays), also when it stays bound.
-void idD3D12DrawRecorder::BindGeometry( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const drawCall_t & dc ) {
-	const d3d12Buffer_t * vertex = buffers.Use( dc.vertexBuffer );
-	const d3d12Buffer_t * index = buffers.Use( dc.indexBuffer );
-	assert( vertex != nullptr && index != nullptr );
+void idD3D12DrawRecorder::BindGeometry( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const drawCall_t & dc, const used_t & used ) {
 	const std::pair<bufferHandle_t, uint8> vertexBuffer( dc.vertexBuffer, static_cast<uint8>( dc.layout ) );
 	if ( bound.vertexBuffer != vertexBuffer ) {
-		const D3D12_VERTEX_BUFFER_VIEW view = { vertex->gpu, static_cast<UINT>( vertex->size ), vertexLayouts[dc.layout].stride };
+		const D3D12_VERTEX_BUFFER_VIEW view = { used.vertex->gpu, static_cast<UINT>( used.vertex->size ), vertexLayouts[dc.layout].stride };
 		list.IASetVertexBuffers( 0, 1, &view );
 		bound.vertexBuffer = vertexBuffer;
 	}
@@ -407,7 +413,7 @@ void idD3D12DrawRecorder::BindGeometry( ID3D12GraphicsCommandList1 & list, const
 		bound.defaultAttribs = true;
 	}
 	if ( bound.indexBuffer != dc.indexBuffer ) {
-		const D3D12_INDEX_BUFFER_VIEW view = { index->gpu, static_cast<UINT>( index->size ), DXGI_FORMAT_R16_UINT };
+		const D3D12_INDEX_BUFFER_VIEW view = { used.index->gpu, static_cast<UINT>( used.index->size ), DXGI_FORMAT_R16_UINT };
 		list.IASetIndexBuffer( &view );
 		bound.indexBuffer = dc.indexBuffer;
 	}

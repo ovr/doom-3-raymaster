@@ -71,7 +71,10 @@ bool idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 
 void idRenderBackendD3D12::Shutdown() {
 	if ( context ) {
-		common->Printf( "d3d12 shaders: compiled %d, %d from the cache\n", context->compiler.Compiled(), context->compiler.CacheHits() );
+		const idD3D12PipelineFactory::stats_t & made = context->pipelines.TotalStats();
+		common->Printf( "d3d12 shaders: compiled %d, %d from the cache; PSOs: %d warmed from the journal in %.1f ms, %d made by draws in %.1f ms, "
+			"%d of both from the library\n", context->compiler.Compiled(), context->compiler.CacheHits(), made.warmed,
+			static_cast<double>( made.warmMicroseconds ) / 1000.0, made.drawn, static_cast<double>( made.drawnMicroseconds ) / 1000.0, made.loaded );
 		D3D12_SetActiveContext( nullptr );
 		context.reset();
 	}
@@ -183,9 +186,13 @@ void idRenderBackendD3D12::SetTextureSampler( textureHandle_t texture, const sam
 
 // Main thread, between frames: the check submits and waits.
 void idRenderBackendD3D12::EndLevelLoad() {
-	if ( context && r_d3d12CheckImages.GetBool() && !context->device.IsLost() ) {
+	if ( !context ) {
+		return;
+	}
+	if ( r_d3d12CheckImages.GetBool() && !context->device.IsLost() ) {
 		static_cast<void>( context->CheckTextures() );
 	}
+	context->EndLevelLoad();
 }
 
 void idRenderBackendD3D12::CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
@@ -238,7 +245,7 @@ programHandle_t idRenderBackendD3D12::CreateProgram( shaderHandle_t vertex, shad
 		info = {};
 		return programHandle_t::NONE;
 	}
-	return context->shaders.CreateProgram( vertex, fragment, debugName, info );
+	return context->CreateProgram( vertex, fragment, debugName, info );
 }
 
 void idRenderBackendD3D12::DestroyShaderStage( shaderHandle_t shader ) {

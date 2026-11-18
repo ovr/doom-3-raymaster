@@ -38,11 +38,69 @@ idCVar r_d3d12CaptureBackBuffer( "r_d3d12CaptureBackBuffer", "0", CVAR_RENDERER 
 	"1 = ReadOutputPixels reads the back buffer after the present blit instead of the scene target (checks the blit)" );
 idCVar r_d3d12ShaderCache( "r_d3d12ShaderCache", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT,
 	"1 = Direct3D 12 keeps the DXBC of every shader in fs_savepath/renderprogs/dxbc and compiles only a text it has not seen" );
+idCVar r_d3d12PipelineLibrary( "r_d3d12PipelineLibrary", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT,
+	"1 = Direct3D 12 keeps its PSOs in fs_savepath/renderprogs/dxbc/pipelines.bin, so the next run loads them instead of compiling" );
+idCVar r_d3d12FrameBuffers( "r_d3d12FrameBuffers", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_INIT,
+	"where Direct3D 12 keeps the vertex cache's per-frame buffers: 0 = UPLOAD heaps the GPU reads in place, 1 = DEFAULT heaps "
+	"with a copy per frame, 2 = GPU_UPLOAD heaps (video memory the CPU writes; needs Resizable BAR)", 0, 2 );
 
 namespace {
 
 constexpr uint64 CONSTANTS_RING_SIZE = 16 << 20;
 constexpr uint64 STAGING_RING_SIZE = 64 << 20;	// four uploader pieces: the GPU copies one while the CPU fills the next
+constexpr const char * JOURNAL_FILE = "renderprogs/dxbc/pipelines.journal";
+constexpr const char * LIBRARY_FILE = "renderprogs/dxbc/pipelines.bin";
+
+[[nodiscard]] constexpr double Megabytes( uint64 bytes ) {
+	return static_cast<double>( bytes ) / ( 1024.0 * 1024.0 );
+}
+
+// A file under fs_savepath, empty when there is none.
+[[nodiscard]] std::vector<byte> ReadSaved( const char * path ) {
+	void * buffer = nullptr;
+	const int length = fileSystem->ReadFile( path, &buffer );
+	if ( length <= 0 || buffer == nullptr ) {
+		return {};
+	}
+	const byte * bytes = static_cast<const byte *>( buffer );
+	std::vector<byte> data( bytes, bytes + length );
+	fileSystem->FreeFile( buffer );
+	return data;
+}
+
+[[nodiscard]] bool WriteSaved( const char * path, std::span<const byte> data ) {
+	return !data.empty() && fileSystem->WriteFile( path, data.data(), static_cast<int>( data.size() ) ) == static_cast<int>( data.size() );
+}
+
+[[nodiscard]] idD3D12PipelineJournal LoadJournal() {
+	idD3D12PipelineJournal journal;
+	if ( const std::vector<byte> file = ReadSaved( JOURNAL_FILE ); !file.empty() && !journal.Read( file ) ) {
+		common->Printf( "d3d12: %s is of another version or cut short; it is begun again\n", JOURNAL_FILE );
+	}
+	return journal;
+}
+
+[[nodiscard]] std::optional<idD3D12PipelineLibrary> OpenPipelineLibrary( const idD3D12Device & device ) {
+	if ( !r_d3d12PipelineLibrary.GetBool() ) {
+		return std::nullopt;
+	}
+	return idD3D12PipelineLibrary::Open( device, ReadSaved( LIBRARY_FILE ) );
+}
+
+[[nodiscard]] d3d12BufferPlacement_t FramePlacement( const idD3D12Device & device ) {
+	switch ( r_d3d12FrameBuffers.GetInteger() ) {
+		case 1:
+			return d3d12BufferPlacement_t::STAGED;
+		case 2:
+			if ( device.Features().gpuUploadHeap ) {
+				return d3d12BufferPlacement_t::GPU_UPLOAD;
+			}
+			common->Printf( "d3d12: r_d3d12FrameBuffers 2: the adapter has no GPU upload heap (OPTIONS16, Resizable BAR); UPLOAD heaps instead\n" );
+			return d3d12BufferPlacement_t::UPLOAD;
+		default:
+			return d3d12BufferPlacement_t::UPLOAD;
+	}
+}
 
 }	// namespace
 
@@ -85,12 +143,14 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	constants( device, CONSTANTS_RING_SIZE, L"doom3 constants ring" ),
 	staging( device, STAGING_RING_SIZE, L"doom3 staging ring" ),
 	uploader( device, *this, staging, barriers, graveyard ),
-	buffers( device, graveyard, uploader, barriers, d3d12BufferPlacement_t::UPLOAD ),
+	buffers( device, graveyard, uploader, barriers, FramePlacement( device ) ),
 	textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ),
 	compiler( library, r_d3d12ShaderCache.GetBool() ),
 	shaders( compiler, graveyard ),
 	rootSignature( device, library ),
-	pipelines( device, rootSignature ),
+	journal( LoadJournal() ),
+	pipelineLibrary( OpenPipelineLibrary( device ) ),
+	pipelines( device, rootSignature, &journal, pipelineLibrary ? &*pipelineLibrary : nullptr ),
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
 	passes( device, rootSignature, compiler, *this, barriers, uploader, constants, descriptors, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
@@ -98,14 +158,15 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, srvPool, constants, descriptors, samplers ) {
 }
 
-// Safe after a mid-frame error: the open list is closed without running. The members then die in
-// reverse order, the library last.
+// Safe after a mid-frame error: the open list is closed without running. The library is written while
+// its PSOs live. The members then die in reverse order, the DLLs last.
 idD3D12Context::~idD3D12Context() {
 	commands.Abandon();
 	barriers.Discard();
 	if ( !device.IsLost() ) {
 		WaitIdle();
 	}
+	SavePipelines( !device.IsLost() );
 	buffers.DestroyAll();
 	textures.DestroyAll();
 	shaders.DestroyAll();
@@ -339,14 +400,48 @@ void idD3D12Context::SetGamma( const d3d12GammaRamp_t & ramp ) {
 	}
 }
 
+// Built-in programs at Init, material programs at a level load: both before a frame draws with them.
+programHandle_t idD3D12Context::CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * name, programInfo_t & info ) {
+	const programHandle_t handle = shaders.CreateProgram( vertex, fragment, name, info );
+	if ( handle != programHandle_t::NONE && !device.IsLost() ) {
+		pipelines.Warm( shaders.Program( handle ), scene.Samples() );
+	}
+	return handle;
+}
+
+// The journal is written here too, so a run that crashes later still warms the next one.
+void idD3D12Context::EndLevelLoad() {
+	const idD3D12PipelineFactory::stats_t level = pipelines.TakeLevelStats();
+	common->Printf( "d3d12 pipelines: %d warmed for the level in %.1f ms; %d made by draws since the last load in %.1f ms; %d of both from the library\n",
+		level.warmed, static_cast<double>( level.warmMicroseconds ) / 1000.0, level.drawn, static_cast<double>( level.drawnMicroseconds ) / 1000.0,
+		level.loaded );
+	SavePipelines( false );
+}
+
+// The file system outlives the renderer (common's Shutdown), but not a failed Init.
+void idD3D12Context::SavePipelines( bool withLibrary ) {
+	if ( fileSystem == nullptr || !fileSystem->IsInitialized() ) {
+		return;
+	}
+	if ( journal.Dirty() && WriteSaved( JOURNAL_FILE, journal.Write() ) ) {
+		journal.MarkSaved();
+	}
+	if ( withLibrary && pipelineLibrary && pipelineLibrary->Dirty() && WriteSaved( LIBRARY_FILE, pipelineLibrary->Write() ) ) {
+		pipelineLibrary->MarkSaved();
+	}
+}
+
 void idD3D12Context::PrintInfo() const {
 	device.PrintInfo();
 	const uint64 version = library.compilerVersion;
 	common->Printf( "D3D12 shader compiler: d3dcompiler_47.dll %u.%u.%u.%u, compiled %d, %d from the cache; %d stages, %d programs\n",
 		static_cast<unsigned>( version >> 48 ), static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ), static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ),
 		static_cast<unsigned>( version & 0xFFFF ), compiler.Compiled(), compiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
-	common->Printf( "D3D12 pipelines: %d PSOs created, %d depth biases; depth bounds %s\n", pipelines.Num(), pipelines.Bias().Num(),
-		device.Features().depthBounds ? "in every PSO" : "unsupported" );
+	const idD3D12PipelineFactory::stats_t & made = pipelines.TotalStats();
+	common->Printf( "D3D12 pipelines: %d PSOs, %d warmed from the journal and %d made by draws, %d from the library; %d depth biases; depth bounds %s\n",
+		pipelines.Num(), made.warmed, made.drawn, made.loaded, pipelines.Bias().Num(), device.Features().depthBounds ? "in every PSO" : "unsupported" );
+	common->Printf( "D3D12 pipeline journal: %d keys of %d programs; library %s\n", journal.NumEntries(), journal.NumPrograms(),
+		!pipelineLibrary ? "off" : pipelineLibrary->FromFile() ? va( "opened over %.1f MB", Megabytes( pipelineLibrary->FileBytes() ) ) : "new" );
 	common->Printf( "D3D12 GPU timers: %s, %.3f MHz; the frame timer and %d x %d r_pix slots\n", timers.Available() ? "on" : "off",
 		static_cast<double>( timers.Frequency() ) / 1.0e6, TIMESTAMP_SETS, idD3D12GpuTimers::SLOTS_PER_SET );
 	if ( swapChain ) {
@@ -355,9 +450,9 @@ void idD3D12Context::PrintInfo() const {
 	common->Printf( "D3D12 scene target: %d x %d, RGBA8 + D24S8, %u sample(s), %s writes, gamma %s; constants ring %llu MB, staging ring %llu MB\n",
 		scene.Width(), scene.Height(), scene.Samples(), recorder.Srgb() ? "sRGB" : "UNORM", passes.GammaIsIdentity() ? "identity" : "through the LUT",
 		static_cast<unsigned long long>( constants.Size() >> 20 ), static_cast<unsigned long long>( staging.Size() >> 20 ) );
-	common->Printf( "D3D12 buffers: %d, FRAME %.1f MB in UPLOAD heaps, STATIC %.1f MB in DEFAULT heaps + %.1f MB CPU mirrors\n", buffers.Num(),
-		buffers.Bytes( bufferUsage_t::FRAME ) / ( 1024.0 * 1024.0 ), buffers.Bytes( bufferUsage_t::STATIC ) / ( 1024.0 * 1024.0 ),
-		buffers.MirrorBytes() / ( 1024.0 * 1024.0 ) );
+	common->Printf( "D3D12 buffers: %d, FRAME %.1f MB in %s, STATIC %.1f MB in DEFAULT heaps; %.1f MB CPU mirrors\n", buffers.Num(),
+		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), D3D12_PlacementName( buffers.FramePlacement() ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ),
+		Megabytes( buffers.MirrorBytes() ) );
 	common->Printf( "D3D12 textures: %d, %.1f MB; sampler tables %d of %u; unaligned BC %s, anisotropic point mips %s\n", textures.Num(),
 		textures.Bytes() / ( 1024.0 * 1024.0 ), samplers.Used(), idD3D12SamplerHeap::TABLES, device.Features().unalignedBlocks ? "yes" : "decoded",
 		device.Features().anisoPointMip ? "yes" : "no" );

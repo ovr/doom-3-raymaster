@@ -167,9 +167,9 @@ set_target_properties(idlibTests PROPERTIES FOLDER "tests")
 add_test(NAME idlibTests COMMAND idlibTests)
 
 # d3d12Tests: the ring, the handle table, the format, sampler and pipeline state tables, the uploader, buffer
-# and texture stores, the PSO factory, the debug groups, the GPU timers and the screen copies on a WARP device (the
-# texture border, decoding, timer and copy tests also on the GPU), and the HLSL emitter and FXC over base/renderprogs against
-# neo/tests/d3d12_golden
+# and texture stores, the PSO factory, the debug groups, the GPU timers, the screen copies and the draw recorder on a WARP
+# device (the texture border, decoding, timer, copy and draw tests also on the GPU), and the HLSL emitter and FXC over
+# base/renderprogs against neo/tests/d3d12_golden
 #   bin/<config>/d3d12Tests.exe [filter]
 add_executable(d3d12Tests
 	tests/d3d12_tests.cpp
@@ -178,6 +178,7 @@ add_executable(d3d12Tests
 	renderer/D3D12/d3d12_Copies.cpp
 	renderer/D3D12/d3d12_Descriptors.cpp
 	renderer/D3D12/d3d12_Device.cpp
+	renderer/D3D12/d3d12_Draw.cpp
 	renderer/D3D12/d3d12_Formats.cpp
 	renderer/D3D12/d3d12_HlslEmitter.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
