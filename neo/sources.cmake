@@ -275,7 +275,8 @@ set(D3D12_SOURCES
 )
 
 
-set(DOOMEXE_SOURCES
+# the whole engine but WinMain: the game and the editor link the same objects
+set(ENGINE_SOURCES
 	${D3D12_SOURCES}
 	aas/AASFile.cpp
 	aas/AASFile_optimize.cpp
@@ -484,6 +485,11 @@ set(DOOMEXE_SOURCES
 	ui/UserInterface.cpp
 	ui/Window.cpp
 	ui/Winvar.cpp
+)
+
+
+set(DOOMEXE_SOURCES
+	sys/win32/win_entry.cpp
 )
 
 

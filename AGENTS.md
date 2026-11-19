@@ -49,9 +49,9 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 
 ## Architecture
 
-**Single executable.** `neo/CMakeLists.txt` builds `idLib`, `external` (zlib, jpeg, etc.) and `Game-d3xp` as CMake **OBJECT** libraries and links them straight into `Doom3BFG.exe`. Static libraries would let the linker drop translation units that hold only self-registering globals (`idCVar`, `idTypeInfo`/`CLASS_DECLARATION`, `idEventDef`, `idCommandLink`), which would silently remove cvars, entity classes and commands. `doomclassic` and `timidity` (classic DOOM 1/2) are ordinary static libs. `amplitude` is a separate tool exe.
+**Single executable.** `neo/CMakeLists.txt` builds `idLib`, `external` (zlib, jpeg, etc.), `Game-d3xp` and `engine` (everything else but `WinMain`) as CMake **OBJECT** libraries and links them straight into `Doom3BFG.exe` with `d3bfg_link_engine`; the exe's own source is `sys/win32/win_entry.cpp`, a `WinMain` that calls `Sys_GameMain`. Static libraries would let the linker drop translation units that hold only self-registering globals (`idCVar`, `idTypeInfo`/`CLASS_DECLARATION`, `idEventDef`, `idCommandLink`), which would silently remove cvars, entity classes and commands. `doomclassic` and `timidity` (classic DOOM 1/2) are ordinary static libs. `amplitude` is a separate tool exe.
 
-**Source lists are explicit.** New `.cpp`/`.h` files must be added to `neo/sources.cmake` (`IDLIB_SOURCES`, `EXTERNAL_SOURCES`, `GAME_D3XP_SOURCES`, `DOOMEXE_SOURCES`, `AMPLITUDE_SOURCES`) or `doomclassic/sources.cmake`. Engine files use the precompiled header `neo/idlib/precompiled.h`.
+**Source lists are explicit.** New `.cpp`/`.h` files must be added to `neo/sources.cmake` (`IDLIB_SOURCES`, `EXTERNAL_SOURCES`, `GAME_D3XP_SOURCES`, `ENGINE_SOURCES`, `DOOMEXE_SOURCES`, `AMPLITUDE_SOURCES`) or `doomclassic/sources.cmake`. Engine files use the precompiled header `neo/idlib/precompiled.h`.
 
 **Layout of `neo/`:**
 - `idlib/`: the base library (math, containers, strings, the `idSIMD` processor, the parallel job system).

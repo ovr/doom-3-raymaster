@@ -46,6 +46,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../sys_local.h"
 #include "win_local.h"
+#include "win_entry.h"
 #include "../../renderer/tr_local.h"
 
 idCVar Win32Vars_t::sys_arch( "sys_arch", "", CVAR_SYSTEM | CVAR_INIT, "" );
@@ -1262,10 +1263,12 @@ void Win_Frame() {
 
 /*
 ==================
-WinMain
+Sys_GameMain
+
+The body of WinMain, which lives in win_entry.cpp
 ==================
 */
-int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow ) {
+int Sys_GameMain( HINSTANCE hInstance, const char *lpCmdLine ) {
 
 	const HCURSOR hcurSave = ::SetCursor( LoadCursor( 0, IDC_WAIT ) );
 
