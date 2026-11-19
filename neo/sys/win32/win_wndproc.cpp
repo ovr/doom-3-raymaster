@@ -144,7 +144,7 @@ Sys_SetAppActive
 The window was activated or deactivated: WM_ACTIVATE, or the host for a child window.
 ====================
 */
-void Sys_SetAppActive( bool active ) {
+static void Sys_SetAppActive( bool active ) {
 	win32.activeApp = active;
 	if ( win32.activeApp ) {
 		idKeyInput::ClearStates();
@@ -265,6 +265,13 @@ LRESULT CALLBACK MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 				SetFocus( hWnd );
 			}
 			break;
+		case WM_SETFOCUS:
+		case WM_KILLFOCUS:
+			// a child never gets WM_ACTIVATE: the focus is its activation
+			if ( engineHost != nullptr ) {
+				Sys_SetAppActive( uMsg == WM_SETFOCUS );
+			}
+			break;
 		case WM_TIMER: {
 			if ( win32.win_timerUpdate.GetBool() ) {
 				common->Frame();
@@ -285,6 +292,11 @@ LRESULT CALLBACK MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 			}
 			// fall through for other keys
 		case WM_KEYDOWN:
+			// the way out of a grabbed mouse, back to the host's own widgets
+			if ( engineHost != nullptr && wParam == VK_ESCAPE && ( GetKeyState( VK_SHIFT ) & 0x8000 ) != 0 ) {
+				SetFocus( GetParent( hWnd ) );
+				return 0;
+			}
 			key = ( ( lParam >> 16 ) & 0xFF ) | ( ( ( lParam >> 24 ) & 1 ) << 7 );
 			if ( key == K_LCTRL || key == K_LALT || key == K_RCTRL || key == K_RALT ) {
 				// let direct-input handle this because windows sends Alt-Gr

@@ -13,6 +13,7 @@
 	  host WinMain ── Sys_EngineInit( host ) ── loop { Sys_EngineFrame() } ── Sys_EngineShutdown()
 	                        │                           │
 	                  ParentWindow()              PumpEvents()   OnQuitRequested()   OnFatalError()
+	                  GetViewportSize()           OnPrint()
 */
 class idEngineHost {
 public:
@@ -31,10 +32,12 @@ public:
 
 	// a fatal engine error, the engine state can still be read; the process ends when this returns
 	virtual void		OnFatalError( const char * text ) = 0;
+
+	// every console print, colour codes removed, on the main thread
+	virtual void		OnPrint( const char * text ) = 0;
 };
 
 extern idEngineHost *	engineHost;
 
-// What WM_ACTIVATE does for the game's own window. A child window never gets that message, so the
-// host forwards the activation of its top-level window: mouse grab, key states and the sound mute.
-void					Sys_SetAppActive( bool active );
+// A hosted engine window is active (keys, mouse grab, sound) while it has the keyboard focus: the
+// host gives it with SetFocus, a click takes it, and Shift+Esc hands it back to the parent window.
