@@ -43,6 +43,8 @@ If you have questions concerning this license or the applicable additional terms
 ===============================================================================
 */
 
+#include "RenderParms.h"
+
 enum class textureHandle_t : uintptr_t { NONE = 0 };
 enum class bufferHandle_t : uintptr_t { NONE = 0 };
 enum class shaderHandle_t : uintptr_t { NONE = 0 };
@@ -105,7 +107,46 @@ struct vertexLayoutDesc_t {
 	uint16				attribMask;		// bit per PC_ATTRIB_INDEX_*
 	vertexAttribDesc_t	attribs[6];
 };
-extern const vertexLayoutDesc_t vertexLayouts[NUM_VERTEX_LAYOUTS];	// RenderBackend.cpp
+
+static_assert( sizeof( idDrawVert ) == 32 && sizeof( idShadowVert ) == 16 && sizeof( idShadowVertSkinned ) == 32 );
+
+// The vertex inputs of every layout, in the order the OpenGL path sets them up.
+inline constexpr vertexLayoutDesc_t vertexLayouts[NUM_VERTEX_LAYOUTS] = {
+	// LAYOUT_UNKNOWN
+	{},
+	// LAYOUT_DRAW_VERT
+	{
+		sizeof( idDrawVert ), 6,
+		( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_NORMAL ) | ( 1 << PC_ATTRIB_INDEX_COLOR ) | ( 1 << PC_ATTRIB_INDEX_COLOR2 )
+			| ( 1 << PC_ATTRIB_INDEX_ST ) | ( 1 << PC_ATTRIB_INDEX_TANGENT ),
+		{
+			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT3,		DRAWVERT_XYZ_OFFSET },
+			{ PC_ATTRIB_INDEX_NORMAL,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_NORMAL_OFFSET },
+			{ PC_ATTRIB_INDEX_COLOR,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_COLOR_OFFSET },
+			{ PC_ATTRIB_INDEX_COLOR2,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_COLOR2_OFFSET },
+			{ PC_ATTRIB_INDEX_ST,		vertexAttribFormat_t::HALF2,		DRAWVERT_ST_OFFSET },
+			{ PC_ATTRIB_INDEX_TANGENT,	vertexAttribFormat_t::UBYTE4_NORM,	DRAWVERT_TANGENT_OFFSET }
+		}
+	},
+	// LAYOUT_DRAW_SHADOW_VERT
+	{
+		sizeof( idShadowVert ), 1,
+		1 << PC_ATTRIB_INDEX_VERTEX,
+		{
+			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT4,		SHADOWVERT_XYZW_OFFSET }
+		}
+	},
+	// LAYOUT_DRAW_SHADOW_VERT_SKINNED
+	{
+		sizeof( idShadowVertSkinned ), 3,
+		( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_COLOR ) | ( 1 << PC_ATTRIB_INDEX_COLOR2 ),
+		{
+			{ PC_ATTRIB_INDEX_VERTEX,	vertexAttribFormat_t::FLOAT4,		SHADOWVERTSKINNED_XYZW_OFFSET },
+			{ PC_ATTRIB_INDEX_COLOR,	vertexAttribFormat_t::UBYTE4_NORM,	SHADOWVERTSKINNED_COLOR_OFFSET },
+			{ PC_ATTRIB_INDEX_COLOR2,	vertexAttribFormat_t::UBYTE4_NORM,	SHADOWVERTSKINNED_COLOR2_OFFSET }
+		}
+	}
+};
 
 struct renderCaps_t {
 	const char *	apiName;				// "OpenGL", "Direct3D 12", "Vulkan"
@@ -175,7 +216,8 @@ struct pipelineKey_t {
 	uint64		stateBits;		// latch.stateBits & GLS_PIPELINE_BITS
 	uint16		program;		// the backend's dense program index
 	uint8		layout;			// vertexLayoutType_t
-	uint8		raster;			// bits 0-1 resolved cull (0 none, 1 front, 2 back), bit 2 lines, bits 3-5 target format id
+	uint8		raster;			// bits 0-1 effective cull (0 none, 1 front, 2 back), bit 2 lines, bits 3-5 target format id,
+							// bit 6 strict depth test (LESS where the GLS bits say LEQUAL), see renderLatch_t
 	uint8		depthBias;		// 0 = off or dynamic, else slot + 1 in the backend's bias table
 	uint8		pad[3];
 	bool		operator==( const pipelineKey_t & ) const = default;
@@ -187,6 +229,11 @@ struct renderLatch_t {
 	uint64				stateBits = 0;
 	int					cull = CULL_UNSET;		// cullType_t
 	bool				viewIsMirror = false;
+	// GL's rules the frames depend on, both reset by SetDefaultState: TWO_SIDED turns culling off and only a
+	// one-sided Cull right after a TWO_SIDED one turns it on (not one after SetViewMirror's CULL_UNSET); the
+	// depth test is strict LESS until a State whose changed bits include GLS_DEPTHFUNC_BITS.
+	bool				cullEnabled = true;
+	bool				depthFuncStrict = true;
 	float				polyOfsScale = 0.0f;
 	float				polyOfsBias = 0.0f;
 	float				depthBoundsMin = 0.0f;	// 0, 0 = test off

@@ -218,9 +218,6 @@ If you have questions concerning this license or the applicable additional terms
 #define WEAPONTOP		32*FRACUNIT
 #define BFGCELLS		40		
 // p_pspr.defs end // 
-//  p_saveg.defs begin // 
-#define PADSAVEP()	::g->save_p += (4 - ((int) ::g->save_p & 3)) & 3
-// p_saveg.defs end // 
 //  p_setup.defs begin // 
 #define MAX_DEATHMATCH_STARTS	10
 // p_setup.defs end // 

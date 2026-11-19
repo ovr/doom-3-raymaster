@@ -437,7 +437,7 @@ fail:
 
 		/* Then read the sample data */
 		sp->data = (sample_t*)safe_malloc(sp->data_length);
-		if ( static_cast< size_t >( sp->data_length ) != fp->Read(sp->data, sp->data_length ))
+		if ( sp->data_length != fp->Read(sp->data, sp->data_length ))
 			goto fail;
 
 		if (!(sp->modes & MODES_16BIT)) /* convert to 16-bit data */

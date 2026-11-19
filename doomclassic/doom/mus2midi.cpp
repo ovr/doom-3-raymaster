@@ -326,7 +326,7 @@ int Mus2Midi(unsigned char* bytes, unsigned char* out, int* len)
 		// Write out temp stuff
 		if (out_local != temp_buffer)
 		{
-			Midi_UpdateBytesWritten(&bytes_written, out_local - temp_buffer, *len);
+			Midi_UpdateBytesWritten(&bytes_written, static_cast< int >( out_local - temp_buffer ), *len);
 			memcpy(out, temp_buffer, out_local - temp_buffer);
 			out += out_local - temp_buffer;
 		}
@@ -343,7 +343,7 @@ int Mus2Midi(unsigned char* bytes, unsigned char* out, int* len)
 
 	// Write out track header
 	WriteInt(midiTrackHeader.name, 'MTrk');
-	WriteInt(&midiTrackHeader.length, out - midiTrackHeaderOut - sizeof(midiTrackHeader));
+	WriteInt(&midiTrackHeader.length, static_cast< unsigned int >( out - midiTrackHeaderOut - sizeof(midiTrackHeader) ));
 	memcpy(midiTrackHeaderOut, &midiTrackHeader, sizeof(midiTrackHeader));
 	
 	// Store length written

@@ -87,7 +87,7 @@ idFile * open_file(const char *name, int decompress, int noise_mode)
 		while (plp)  /* Try along the path then */
 		{
 			*current_filename=0;
-			l=strlen(plp->path);
+			l=static_cast< int >( strlen(plp->path) );
 			if(l)
 			{
 				strcpy(current_filename, plp->path);
@@ -121,12 +121,10 @@ void close_file(idFile * fp)
 /* This is meant for skipping a few bytes in a file or fifo. */
 void skip(idFile * fp, size_t len)
 {
-	size_t c;
 	char tmp[1024];
 	while (len>0)
 	{
-		c=len;
-		if (c>1024) c=1024;
+		const int c = static_cast< int >( len < sizeof( tmp ) ? len : sizeof( tmp ) );
 		len-=c;
 		if (c!=fp->Read(tmp, c ))
 			ctl->cmsg(CMSG_ERROR, VERB_NORMAL, "%s: skip: %s",
@@ -142,13 +140,13 @@ void *safe_malloc(size_t count)
 	if (count > (1<<21))
 	{
 		ctl->cmsg(CMSG_FATAL, VERB_NORMAL, 
-			"Strange, I feel like allocating %d bytes. This must be a bug.",
+			"Strange, I feel like allocating %zu bytes. This must be a bug.",
 			count);
 	}
 	else if ((p=Real_Tim_Malloc(count)))
 		return p;
 	else
-		ctl->cmsg(CMSG_FATAL, VERB_NORMAL, "Sorry. Couldn't malloc %d bytes.", count);
+		ctl->cmsg(CMSG_FATAL, VERB_NORMAL, "Sorry. Couldn't malloc %zu bytes.", count);
 
 	ctl->close();
 	//exit(10);
@@ -165,7 +163,7 @@ void add_to_pathlist(char *s)
 }
 
 /* Required memory management functions */
-void *Real_Tim_Malloc( int sz ) {
+void *Real_Tim_Malloc( size_t sz ) {
 	return malloc( sz );
 }
 

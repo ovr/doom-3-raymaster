@@ -1354,7 +1354,7 @@ void idAnimated::Event_LaunchMissilesUpdate( int launchjoint, int targetjoint, i
 idAnimated::Event_LaunchMissiles
 =====================
 */
-void idAnimated::Event_LaunchMissiles( const char *projectilename, const char *sound, const char *launchjoint, const char *targetjoint, int numshots, int framedelay ) {
+void idAnimated::Event_LaunchMissiles( const char *projectilename, const char *sound, const char *launchjoint, const char *targetjoint, int numshots, float framedelay ) {
 	const idDict *	projectileDef;
 	jointHandle_t	launch;
 	jointHandle_t	target;
@@ -1380,7 +1380,7 @@ void idAnimated::Event_LaunchMissiles( const char *projectilename, const char *s
 	spawnArgs.Set( "missilesound", sound );
 
 	CancelEvents( &EV_LaunchMissilesUpdate );
-	ProcessEvent( &EV_LaunchMissilesUpdate, launch, target, numshots - 1, framedelay );
+	ProcessEvent( &EV_LaunchMissilesUpdate, launch, target, numshots - 1, static_cast<int>( framedelay ) );
 }
 
 /*

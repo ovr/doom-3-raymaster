@@ -45,37 +45,14 @@ If you have questions concerning this license or the applicable additional terms
 #undef ID_WIN32
 #undef ID_LITTLE_ENDIAN
 
-#if defined(_WIN32)
-	// _WIN32 always defined
-	// _WIN64 also defined for x64 target
-/*
-	#if !defined( _MANAGED )
-		#if !defined( _WIN64 )
-			#define ID_WIN_X86_ASM
-			#define ID_WIN_X86_MMX_ASM
-			#define ID_WIN_X86_MMX_INTRIN
-			#define ID_WIN_X86_SSE_ASM
-			#define ID_WIN_X86_SSE_INTRIN
-			#define ID_WIN_X86_SSE2_ASM
-			#define ID_WIN_X86_SSE2_INTRIN
-			// the 32 bit build is now as close to the console builds as possible
-			#define ID_CONSOLE
-		#else
-			#define ID_PC_WIN64
-			#define ID_WIN_X86_MMX_INTRIN
-			#define ID_WIN_X86_SSE_INTRIN
-			#define ID_WIN_X86_SSE2_INTRIN
-			#define ID_WIN_X86_SSE3_INTRIN
-		#endif
-	#endif
-*/
-
+#if defined( _WIN64 )
 	#define ID_PC
 	#define ID_PC_WIN
+	#define ID_PC_WIN64
 	#define ID_WIN32
 	#define ID_LITTLE_ENDIAN
 #else
-#error Unknown Platform
+#error Only 64-bit Windows (x64) is supported
 #endif
 
 #define ID_OPENGL
@@ -90,7 +67,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #ifdef ID_PC_WIN
 
-#define	CPUSTRING						"x86"
+#define	CPUSTRING						"x64"
 
 #define	BUILD_STRING					"win-" CPUSTRING
 #define BUILD_OS_ID						0

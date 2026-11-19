@@ -28,6 +28,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 #include "../idlib/precompiled.h"
 #include "../renderer/image.h"
+#include "../framework/VisualDemo.h"
 
 #pragma warning(disable: 4355) // 'this' : used in base member initializer list
 
@@ -38,6 +39,10 @@ int idSWF::mouseY = -1;
 bool idSWF::isMouseInClientArea = false;
 
 extern idCVar in_useJoystick;
+
+int idSWF::Milliseconds() {
+	return visualDemo->GuiMilliseconds();
+}
 
 /*
 ===================
@@ -51,7 +56,7 @@ idSWF::idSWF( const char * filename_, idSoundWorld * soundWorld_ ) {
 	swfScale = 1.0f;
 	scaleToVirtual.Set( 1.0f, 1.0f );
 
-	random.SetSeed( Sys_Milliseconds() );
+	random.SetSeed( Milliseconds() );
 
 	guiSolid = declManager->FindMaterial( "guiSolid" );
 	guiCursor_arrow = declManager->FindMaterial( "ui/assets/guicursor_arrow" );
@@ -253,7 +258,7 @@ when a SWF is deactivated, it rewinds the timeline back to the start
 void idSWF::Activate( bool b ) {
 	if ( !isActive && b ) {
 		inhibitControl = false;
-		lastRenderTime = Sys_Milliseconds();
+		lastRenderTime = Milliseconds();
 
 		mainspriteInstance->FreeDisplayList();
 		mainspriteInstance->Play();

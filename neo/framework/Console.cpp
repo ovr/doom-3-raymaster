@@ -452,8 +452,12 @@ float idConsoleLocal::DrawFPS( float y ) {
 		}
 	}
 
+	// a line of the render API, e.g. r_d3d12Stats: buffer memory and uploads per frame
+	const char * const backendText = renderSystem->GetBackendStats();
+	const bool showBackend = backendText[0] != '\0';
+
 	static const int NUM_TIMING_ROWS = 6;
-	const int numCountRows = ( showResolution ? 3 : 2 ) + ( interp.active ? 1 : 0 ) + ( interpMoreText.IsEmpty() ? 0 : 1 );
+	const int numCountRows = ( showResolution ? 3 : 2 ) + ( interp.active ? 1 : 0 ) + ( interpMoreText.IsEmpty() ? 0 : 1 ) + ( showBackend ? 1 : 0 );
 	const float panelH = pad
 		+ p.UI( 48 )						// fps header
 		+ graphH + p.UI( 6 )				// graph
@@ -566,6 +570,11 @@ float idConsoleLocal::DrawFPS( float y ) {
 	}
 	if ( !interpMoreText.IsEmpty() ) {
 		p.Text( innerR, cy, 14, perfColorText, interpMoreText.c_str(), true );
+		cy += rowH;
+	}
+	if ( showBackend ) {
+		p.Text( innerX, cy, 16, perfColorLabel, "GPU buffers" );
+		p.Text( innerR, cy, 14, perfColorText, backendText, true );
 		cy += rowH;
 	}
 
@@ -757,7 +766,7 @@ void idConsoleLocal::Dump( const char *fileName ) {
 		buffer[x+1] = '\r';
 		buffer[x+2] = '\n';
 		buffer[x+3] = 0;
-		f->Write( buffer, strlen( buffer ) );
+		f->Write( buffer, idStr::Length( buffer ) );
 	}
 
 	fileSystem->CloseFile( f );
@@ -1199,7 +1208,7 @@ void idConsoleLocal::DrawInput() {
 	y = vislines - ( SMALLCHAR_HEIGHT * 2 );
 
 	if ( consoleField.GetAutoCompleteLength() != 0 ) {
-		autoCompleteLength = strlen( consoleField.GetBuffer() ) - consoleField.GetAutoCompleteLength();
+		autoCompleteLength = idStr::Length( consoleField.GetBuffer() ) - consoleField.GetAutoCompleteLength();
 
 		if ( autoCompleteLength > 0 ) {
 			renderSystem->DrawFilled( idVec4( 0.8f, 0.2f, 0.2f, 0.45f ),

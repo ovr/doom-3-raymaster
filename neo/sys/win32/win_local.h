@@ -45,6 +45,7 @@ char	*Sys_GetCurrentUser();
 void	Win_SetErrorText( const char *text );
 
 cpuid_t	Sys_GetCPUId();
+int		Sys_GetCPUMHz();
 
 // Input subsystem
 
@@ -67,7 +68,7 @@ void	DisableTaskKeys( BOOL bDisable, BOOL bBeep, BOOL bTaskMgr );
 uint64 Sys_Microseconds();
 
 // window procedure
-LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 void Conbuf_AppendText( const char *msg );
 

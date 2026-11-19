@@ -523,7 +523,9 @@ memcpy( ::g->NUMANIMS, temp_NUMANIMS, sizeof(temp_NUMANIMS) );
 	wi_stuff_anims[2] = ::g->epsd2animinfo;
 // wi_stuff.constructs end // 
 //  z_zone.constructs begin // 
-	::g->zones[NUM_ZONES] = NULL;
+	for ( memzone_t * & zone : ::g->zones ) {
+		zone = nullptr;
+	}
 	::g->NumAlloc = 0;
 // z_zone.constructs end // 
 // info constructs begin //

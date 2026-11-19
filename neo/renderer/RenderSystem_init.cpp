@@ -41,6 +41,9 @@ screenConfig_t	screenConfig;
 
 idCVar r_debugContext( "r_debugContext", "0", CVAR_RENDERER, "Enable various levels of context debug." );
 idCVar r_skipIntelWorkarounds( "r_skipIntelWorkarounds", "0", CVAR_RENDERER | CVAR_BOOL, "skip workarounds for Intel driver bugs" );
+idCVar r_debugMaxDraws( "r_debugMaxDraws", "-1", CVAR_RENDERER | CVAR_INTEGER, "draw only the first N draws of every frame, -1 = all" );
+idCVar r_hashDrawStream( "r_hashDrawStream", "0", CVAR_RENDERER | CVAR_BOOL, "print a hash of the draws of every frame, without handle values" );
+idCVar r_testClearPattern( "r_testClearPattern", "0", CVAR_RENDERER | CVAR_BOOL, "end every frame with the clear pattern tools/vdemo/check-pattern.py checks" );
 idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of antialiasing samples" );
 idCVar r_vidMode( "r_vidMode", "0", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "fullscreen video mode number" );
 idCVar r_displayRefresh( "r_displayRefresh", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_NOCHEAT, "optional display refresh rate option for vid mode", 0.0f, 240.0f );
@@ -112,7 +115,7 @@ idCVar r_useLightAreaCulling( "r_useLightAreaCulling", "1", CVAR_RENDERER | CVAR
 idCVar r_useLightScissors( "r_useLightScissors", "3", CVAR_RENDERER | CVAR_INTEGER, "0 = no scissor, 1 = non-clipped scissor, 2 = near-clipped scissor, 3 = fully-clipped scissor", 0, 3, idCmdSystem::ArgCompletion_Integer<0,3> );
 idCVar r_useEntityPortalCulling( "r_useEntityPortalCulling", "1", CVAR_RENDERER | CVAR_INTEGER, "0 = none, 1 = cull frustum corners to plane, 2 = exact clip the frustum faces", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_logFile( "r_logFile", "0", CVAR_RENDERER | CVAR_INTEGER, "number of frames to emit GL logs" );
-idCVar r_clear( "r_clear", "2", CVAR_RENDERER, "force screen clear every frame, 1 = purple, 2 = black, 'r g b' = custom" );
+idCVar r_clear( "r_clear", "0", CVAR_RENDERER, "clear the screen at the start of every frame: 0 = no (a stereo eye is cleared black), 1 = purple, 2 = black, 'r g b' = custom" );
 
 idCVar r_offsetFactor( "r_offsetfactor", "0", CVAR_RENDERER | CVAR_FLOAT, "polygon offset parameter" );
 idCVar r_offsetUnits( "r_offsetunits", "-600", CVAR_RENDERER | CVAR_FLOAT, "polygon offset parameter" );
@@ -291,7 +294,7 @@ void R_SetNewMode( const bool fullInit ) {
 		}
 
 		if ( i == 2 ) {
-			common->FatalError( "Unable to initialize OpenGL" );
+			common->FatalError( "Unable to initialize the render backend (r_renderApi \"%s\")", r_renderApi.GetString() );
 		}
 
 		if ( i == 0 ) {
@@ -602,8 +605,13 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 	const int sysHeight = renderSystem->GetHeight();
 	byte * temp = (byte *)R_StaticAlloc( sysWidth * sysHeight * 3 );
 
-	// disable scissor, so we don't need to adjust all those rects
-	r_useScissor.SetBool( false );
+	// tiles disable the scissor, so we don't need to adjust all those rects; a single window-sized
+	// render keeps it, or the scissored debug drawing would differ from the frame on screen
+	const bool tiled = width > sysWidth || height > sysHeight;
+	const bool useScissor = r_useScissor.GetBool();
+	if ( tiled ) {
+		r_useScissor.SetBool( false );
+	}
 
 	for ( int xo = 0 ; xo < width ; xo += sysWidth ) {
 		for ( int yo = 0 ; yo < height ; yo += sysHeight ) {
@@ -644,7 +652,7 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 		}
 	}
 
-	r_useScissor.SetBool( true );
+	r_useScissor.SetBool( useScissor );
 
 	R_StaticFree( temp );
 }
@@ -1582,6 +1590,9 @@ idRenderSystemLocal::EndLevelLoad
 void idRenderSystemLocal::EndLevelLoad() {
 	renderModelManager->EndLevelLoad();
 	globalImages->EndLevelLoad();
+	if ( renderBackend != nullptr && renderBackend->IsOwnerThread() ) {
+		renderBackend->EndLevelLoad();
+	}
 }
 
 /*

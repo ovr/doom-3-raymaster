@@ -86,7 +86,7 @@ void idSWF::Render( idRenderSystem * gui, int time, bool isSplitscreen ) {
 		}
 	}
 
-	int currentTime = Sys_Milliseconds();
+	int currentTime = Milliseconds();
 	int framesToRun = 0;
 
 	if ( paused ) {
@@ -697,14 +697,14 @@ void idSWF::RenderEditText( idRenderSystem * gui, idSWFTextInstance * textInstan
 	if ( textInstance->variable.IsEmpty() ) {
 		if ( textInstance->renderMode == SWF_TEXT_RENDER_PARAGRAPH ) {
 			if ( textInstance->NeedsGenerateRandomText() ) {
-				textInstance->StartParagraphText( Sys_Milliseconds() );
+				textInstance->StartParagraphText( Milliseconds() );
 			}
-			text = textInstance->GetParagraphText( Sys_Milliseconds() );
+			text = textInstance->GetParagraphText( Milliseconds() );
 		} else if ( textInstance->renderMode == SWF_TEXT_RENDER_RANDOM_APPEAR || textInstance->renderMode == SWF_TEXT_RENDER_RANDOM_APPEAR_CAPS ) {
 			if ( textInstance->NeedsGenerateRandomText() ) {
-				textInstance->StartRandomText( Sys_Milliseconds() );
+				textInstance->StartRandomText( Milliseconds() );
 			}
-			text = textInstance->GetRandomText( Sys_Milliseconds() );
+			text = textInstance->GetRandomText( Milliseconds() );
 		} else {
 			text = idLocalization::GetString( textInstance->text );
 		}
@@ -747,7 +747,7 @@ void idSWF::RenderEditText( idRenderSystem * gui, idSWFTextInstance * textInstan
 
 	bool drawCursor = false;
 
-	if ( inputField && ( ( Sys_Milliseconds() >> 8 ) & 1 ) == 0 ) {	// blink by time, not by frames
+	if ( inputField && ( ( Milliseconds() >> 8 ) & 1 ) == 0 ) {	// blink by time, not by frames
 		cursorPos = selEnd;
 		drawCursor = true;
 	}

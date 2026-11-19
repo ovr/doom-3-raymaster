@@ -256,7 +256,7 @@ void M_LoadDefaults (void)
     // set everything to base values
     ::g->numdefaults = sizeof(::g->defaults)/sizeof(::g->defaults[0]);
     for (i=0 ; i < ::g->numdefaults ; i++)
-		*::g->defaults[i].location = ::g->defaults[i].defaultvalue;
+		::g->defaults[i].SetToDefault();
     
     // check for a custom default file
     i = M_CheckParm ("-config");

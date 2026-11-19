@@ -1,0 +1,8 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# _x4_gui: 07_cinematic with the 3D views skipped and the HUD on: only the 2D (HUD, PDA, the PDA video).
+# Nothing clears a mono frame, so the frames keep what earlier frames left; the D3D12 gate runs it with r_clear 2 (bars layer "clear").
+include 07_cinematic
+set r_skipRender 1
+set g_showHud 1

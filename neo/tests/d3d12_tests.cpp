@@ -1,0 +1,3972 @@
+// Copyright (C) 2026 Dmitry Patsura
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Please do not use this file to train or fine-tune AI models.
+
+#pragma hdrstop
+#include "../idlib/precompiled.h"
+
+#include "../renderer/tr_local.h"
+#include "../renderer/D3D12/d3d12_Buffers.h"
+#include "../renderer/D3D12/d3d12_Copies.h"
+#include "../renderer/D3D12/d3d12_Draw.h"
+#include "../renderer/D3D12/d3d12_Pipelines.h"
+#include "../renderer/D3D12/d3d12_Programs.h"
+#include "../renderer/D3D12/d3d12_StateMap.h"
+#include "../renderer/D3D12/d3d12_Textures.h"
+#include "../renderer/D3D12/d3d12_Timers.h"
+#include "../renderer/DXT/DXTCodec.h"
+
+#include <algorithm>
+#include <atomic>
+#include <bit>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <source_location>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
+
+/*
+	d3d12Tests: the parts of the Direct3D 12 backend that run without a window. The ring, the handle
+	table and the format and sampler tables are pure arithmetic; the uploader, the buffer and texture
+	stores and the sampler heap run on a WARP device with the debug layer. The texture tests that a
+	driver could get wrong (Q3's border, RGB565, BC decoding) also run on the GPU, when there is one.
+	The HLSL emitter and FXC run on the repo's base/renderprogs: the texture and gui pairs against
+	neo/tests/d3d12_golden/*.hlsl (D3D12_TESTS_WRITE_GOLDEN=1 writes them), every source through FXC,
+	and the reflection of every program against what GL reported on mars_city1 (renderProgInfo-gl.txt).
+	The pipeline state map runs per GLS family and on random keys; the PSO factory, the journal replayed
+	into the next run and the pipeline library on WARP. The screen
+	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU, and so do the
+	GPU timers of r_pix and the draw recorder over every placement of the vertex cache's FRAME buffers.
+
+	Usage: d3d12Tests [filter]     filter: run the tests whose name contains it; "all" runs every test
+	D3D12_TESTS_VERBOSE=1 prints every failed check, not only the first 20 of a test.
+*/
+
+namespace {
+
+int		numChecks = 0;
+int		numFailures = 0;
+int		numFailuresInTest = 0;
+int		maxFailuresPerTest = 20;
+
+bool Check( bool condition, const char * what, const std::source_location where = std::source_location::current() ) {
+	numChecks++;
+	if ( condition ) {
+		return true;
+	}
+	numFailures++;
+	numFailuresInTest++;
+	if ( numFailuresInTest <= maxFailuresPerTest ) {
+		printf( "  FAIL line %u: %s\n", static_cast<unsigned>( where.line() ), what );
+	}
+	return false;
+}
+
+[[nodiscard]] std::vector<byte> Pattern( size_t bytes, uint32 seed ) {
+	std::vector<byte> data( bytes );
+	uint32 x = seed;
+	for ( byte & b : data ) {
+		x = x * 1664525u + 1013904223u;
+		b = static_cast<byte>( x >> 24 );
+	}
+	return data;
+}
+
+// ---- the ring ----------------------------------------------------------------------------------------------
+
+void Test_RingWrap() {
+	idD3D12RingAllocator ring( 1000 );
+	Check( ring.TryAllocate( 400, 1 ) == 0u, "the first allocation is at 0" );
+	ring.CloseChunk( 1 );
+	Check( ring.TryAllocate( 400, 1 ) == 400u, "the second follows it" );
+	ring.CloseChunk( 2 );
+	Check( !ring.TryAllocate( 300, 1 ), "200 bytes at the end and nothing retired: no room" );
+	ring.Retire( 1 );
+	Check( ring.TryAllocate( 300, 1 ) == 0u, "wraps to 0 instead of splitting" );
+	Check( ring.Used() == 900, va( "used %llu: the skipped 200 bytes count", static_cast<unsigned long long>( ring.Used() ) ) );
+	ring.CloseChunk( 3 );
+	Check( ring.OldestFence() == 2, "fence order" );
+	ring.Retire( 3 );
+	Check( ring.Used() == 0 && ring.OldestFence() == 0, "every chunk retired" );
+}
+
+void Test_RingRelease() {
+	idD3D12RingAllocator ring( 1024 );
+	Check( ring.TryAllocate( 100, 1 ) == 0u, "first" );
+	ring.CloseChunk( 5 );
+	Check( ring.TryAllocate( 100, 1 ) == 100u, "second" );
+	ring.CloseChunk( 6 );
+	ring.Retire( 4 );
+	Check( ring.Used() == 200 && ring.OldestFence() == 5, "an earlier fence frees nothing" );
+	ring.Retire( 5 );
+	Check( ring.Used() == 100 && ring.OldestFence() == 6, "fence 5 frees its chunk only" );
+	Check( ring.TryAllocate( 50, 1 ) == 200u, "an open allocation" );
+	ring.Retire( 100 );
+	Check( ring.Used() == 50 && ring.OldestFence() == 0, "an open allocation is no chunk yet: it stays" );
+	ring.CloseChunk( 7 );
+	ring.Retire( 7 );
+	Check( ring.Used() == 0, "empty" );
+	Check( ring.TryAllocate( 1024, 1 ) == 0u, "an empty ring starts over: its whole length is free" );
+}
+
+void Test_RingFull() {
+	idD3D12RingAllocator ring( 256 );
+	Check( !ring.TryAllocate( 257, 1 ), "more than the ring" );
+	Check( ring.TryAllocate( 256, 1 ) == 0u, "the whole ring" );
+	Check( !ring.TryAllocate( 1, 1 ), "full" );
+	ring.CloseChunk( 9 );
+	ring.Retire( 8 );
+	Check( !ring.TryAllocate( 1, 1 ), "full until fence 9 is waited for" );
+	ring.Retire( 9 );
+	Check( ring.TryAllocate( 10, 1 ) == 0u, "free again" );
+	Check( ring.TryAllocate( 10, 64 ) == 64u, "aligned" );
+	Check( ring.Used() == 74, "the alignment gap counts" );
+}
+
+// ---- the handle table ----------------------------------------------------------------------------------------
+
+enum class testHandle_t : uint64 { NONE = 0 };
+using testTable_t = idD3D12HandleTable<int, testHandle_t>;
+
+[[nodiscard]] constexpr uint64 Bits( testHandle_t handle ) { return static_cast<uint64>( handle ); }
+[[nodiscard]] constexpr uint64 IndexOf( testHandle_t handle ) { return ( Bits( handle ) & 0xFFFFFFFFull ) - 1; }
+
+void Test_HandleGenerations() {
+	testTable_t table;
+	const testHandle_t a = table.Add( 10 );
+	Check( Bits( a ) == ( ( 1ull << 32 ) | 1 ), "index 0, generation 1" );
+	Check( table.Find( a ) != nullptr && *table.Find( a ) == 10, "Find a live handle" );
+	Check( table.Remove( a ) == 10, "Remove gives the record back" );
+	Check( table.Find( a ) == nullptr, "a removed handle is dead" );
+	const testHandle_t b = table.Add( 20 );
+	Check( Bits( b ) == ( ( 2ull << 32 ) | 1 ), "the slot is reused with generation 2" );
+	Check( table.Find( a ) == nullptr, "the old handle stays dead after the reuse" );
+	Check( table.Get( b ) == 20 && table.Num() == 1, "Get and Num" );
+}
+
+void Test_HandleFindDead() {
+	testTable_t table;
+	Check( table.Find( testHandle_t::NONE ) == nullptr, "NONE" );
+	const testHandle_t a = table.Add( 1 );
+	Check( table.Find( static_cast<testHandle_t>( Bits( a ) + ( 1ull << 32 ) ) ) == nullptr, "a later generation" );
+	Check( table.Find( static_cast<testHandle_t>( Bits( a ) + 1 ) ) == nullptr, "an index never used" );
+	Check( table.Find( static_cast<testHandle_t>( ( 1ull << 32 ) | 257 ) ) == nullptr, "a chunk never allocated" );
+	Check( table.Find( static_cast<testHandle_t>( ( 1ull << 32 ) | 65537 ) ) == nullptr, "an index beyond the table" );
+	Check( table.Find( static_cast<testHandle_t>( 1ull << 32 ) ) == nullptr, "index + 1 = 0 is no index" );
+	const testTable_t & constTable = table;
+	Check( constTable.Find( a ) != nullptr && *constTable.Find( a ) == 1, "const Find" );
+}
+
+void Test_HandleLowestFree() {
+	testTable_t table;
+	std::array<testHandle_t, 5> handles = {};
+	for ( int i = 0; i < 5; i++ ) {
+		handles[i] = table.Add( int( i ) );
+	}
+	Check( table.Remove( handles[3] ) == 3 && table.Remove( handles[1] ) == 1, "Remove" );
+	const testHandle_t c = table.Add( 100 );
+	const testHandle_t d = table.Add( 101 );
+	const testHandle_t e = table.Add( 102 );
+	Check( IndexOf( c ) == 1 && IndexOf( d ) == 3 && IndexOf( e ) == 5, "the lowest free index first: handles repeat run to run" );
+	std::vector<int> order;
+	table.ForEach( [&order]( testHandle_t, int & value ) { order.push_back( value ); } );
+	Check( order == std::vector<int>{ 0, 100, 2, 101, 4, 102 }, "ForEach in index order" );
+}
+
+int destroyedRecords = 0;
+struct countedRecord_t {
+	~countedRecord_t() { destroyedRecords++; }
+};
+
+void Test_HandleClear() {
+	idD3D12HandleTable<std::unique_ptr<countedRecord_t>, testHandle_t> table;
+	destroyedRecords = 0;
+	std::array<testHandle_t, 10> handles = {};
+	for ( testHandle_t & handle : handles ) {
+		handle = table.Add( std::make_unique<countedRecord_t>() );
+	}
+	{
+		const std::unique_ptr<countedRecord_t> removed = table.Remove( handles[4] );
+		Check( destroyedRecords == 0, "Remove moves the record out" );
+	}
+	Check( destroyedRecords == 1, "the removed record dies with its owner" );
+	table.Clear();
+	Check( destroyedRecords == 10 && table.Num() == 0, "Clear destroys every live record" );
+	bool anyLive = false;
+	for ( const testHandle_t handle : handles ) {
+		anyLive |= table.Find( handle ) != nullptr;
+	}
+	Check( !anyLive, "every handle is dead after Clear" );
+	const testHandle_t again = table.Add( std::make_unique<countedRecord_t>() );
+	Check( IndexOf( again ) == 0 && again != handles[0], "index 0 again, a new generation" );
+}
+
+void Test_HandleFull() {
+	idD3D12HandleTable<int, testHandle_t, 256> table;
+	bool allIssued = true;
+	for ( int i = 0; i < 256; i++ ) {
+		allIssued &= table.Add( int( i ) ) != testHandle_t::NONE;
+	}
+	Check( allIssued && table.Num() == 256, "256 records" );
+	Check( table.Add( 256 ) == testHandle_t::NONE, "a full table gives NONE" );
+}
+
+// MapBuffer: the vertex cache maps its static set from the game thread while the main thread adds buffers.
+void Test_HandleFindDuringAdd() {
+	const auto table = std::make_unique<testTable_t>();
+	const testHandle_t watched = table->Add( 42 );
+	std::atomic<bool> stop = false;
+	std::atomic<int> finds = 0;
+	std::atomic<int> wrong = 0;
+	std::thread reader( [&]() {
+		const testTable_t & readOnly = *table;
+		while ( !stop.load( std::memory_order_acquire ) ) {
+			const int * value = readOnly.Find( watched );
+			if ( value == nullptr || *value != 42 ) {
+				wrong++;
+			}
+			finds++;
+		}
+	} );
+	while ( finds.load() == 0 ) {
+		std::this_thread::yield();
+	}
+	int notIssued = 0;
+	for ( int i = 0; i < 60000; i++ ) {
+		notIssued += ( table->Add( int( i ) ) == testHandle_t::NONE ) ? 1 : 0;
+	}
+	stop.store( true, std::memory_order_release );
+	reader.join();
+	Check( notIssued == 0 && table->Num() == 60001, "60000 adds into 235 chunks" );
+	Check( wrong.load() == 0, va( "%d of %d Finds from the other thread failed", wrong.load(), finds.load() ) );
+}
+
+// ---- WARP: the uploader and the buffer store ----------------------------------------------------------------
+
+// The context's submission without a window: one list, the staging ring and the graveyard, retired by
+// explicit waits only.
+class idTestGpu final : public idD3D12Submitter {
+public:
+	idTestGpu( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice, uint64 stagingSize, d3d12BufferPlacement_t framePlacement ) :
+		library( std::move( loadedLibrary ) ),
+		device( std::move( createdDevice ) ),
+		liveObjects( device ),
+		queue( device ),
+		graveyard( queue ),
+		commands( device, queue ),
+		barriers( *this ),
+		srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ),
+		rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
+		staging( device, stagingSize, L"test staging ring" ),
+		uploader( device, *this, staging, barriers, graveyard ),
+		buffers( device, graveyard, uploader, barriers, framePlacement ),
+		textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ) {
+	}
+	~idTestGpu() {
+		if ( !device.IsLost() ) {
+			WaitIdle();
+		}
+		buffers.DestroyAll();
+		textures.DestroyAll();
+		graveyard.CollectAll();
+	}
+	idTestGpu( const idTestGpu & ) = delete;
+	idTestGpu & operator=( const idTestGpu & ) = delete;
+
+	ID3D12GraphicsCommandList1 & List() override { return commands.IsOpen() ? commands.List() : commands.Open(); }
+	uint64 SubmitChunk() override {
+		if ( !commands.IsOpen() ) {
+			return queue.LastSignaled();
+		}
+		barriers.Flush();
+		const uint64 fence = commands.CloseAndExecute();
+		staging.CloseChunk( fence );
+		submits++;
+		return fence;
+	}
+	void WaitFor( uint64 fence ) override {
+		waits += ( fence > queue.Waited() ) ? 1 : 0;
+		queue.Wait( fence );
+		staging.Retire( queue.Waited() );
+		graveyard.Collect();
+	}
+	void WaitIdle() override {
+		SubmitChunk();
+		WaitFor( queue.Signal() );
+	}
+	uint64 PendingFence() const override { return queue.LastSignaled() + 1; }
+	uint64 ListSerial() const override { return commands.IsOpen() ? commands.Serial() : commands.Serial() + 1; }
+	uint64 WaitedFence() const override { return queue.Waited(); }
+
+	// bytes of resource at offset through a READBACK buffer; state nullptr = an UPLOAD buffer, GENERIC_READ for good.
+	[[nodiscard]] std::vector<byte> Read( ID3D12Resource & resource, d3d12ResourceState_t * state, uint64 offset, uint64 bytes );
+	// Blocks until the GPU has run everything submitted, behind the queue's back: Waited() does not move.
+	void FinishUnwaited();
+
+	idD3D12Library					library;
+	idD3D12Device					device;
+	idD3D12LiveObjectReport			liveObjects;
+	idD3D12Queue					queue;
+	idD3D12Graveyard				graveyard;
+	idD3D12CommandStream			commands;
+	idD3D12Barriers					barriers;
+	idD3D12DescriptorPool			srvPool;
+	idD3D12DescriptorPool			rtvPool;
+	idD3D12UploadRing				staging;
+	idD3D12Uploader					uploader;
+	idD3D12BufferStore				buffers;
+	idD3D12TextureStore				textures;
+	int								submits = 0;
+	int								waits = 0;
+};
+
+std::vector<byte> idTestGpu::Read( ID3D12Resource & resource, d3d12ResourceState_t * state, uint64 offset, uint64 bytes ) {
+	idComPtr<ID3D12Resource> readback = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_READBACK, bytes, D3D12_RESOURCE_STATE_COPY_DEST,
+		L"test readback" );
+	if ( !readback ) {
+		return {};
+	}
+	if ( state != nullptr ) {
+		barriers.Transition( resource, *state, D3D12_RESOURCE_STATE_COPY_SOURCE );
+		barriers.Flush();
+	}
+	List().CopyBufferRegion( readback.Get(), 0, &resource, offset, bytes );
+	WaitIdle();
+	std::vector<byte> data( static_cast<size_t>( bytes ) );
+	const D3D12_RANGE everything = { 0, static_cast<SIZE_T>( bytes ) };
+	void * mapped = nullptr;
+	if ( device.Check( readback->Map( 0, &everything, &mapped ), "Map (test readback)" ) ) {
+		memcpy( data.data(), mapped, data.size() );
+		const D3D12_RANGE nothingWritten = { 0, 0 };
+		readback->Unmap( 0, &nothingWritten );
+	}
+	return data;
+}
+
+void idTestGpu::FinishUnwaited() {
+	idComPtr<ID3D12Fence> fence;
+	if ( !device.Check( device.Get().CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( &fence ) ), "CreateFence (test)" ) ) {
+		return;
+	}
+	device.Check( queue.Get().Signal( fence.Get(), 1 ), "Signal (test)" );
+	device.Check( fence->SetEventOnCompletion( 1, nullptr ), "SetEventOnCompletion (test)" );	// no event: blocks
+}
+
+[[nodiscard]] std::unique_ptr<idTestGpu> CreateWarp( uint64 stagingSize, d3d12BufferPlacement_t framePlacement = d3d12BufferPlacement_t::UPLOAD ) {
+	auto library = idD3D12Library::Load();
+	if ( !library ) {
+		Check( false, va( "idD3D12Library::Load: %s", library.error().c_str() ) );
+		return nullptr;
+	}
+	auto device = idD3D12Device::Create( *library, "warp", 1 );
+	if ( !device ) {
+		Check( false, va( "idD3D12Device::Create( warp ): %s", device.error().c_str() ) );
+		return nullptr;
+	}
+	if ( device->DebugLevel() == 0 ) {
+		printf( "  no debug layer (Graphics Tools): the API usage is not validated\n" );
+	}
+	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize, framePlacement );
+}
+
+// The high-performance adapter; nullptr (the test skipped, not failed) on a machine without one.
+[[nodiscard]] std::unique_ptr<idTestGpu> CreateHardware( uint64 stagingSize, d3d12BufferPlacement_t framePlacement = d3d12BufferPlacement_t::UPLOAD ) {
+	auto library = idD3D12Library::Load();
+	if ( !library ) {
+		Check( false, va( "idD3D12Library::Load: %s", library.error().c_str() ) );
+		return nullptr;
+	}
+	auto device = idD3D12Device::Create( *library, "", 1 );
+	if ( !device || device->Features().warp ) {
+		printf( "  skipped: no hardware adapter\n" );
+		return nullptr;
+	}
+	printf( "  adapter %s\n", device->Features().adapterName.c_str() );
+	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize, framePlacement );
+}
+
+void CheckNoLayerErrors( const idTestGpu & gpu ) {
+	const int errors = gpu.device.DrainMessages();
+	Check( errors == 0, va( "%d debug layer errors", errors ) );
+}
+
+// 50 MB through a 40 MB ring: Room waits for the oldest piece and Pace submits every 16 MB.
+void Test_WarpStaticBuffer() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 40 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	constexpr uint64 SIZE = 50 << 20;
+	std::vector<byte> data = Pattern( SIZE, 1 );
+	const bufferHandle_t handle = gpu->buffers.Create( bufferType_t::VERTEX, bufferUsage_t::STATIC, static_cast<int>( SIZE ), data.data() );
+	if ( !Check( handle != bufferHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	const d3d12Buffer_t & buffer = gpu->buffers.Get( handle );
+	Check( buffer.placement == d3d12BufferPlacement_t::STAGED && buffer.bytes == SIZE, "STATIC is staged" );
+	Check( gpu->uploader.BytesThisFrame() == SIZE, "the data went through the staging ring" );
+	Check( gpu->submits >= 3, va( "%d submits: one every 16 MB", gpu->submits ) );
+	Check( gpu->waits >= 1, va( "%d waits: the ring waited for its oldest piece", gpu->waits ) );
+	Check( gpu->buffers.Bytes( bufferUsage_t::STATIC ) == SIZE && gpu->buffers.MirrorBytes() == SIZE, "the byte counts" );
+
+	gpu->WaitIdle();
+	d3d12ResourceState_t state;
+	state.decays = true;
+	Check( gpu->Read( *buffer.resource.Get(), &state, 0, SIZE ) == data, "the GPU copy equals the data" );
+
+	byte * mapped = static_cast<byte *>( gpu->buffers.Map( handle ) );
+	Check( mapped == buffer.cpu, "Map gives the mirror" );
+	for ( int i = 0; i < 4096; i++ ) {
+		mapped[1000 + i] = data[1000 + i] = static_cast<byte>( i * 7 );
+	}
+	gpu->uploader.ResetFrameCounters();
+	gpu->buffers.Unmap( handle, 1000, 4096 );
+	Check( gpu->uploader.BytesThisFrame() == 4096, "Unmap copies the dirty range only" );
+	gpu->WaitIdle();
+	const std::vector<byte> head = gpu->Read( *buffer.resource.Get(), &state, 0, 8192 );
+	Check( head.size() == 8192 && std::equal( head.begin(), head.end(), data.begin() ), "the dirty range reached the GPU" );
+
+	gpu->buffers.Destroy( handle );
+	Check( gpu->buffers.Num() == 0 && gpu->buffers.Bytes( bufferUsage_t::STATIC ) == 0 && gpu->buffers.MirrorBytes() == 0, "Destroy" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// A FRAME buffer in each place r_d3d12FrameBuffers has: what the CPU writes between Map and Unmap reaches the GPU;
+// only a STAGED one goes through the staging ring.
+void FrameBuffers( idTestGpu & gpu, d3d12BufferPlacement_t placement ) {
+	gpu.buffers.CreateDefaults();
+	Check( gpu.buffers.ZeroJoints() != 0, "the zero joints" );
+	const D3D12_VERTEX_BUFFER_VIEW attribs = gpu.buffers.DefaultAttribs();
+	Check( attribs.BufferLocation != 0 && attribs.SizeInBytes == 16 && attribs.StrideInBytes == 0, "the default attribute: stride 0" );
+
+	std::vector<byte> data = Pattern( 1024, 2 );
+	const bufferHandle_t handle = gpu.buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, 1024, data.data() );
+	if ( !Check( handle != bufferHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	const d3d12Buffer_t & buffer = gpu.buffers.Get( handle );
+	constexpr uint64 BYTES = 1024 + idD3D12BufferStore::JOINT_TAIL;
+	const bool staged = ( placement == d3d12BufferPlacement_t::STAGED );
+	Check( buffer.placement == placement && buffer.bytes == BYTES, va( "FRAME in %s, with the joint tail", D3D12_PlacementName( placement ) ) );
+	Check( gpu.buffers.Bytes( bufferUsage_t::FRAME ) == BYTES && gpu.buffers.MirrorBytes() == ( staged ? 1024u : 0u ), "the byte counts" );
+	Check( staged ? gpu.uploader.BytesThisFrame() == 1024 : ( gpu.uploader.BytesThisFrame() == 0 && gpu.submits == 0 ),
+		"the data is copied only when staged" );
+
+	byte * mapped = static_cast<byte *>( gpu.buffers.Map( handle ) );
+	Check( mapped == buffer.cpu, "Map gives the mapped heap or the mirror" );
+	for ( int i = 0; i < 64; i++ ) {
+		mapped[i] = data[i] = static_cast<byte>( 0xA0 + i );
+	}
+	gpu.uploader.ResetFrameCounters();
+	gpu.buffers.Unmap( handle, 0, 64 );
+	Check( staged ? ( gpu.buffers.InPlaceBytesThisFrame() == 0 && gpu.uploader.BytesThisFrame() == 64 )
+		: ( gpu.buffers.InPlaceBytesThisFrame() == 64 && gpu.uploader.BytesThisFrame() == 0 ), "Unmap copies the dirty range of a staged buffer only" );
+	gpu.WaitIdle();		// a staged buffer decays to COMMON
+	d3d12ResourceState_t decayed;
+	decayed.decays = true;
+	const std::vector<byte> read = gpu.Read( *buffer.resource.Get(), staged ? &decayed : nullptr, 0, BYTES );
+	Check( read.size() == BYTES && std::equal( data.begin(), data.end(), read.begin() ), "the GPU reads what the CPU wrote" );
+	Check( read.size() == BYTES && std::all_of( read.begin() + 1024, read.end(), []( byte b ) { return b == 0; } ),
+		"the tail is zero: committed memory starts cleared" );
+	gpu.buffers.Destroy( handle );
+	Check( gpu.buffers.Bytes( bufferUsage_t::FRAME ) == 0 && gpu.buffers.MirrorBytes() == 0, "Destroy" );
+	CheckNoLayerErrors( gpu );
+}
+
+void Test_WarpFrameBuffers() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		FrameBuffers( *gpu, d3d12BufferPlacement_t::UPLOAD );
+	}
+}
+
+void Test_WarpFrameBuffersStaged() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20, d3d12BufferPlacement_t::STAGED ) ) {
+		FrameBuffers( *gpu, d3d12BufferPlacement_t::STAGED );
+	}
+}
+
+// OPTIONS16: Resizable BAR; the context falls back to UPLOAD without it.
+void Test_GpuFrameBuffersGpuUpload() {
+	const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20, d3d12BufferPlacement_t::GPU_UPLOAD );
+	if ( !gpu ) {
+		return;
+	}
+	if ( !gpu->device.Features().gpuUploadHeap ) {
+		printf( "  skipped: the adapter has no GPU upload heap\n" );
+		return;
+	}
+	FrameBuffers( *gpu, d3d12BufferPlacement_t::GPU_UPLOAD );
+}
+
+// The biggest texture levels do not fit a ring piece: a temporary buffer that dies with the list.
+void Test_WarpLargeStage() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	constexpr uint64 SIZE = 20 << 20;
+	const std::optional<d3d12UploadSpan_t> span = gpu->uploader.Stage( SIZE, 512 );
+	if ( !Check( span.has_value(), "Stage( 20 MB )" ) ) {
+		return;
+	}
+	Check( gpu->graveyard.Pending() == 1 && gpu->staging.Used() == 0, "a temporary buffer, buried at once, not the ring" );
+	const std::vector<byte> data = Pattern( SIZE, 3 );
+	memcpy( span->cpu, data.data(), data.size() );
+
+	idComPtr<ID3D12Resource> target = D3D12_CreateBuffer( gpu->device, D3D12_HEAP_TYPE_DEFAULT, SIZE, D3D12_RESOURCE_STATE_COMMON,
+		L"test large stage target" );
+	d3d12ResourceState_t state;
+	state.decays = true;
+	gpu->barriers.Transition( *target.Get(), state, D3D12_RESOURCE_STATE_COPY_DEST );
+	gpu->barriers.Flush();
+	gpu->List().CopyBufferRegion( target.Get(), 0, span->buffer, span->offset, SIZE );
+	gpu->WaitIdle();
+	Check( gpu->graveyard.Pending() == 0, "collected after the wait for its list" );
+	Check( gpu->Read( *target.Get(), &state, 0, SIZE ) == data, "the copy equals the data" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// R3: a destroyed buffer dies after an explicit wait for its list, never because the GPU happens to be done.
+void Test_WarpGravesWaitForWaited() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	const std::vector<byte> data = Pattern( 4096, 4 );
+	const bufferHandle_t handle = gpu->buffers.Create( bufferType_t::INDEX, bufferUsage_t::STATIC, 4096, data.data() );
+	gpu->buffers.Destroy( handle );
+	Check( gpu->graveyard.Pending() == 1, "buried with the list that copies into it" );
+	const uint64 fence = gpu->SubmitChunk();
+	gpu->FinishUnwaited();
+	gpu->graveyard.Collect();
+	Check( gpu->graveyard.Pending() == 1 && gpu->queue.Waited() < fence, "the GPU is done, nobody waited: it stays" );
+	gpu->WaitFor( fence );
+	Check( gpu->graveyard.Pending() == 0, "the wait frees it" );
+	CheckNoLayerErrors( *gpu );
+}
+
+void Test_WarpRingRetiresByWaited() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	Check( gpu->staging.TryAllocate( 16 << 20, 16 ).has_value(), "the whole ring" );
+	static_cast<void>( gpu->List() );
+	const uint64 fence = gpu->SubmitChunk();
+	gpu->FinishUnwaited();
+	Check( !gpu->staging.TryAllocate( 16, 16 ) && gpu->staging.OldestFence() == fence, "the GPU is done, nobody waited: still full" );
+	gpu->WaitFor( fence );
+	Check( gpu->staging.TryAllocate( 16, 16 ).has_value(), "the wait frees it" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// ---- the format table and the sampler map --------------------------------------------------------------------
+
+enum testMap_t : UINT { R = 0, G = 1, B = 2, A = 3, ZERO = 4, ONE = 5 };
+
+[[nodiscard]] constexpr UINT Mapping( testMap_t r, testMap_t g, testMap_t b, testMap_t a ) {
+	return D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING( r, g, b, a );
+}
+
+struct formatRow_t {
+	const char *		name;
+	textureFormat_t		format;
+	textureColor_t		color;
+	textureRole_t		role;
+	int					width, height;
+	bool				unalignedBlocks;
+	DXGI_FORMAT			resource;
+	DXGI_FORMAT			rtv;
+	UINT				mapping;
+	uint8				blockBytes, sourceBytes;
+	bool				compressed, sourceBlocks;
+	d3d12Convert_t		convert;
+};
+
+void Test_FormatTable() {
+	using enum d3d12Convert_t;
+	constexpr textureRole_t SAMPLED = textureRole_t::SAMPLED;
+	const UINT IDENTITY = Mapping( R, G, B, A );
+	const formatRow_t rows[] = {
+		{ "RGBA8", FMT_RGBA8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 4, 4, false, false, NONE },
+		{ "COLOR_COPY", FMT_DXT5, CFM_DEFAULT, textureRole_t::COLOR_COPY, 64, 64, true, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 4, 4,
+			false, false, NONE },
+		{ "DEPTH_COPY wins over RGBA8", FMT_RGBA8, CFM_DEFAULT, textureRole_t::DEPTH_COPY, 64, 64, true, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT,
+			Mapping( R, R, R, ONE ), 4, 4, false, false, NONE },
+		{ "XRGB8", FMT_XRGB8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, G, B, ONE ), 4, 4,
+			false, false, NONE },
+		{ "ALPHA", FMT_ALPHA, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( ONE, ONE, ONE, R ), 1, 1,
+			false, false, NONE },
+		{ "L8A8", FMT_L8A8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, R, R, G ), 2, 2,
+			false, false, NONE },
+		{ "LUM8", FMT_LUM8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, R, R, ONE ), 1, 1,
+			false, false, NONE },
+		{ "INT8 (Q3: R8, the mapping applies to the border)", FMT_INT8, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN,
+			Mapping( R, R, R, R ), 1, 1, false, false, NONE },
+		{ "DXT1", FMT_DXT1, CFM_DEFAULT, SAMPLED, 64, 64, false, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 8, 8, true, true, NONE },
+		{ "DXT1 green alpha", FMT_DXT1, CFM_GREEN_ALPHA, SAMPLED, 64, 64, false, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( ONE, ONE, ONE, G ),
+			8, 8, true, true, NONE },
+		{ "DXT5", FMT_DXT5, CFM_NORMAL_DXT5, SAMPLED, 64, 64, false, DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 16, 16, true, true, NONE },
+		{ "DXT1 6x6 with OPTIONS8", FMT_DXT1, CFM_DEFAULT, SAMPLED, 6, 6, true, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 8, 8,
+			true, true, NONE },
+		{ "DXT1 6x8 without OPTIONS8", FMT_DXT1, CFM_DEFAULT, SAMPLED, 6, 8, false, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 4, 8,
+			false, true, DECODE_DXT1 },
+		{ "DXT5 8x2 without OPTIONS8", FMT_DXT5, CFM_DEFAULT, SAMPLED, 8, 2, false, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, IDENTITY, 4, 16,
+			false, true, DECODE_DXT5 },
+		{ "DXT1 decoded, green alpha", FMT_DXT1, CFM_GREEN_ALPHA, SAMPLED, 2, 2, false, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
+			Mapping( ONE, ONE, ONE, G ), 4, 8, false, true, DECODE_DXT1 },
+		{ "RGB565", FMT_RGB565, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, G, B, ONE ), 2, 2,
+			false, false, SWAP_565 },
+		{ "DEPTH", FMT_DEPTH, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT, Mapping( R, R, R, ONE ), 4, 4,
+			false, false, NONE },
+		{ "X16", FMT_X16, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, R, R, R ), 2, 2, false, false, NONE },
+		{ "Y16_X16", FMT_Y16_X16, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_UNKNOWN, Mapping( R, R, R, G ), 4, 4,
+			false, false, NONE },
+		{ "NONE", FMT_NONE, CFM_DEFAULT, SAMPLED, 64, 64, true, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, 0, 0,
+			false, false, NONE },
+	};
+	for ( const formatRow_t & row : rows ) {
+		const d3d12FormatInfo_t info = D3D12_FormatFor( row.format, row.color, row.role, row.width, row.height, row.unalignedBlocks );
+		Check( info.resource == row.resource && info.srv == row.resource, va( "%s: resource and view format %d", row.name, info.resource ) );
+		Check( info.rtv == row.rtv, va( "%s: render target view", row.name ) );
+		Check( info.mapping == row.mapping, va( "%s: mapping 0x%x, expected 0x%x", row.name, info.mapping, row.mapping ) );
+		Check( info.blockBytes == row.blockBytes && info.sourceBytes == row.sourceBytes, va( "%s: bytes %d / %d", row.name, info.blockBytes,
+			info.sourceBytes ) );
+		Check( info.compressed == row.compressed && info.sourceBlocks == row.sourceBlocks, va( "%s: blocks", row.name ) );
+		Check( info.convert == row.convert, va( "%s: conversion %d", row.name, static_cast<int>( info.convert ) ) );
+	}
+}
+
+void Test_SamplerPacking() {
+	constexpr samplerDesc_t DEFAULT_SAMPLER = { samplerFilter_t::NEAREST, samplerAddress_t::REPEAT, 1.0f, 0.0f };
+	Check( D3D12_PackSampler( DEFAULT_SAMPLER ) == 0, "point, repeat, no anisotropy, no bias packs to 0" );
+	Check( D3D12_UnpackSampler( 0 ) == DEFAULT_SAMPLER, "0 unpacks to it" );
+	const samplerDesc_t samplers[] = {
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::BORDER_TRANSPARENT, 16.0f, -0.5f },
+		{ samplerFilter_t::LINEAR_MIP_NEAREST, samplerAddress_t::CLAMP, 8.0f, 0.25f },
+		{ samplerFilter_t::LINEAR, samplerAddress_t::BORDER_BLACK, 1.0f, 3.0f },
+	};
+	for ( const samplerDesc_t & sampler : samplers ) {
+		Check( D3D12_UnpackSampler( D3D12_PackSampler( sampler ) ) == sampler, va( "filter %d address %d: the round trip",
+			static_cast<int>( sampler.filter ), static_cast<int>( sampler.address ) ) );
+	}
+	Check( D3D12_PackSampler( samplers[0] ) != D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::BORDER_TRANSPARENT, 16.0f, 0.5f } ),
+		"the bias is part of the key" );
+	Check( D3D12_UnpackSampler( D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 99.0f, 0.0f } ) ).maxAnisotropy == 16.0f,
+		"anisotropy is clamped to 16" );
+}
+
+void Test_SamplerMap() {
+	struct row_t {
+		samplerFilter_t		filter;
+		float				anisotropy;
+		bool				anisoPointMip;
+		D3D12_FILTER		expected;
+		float				maxLod;
+	};
+	const row_t rows[] = {
+		{ samplerFilter_t::NEAREST, 1.0f, false, D3D12_FILTER_MIN_MAG_MIP_POINT, 0.0f },
+		{ samplerFilter_t::LINEAR, 1.0f, false, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, 0.0f },
+		{ samplerFilter_t::LINEAR_MIP_NEAREST, 1.0f, true, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_NEAREST, 8.0f, true, D3D12_FILTER_MIN_MAG_ANISOTROPIC_MIP_POINT, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_NEAREST, 8.0f, false, D3D12_FILTER_ANISOTROPIC, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, 1.0f, true, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, 4.0f, true, D3D12_FILTER_ANISOTROPIC, D3D12_FLOAT32_MAX },
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, 4.0f, false, D3D12_FILTER_ANISOTROPIC, D3D12_FLOAT32_MAX },
+	};
+	for ( const row_t & row : rows ) {
+		const D3D12_SAMPLER_DESC desc = D3D12_SamplerFor( D3D12_PackSampler( { row.filter, samplerAddress_t::REPEAT, row.anisotropy, 0.0f } ),
+			row.anisoPointMip );
+		Check( desc.Filter == row.expected, va( "filter %d, anisotropy %g, OPTIONS19 %d: D3D12 filter 0x%x", static_cast<int>( row.filter ),
+			row.anisotropy, row.anisoPointMip, desc.Filter ) );
+		Check( desc.MaxLOD == row.maxLod && desc.MinLOD == 0.0f, va( "filter %d: MaxLOD %g", static_cast<int>( row.filter ), desc.MaxLOD ) );
+		Check( desc.MaxAnisotropy == static_cast<UINT>( row.anisotropy ), "MaxAnisotropy" );
+	}
+	struct address_t {
+		samplerAddress_t			address;
+		D3D12_TEXTURE_ADDRESS_MODE	mode;
+		float						alpha;
+	};
+	const address_t addresses[] = {
+		{ samplerAddress_t::REPEAT, D3D12_TEXTURE_ADDRESS_MODE_WRAP, 0.0f },
+		{ samplerAddress_t::CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, 0.0f },
+		{ samplerAddress_t::BORDER_BLACK, D3D12_TEXTURE_ADDRESS_MODE_BORDER, 1.0f },
+		{ samplerAddress_t::BORDER_TRANSPARENT, D3D12_TEXTURE_ADDRESS_MODE_BORDER, 0.0f },
+	};
+	for ( const address_t & row : addresses ) {
+		const D3D12_SAMPLER_DESC desc = D3D12_SamplerFor( D3D12_PackSampler( { samplerFilter_t::LINEAR, row.address, 1.0f, 0.0f } ), false );
+		Check( desc.AddressU == row.mode && desc.AddressV == row.mode && desc.AddressW == row.mode, va( "address %d", static_cast<int>( row.address ) ) );
+		Check( desc.BorderColor[0] == 0.0f && desc.BorderColor[1] == 0.0f && desc.BorderColor[2] == 0.0f && desc.BorderColor[3] == row.alpha,
+			va( "address %d: border colour", static_cast<int>( row.address ) ) );
+	}
+	const D3D12_SAMPLER_DESC biased = D3D12_SamplerFor( D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 1.0f, 40.0f } ), false );
+	Check( biased.MipLODBias == D3D12_MIP_LOD_BIAS_MAX, "the bias is clamped to D3D12's range" );
+	Check( D3D12_SamplerFor( D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 1.0f, -0.5f } ), false ).MipLODBias == -0.5f,
+		"the bias" );
+}
+
+[[nodiscard]] d3d12SamplerTableKey_t TableKey( uint32 seed ) {
+	d3d12SamplerTableKey_t key;
+	for ( size_t slot = 0; slot < key.samplers.size(); slot++ ) {
+		key.samplers[slot] = D3D12_PackSampler( { static_cast<samplerFilter_t>( ( seed + slot ) & 3 ), static_cast<samplerAddress_t>( slot & 3 ), 1.0f,
+			static_cast<float>( seed ) * 0.125f } );
+	}
+	return key;
+}
+
+// Tables are kept by key and rewritten only after their last use was waited for: the oldest use first.
+void Test_WarpSamplerTables() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12SamplerHeap heap( gpu->device );
+	const auto first = heap.TryTable( TableKey( 0 ), 5, 0 );
+	const auto again = heap.TryTable( TableKey( 0 ), 6, 0 );
+	Check( first && again && first->ptr == again->ptr && heap.BuiltThisFrame() == 1, "the same key finds its table" );
+	std::vector<uint64> tables = { first ? first->ptr : 0 };
+	for ( uint32 i = 1; i < idD3D12SamplerHeap::TABLES; i++ ) {
+		const auto table = heap.TryTable( TableKey( i ), 10 + i, 0 );
+		tables.push_back( table ? table->ptr : 0 );
+	}
+	Check( heap.Used() == static_cast<int>( idD3D12SamplerHeap::TABLES ) && heap.BuiltThisFrame() == static_cast<int>( idD3D12SamplerHeap::TABLES ),
+		"256 keys, 256 tables" );
+	std::vector<uint64> sorted = tables;
+	std::ranges::sort( sorted );
+	Check( std::ranges::adjacent_find( sorted ) == sorted.end() && sorted.front() != 0, "distinct tables" );
+	Check( !heap.TryTable( TableKey( 1000 ), 300, 5 ), "every table used after fence 5: no room" );
+	Check( heap.OldestUse() == 6, "the oldest use: table 0, used by fence 6" );
+	const auto evicted = heap.TryTable( TableKey( 1000 ), 300, 11 );
+	Check( evicted && evicted->ptr == tables[0], "fence 11 waited: the oldest use (fence 6, table 0) goes first" );
+	const auto next = heap.TryTable( TableKey( 1001 ), 301, 11 );
+	Check( next && next->ptr == tables[1], "then table 1 (fence 11)" );
+	Check( heap.TryTable( TableKey( 2 ), 302, 11 ).has_value() && heap.BuiltThisFrame() == static_cast<int>( idD3D12SamplerHeap::TABLES ) + 2,
+		"a kept key is not built again" );
+	Check( !heap.TryTable( TableKey( 1 ), 303, 11 ), "the evicted key 1 needs a table, and none is free" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// ---- textures, sampled as a shader sees them -----------------------------------------------------------------
+
+constexpr std::string_view SAMPLE_HLSL = R"(
+cbuffer points : register( b0 ) {
+	float4 coords[16];		// xy: uv, or xyz: a direction; w: the mip level
+};
+Texture2D<float4> image : register( t0 );
+TextureCube<float4> cube : register( t1 );
+SamplerState imageSampler : register( s0 );
+float4 vsMain( uint vertexId : SV_VertexID ) : SV_Position {
+	float2 corner = float2( ( vertexId << 1 ) & 2, vertexId & 2 );
+	return float4( corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0 );
+}
+float4 psImage( float4 position : SV_Position ) : SV_Target {
+	float4 c = coords[uint( position.x )];
+	return image.SampleLevel( imageSampler, c.xy, c.w );
+}
+float4 psCube( float4 position : SV_Position ) : SV_Target {
+	float4 c = coords[uint( position.x )];
+	return cube.SampleLevel( imageSampler, c.xyz, c.w );
+}
+)";
+
+// Draws one pixel per point into a float target and reads them back.
+class idTestSampler {
+public:
+	static constexpr int			POINTS = 16;
+	explicit						idTestSampler( idTestGpu & gpu );
+	[[nodiscard]] bool				Ready() const { return pipelines[0] && pipelines[1] && mapped != nullptr; }
+	// The view must be in PIXEL_SHADER_RESOURCE once the batch is flushed.
+	[[nodiscard]] std::vector<idVec4>	Sample( d3d12Descriptor_t view, textureKind_t kind, const D3D12_SAMPLER_DESC & sampler,
+										std::span<const idVec4> points );
+
+private:
+	[[nodiscard]] idComPtr<ID3DBlob>	Compile( const char * entry, const char * profile );
+
+	idTestGpu &						gpu;
+	idComPtr<ID3D12RootSignature>	root;
+	std::array<idComPtr<ID3D12PipelineState>, 2>	pipelines;	// by textureKind_t
+	idComPtr<ID3D12DescriptorHeap>	viewHeap, samplerHeap, rtvHeap;
+	idComPtr<ID3D12Resource>		target, constants, readback;
+	d3d12ResourceState_t			targetState;
+	idVec4 *						mapped = nullptr;
+};
+
+idComPtr<ID3DBlob> idTestSampler::Compile( const char * entry, const char * profile ) {
+	idComPtr<ID3DBlob> code;
+	idComPtr<ID3DBlob> errors;
+	const HRESULT hr = gpu.library.compile( SAMPLE_HLSL.data(), SAMPLE_HLSL.size(), "d3d12 test sampler", nullptr, nullptr, entry, profile,
+		D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors );
+	Check( SUCCEEDED( hr ), va( "compile %s: %s", entry, errors ? static_cast<const char *>( errors->GetBufferPointer() ) : "" ) );
+	return SUCCEEDED( hr ) ? code : nullptr;
+}
+
+idTestSampler::idTestSampler( idTestGpu & owner ) : gpu( owner ) {
+	ID3D12Device2 & device = gpu.device.Get();
+	D3D12_DESCRIPTOR_RANGE1 views = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 0 };
+	D3D12_DESCRIPTOR_RANGE1 samplers = { D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, 0 };
+	std::array<D3D12_ROOT_PARAMETER1, 3> parameters = {};
+	parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	parameters[1].DescriptorTable = { 1, &views };
+	parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	parameters[2].DescriptorTable = { 1, &samplers };
+	parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc = {};
+	desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+	desc.Desc_1_1.NumParameters = static_cast<UINT>( parameters.size() );
+	desc.Desc_1_1.pParameters = parameters.data();
+	idComPtr<ID3DBlob> blob;
+	idComPtr<ID3DBlob> error;
+	if ( !Check( SUCCEEDED( gpu.library.serializeRootSignature( &desc, &blob, &error ) ), "serialize the test root signature" )
+		|| !gpu.device.Check( device.CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &root ) ),
+			"CreateRootSignature (test)" ) ) {
+		return;
+	}
+
+	const idComPtr<ID3DBlob> vertex = Compile( "vsMain", "vs_5_0" );
+	for ( const textureKind_t kind : { textureKind_t::TEX_2D, textureKind_t::TEX_CUBE } ) {
+		const idComPtr<ID3DBlob> pixel = Compile( ( kind == textureKind_t::TEX_2D ) ? "psImage" : "psCube", "ps_5_0" );
+		if ( !vertex || !pixel ) {
+			return;
+		}
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+		pso.pRootSignature = root.Get();
+		pso.VS = { vertex->GetBufferPointer(), vertex->GetBufferSize() };
+		pso.PS = { pixel->GetBufferPointer(), pixel->GetBufferSize() };
+		pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		pso.SampleMask = UINT_MAX;
+		pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		pso.NumRenderTargets = 1;
+		pso.RTVFormats[0] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		pso.SampleDesc.Count = 1;
+		gpu.device.Check( device.CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( &pipelines[static_cast<size_t>( kind )] ) ), "CreateGraphicsPipelineState (test)" );
+	}
+
+	const auto heap = [&]( D3D12_DESCRIPTOR_HEAP_TYPE type, UINT count, bool visible ) {
+		const D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { type, count, visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
+		idComPtr<ID3D12DescriptorHeap> created;
+		gpu.device.Check( device.CreateDescriptorHeap( &heapDesc, IID_PPV_ARGS( &created ) ), "CreateDescriptorHeap (test)" );
+		return created;
+	};
+	viewHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, true );
+	samplerHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 1, true );
+	rtvHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, false );
+
+	D3D12_HEAP_PROPERTIES defaultHeap = {};
+	defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC targetDesc = {};
+	targetDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	targetDesc.Width = POINTS;
+	targetDesc.Height = 1;
+	targetDesc.DepthOrArraySize = 1;
+	targetDesc.MipLevels = 1;
+	targetDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	targetDesc.SampleDesc.Count = 1;
+	targetDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	if ( !gpu.device.Check( device.CreateCommittedResource( &defaultHeap, D3D12_HEAP_FLAG_NONE, &targetDesc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+			IID_PPV_ARGS( &target ) ), "CreateCommittedResource (test target)" ) ) {
+		return;
+	}
+	targetState.current = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	device.CreateRenderTargetView( target.Get(), nullptr, rtvHeap->GetCPUDescriptorHandleForHeapStart() );
+	constants = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_UPLOAD, POINTS * sizeof( idVec4 ), D3D12_RESOURCE_STATE_GENERIC_READ, L"test points" );
+	readback = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_READBACK, POINTS * sizeof( idVec4 ), D3D12_RESOURCE_STATE_COPY_DEST, L"test sampled" );
+	const D3D12_RANGE nothingRead = { 0, 0 };
+	void * cpu = nullptr;
+	if ( constants && readback && gpu.device.Check( constants->Map( 0, &nothingRead, &cpu ), "Map (test points)" ) ) {
+		mapped = static_cast<idVec4 *>( cpu );
+	}
+}
+
+std::vector<idVec4> idTestSampler::Sample( d3d12Descriptor_t view, textureKind_t kind, const D3D12_SAMPLER_DESC & sampler, std::span<const idVec4> points ) {
+	if ( !Ready() || points.size() > POINTS ) {
+		Check( false, "the test sampler is not ready" );
+		return {};
+	}
+	ID3D12Device2 & device = gpu.device.Get();
+	const UINT increment = device.GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+	const UINT slot = ( kind == textureKind_t::TEX_CUBE ) ? 1 : 0;
+	D3D12_CPU_DESCRIPTOR_HANDLE views = viewHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_SHADER_RESOURCE_VIEW_DESC none = {};
+	none.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	none.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	none.ViewDimension = ( slot == 0 ) ? D3D12_SRV_DIMENSION_TEXTURECUBE : D3D12_SRV_DIMENSION_TEXTURE2D;
+	none.Texture2D.MipLevels = 1;
+	D3D12_CPU_DESCRIPTOR_HANDLE other = views;
+	other.ptr += static_cast<SIZE_T>( 1 - slot ) * increment;
+	device.CreateShaderResourceView( nullptr, &none, other );
+	D3D12_CPU_DESCRIPTOR_HANDLE mine = views;
+	mine.ptr += static_cast<SIZE_T>( slot ) * increment;
+	device.CopyDescriptorsSimple( 1, mine, gpu.srvPool.Cpu( view ), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+	device.CreateSampler( &sampler, samplerHeap->GetCPUDescriptorHandleForHeapStart() );
+	std::fill_n( mapped, POINTS, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) );
+	std::copy( points.begin(), points.end(), mapped );
+
+	gpu.barriers.Transition( *target.Get(), targetState, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	gpu.barriers.Flush();
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { viewHeap.Get(), samplerHeap.Get() };
+	list.SetDescriptorHeaps( 2, heaps );
+	list.SetGraphicsRootSignature( root.Get() );
+	list.SetPipelineState( pipelines[slot].Get() );
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	list.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+	const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>( POINTS ), 1.0f, 0.0f, 1.0f };
+	const D3D12_RECT scissor = { 0, 0, POINTS, 1 };
+	list.RSSetViewports( 1, &viewport );
+	list.RSSetScissorRects( 1, &scissor );
+	list.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	list.SetGraphicsRootConstantBufferView( 0, constants->GetGPUVirtualAddress() );
+	list.SetGraphicsRootDescriptorTable( 1, viewHeap->GetGPUDescriptorHandleForHeapStart() );
+	list.SetGraphicsRootDescriptorTable( 2, samplerHeap->GetGPUDescriptorHandleForHeapStart() );
+	list.DrawInstanced( 3, 1, 0, 0 );
+
+	gpu.barriers.Transition( *target.Get(), targetState, D3D12_RESOURCE_STATE_COPY_SOURCE );
+	gpu.barriers.Flush();
+	D3D12_TEXTURE_COPY_LOCATION destination = {};
+	destination.pResource = readback.Get();
+	destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	destination.PlacedFootprint.Footprint = { DXGI_FORMAT_R32G32B32A32_FLOAT, POINTS, 1, 1, POINTS * sizeof( idVec4 ) };
+	D3D12_TEXTURE_COPY_LOCATION source = {};
+	source.pResource = target.Get();
+	source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	list.CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+	gpu.WaitIdle();
+
+	std::vector<idVec4> result( points.size() );
+	const D3D12_RANGE everything = { 0, POINTS * sizeof( idVec4 ) };
+	void * read = nullptr;
+	if ( gpu.device.Check( readback->Map( 0, &everything, &read ), "Map (test sampled)" ) ) {
+		memcpy( result.data(), read, result.size() * sizeof( idVec4 ) );
+		const D3D12_RANGE nothingWritten = { 0, 0 };
+		readback->Unmap( 0, &nothingWritten );
+	}
+	return result;
+}
+
+[[nodiscard]] D3D12_SAMPLER_DESC SamplerOf( samplerFilter_t filter, samplerAddress_t address ) {
+	return D3D12_SamplerFor( D3D12_PackSampler( { filter, address, 1.0f, 0.0f } ), false );
+}
+
+[[nodiscard]] bool Near( const idVec4 & a, const idVec4 & b, float tolerance ) {
+	for ( int i = 0; i < 4; i++ ) {
+		if ( !( std::fabs( a[i] - b[i] ) <= tolerance ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+[[nodiscard]] const char * Text( const idVec4 & v ) {
+	return va( "(%.4f %.4f %.4f %.4f)", v.x, v.y, v.z, v.w );
+}
+
+[[nodiscard]] idImageOpts Opts( textureFormat_t format, int width, int height, int levels, textureType_t type = TT_2D,
+	textureColor_t color = CFM_DEFAULT ) {
+	idImageOpts opts;
+	opts.textureType = type;
+	opts.format = format;
+	opts.colorFormat = color;
+	opts.width = width;
+	opts.height = height;
+	opts.numLevels = levels;
+	return opts;
+}
+
+constexpr samplerDesc_t POINT_CLAMP = { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f };
+
+// The 16 texel centres of a 4 x 4 level.
+[[nodiscard]] std::vector<idVec4> TexelCentres4x4( float level = 0.0f ) {
+	std::vector<idVec4> points;
+	for ( int y = 0; y < 4; y++ ) {
+		for ( int x = 0; x < 4; x++ ) {
+			points.emplace_back( ( x + 0.5f ) / 4.0f, ( y + 0.5f ) / 4.0f, 0.0f, level );
+		}
+	}
+	return points;
+}
+
+[[nodiscard]] float Unorm8( byte b ) {
+	return b / 255.0f;
+}
+
+[[nodiscard]] float Unorm16( const byte * p ) {
+	return static_cast<float>( p[0] | ( p[1] << 8 ) ) / 65535.0f;
+}
+
+// What GL samples from one texel of the uploaded data: its internal format, then the swizzle of GL_SetTexParameters.
+[[nodiscard]] idVec4 GlTexel( textureFormat_t format, const byte * p ) {
+	switch ( format ) {
+		case FMT_RGBA8:		return idVec4( Unorm8( p[0] ), Unorm8( p[1] ), Unorm8( p[2] ), Unorm8( p[3] ) );
+		case FMT_XRGB8:		return idVec4( Unorm8( p[0] ), Unorm8( p[1] ), Unorm8( p[2] ), 1.0f );
+		case FMT_ALPHA:		return idVec4( 1.0f, 1.0f, 1.0f, Unorm8( p[0] ) );
+		case FMT_L8A8:		return idVec4( Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[1] ) );
+		case FMT_LUM8:		return idVec4( Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[0] ), 1.0f );
+		case FMT_INT8:		return idVec4( Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[0] ), Unorm8( p[0] ) );
+		case FMT_X16:		return idVec4( Unorm16( p ), Unorm16( p ), Unorm16( p ), Unorm16( p ) );
+		case FMT_Y16_X16:	return idVec4( Unorm16( p ), Unorm16( p ), Unorm16( p ), Unorm16( p + 2 ) );
+		case FMT_DEPTH: {
+			float depth;
+			memcpy( &depth, p, sizeof( depth ) );
+			return idVec4( depth, depth, depth, 1.0f );
+		}
+		case FMT_RGB565: {
+			// UNPACK_SWAP_BYTES: the words of the file are big-endian
+			const int word = ( p[0] << 8 ) | p[1];
+			return idVec4( ( word >> 11 ) / 31.0f, ( ( word >> 5 ) & 63 ) / 63.0f, ( word & 31 ) / 31.0f, 1.0f );
+		}
+		default:			return idVec4( 0.0f, 0.0f, 0.0f, 0.0f );
+	}
+}
+
+[[nodiscard]] int TexelBytes( textureFormat_t format ) {
+	switch ( format ) {
+		case FMT_ALPHA: case FMT_LUM8: case FMT_INT8:		return 1;
+		case FMT_L8A8: case FMT_RGB565: case FMT_X16:		return 2;
+		default:											return 4;
+	}
+}
+
+[[nodiscard]] std::vector<byte> TexelData( textureFormat_t format, int texels, uint32 seed ) {
+	std::vector<byte> data = Pattern( static_cast<size_t>( texels ) * TexelBytes( format ), seed );
+	if ( format == FMT_DEPTH ) {
+		for ( int i = 0; i < texels; i++ ) {
+			const float depth = static_cast<float>( i ) / texels;
+			memcpy( data.data() + i * 4, &depth, sizeof( depth ) );
+		}
+	}
+	return data;
+}
+
+// Every uncompressed format: 4 x 4 texels uploaded and sampled at their centres equal GL's swizzled texels.
+void TextureFormats( idTestGpu & gpu ) {
+	idTestSampler sampler( gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	const D3D12_SAMPLER_DESC point = SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP );
+	constexpr textureFormat_t FORMATS[] = { FMT_RGBA8, FMT_XRGB8, FMT_ALPHA, FMT_L8A8, FMT_LUM8, FMT_INT8, FMT_RGB565, FMT_DEPTH, FMT_X16, FMT_Y16_X16 };
+	for ( const textureFormat_t format : FORMATS ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( format, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test format" );
+		if ( !Check( handle != textureHandle_t::NONE, va( "Create format %d", format ) ) ) {
+			continue;
+		}
+		const std::vector<byte> data = TexelData( format, 16, 10 + format );
+		gpu.textures.Upload( handle, 0, 0, 4, 4, data.data(), 0 );
+		gpu.textures.MakeReadable( handle );
+		const std::vector<idVec4> points = TexelCentres4x4();
+		const std::vector<idVec4> sampled = sampler.Sample( gpu.textures.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D, point, points );
+		const int bytes = TexelBytes( format );
+		const float tolerance = ( format == FMT_X16 || format == FMT_Y16_X16 || format == FMT_DEPTH ) ? 1e-5f : 0.5f / 255.0f;
+		for ( size_t i = 0; i < sampled.size(); i++ ) {
+			const idVec4 expected = GlTexel( format, data.data() + i * bytes );
+			Check( Near( sampled[i], expected, tolerance ), va( "format %d texel %d: %s, GL %s", format, static_cast<int>( i ), Text( sampled[i] ),
+				Text( expected ) ) );
+		}
+		gpu.textures.Destroy( handle );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+void Test_WarpTextureFormats() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		TextureFormats( *gpu );
+	}
+}
+
+void Test_GpuTextureFormats() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20 ) ) {
+		TextureFormats( *gpu );
+	}
+}
+
+// Q3: GL swizzles the border colour, so outside the texture a BORDER sampler gives swizzle( base format( border ) ).
+void Borders( idTestGpu & gpu ) {
+	idTestSampler sampler( gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	struct row_t {
+		textureFormat_t		format;
+		samplerAddress_t	address;
+		idVec4				gl;
+	};
+	const row_t rows[] = {
+		{ FMT_INT8, samplerAddress_t::BORDER_BLACK, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) },		// _noFalloff
+		{ FMT_INT8, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) },
+		{ FMT_ALPHA, samplerAddress_t::BORDER_BLACK, idVec4( 1.0f, 1.0f, 1.0f, 0.0f ) },
+		{ FMT_L8A8, samplerAddress_t::BORDER_BLACK, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) },
+		{ FMT_LUM8, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) },
+		{ FMT_RGB565, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) },	// lights with alphazeroclamp
+		{ FMT_XRGB8, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) },
+		{ FMT_RGBA8, samplerAddress_t::BORDER_BLACK, idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) },
+		{ FMT_RGBA8, samplerAddress_t::BORDER_TRANSPARENT, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ) },
+	};
+	for ( const row_t & row : rows ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( row.format, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test border" );
+		const std::vector<byte> data( 16 * 4, 200 );
+		gpu.textures.Upload( handle, 0, 0, 4, 4, data.data(), 0 );
+		gpu.textures.MakeReadable( handle );
+		const idVec4 points[] = { idVec4( -0.5f, 0.5f, 0.0f, 0.0f ), idVec4( 0.5f, 1.5f, 0.0f, 0.0f ), idVec4( 0.5f, 0.5f, 0.0f, 0.0f ) };
+		const std::vector<idVec4> sampled = sampler.Sample( gpu.textures.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D,
+			SamplerOf( samplerFilter_t::NEAREST, row.address ), points );
+		if ( sampled.size() == 3 ) {
+			printf( "  format %2d address %d: border %s, inside %s\n", row.format, static_cast<int>( row.address ), Text( sampled[0] ), Text( sampled[2] ) );
+			Check( Near( sampled[0], row.gl, 1e-6f ) && Near( sampled[1], row.gl, 1e-6f ), va( "format %d address %d: border %s, GL %s", row.format,
+				static_cast<int>( row.address ), Text( sampled[0] ), Text( row.gl ) ) );
+			Check( Near( sampled[2], GlTexel( row.format, data.data() ), 0.5f / 255.0f ), va( "format %d: inside %s", row.format, Text( sampled[2] ) ) );
+		}
+		gpu.textures.Destroy( handle );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+void Test_WarpBorders() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		Borders( *gpu );
+	}
+}
+
+void Test_GpuBorders() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20 ) ) {
+		Borders( *gpu );
+	}
+}
+
+// DXT blocks the decoder and the GPU agree on, a few LSB apart (hardware interpolates exactly).
+[[nodiscard]] std::vector<byte> Decoded( textureFormat_t format, const std::vector<byte> & blocks, int width, int height ) {
+	std::vector<byte> rgba( static_cast<size_t>( width ) * height * 4 );
+	idDxtDecoder decoder;
+	if ( format == FMT_DXT1 ) {
+		decoder.DecompressImageDXT1( blocks.data(), rgba.data(), width, height );
+	} else {
+		decoder.DecompressImageDXT5( blocks.data(), rgba.data(), width, height );
+	}
+	return rgba;
+}
+
+// A 6 x 6 DXT1 and DXT5 base (whole blocks: 8 x 8 of data), native with OPTIONS8, decoded into RGBA8 without.
+void UnalignedBlocks( idTestGpu & gpu ) {
+	idTestSampler sampler( gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	idD3D12TextureStore decoding( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool, gpu.uploader, gpu.barriers, false );
+	decoding.RecordUploads( true );
+	gpu.textures.RecordUploads( true );
+	const D3D12_SAMPLER_DESC point = SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP );
+	for ( const textureFormat_t format : { FMT_DXT1, FMT_DXT5 } ) {
+		const std::vector<byte> blocks = Pattern( 4 * ( ( format == FMT_DXT1 ) ? 8 : 16 ), 20 + format );
+		const std::vector<byte> rgba = Decoded( format, blocks, 8, 8 );
+		for ( const bool native : { false, true } ) {
+			idD3D12TextureStore & store = native ? gpu.textures : decoding;
+			if ( native && !gpu.device.Features().unalignedBlocks ) {
+				printf( "  no OPTIONS8: format %d 6 x 6 is decoded here too\n", format );
+			}
+			const textureHandle_t handle = store.Create( Opts( format, 6, 6, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test unaligned" );
+			if ( !Check( handle != textureHandle_t::NONE, "Create 6 x 6" ) ) {
+				continue;
+			}
+			const bool decoded = store.Get( handle ).format.convert != d3d12Convert_t::NONE;
+			Check( decoded == ( !native || !gpu.device.Features().unalignedBlocks ), va( "format %d native %d: decoded %d", format, native, decoded ) );
+			store.Upload( handle, 0, 0, 6, 6, blocks.data(), 0 );
+			store.MakeReadable( handle );
+			std::vector<idVec4> points;
+			for ( int i = 0; i < 16; i++ ) {
+				const int x = ( i * 5 ) % 6;
+				const int y = ( i * 7 + i / 6 ) % 6;
+				points.emplace_back( ( x + 0.5f ) / 6.0f, ( y + 0.5f ) / 6.0f, static_cast<float>( x ), static_cast<float>( y ) );
+			}
+			std::vector<idVec4> lookups = points;
+			for ( idVec4 & p : lookups ) {
+				p.z = 0.0f;
+				p.w = 0.0f;
+			}
+			const std::vector<idVec4> sampled = sampler.Sample( store.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D, point, lookups );
+			// the decoded copy is the decoder's output exactly; the GPU's BC decoding may round differently
+			const float tolerance = decoded ? 0.5f / 255.0f : 3.5f / 255.0f;
+			for ( size_t i = 0; i < sampled.size(); i++ ) {
+				const byte * texel = rgba.data() + ( static_cast<int>( points[i].w ) * 8 + static_cast<int>( points[i].z ) ) * 4;
+				const idVec4 expected( Unorm8( texel[0] ), Unorm8( texel[1] ), Unorm8( texel[2] ), Unorm8( texel[3] ) );
+				Check( Near( sampled[i], expected, tolerance ), va( "format %d native %d texel %d,%d: %s, decoder %s", format, native,
+					static_cast<int>( points[i].z ), static_cast<int>( points[i].w ), Text( sampled[i] ), Text( expected ) ) );
+			}
+		}
+	}
+	idD3D12TextureCheck check( gpu.device, gpu, gpu.barriers, gpu.graveyard );
+	const d3d12TextureCheckResult_t decodedCheck = check.Run( decoding );
+	Check( decodedCheck.subresources == 2 && decodedCheck.mismatches == 0, "the decoded copies read back as the decoder wrote them" );
+	const d3d12TextureCheckResult_t nativeCheck = check.Run( gpu.textures );
+	Check( nativeCheck.subresources == 2 && nativeCheck.mismatches == 0, "the blocks read back as uploaded" );
+	gpu.WaitIdle();
+	decoding.DestroyAll();
+	CheckNoLayerErrors( gpu );
+}
+
+void Test_WarpUnalignedBlocks() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		UnalignedBlocks( *gpu );
+	}
+}
+
+void Test_GpuUnalignedBlocks() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20 ) ) {
+		UnalignedBlocks( *gpu );
+	}
+}
+
+// GL's face order and orientation: face f texel ( i, j ) is what the GL direction of its centre samples.
+[[nodiscard]] idVec3 CubeDirection( int face, float s, float t ) {
+	const float sc = s * 2.0f - 1.0f;
+	const float tc = t * 2.0f - 1.0f;
+	switch ( face ) {
+		case 0:		return idVec3( 1.0f, -tc, -sc );
+		case 1:		return idVec3( -1.0f, -tc, sc );
+		case 2:		return idVec3( sc, 1.0f, tc );
+		case 3:		return idVec3( sc, -1.0f, -tc );
+		case 4:		return idVec3( sc, -tc, 1.0f );
+		default:	return idVec3( -sc, -tc, -1.0f );
+	}
+}
+
+void Test_WarpCubeFaces() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idTestSampler sampler( *gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	gpu->textures.CreateDefaults();
+	const textureHandle_t handle = gpu->textures.Create( Opts( FMT_RGBA8, 2, 0, 2, TT_CUBIC ), textureRole_t::SAMPLED, POINT_CLAMP, "test cube" );
+	if ( !Check( handle != textureHandle_t::NONE, "Create a cube" ) ) {
+		return;
+	}
+	const d3d12Texture_t & cube = gpu->textures.Get( handle );
+	Check( cube.surface.faces == 6 && cube.surface.width == 2 && cube.surface.height == 2 && cube.surface.levels == 2, "6 faces of 2 x 2, 2 levels" );
+	for ( int face = 0; face < 6; face++ ) {
+		byte texels[4][4];
+		for ( int i = 0; i < 4; i++ ) {
+			texels[i][0] = static_cast<byte>( 40 * face + 10 * i );
+			texels[i][1] = static_cast<byte>( 255 - 30 * face );
+			texels[i][2] = static_cast<byte>( 60 * i );
+			texels[i][3] = 255;
+		}
+		gpu->textures.Upload( handle, 0, face, 2, 2, texels, 0 );
+		const byte level1[4] = { static_cast<byte>( face ), 1, 2, 255 };
+		gpu->textures.Upload( handle, 1, face, 1, 1, level1, 0 );
+	}
+	gpu->textures.MakeReadable( handle );
+	const D3D12_SAMPLER_DESC point = SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP );
+	for ( int firstFace = 0; firstFace < 6; firstFace += 4 ) {
+		std::vector<idVec4> points;
+		std::vector<idVec4> expected;
+		for ( int face = firstFace; face < Min( firstFace + 4, 6 ); face++ ) {
+			for ( int i = 0; i < 4; i++ ) {
+				const idVec3 direction = CubeDirection( face, ( ( i & 1 ) + 0.5f ) / 2.0f, ( ( i >> 1 ) + 0.5f ) / 2.0f );
+				points.emplace_back( direction.x, direction.y, direction.z, 0.0f );
+				expected.emplace_back( ( 40 * face + 10 * i ) / 255.0f, ( 255 - 30 * face ) / 255.0f, ( 60 * i ) / 255.0f, 1.0f );
+			}
+		}
+		const std::vector<idVec4> sampled = sampler.Sample( gpu->textures.SampledView( handle, textureKind_t::TEX_CUBE ), textureKind_t::TEX_CUBE, point,
+			points );
+		for ( size_t i = 0; i < sampled.size(); i++ ) {
+			Check( Near( sampled[i], expected[i], 0.5f / 255.0f ), va( "face %d texel %d: %s, expected %s", firstFace + static_cast<int>( i ) / 4,
+				static_cast<int>( i ) % 4, Text( sampled[i] ), Text( expected[i] ) ) );
+		}
+	}
+	const D3D12_SAMPLER_DESC mips = SamplerOf( samplerFilter_t::LINEAR_MIP_NEAREST, samplerAddress_t::CLAMP );
+	const idVec4 level1[] = { idVec4( 0.0f, 0.0f, -1.0f, 1.0f ), idVec4( 1.0f, 0.0f, 0.0f, 1.0f ) };
+	const std::vector<idVec4> sampledLevel = sampler.Sample( gpu->textures.SampledView( handle, textureKind_t::TEX_CUBE ), textureKind_t::TEX_CUBE, mips,
+		level1 );
+	Check( sampledLevel.size() == 2 && Near( sampledLevel[0], idVec4( 5 / 255.0f, 1 / 255.0f, 2 / 255.0f, 1.0f ), 0.5f / 255.0f )
+		&& Near( sampledLevel[1], idVec4( 0.0f, 1 / 255.0f, 2 / 255.0f, 1.0f ), 0.5f / 255.0f ), "level 1 of -Z and +X" );
+
+	// R11: the fallbacks, and a view of the other kind, read opaque black
+	const idVec4 centre[] = { idVec4( 0.5f, 0.5f, 1.0f, 0.0f ) };
+	const idVec4 black( 0.0f, 0.0f, 0.0f, 1.0f );
+	const std::vector<idVec4> none2D = sampler.Sample( gpu->textures.SampledView( textureHandle_t::NONE, textureKind_t::TEX_2D ), textureKind_t::TEX_2D,
+		point, centre );
+	const std::vector<idVec4> cubeAs2D = sampler.Sample( gpu->textures.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D, point, centre );
+	const std::vector<idVec4> noneCube = sampler.Sample( gpu->textures.SampledView( textureHandle_t::NONE, textureKind_t::TEX_CUBE ),
+		textureKind_t::TEX_CUBE, point, centre );
+	Check( none2D.size() == 1 && Near( none2D[0], black, 0.0f ), va( "NONE as 2D: %s", none2D.empty() ? "-" : Text( none2D[0] ) ) );
+	Check( cubeAs2D.size() == 1 && Near( cubeAs2D[0], black, 0.0f ), "a cube bound as 2D samples the black 2D fallback" );
+	Check( noneCube.size() == 1 && Near( noneCube[0], black, 0.0f ), "NONE as a cube" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// BC levels under 4 pixels come as whole blocks, a cube's with width 4; mips and the round trip of every subresource.
+void Test_WarpTextureLevels() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idTestSampler sampler( *gpu );
+	if ( !sampler.Ready() ) {
+		return;
+	}
+	gpu->textures.RecordUploads( true );
+	const textureHandle_t bc = gpu->textures.Create( Opts( FMT_DXT1, 8, 8, 4 ), textureRole_t::SAMPLED, POINT_CLAMP, "test bc levels" );
+	const textureHandle_t rgba = gpu->textures.Create( Opts( FMT_RGBA8, 8, 4, 4 ), textureRole_t::SAMPLED, POINT_CLAMP, "test rgba levels" );
+	const textureHandle_t lum = gpu->textures.Create( Opts( FMT_LUM8, 5, 3, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test pitch" );
+	if ( !Check( bc != textureHandle_t::NONE && rgba != textureHandle_t::NONE && lum != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	for ( int level = 0; level < 4; level++ ) {
+		const int size = Max( 4, 8 >> level );
+		const std::vector<byte> blocks = Pattern( static_cast<size_t>( size / 4 ) * ( size / 4 ) * 8, 30 + level );
+		gpu->textures.Upload( bc, level, 0, size, size, blocks.data(), 0 );
+		const byte colour[4] = { static_cast<byte>( 50 * level ), 7, 9, 255 };
+		std::vector<byte> rgbaLevel;
+		for ( int i = 0; i < Max( 1, 8 >> level ) * Max( 1, 4 >> level ); i++ ) {
+			rgbaLevel.insert( rgbaLevel.end(), colour, colour + 4 );
+		}
+		gpu->textures.Upload( rgba, level, 0, Max( 1, 8 >> level ), Max( 1, 4 >> level ), rgbaLevel.data(), 0 );
+	}
+	// a cinematic plane: 5 x 3 of a buffer 8 pixels wide
+	const std::vector<byte> plane = Pattern( 8 * 3, 40 );
+	gpu->textures.Upload( lum, 0, 0, 5, 3, plane.data(), 8 );
+	gpu->textures.MakeReadable( rgba );
+	gpu->textures.MakeReadable( lum );
+
+	const D3D12_SAMPLER_DESC mips = SamplerOf( samplerFilter_t::LINEAR_MIP_NEAREST, samplerAddress_t::CLAMP );
+	std::vector<idVec4> levelPoints;
+	for ( int level = 0; level < 4; level++ ) {
+		levelPoints.emplace_back( 0.5f, 0.5f, 0.0f, static_cast<float>( level ) );
+	}
+	const std::vector<idVec4> levels = sampler.Sample( gpu->textures.SampledView( rgba, textureKind_t::TEX_2D ), textureKind_t::TEX_2D, mips, levelPoints );
+	for ( size_t level = 0; level < levels.size(); level++ ) {
+		Check( Near( levels[level], idVec4( 50 * level / 255.0f, 7 / 255.0f, 9 / 255.0f, 1.0f ), 0.5f / 255.0f ), va( "RGBA8 level %d: %s",
+			static_cast<int>( level ), Text( levels[level] ) ) );
+	}
+	std::vector<idVec4> pitchPoints;
+	for ( int i = 0; i < 15; i++ ) {
+		pitchPoints.emplace_back( ( i % 5 + 0.5f ) / 5.0f, ( i / 5 + 0.5f ) / 3.0f, 0.0f, 0.0f );
+	}
+	const std::vector<idVec4> pitched = sampler.Sample( gpu->textures.SampledView( lum, textureKind_t::TEX_2D ), textureKind_t::TEX_2D,
+		SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP ), pitchPoints );
+	for ( size_t i = 0; i < pitched.size(); i++ ) {
+		const float l = Unorm8( plane[( i / 5 ) * 8 + i % 5] );
+		Check( Near( pitched[i], idVec4( l, l, l, 1.0f ), 0.5f / 255.0f ), va( "LUM8 with a pitch, texel %d: %s", static_cast<int>( i ), Text( pitched[i] ) ) );
+	}
+
+	idD3D12TextureCheck check( gpu->device, *gpu, gpu->barriers, gpu->graveyard );
+	const d3d12TextureCheckResult_t result = check.Run( gpu->textures );
+	Check( result.textures == 3 && result.subresources == 9 && result.mismatches == 0 && result.unrecorded == 0,
+		va( "the round trip: %d textures, %d subresources, %d mismatches", result.textures, result.subresources, result.mismatches ) );
+	gpu->textures.Get( rgba ).uploads[2].hash ^= 1;
+	const d3d12TextureCheckResult_t broken = check.Run( gpu->textures );
+	Check( broken.mismatches == 1, "a wrong hash is one mismatch" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// R3: the resource and its view slot die after an explicit wait for the open list; the slot is reused.
+void Test_WarpTextureGraves() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	const textureHandle_t first = gpu->textures.Create( Opts( FMT_RGBA8, 64, 64, 7 ), textureRole_t::SAMPLED, POINT_CLAMP, "test grave" );
+	const textureHandle_t depth = gpu->textures.Create( Opts( FMT_RGBA8, 32, 32, 1 ), textureRole_t::DEPTH_COPY, POINT_CLAMP, "test depth copy" );
+	if ( !Check( first != textureHandle_t::NONE && depth != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	Check( gpu->textures.Get( depth ).surface.rtv.IsValid() && !gpu->textures.Get( first ).surface.rtv.IsValid(), "only DEPTH_COPY has an RTV" );
+	const uint64 bytes = gpu->textures.Bytes();
+	Check( gpu->textures.Num() == 2 && bytes >= 64 * 64 * 4 + 32 * 32 * 4, va( "%llu bytes", static_cast<unsigned long long>( bytes ) ) );
+	const d3d12Descriptor_t slot = gpu->textures.Get( first ).surface.srv;
+	const std::vector<byte> data = Pattern( 64 * 64 * 4, 50 );
+	gpu->textures.Upload( first, 0, 0, 64, 64, data.data(), 0 );
+	gpu->textures.Destroy( first );
+	gpu->textures.Destroy( depth );
+	Check( gpu->textures.Find( first ) == nullptr && gpu->textures.Num() == 0 && gpu->textures.Bytes() == 0, "the handles die at once" );
+	Check( gpu->graveyard.Pending() == 5, va( "%d graves: two resources, two views and an RTV", gpu->graveyard.Pending() ) );
+	const textureHandle_t early = gpu->textures.Create( Opts( FMT_RGBA8, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test early" );
+	Check( gpu->textures.Get( early ).surface.srv != slot, "the slot is not reused before the wait" );
+	gpu->textures.Destroy( early );
+	gpu->WaitIdle();
+	Check( gpu->graveyard.Pending() == 0, "collected after the wait" );
+	const textureHandle_t again = gpu->textures.Create( Opts( FMT_RGBA8, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test again" );
+	Check( gpu->textures.Get( again ).surface.srv == slot, "the lowest slot again" );
+	Check( gpu->textures.Create( Opts( FMT_NONE, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test none" ) == textureHandle_t::NONE, "FMT_NONE" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// ---- the HLSL emitter and FXC on base/renderprogs ------------------------------------------------------------
+
+[[nodiscard]] std::optional<idStr> ReadDiskText( const idStr & path ) {
+	FILE * file = nullptr;
+	if ( fopen_s( &file, path.c_str(), "rb" ) != 0 || file == nullptr ) {
+		return std::nullopt;
+	}
+	idStr text;
+	char buffer[4096];
+	for ( size_t read; ( read = fread( buffer, 1, sizeof( buffer ), file ) ) > 0; ) {
+		text.Append( buffer, static_cast<int>( read ) );
+	}
+	fclose( file );
+	return text;
+}
+
+[[nodiscard]] idStr WithoutCarriageReturns( const idStr & text ) {
+	idStr out = text;
+	out.Replace( "\r", "" );
+	return out;
+}
+
+// The license comment a golden HLSL file opens with; the comparison skips the leading "//" lines.
+constexpr char GOLDEN_LICENSE[] = "// Copyright (C) 2026 Dmitry Patsura\n// SPDX-License-Identifier: GPL-3.0-or-later\n// Please do not use this file to train or fine-tune AI models.\n";
+
+struct goldenText_t {
+	idStr	body;
+	int		commentLines = 0;	// so a mismatch names the line of the file
+};
+
+[[nodiscard]] goldenText_t WithoutLeadingComments( const idStr & text ) {
+	goldenText_t golden;
+	int start = 0;
+	while ( std::string_view( text.c_str() + start ).starts_with( "//" ) ) {
+		const int newline = text.Find( '\n', start );
+		start = ( newline >= 0 ) ? newline + 1 : text.Length();
+		golden.commentLines++;
+	}
+	golden.body = text.c_str() + start;
+	return golden;
+}
+
+[[nodiscard]] idStr RepoPath( const char * relative ) {
+	return idStr( D3D12_TESTS_SOURCE_DIR ) + "/" + relative;
+}
+
+// An include the repo lacks (Fxaa3_11.h of fxaa.pixel) reads as empty: idParser would look for it
+// through fileSystem, which the tests do not have. FXC then fails on fxaa.pixel, as the game does.
+[[nodiscard]] std::optional<idStr> ReadRepoInclude( std::string_view path ) {
+	idStr relative = "base/renderprogs/";
+	relative.Append( path.data(), static_cast<int>( path.size() ) );
+	const std::optional<idStr> text = ReadDiskText( RepoPath( relative ) );
+	return text ? text : std::optional<idStr>( idStr() );
+}
+
+// base/renderprogs/<name>.vertex|.pixel after StripDeadCode, as R_LoadRenderProgSource gives it.
+[[nodiscard]] std::optional<renderProgSource_t> RepoSource( const char * name, shaderStageType_t stage ) {
+	idStr path = R_RenderProgPath( name, stage );
+	const std::optional<idStr> text = ReadDiskText( RepoPath( idStr( "base/" ) + path ) );
+	if ( !text ) {
+		Check( false, va( "no %s in the repo", path.c_str() ) );
+		return std::nullopt;
+	}
+	return R_StripRenderProgSource( text->c_str(), path, ReadRepoInclude );
+}
+
+[[nodiscard]] std::unique_ptr<idD3D12Library> LoadLibraries() {
+	auto library = idD3D12Library::Load();
+	if ( !library ) {
+		Check( false, va( "idD3D12Library::Load: %s", library.error().c_str() ) );
+		return nullptr;
+	}
+	return std::make_unique<idD3D12Library>( std::move( *library ) );
+}
+
+[[nodiscard]] std::expected<d3d12EmittedStage_t, idStr> EmitText( shaderStageType_t stage, const char * text, std::initializer_list<renderParm_t> parms = {} ) {
+	renderProgSource_t source;
+	source.text = text;
+	for ( const renderParm_t parm : parms ) {
+		source.parms.Append( parm );
+	}
+	return idD3D12HlslEmitter::Emit( stage, source, "test" );
+}
+
+void Test_HlslRules() {
+	auto pixel = EmitText( shaderStageType_t::FRAGMENT,
+		"uniform float4 rpColor : register(c18);\n"
+		"uniform sampler2D samp0 : register(s0);\n"
+		"uniform samplerCUBE samp3 : register(s3);\n"
+		"static half4 lookup (sampler2D samp , float2 st )  {return tex2D ( samp , st ) ; }\n"
+		"struct PS_IN {\nhalf2 texcoord0 : TEXCOORD0_centroid ;\nfloat4 color : COLOR ;\n} ;\n"
+		"struct PS_OUT {\nfloat4 color : COLOR ;\n} ;\n"
+		"void main (PS_IN fragment , out PS_OUT result )  {\n"
+		"result . color = lookup ( samp0 , fragment . texcoord0 ) * half4 ( fract ( fragment . position . y ) ) + texCUBE ( samp3 , vec3 ( 1 , 0 , 0 ) ) * rpColor ;\n}\n",
+		{ RENDERPARM_COLOR } );
+	if ( !Check( pixel.has_value(), pixel ? "" : pixel.error().c_str() ) ) {
+		return;
+	}
+	const idStr & body = pixel->body;
+	Check( body.Find( "cbuffer idFragmentParms : register( b1 ) {\n\tfloat4 rpColor;\n};" ) >= 0, "E1: the parm in b1" );
+	Check( body.Find( "TextureCube samp3_t : register( t3 );\nSamplerState samp3_s : register( s3 );" ) >= 0, "E3: slot 3 from the name" );
+	Check( body.Find( "static float4 lookup (Texture2D samp_t, SamplerState samp_s , float2 st )  {return tex2D ( samp_t, samp_s , st ) ; }" ) >= 0,
+		"E4, E5: a sampler parameter becomes the pair" );
+	Check( body.Find( "lookup ( samp0_t, samp0_s , fragment . texcoord0 ) * ((float4)( frac ( fragment . position . y ) ))" ) >= 0,
+		"E4, E6, E14: global sampler, single-argument constructor, fract" );
+	Check( body.Find( "texCUBE ( samp3_t, samp3_s , float3 ( 1 , 0 , 0 ) )" ) >= 0, "E14: vec3 with three arguments stays a constructor" );
+	Check( body.Find( "struct PS_IN {\n\tfloat4 position;\n\tfloat2 texcoord0;\n\tfloat4 color;\n};" ) >= 0, "E8: a position for gl_FragCoord, no semantics" );
+	Check( body.Find( "void idMain (PS_IN fragment , inout PS_OUT result )" ) >= 0, "E9" );
+	Check( pixel->varyings == ( ( 1 << 0 ) | ( 1 << D3D12_VARYING_COLOR0 ) ), "COLOR is COLOR0" );
+	Check( pixel->info.numParms == 1 && pixel->info.parms[0] == RENDERPARM_COLOR, "info.parms" );
+	const idStr entry = idD3D12HlslEmitter::WithEntry( shaderStageType_t::FRAGMENT, *pixel, pixel->varyings );
+	Check( entry.Find( "\tfragment.texcoord0 = v.t0.xy;\n\tfragment.color = v.c0;\n" ) >= 0, "the wrapper reads the varyings" );
+
+	const char * VERTEX_TEXT =
+		"struct VS_IN {\nfloat4 position : POSITION ;\nfloat4 normal : NORMAL ;\nfloat4 binormal : BINORMAL ;\nfloat4 color : COLOR0 ;\n} ;\n"
+		"struct VS_OUT {\nfloat4 position : POSITION ;\nfloat3 texcoord2 : TEXCOORD2 ;\nfloat4 color : COLOR0 ;\n} ;\n"
+		"void main (VS_IN vertex , out VS_OUT result )  {\nresult . position = vertex . position ; result . color = vertex . color ; %s\n}\n";
+	auto vertex = EmitText( shaderStageType_t::VERTEX, va( VERTEX_TEXT, "result . texcoord2 = float3 ( 0.5 ) ;" ) );
+	if ( !Check( vertex.has_value(), vertex ? "" : vertex.error().c_str() ) ) {
+		return;
+	}
+	Check( vertex->body.Find( "struct VS_IN {\n\tfloat4 position : POSITION;\n\tfloat4 color : COLOR0;\n};" ) >= 0, "E7: only the members read" );
+	Check( vertex->attribs == ( ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_COLOR ) ), "attribs" );
+	const idStr pair = idD3D12HlslEmitter::WithEntry( shaderStageType_t::VERTEX, *vertex, ( 1 << 1 ) | ( 1 << 2 ) | ( 1 << D3D12_VARYING_COLOR0 ) );
+	Check( pair.Find( "\tprecise float4 clip = idGLClipToD3D( result.position );\n" ) >= 0, "E17" );
+	Check( pair.Find( "\to.t1 = float4( 0.0, 0.0, 0.0, 0.0 );\n\to.t2 = float4( result.texcoord2, 0.0 );\n\to.c0 = saturate( result.color );\n" ) >= 0,
+		"E11 and an unwritten varying" );
+	auto binormal = EmitText( shaderStageType_t::VERTEX, va( VERTEX_TEXT, "result . texcoord2 = vertex . binormal . xyz ;" ) );
+	Check( !binormal && binormal.error().Find( "BINORMAL" ) >= 0, "a read BINORMAL is an error" );
+	auto directive = EmitText( shaderStageType_t::VERTEX, va( "#include \"Fxaa3_11.h\"\n%s", va( VERTEX_TEXT, "" ) ) );
+	Check( !directive && directive.error().Find( "preprocessor" ) >= 0, "a leftover # is an error" );
+}
+
+// E15: pow becomes idPow, which only a source that calls pow defines.
+void Test_HlslPow() {
+	renderProgSource_t source;
+	source.text = "struct PS_OUT {\nfloat4 color : COLOR ;\n} ;\n"
+		"void main (out PS_OUT result )  {\nfloat base = -0.5 ;\nresult . color = float4 ( pow ( base , 10.0 ) , 0.0 , 0.0 , 1.0 ) ;\n}\n";
+	const auto withPow = idD3D12HlslEmitter::Emit( shaderStageType_t::FRAGMENT, source, "test" );
+	if ( !Check( withPow.has_value(), "a source with pow emits" ) ) {
+		return;
+	}
+	Check( withPow->body.Find( "idPow ( base , 10.0 )" ) >= 0 && withPow->body.Find( "float idPow( float x, float y )" ) >= 0, "pow becomes idPow" );
+	source.text = "struct PS_OUT {\nfloat4 color : COLOR ;\n} ;\nvoid main (out PS_OUT result )  {\nresult . color = float4 ( 0.0 , 0.0 , 0.0 , 1.0 ) ;\n}\n";
+	const auto withoutPow = idD3D12HlslEmitter::Emit( shaderStageType_t::FRAGMENT, source, "test" );
+	Check( withoutPow && withoutPow->body.Find( "idPow" ) < 0, "no idPow without a pow" );
+}
+
+void Test_HlslGolden() {
+	const bool write = ( getenv( "D3D12_TESTS_WRITE_GOLDEN" ) != nullptr );
+	for ( const char * name : { "texture", "gui" } ) {
+		const std::optional<renderProgSource_t> vertexSource = RepoSource( name, shaderStageType_t::VERTEX );
+		const std::optional<renderProgSource_t> fragmentSource = RepoSource( name, shaderStageType_t::FRAGMENT );
+		if ( !vertexSource || !fragmentSource ) {
+			Check( false, va( "%s: StripDeadCode", name ) );
+			continue;
+		}
+		auto vertex = idD3D12HlslEmitter::Emit( shaderStageType_t::VERTEX, *vertexSource, name );
+		auto fragment = idD3D12HlslEmitter::Emit( shaderStageType_t::FRAGMENT, *fragmentSource, name );
+		if ( !Check( vertex && fragment, va( "%s: Emit: %s", name, !vertex ? vertex.error().c_str() : !fragment ? fragment.error().c_str() : "" ) ) ) {
+			continue;
+		}
+		const struct {
+			const char *	suffix;
+			idStr			text;
+		} outputs[] = {
+			{ "vertex", idD3D12HlslEmitter::WithEntry( shaderStageType_t::VERTEX, *vertex, fragment->varyings ) },
+			{ "pixel", idD3D12HlslEmitter::WithEntry( shaderStageType_t::FRAGMENT, *fragment, fragment->varyings ) },
+		};
+		for ( const auto & output : outputs ) {
+			const idStr path = RepoPath( va( "neo/tests/d3d12_golden/%s.%s.hlsl", name, output.suffix ) );
+			if ( write ) {
+				FILE * file = nullptr;
+				if ( Check( fopen_s( &file, path.c_str(), "wb" ) == 0 && file != nullptr, va( "write %s", path.c_str() ) ) ) {
+					idStr crlf = idStr( GOLDEN_LICENSE ) + output.text;	// CRLF, as the checkout has the other text files
+					crlf.Replace( "\n", "\r\n" );
+					fwrite( crlf.c_str(), 1, static_cast<size_t>( crlf.Length() ), file );
+					fclose( file );
+				}
+			}
+			const std::optional<idStr> golden = ReadDiskText( path );
+			if ( !Check( golden.has_value(), va( "no %s", path.c_str() ) ) ) {
+				continue;
+			}
+			const goldenText_t expected = WithoutLeadingComments( WithoutCarriageReturns( *golden ) );
+			if ( expected.body == output.text ) {
+				continue;
+			}
+			int line = 1 + expected.commentLines;
+			for ( int i = 0; i < Min( expected.body.Length(), output.text.Length() ) && expected.body[i] == output.text[i]; i++ ) {
+				line += ( expected.body[i] == '\n' ) ? 1 : 0;
+			}
+			Check( false, va( "%s.%s differs from %s from line %d on", name, output.suffix, path.c_str(), line ) );
+		}
+	}
+}
+
+void Test_HlslAllSources() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	idD3D12ShaderCompiler compiler( *library, false );
+	int sources = 0;
+	idStrList failures;
+	std::vector<std::filesystem::path> files;
+	for ( const auto & entry : std::filesystem::directory_iterator( RepoPath( "base/renderprogs" ).c_str() ) ) {
+		files.push_back( entry.path() );
+	}
+	std::ranges::sort( files );
+	for ( const std::filesystem::path & file : files ) {
+		const std::string extension = file.extension().string();
+		if ( extension != ".vertex" && extension != ".pixel" ) {
+			continue;
+		}
+		const shaderStageType_t stage = ( extension == ".vertex" ) ? shaderStageType_t::VERTEX : shaderStageType_t::FRAGMENT;
+		const std::string name = file.filename().string();
+		sources++;
+		const std::optional<renderProgSource_t> source = RepoSource( name.c_str(), stage );
+		auto built = source ? D3D12_BuildStage( compiler, stage, name.c_str(), *source ) : std::unexpected( idStr( "StripDeadCode" ) );
+		if ( !built ) {
+			failures.Append( name.c_str() );
+			if ( name != "fxaa.pixel" ) {
+				printf( "  %s\n", built.error().c_str() );
+			}
+		}
+	}
+	Check( sources == 88, va( "%d sources in base/renderprogs, not 88", sources ) );
+	Check( failures.Num() == 1 && failures[0] == "fxaa.pixel", va( "%d failures, only fxaa.pixel expected", failures.Num() ) );
+	Check( compiler.Compiled() == sources - 1, "every other source compiled once" );
+}
+
+[[nodiscard]] idStr ParmList( const shaderStageInfo_t & info ) {
+	if ( info.numParms == 0 ) {
+		return "-";
+	}
+	idStr list;
+	for ( int i = 0; i < info.numParms; i++ ) {
+		list += va( ( i > 0 ) ? ",%d" : "%d", info.parms[i] );
+	}
+	return list;
+}
+
+// The value of key=value in a renderProgInfo line.
+[[nodiscard]] idStr InfoField( const idStr & line, const char * key ) {
+	const idStr prefix = idStr( " " ) + key + "=";
+	const int start = line.Find( prefix );
+	if ( start < 0 ) {
+		return idStr();
+	}
+	idStr value = line.c_str() + start + prefix.Length();
+	const int end = value.Find( ' ' );
+	if ( end >= 0 ) {
+		value.CapLength( end );
+	}
+	return value;
+}
+
+// GL's renderProgInfo of mars_city1: the D3D12 program of each pair reports the same, attribMask a superset.
+void Test_HlslReflectionMatchesGl() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	const std::optional<idStr> reference = ReadDiskText( RepoPath( "neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) );
+	if ( !library || !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) ) {
+		return;
+	}
+	idD3D12ShaderCompiler compiler( *library, false );
+	idStrList lines;
+	const idStr text = WithoutCarriageReturns( *reference );
+	for ( int start = 0, newline; ( newline = text.Find( '\n', start ) ) >= 0; start = newline + 1 ) {
+		lines.Append( text.Mid( start, newline - start ) );
+	}
+	const auto Build = [&compiler]( const idStr & stageName, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
+		const std::optional<renderProgSource_t> source = RepoSource( stageName, type );
+		if ( !source ) {
+			return std::unexpected( idStr( "no source" ) );
+		}
+		return D3D12_BuildStage( compiler, type, stageName, *source );
+	};
+	int programs = 0;
+	for ( int l = 0; l < lines.Num(); l++ ) {
+		const idStr & line = lines[l];
+		if ( line.IsEmpty() || line[0] == '#' ) {
+			continue;
+		}
+		programs++;
+		const idStr vertexName = InfoField( line, "vs" );
+		const idStr fragmentName = InfoField( line, "fs" );
+		const auto vertex = Build( vertexName, shaderStageType_t::VERTEX );
+		const auto fragment = ( fragmentName != "-" ) ? Build( fragmentName, shaderStageType_t::FRAGMENT ) : std::expected<d3d12ShaderStage_t, idStr>( std::unexpected( idStr( "-" ) ) );
+		if ( !vertex || ( !fragment && fragmentName != "-" ) ) {
+			Check( false, va( "%s: %s", line.c_str(), !vertex ? vertex.error().c_str() : fragment.error().c_str() ) );
+			continue;
+		}
+		auto program = D3D12_LinkProgram( compiler, *vertex, fragment ? &*fragment : nullptr );
+		if ( !Check( program.has_value(), va( "%s: link: %s", line.c_str(), program ? "" : program.error().c_str() ) ) ) {
+			continue;
+		}
+		const programInfo_t & info = program->info;
+		const uint16 glAttribs = static_cast<uint16>( strtoul( InfoField( line, "attribMask" ), nullptr, 16 ) );
+		const idStr d3d12 = va( "samplerMask=0x%04x cubeMask=0x%04x usesJoints=%d vsParms=%s fsParms=%s", info.samplerMask, info.cubeMask, info.usesJoints ? 1 : 0,
+			ParmList( vertex->emitted.info ).c_str(), fragment ? ParmList( fragment->emitted.info ).c_str() : "-" );
+		const idStr gl = va( "samplerMask=%s cubeMask=%s usesJoints=%s vsParms=%s fsParms=%s", InfoField( line, "samplerMask" ).c_str(),
+			InfoField( line, "cubeMask" ).c_str(), InfoField( line, "usesJoints" ).c_str(), InfoField( line, "vsParms" ).c_str(), InfoField( line, "fsParms" ).c_str() );
+		Check( d3d12 == gl, va( "%s|%s: D3D12 %s, GL %s", vertexName.c_str(), fragmentName.c_str(), d3d12.c_str(), gl.c_str() ) );
+		Check( ( info.attribMask & glAttribs ) == glAttribs, va( "%s|%s: attribMask 0x%04x lacks some of GL's 0x%04x", vertexName.c_str(), fragmentName.c_str(),
+			info.attribMask, glAttribs ) );
+	}
+	Check( programs == 43, va( "%d programs in renderProgInfo-gl.txt, not 43", programs ) );
+}
+
+// ---- pipeline state: pipelineKey_t → the PSO description ---------------------------------------------------
+
+constexpr uint16 GUI_ATTRIBS = ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_ST ) | ( 1 << PC_ATTRIB_INDEX_COLOR );
+constexpr d3d12DepthBias_t TEST_BIAS = { -100, -2.0f };
+
+[[nodiscard]] pipelineKey_t Key( uint64 stateBits, int raster = 0, int layout = LAYOUT_DRAW_VERT ) {
+	pipelineKey_t key = {};
+	key.stateBits = stateBits;
+	key.raster = static_cast<uint8>( raster );
+	key.layout = static_cast<uint8>( layout );
+	return key;
+}
+
+[[nodiscard]] d3d12PipelineDesc_t Desc( const pipelineKey_t & key, uint16 attribs = GUI_ATTRIBS, bool depthBounds = false ) {
+	return D3D12_PipelineDescFor( D3D12_NormalizeKey( key ), attribs, TEST_BIAS, depthBounds );
+}
+
+// Every field of a description, so equal strings are equal PSOs.
+[[nodiscard]] std::string DescBytes( const d3d12PipelineDesc_t & desc ) {
+	std::string out;
+	const auto put = [&out]( const auto value ) { out.append( reinterpret_cast<const char *>( &value ), sizeof( value ) ); };
+	put( desc.blend.AlphaToCoverageEnable );
+	put( desc.blend.IndependentBlendEnable );
+	for ( const D3D12_RENDER_TARGET_BLEND_DESC & target : desc.blend.RenderTarget ) {
+		put( target.BlendEnable );
+		put( target.LogicOpEnable );
+		put( target.SrcBlend );
+		put( target.DestBlend );
+		put( target.BlendOp );
+		put( target.SrcBlendAlpha );
+		put( target.DestBlendAlpha );
+		put( target.BlendOpAlpha );
+		put( target.LogicOp );
+		put( target.RenderTargetWriteMask );
+	}
+	const D3D12_RASTERIZER_DESC & raster = desc.raster;
+	put( raster.FillMode );
+	put( raster.CullMode );
+	put( raster.FrontCounterClockwise );
+	put( raster.DepthBias );
+	put( raster.DepthBiasClamp );
+	put( raster.SlopeScaledDepthBias );
+	put( raster.DepthClipEnable );
+	put( raster.MultisampleEnable );
+	put( raster.AntialiasedLineEnable );
+	put( raster.ForcedSampleCount );
+	put( raster.ConservativeRaster );
+	const D3D12_DEPTH_STENCIL_DESC1 & depth = desc.depthStencil;
+	put( depth.DepthEnable );
+	put( depth.DepthWriteMask );
+	put( depth.DepthFunc );
+	put( depth.StencilEnable );
+	put( depth.StencilReadMask );
+	put( depth.StencilWriteMask );
+	for ( const D3D12_DEPTH_STENCILOP_DESC & face : { depth.FrontFace, depth.BackFace } ) {
+		put( face.StencilFailOp );
+		put( face.StencilDepthFailOp );
+		put( face.StencilPassOp );
+		put( face.StencilFunc );
+	}
+	put( depth.DepthBoundsTestEnable );
+	put( desc.topology );
+	put( desc.colorFormat );
+	put( desc.sample.Count );
+	put( desc.sample.Quality );
+	put( desc.numInputs );
+	put( desc.defaultAttribs );
+	for ( uint32 i = 0; i < desc.numInputs; i++ ) {
+		const D3D12_INPUT_ELEMENT_DESC & input = desc.inputs[i];
+		out += input.SemanticName;
+		put( input.SemanticIndex );
+		put( input.Format );
+		put( input.InputSlot );
+		put( input.AlignedByteOffset );
+		put( input.InputSlotClass );
+		put( input.InstanceDataStepRate );
+	}
+	return out;
+}
+
+void Test_PipelineBlend() {
+	for ( uint64 src = 0; src < 8; src++ ) {
+		for ( uint64 dst = 0; dst < 8; dst++ ) {
+			const D3D12_RENDER_TARGET_BLEND_DESC target = Desc( Key( src | ( dst << 3 ) ) ).blend.RenderTarget[0];
+			const bool colorFactor = target.SrcBlendAlpha == D3D12_BLEND_SRC_COLOR || target.SrcBlendAlpha == D3D12_BLEND_INV_SRC_COLOR
+				|| target.SrcBlendAlpha == D3D12_BLEND_DEST_COLOR || target.SrcBlendAlpha == D3D12_BLEND_INV_DEST_COLOR
+				|| target.DestBlendAlpha == D3D12_BLEND_SRC_COLOR || target.DestBlendAlpha == D3D12_BLEND_INV_SRC_COLOR
+				|| target.DestBlendAlpha == D3D12_BLEND_DEST_COLOR || target.DestBlendAlpha == D3D12_BLEND_INV_DEST_COLOR;
+			Check( !colorFactor, va( "src %llu dst %llu: a *_COLOR alpha factor", src, dst ) );
+			Check( ( target.BlendEnable != FALSE ) == ( src != 0 || dst != 0 ), va( "src %llu dst %llu: blending on unless ONE, ZERO", src, dst ) );
+			Check( target.BlendOp == D3D12_BLEND_OP_ADD && target.BlendOpAlpha == D3D12_BLEND_OP_ADD && !target.LogicOpEnable, "ADD, no logic op" );
+		}
+	}
+	const D3D12_RENDER_TARGET_BLEND_DESC modulate = Desc( Key( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO ) ).blend.RenderTarget[0];
+	Check( modulate.SrcBlend == D3D12_BLEND_DEST_COLOR && modulate.SrcBlendAlpha == D3D12_BLEND_DEST_ALPHA && modulate.DestBlend == D3D12_BLEND_ZERO
+		&& modulate.DestBlendAlpha == D3D12_BLEND_ZERO, "DST_COLOR, ZERO: DEST_ALPHA for alpha" );
+	const D3D12_RENDER_TARGET_BLEND_DESC inverse = Desc( Key( GLS_SRCBLEND_ONE_MINUS_DST_COLOR | GLS_DSTBLEND_ONE_MINUS_SRC_COLOR ) ).blend.RenderTarget[0];
+	Check( inverse.SrcBlend == D3D12_BLEND_INV_DEST_COLOR && inverse.SrcBlendAlpha == D3D12_BLEND_INV_DEST_ALPHA
+		&& inverse.DestBlend == D3D12_BLEND_INV_SRC_COLOR && inverse.DestBlendAlpha == D3D12_BLEND_INV_SRC_ALPHA, "the inverse colour factors" );
+	const D3D12_RENDER_TARGET_BLEND_DESC color = Desc( Key( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_SRC_COLOR ) ).blend.RenderTarget[0];
+	Check( color.SrcBlend == D3D12_BLEND_ZERO && color.DestBlend == D3D12_BLEND_SRC_COLOR && color.DestBlendAlpha == D3D12_BLEND_SRC_ALPHA, "SRC_COLOR" );
+	const D3D12_RENDER_TARGET_BLEND_DESC alpha = Desc( Key( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA ) ).blend.RenderTarget[0];
+	Check( alpha.BlendEnable && alpha.SrcBlend == D3D12_BLEND_SRC_ALPHA && alpha.SrcBlendAlpha == D3D12_BLEND_SRC_ALPHA
+		&& alpha.DestBlend == D3D12_BLEND_INV_SRC_ALPHA && alpha.DestBlendAlpha == D3D12_BLEND_INV_SRC_ALPHA, "the GUI's alpha blend" );
+	const D3D12_RENDER_TARGET_BLEND_DESC opaque = Desc( Key( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO ) ).blend.RenderTarget[0];
+	Check( !opaque.BlendEnable && opaque.SrcBlend == D3D12_BLEND_ONE && opaque.DestBlend == D3D12_BLEND_ZERO, "ONE, ZERO: off, as GL disables GL_BLEND" );
+
+	struct mask_t {
+		uint64	bits;
+		UINT8	writeMask;
+	};
+	const mask_t masks[] = {
+		{ 0, D3D12_COLOR_WRITE_ENABLE_ALL },
+		{ GLS_COLORMASK, D3D12_COLOR_WRITE_ENABLE_ALPHA },
+		{ GLS_ALPHAMASK, D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE },
+		{ GLS_REDMASK | GLS_BLUEMASK, D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_ALPHA },
+		{ GLS_COLORMASK | GLS_ALPHAMASK, 0 },
+	};
+	for ( const mask_t & mask : masks ) {
+		const D3D12_BLEND_DESC blend = Desc( Key( mask.bits ) ).blend;
+		Check( blend.RenderTarget[0].RenderTargetWriteMask == mask.writeMask, va( "mask bits 0x%llx: write mask 0x%x", mask.bits,
+			blend.RenderTarget[0].RenderTargetWriteMask ) );
+		Check( !blend.IndependentBlendEnable && !blend.AlphaToCoverageEnable, "one blend for every target, no alpha to coverage" );
+	}
+}
+
+void Test_PipelineDepth() {
+	struct row_t {
+		uint64					bits;
+		int						raster;
+		D3D12_COMPARISON_FUNC	func;
+	};
+	const row_t rows[] = {
+		{ GLS_DEPTHFUNC_LESS, 0, D3D12_COMPARISON_FUNC_LESS_EQUAL },
+		{ GLS_DEPTHFUNC_ALWAYS, 0, D3D12_COMPARISON_FUNC_ALWAYS },
+		{ GLS_DEPTHFUNC_GREATER, 0, D3D12_COMPARISON_FUNC_GREATER_EQUAL },
+		{ GLS_DEPTHFUNC_EQUAL, 0, D3D12_COMPARISON_FUNC_EQUAL },
+		{ GLS_DEPTHFUNC_LESS, D3D12_KEY_STRICT_DEPTH, D3D12_COMPARISON_FUNC_LESS },
+		{ GLS_DEPTHFUNC_EQUAL, D3D12_KEY_STRICT_DEPTH, D3D12_COMPARISON_FUNC_LESS },	// GL_LESS from SetDefaultState until a State changes it
+	};
+	for ( const row_t & row : rows ) {
+		for ( const uint64 depthMask : { uint64( 0 ), GLS_DEPTHMASK } ) {
+			const D3D12_DEPTH_STENCIL_DESC1 depth = Desc( Key( row.bits | depthMask, row.raster ) ).depthStencil;
+			Check( depth.DepthEnable && depth.DepthFunc == row.func, va( "depth bits 0x%llx, raster 0x%x: func %d", row.bits, row.raster, depth.DepthFunc ) );
+			Check( depth.DepthWriteMask == ( depthMask != 0 ? D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL ), "GLS_DEPTHMASK stops writes only" );
+		}
+	}
+	Check( D3D12_NormalizeKey( Key( GLS_DEPTHFUNC_EQUAL, D3D12_KEY_STRICT_DEPTH ) ) == D3D12_NormalizeKey( Key( 0, D3D12_KEY_STRICT_DEPTH ) ),
+		"under the strict bit the depth function bits do not count" );
+	Check( Desc( Key( 0 ), GUI_ATTRIBS, true ).depthStencil.DepthBoundsTestEnable && !Desc( Key( 0 ) ).depthStencil.DepthBoundsTestEnable,
+		"depth bounds in every PSO when the device has them" );
+}
+
+void Test_PipelineStencil() {
+	const D3D12_DEPTH_STENCIL_DESC1 off = Desc( Key( GLS_STENCIL_MAKE_MASK( 0x0F ) | GLS_STENCIL_MAKE_REF( 5 ) ) ).depthStencil;
+	Check( !off.StencilEnable, "no function and no front ops: no stencil test" );
+	Check( D3D12_NormalizeKey( Key( GLS_STENCIL_MAKE_MASK( 0x0F ) | GLS_SEPARATE_STENCIL ) ) == D3D12_NormalizeKey( Key( 0 ) ),
+		"with the test off the mask and the back ops do not count" );
+	// GLS:316-322 reads the front ops only: back ops alone leave GL's test off
+	const D3D12_DEPTH_STENCIL_DESC1 backOnly = Desc( Key( GLS_SEPARATE_STENCIL | GLS_BackStencilOps( GLS_STENCIL_OP_PASS_INCR ) ) ).depthStencil;
+	Check( !backOnly.StencilEnable, "back ops alone: no stencil test, as in GL" );
+
+	const D3D12_DEPTH_STENCIL_DESC1 swf = Desc( Key( GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_REF( 129 ) | GLS_STENCIL_MAKE_MASK( 255 ) ) ).depthStencil;
+	Check( swf.StencilEnable && swf.StencilReadMask == 255 && swf.StencilWriteMask == 255 && swf.FrontFace.StencilFunc == D3D12_COMPARISON_FUNC_EQUAL
+		&& swf.FrontFace.StencilPassOp == D3D12_STENCIL_OP_KEEP && swf.BackFace.StencilFunc == D3D12_COMPARISON_FUNC_EQUAL, "a function alone turns the test on" );
+	const D3D12_DEPTH_STENCIL_DESC1 incr = Desc( Key( GLS_STENCIL_OP_PASS_INCR ) ).depthStencil;
+	Check( incr.StencilEnable && incr.FrontFace.StencilFunc == D3D12_COMPARISON_FUNC_ALWAYS && incr.FrontFace.StencilPassOp == D3D12_STENCIL_OP_INCR_SAT
+		&& incr.BackFace.StencilPassOp == D3D12_STENCIL_OP_INCR_SAT, "front ops alone turn the test on; GL's INCR saturates" );
+	const D3D12_DEPTH_STENCILOP_DESC wrap = Desc( Key( GLS_STENCIL_OP_FAIL_INCR_WRAP | GLS_STENCIL_OP_ZFAIL_DECR_WRAP | GLS_STENCIL_OP_PASS_DECR ) ).depthStencil.FrontFace;
+	Check( wrap.StencilFailOp == D3D12_STENCIL_OP_INCR && wrap.StencilDepthFailOp == D3D12_STENCIL_OP_DECR && wrap.StencilPassOp == D3D12_STENCIL_OP_DECR_SAT,
+		"INCR_WRAP, DECR_WRAP, DECR: INCR, DECR, DECR_SAT" );
+	const D3D12_DEPTH_STENCILOP_DESC others = Desc( Key( GLS_STENCIL_OP_FAIL_ZERO | GLS_STENCIL_OP_ZFAIL_REPLACE | GLS_STENCIL_OP_PASS_INVERT ) ).depthStencil.FrontFace;
+	Check( others.StencilFailOp == D3D12_STENCIL_OP_ZERO && others.StencilDepthFailOp == D3D12_STENCIL_OP_REPLACE && others.StencilPassOp == D3D12_STENCIL_OP_INVERT,
+		"ZERO, REPLACE, INVERT" );
+	const D3D12_COMPARISON_FUNC funcs[8] = { D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_LESS, D3D12_COMPARISON_FUNC_LESS_EQUAL,
+		D3D12_COMPARISON_FUNC_GREATER, D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_EQUAL, D3D12_COMPARISON_FUNC_NOT_EQUAL,
+		D3D12_COMPARISON_FUNC_NEVER };
+	for ( uint64 func = 1; func < 8; func++ ) {
+		const D3D12_DEPTH_STENCIL_DESC1 depth = Desc( Key( ( func << 36 ) | GLS_STENCIL_MAKE_MASK( 0x3C ) ) ).depthStencil;
+		Check( depth.FrontFace.StencilFunc == funcs[func] && depth.BackFace.StencilFunc == funcs[func] && depth.StencilReadMask == 0x3C,
+			va( "stencil func %llu", func ) );
+	}
+
+	struct separate_t {
+		const char *		name;
+		uint64				bits;
+		D3D12_STENCIL_OP	front[3];
+		D3D12_STENCIL_OP	back[3];
+	};
+	const separate_t separates[] = {
+		{ "Z-pass", GLS_STENCIL_SHADOW_ZPASS, { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_INCR_SAT },
+			{ D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_DECR_SAT } },
+		{ "preload", GLS_STENCIL_SHADOW_PRELOAD, { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_DECR_SAT, D3D12_STENCIL_OP_DECR_SAT },
+			{ D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_INCR_SAT, D3D12_STENCIL_OP_INCR_SAT } },
+		{ "light select", GLS_STENCIL_LIGHT_SELECT, { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_REPLACE, D3D12_STENCIL_OP_ZERO },
+			{ D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_ZERO, D3D12_STENCIL_OP_REPLACE } },
+	};
+	for ( const separate_t & row : separates ) {
+		const D3D12_DEPTH_STENCIL_DESC1 depth = Desc( Key( row.bits | GLS_STENCIL_FUNC_ALWAYS | GLS_STENCIL_MAKE_MASK( 255 ) ) ).depthStencil;
+		const D3D12_DEPTH_STENCILOP_DESC & front = depth.FrontFace;
+		const D3D12_DEPTH_STENCILOP_DESC & back = depth.BackFace;
+		Check( depth.StencilEnable && front.StencilFailOp == row.front[0] && front.StencilDepthFailOp == row.front[1] && front.StencilPassOp == row.front[2],
+			va( "%s: front", row.name ) );
+		Check( back.StencilFailOp == row.back[0] && back.StencilDepthFailOp == row.back[1] && back.StencilPassOp == row.back[2], va( "%s: back", row.name ) );
+	}
+	const uint64 front = GLS_STENCIL_OP_ZFAIL_INCR | GLS_STENCIL_OP_PASS_ZERO;
+	Check( D3D12_NormalizeKey( Key( front | GLS_BackStencilOps( GLS_STENCIL_OP_PASS_DECR ) ) ) == D3D12_NormalizeKey( Key( front ) ),
+		"without SEPARATE_STENCIL the back ops do not count" );
+	Check( D3D12_NormalizeKey( Key( front | GLS_SEPARATE_STENCIL | GLS_BackStencilOps( front ) ) ) == D3D12_NormalizeKey( Key( front ) ),
+		"separate ops equal to the front ones are no separate ops" );
+	Check( D3D12_NormalizeKey( Key( GLS_STENCIL_FUNC_LESS | GLS_STENCIL_MAKE_REF( 1 ) ) ) == D3D12_NormalizeKey( Key( GLS_STENCIL_FUNC_LESS | GLS_STENCIL_MAKE_REF( 200 ) ) ),
+		"the reference is dynamic" );
+}
+
+void Test_PipelineRaster() {
+	Check( R_PipelineCull( CT_FRONT_SIDED, true, false ) == 1 && R_PipelineCull( CT_BACK_SIDED, true, false ) == 2, "front-sided culls GL_FRONT, back-sided GL_BACK" );
+	Check( R_PipelineCull( CT_FRONT_SIDED, true, true ) == 2 && R_PipelineCull( CT_BACK_SIDED, true, true ) == 1, "a mirror swaps them" );
+	Check( R_PipelineCull( CT_TWO_SIDED, true, false ) == 0 && R_PipelineCull( CT_FRONT_SIDED, false, true ) == 0, "two-sided, or culling still off" );
+	const D3D12_CULL_MODE modes[3] = { D3D12_CULL_MODE_NONE, D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_BACK };
+	for ( int cull = 0; cull < 3; cull++ ) {
+		const D3D12_RASTERIZER_DESC raster = Desc( Key( 0, cull ) ).raster;
+		Check( raster.CullMode == modes[cull] && !raster.FrontCounterClockwise, va( "raster cull %d: CullMode %d, clockwise front faces", cull, raster.CullMode ) );
+		Check( Desc( Key( 0, cull | D3D12_KEY_LINES ) ).raster.CullMode == D3D12_CULL_MODE_NONE, "lines are not culled" );
+	}
+	Check( D3D12_NormalizeKey( Key( 0, 1 | D3D12_KEY_LINES ) ) == D3D12_NormalizeKey( Key( 0, D3D12_KEY_LINES ) ), "a line key has no cull" );
+
+	const d3d12PipelineDesc_t wire = Desc( Key( GLS_POLYMODE_LINE ) );
+	Check( wire.raster.FillMode == D3D12_FILL_MODE_WIREFRAME && wire.topology == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, "POLYMODE_LINE: wireframe triangles" );
+	const d3d12PipelineDesc_t lines = Desc( Key( GLS_POLYMODE_LINE, D3D12_KEY_LINES ) );
+	Check( lines.raster.FillMode == D3D12_FILL_MODE_SOLID && lines.topology == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE, "lines: LINE topology" );
+
+	pipelineKey_t biased = Key( GLS_POLYGON_OFFSET );
+	biased.depthBias = 1;
+	const D3D12_RASTERIZER_DESC offset = Desc( biased ).raster;
+	Check( offset.DepthBias == TEST_BIAS.bias && offset.SlopeScaledDepthBias == TEST_BIAS.slope && offset.DepthBiasClamp == 0.0f, "the slot's bias" );
+	Check( Desc( Key( GLS_POLYGON_OFFSET ) ).raster.DepthBias == 0, "slot 0: no bias, whatever the GLS bit" );
+	biased.raster = D3D12_KEY_LINES;
+	Check( D3D12_NormalizeKey( biased ).depthBias == 0 && Desc( biased ).raster.DepthBias == 0 && Desc( biased ).raster.SlopeScaledDepthBias == 0.0f,
+		"no depth bias on lines: GL offsets polygons only" );
+	Check( D3D12_DepthBiasFor( -2.0f, -100.4f ) == d3d12DepthBias_t{ -100, -2.0f } && D3D12_DepthBiasFor( 1.5f, 2.5f ).bias == 3, "units round to an INT" );
+
+	const d3d12PipelineDesc_t plain = Desc( Key( 0, d3d12TargetId_t::Of( false, 1 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	Check( plain.colorFormat == DXGI_FORMAT_R8G8B8A8_UNORM && plain.sample.Count == 1 && plain.sample.Quality == 0, "target 0: UNORM, one sample" );
+	const d3d12PipelineDesc_t srgb = Desc( Key( 0, d3d12TargetId_t::Of( true, 4 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	Check( srgb.colorFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && srgb.sample.Count == 4, "the target id: the sRGB view, 4 samples" );
+	Check( plain.raster.DepthClipEnable && !plain.raster.MultisampleEnable && !plain.raster.AntialiasedLineEnable, "depth clip, aliased lines" );
+}
+
+void Test_PipelineInputs() {
+	const d3d12PipelineDesc_t gui = Desc( Key( 0 ) );
+	Check( gui.numInputs == 3 && !gui.defaultAttribs, "gui: three inputs from the draw vert" );
+	if ( gui.numInputs == 3 ) {
+		const D3D12_INPUT_ELEMENT_DESC * inputs = gui.inputs.data();
+		Check( idStr::Cmp( inputs[0].SemanticName, "POSITION" ) == 0 && inputs[0].Format == DXGI_FORMAT_R32G32B32_FLOAT && inputs[0].AlignedByteOffset == DRAWVERT_XYZ_OFFSET
+			&& inputs[0].InputSlot == 0, "POSITION" );
+		Check( idStr::Cmp( inputs[1].SemanticName, "TEXCOORD" ) == 0 && inputs[1].SemanticIndex == 0 && inputs[1].Format == DXGI_FORMAT_R16G16_FLOAT
+			&& inputs[1].AlignedByteOffset == DRAWVERT_ST_OFFSET, "TEXCOORD0: two halves" );
+		Check( idStr::Cmp( inputs[2].SemanticName, "COLOR" ) == 0 && inputs[2].SemanticIndex == 0 && inputs[2].Format == DXGI_FORMAT_R8G8B8A8_UNORM
+			&& inputs[2].AlignedByteOffset == DRAWVERT_COLOR_OFFSET && inputs[2].InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, "COLOR0" );
+	}
+	Check( Desc( Key( 0 ), static_cast<uint16>( vertexLayouts[LAYOUT_DRAW_VERT].attribMask ) ).numInputs == 6, "all six of a draw vert" );
+
+	const uint16 positionColor = ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_COLOR );
+	const d3d12PipelineDesc_t shadow = Desc( Key( 0, 0, LAYOUT_DRAW_SHADOW_VERT ), positionColor );
+	Check( shadow.numInputs == 2 && shadow.defaultAttribs, "a shadow vert lacks the colour" );
+	if ( shadow.numInputs == 2 ) {
+		Check( shadow.inputs[0].Format == DXGI_FORMAT_R32G32B32A32_FLOAT && shadow.inputs[0].InputSlot == 0, "the shadow vert's xyzw" );
+		Check( shadow.inputs[1].InputSlot == 1 && shadow.inputs[1].AlignedByteOffset == 0 && shadow.inputs[1].Format == DXGI_FORMAT_R32G32B32A32_FLOAT,
+			"the missing colour reads (0, 0, 0, 1) from slot 1" );
+	}
+	const uint16 skinnedAttribs = positionColor | ( 1 << PC_ATTRIB_INDEX_COLOR2 );
+	const d3d12PipelineDesc_t skinned = Desc( Key( 0, 0, LAYOUT_DRAW_SHADOW_VERT_SKINNED ), skinnedAttribs );
+	Check( skinned.numInputs == 3 && !skinned.defaultAttribs && skinned.inputs[2].SemanticIndex == 1
+		&& skinned.inputs[2].AlignedByteOffset == SHADOWVERTSKINNED_COLOR2_OFFSET, "the skinned shadow vert: COLOR1 at its offset" );
+}
+
+// What a PSO of the key is: its program, its layout (the IA's stride) and its description.
+[[nodiscard]] std::string PipelineBytes( const pipelineKey_t & key ) {
+	const uint16 program = key.program;
+	const uint16 attribs = static_cast<uint16>( ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( ( program & 1 ) ? 1 << PC_ATTRIB_INDEX_ST : 0 )
+		| ( ( program & 2 ) ? 1 << PC_ATTRIB_INDEX_COLOR : 0 ) | ( ( program & 4 ) ? 1 << PC_ATTRIB_INDEX_NORMAL : 0 )
+		| ( ( program & 8 ) ? 1 << PC_ATTRIB_INDEX_COLOR2 : 0 ) | ( ( program & 16 ) ? 1 << PC_ATTRIB_INDEX_TANGENT : 0 ) );
+	const d3d12DepthBias_t bias = ( key.depthBias == 0 ) ? d3d12DepthBias_t() : d3d12DepthBias_t{ key.depthBias, key.depthBias * 0.5f };
+	const uint8 layout = ( key.layout < NUM_VERTEX_LAYOUTS ) ? key.layout : static_cast<uint8>( LAYOUT_UNKNOWN );
+	std::string bytes( reinterpret_cast<const char *>( &program ), sizeof( program ) );
+	bytes.push_back( static_cast<char>( layout ) );
+	return bytes + DescBytes( D3D12_PipelineDescFor( key, attribs, bias, true ) );
+}
+
+class idTestRandom {
+public:
+	explicit idTestRandom( uint64 seed ) : state( seed ) {}
+	uint32 Next() {
+		state = state * 6364136223846793005ull + 1442695040888963407ull;
+		return static_cast<uint32>( state >> 33 );
+	}
+	uint64 Bits( int count ) { return ( ( static_cast<uint64>( Next() ) << 32 ) | Next() ) & ( ( count == 64 ) ? ~0ull : ( 1ull << count ) - 1 ); }
+	bool OneIn( uint32 n ) { return Next() % n == 0; }
+private:
+	uint64 state;
+};
+
+// Mostly the values shared code sends, sometimes anything: the stencil test on and off, separate ops equal to the front ones.
+[[nodiscard]] pipelineKey_t RandomKey( idTestRandom & random ) {
+	uint64 bits = random.Bits( 15 );		// blend, masks, polygon mode and offset, depth function
+	bits |= random.OneIn( 4 ) ? random.Bits( 5 ) << 15 : 0;
+	bits |= random.Bits( 8 ) << GLS_STENCIL_FUNC_REF_SHIFT;
+	bits |= ( random.OneIn( 2 ) ? 0xFFull : random.Bits( 8 ) ) << GLS_STENCIL_FUNC_MASK_SHIFT;
+	if ( !random.OneIn( 3 ) ) {
+		bits |= ( random.OneIn( 3 ) ? 0 : random.Bits( 3 ) ) << 36;
+		for ( int op = 0; op < 3; op++ ) {
+			bits |= ( random.OneIn( 2 ) ? 0 : random.Bits( 3 ) ) << ( 39 + op * 3 );
+		}
+	}
+	bits |= ( random.OneIn( 3 ) ? GLS_BackStencilOps( bits ) : random.Bits( 9 ) << 48 ) | ( random.OneIn( 2 ) ? GLS_SEPARATE_STENCIL : 0 );
+	bits |= random.OneIn( 4 ) ? random.Bits( 6 ) << 58 : 0;
+	pipelineKey_t key = {};
+	key.stateBits = bits;
+	key.program = static_cast<uint16>( random.Bits( 5 ) );
+	key.layout = static_cast<uint8>( random.OneIn( 8 ) ? random.Bits( 8 ) : 1 + random.Next() % 3 );
+	key.raster = static_cast<uint8>( random.Bits( random.OneIn( 4 ) ? 8 : 7 ) );
+	key.depthBias = static_cast<uint8>( random.OneIn( 2 ) ? 0 : random.OneIn( 4 ) ? random.Bits( 8 ) : 1 + random.Next() % 2 );
+	if ( random.OneIn( 4 ) ) {
+		key.pad[random.Next() % 3] = static_cast<uint8>( random.Bits( 8 ) );
+	}
+	return key;
+}
+
+// Equal PSO descriptions ⇔ equal normalized keys: every single-bit change of random keys, and field changes that
+// make the back ops equal to the front ones or turn the stencil test off.
+void Test_PipelineNormalize() {
+	idTestRandom random( 0x5EED );
+	int compared = 0;
+	int samePipeline = 0;
+	for ( int i = 0; i < 2000; i++ ) {
+		const pipelineKey_t key = RandomKey( random );
+		const pipelineKey_t normal = D3D12_NormalizeKey( key );
+		const std::string bytes = PipelineBytes( key );
+		Check( D3D12_NormalizeKey( normal ) == normal, "normalizing twice changes nothing" );
+		Check( PipelineBytes( normal ) == bytes, va( "key %d: normalizing changed the PSO", i ) );
+		std::vector<pipelineKey_t> variants;
+		for ( int bit = 0; bit < 128; bit++ ) {
+			pipelineKey_t flipped = key;
+			reinterpret_cast<byte *>( &flipped )[bit / 8] ^= static_cast<byte>( 1 << ( bit % 8 ) );
+			variants.push_back( flipped );
+		}
+		pipelineKey_t copied = key;
+		copied.stateBits = ( copied.stateBits & ~GLS_STENCIL_BACK_OP_BITS ) | GLS_BackStencilOps( copied.stateBits );
+		variants.push_back( copied );
+		pipelineKey_t stencilOff = key;
+		stencilOff.stateBits &= ~( GLS_STENCIL_FUNC_BITS | GLS_STENCIL_FRONT_OP_BITS );
+		variants.push_back( stencilOff );
+		for ( const pipelineKey_t & variant : variants ) {
+			const bool sameKey = ( D3D12_NormalizeKey( variant ) == normal );
+			const bool sameBytes = ( PipelineBytes( variant ) == bytes );
+			if ( !Check( sameKey == sameBytes, va( "key %d: equal normalized keys %d, equal PSOs %d (0x%016llx %04x %02x %02x %02x vs 0x%016llx %02x)", i, sameKey,
+					sameBytes, key.stateBits, key.program, key.layout, key.raster, key.depthBias, variant.stateBits, variant.raster ) ) ) {
+				continue;
+			}
+			compared++;
+			samePipeline += sameBytes ? 1 : 0;
+		}
+	}
+	Check( samePipeline > compared / 10 && samePipeline < compared - compared / 10, va( "%d of %d variants the same PSO: both sides tested", samePipeline, compared ) );
+}
+
+void Test_DepthBiasTable() {
+	idD3D12DepthBiasTable table;
+	Check( table.Slot( 0.0f, 0.0f ) == 0 && table.Slot( 0.0f, 0.3f ) == 0 && table.Num() == 0, "no bias, no slot" );
+	const uint8 first = table.Slot( -2.0f, -100.0f );
+	Check( first == 1 && table[first] == d3d12DepthBias_t{ -100, -2.0f }, "the first bias takes slot 1" );
+	Check( table.Slot( -2.0f, -100.4f ) == first, "units that round to the same INT share the slot" );
+	const uint8 second = table.Slot( -1.0f, -100.0f );
+	Check( second == 2 && table.Slot( -2.0f, -100.0f ) == first && table.Num() == 2, "another factor, another slot; the first is found again" );
+	Check( table[0] == d3d12DepthBias_t(), "slot 0 is no bias" );
+	Check( table.SlotOf( d3d12DepthBias_t{ -100, -1.0f } ) == second && table.SlotOf( d3d12DepthBias_t() ) == 0 && table.Num() == 2,
+		"a journal's bias finds its slot by value" );
+	Check( table.SlotOf( d3d12DepthBias_t{ -7, 0.5f } ) == 3 && table.Slot( 0.5f, -7.0f ) == 3 && table.Num() == 3,
+		"a journal's new bias takes a slot, and the draw that sets it finds it" );
+	for ( int i = 4; i <= 255; i++ ) {
+		static_cast<void>( table.Slot( static_cast<float>( i ), 0.0f ) );
+	}
+	Check( table.Num() == 255 && table[255] == d3d12DepthBias_t{ 0, 255.0f }, "255 slots" );
+	Check( table.NearestThisFrame() == 0, "nothing reused while the table has room" );
+
+	Check( table.Slot( 1000.0f, 0.0f ) == 255 && table.Slot( 1000.0f, 0.0f ) == 255 && table.Num() == 255,
+		"a full table gives the nearest bias, also to the cached pair" );
+	Check( table.Slot( 2.4f, -99.0f ) == 2, "the nearest by factor and units: slot 2 (-1, -100)" );
+	Check( table.Slot( 0.0f, -1.0f ) == 0, "no bias is a candidate too" );
+	Check( table.Slot( -2.0f, -100.0f ) == first, "a bias the table has is still exact" );
+	Check( table.SlotOf( d3d12DepthBias_t{ 0, 1000.0f } ) == 255, "a full table gives a journal's bias the nearest one too" );
+	Check( table.NearestThisFrame() == 4, va( "each draw with a nearest bias counts, a journal's bias does not: %d of 4", table.NearestThisFrame() ) );
+	table.ResetFrameCounters();
+	Check( table.NearestThisFrame() == 0, "the count is per frame" );
+}
+
+void Test_PipelineJournal() {
+	idD3D12PipelineJournal journal;
+	Check( !journal.Dirty() && journal.NumEntries() == 0 && journal.EntriesFor( "gui|gui" ).empty(), "an empty journal" );
+	d3d12JournalEntry_t a;
+	a.key.stateBits = GLS_DEPTHFUNC_EQUAL | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+	a.key.layout = LAYOUT_DRAW_VERT;
+	a.key.raster = 2;
+	d3d12JournalEntry_t b = a;
+	b.bias = d3d12DepthBias_t{ -100, -2.0f };
+	d3d12JournalEntry_t c = a;
+	c.key.layout = LAYOUT_DRAW_SHADOW_VERT;
+	c.key.raster = D3D12_KEY_LINES | ( d3d12TargetId_t::Of( true, 4 ).value << D3D12_KEY_TARGET_SHIFT );
+	journal.Record( "interaction|interaction", a );
+	journal.Record( "interaction|interaction", b );
+	journal.Record( "shadow|-", c );
+	journal.Record( "interaction|interaction", a );
+	Check( journal.Dirty() && journal.NumPrograms() == 2 && journal.NumEntries() == 3, "a known key is ignored" );
+	const std::span<const d3d12JournalEntry_t> entries = journal.EntriesFor( "interaction|interaction" );
+	Check( entries.size() == 2 && entries[0] == a && entries[1] == b, "the keys of a program, in the order drawn" );
+	journal.MarkSaved();
+	journal.Record( "shadow|-", c );
+	Check( !journal.Dirty(), "a known key leaves a saved journal clean" );
+
+	const std::vector<byte> file = journal.Write();
+	idD3D12PipelineJournal read;
+	Check( read.Read( file ) && !read.Dirty() && read.NumPrograms() == 2 && read.NumEntries() == 3 && read.Write() == file,
+		"Write, Read and Write again: the same file" );
+	Check( read.EntriesFor( "shadow|-" ).size() == 1 && read.EntriesFor( "shadow|-" )[0] == c, "the keys come back" );
+	idD3D12PipelineJournal reordered;
+	reordered.Record( "shadow|-", c );
+	reordered.Record( "interaction|interaction", a );
+	reordered.Record( "interaction|interaction", b );
+	Check( reordered.Write() == file, "sorted by program: the same keys write the same file" );
+
+	std::vector<byte> stale = file;
+	stale[4] ^= 0xFF;
+	Check( !read.Read( stale ) && read.NumEntries() == 0 && read.EntriesFor( "shadow|-" ).empty(), "another VERSION is not read" );
+	Check( !read.Read( std::span( file ).first( file.size() - 1 ) ) && read.NumPrograms() == 0, "a file cut short is not read" );
+	std::vector<byte> longer = file;
+	longer.push_back( 0 );
+	Check( !read.Read( longer ), "nor one with bytes after its end" );
+	Check( !read.Read( {} ), "nor no file" );
+	idD3D12PipelineJournal foreign;
+	d3d12JournalEntry_t bad = a;
+	bad.key.raster = 0x80;
+	foreign.Record( "gui|gui", bad );
+	Check( !read.Read( foreign.Write() ), "a raster bit the backend never sets: not a journal this code wrote" );
+}
+
+// gui and shadow.vertex alone (no PS), from the repo's sources.
+struct testPrograms_t {
+	d3d12Program_t					gui;
+	d3d12Program_t					shadow;
+};
+
+[[nodiscard]] std::optional<testPrograms_t> LinkTestPrograms( idD3D12ShaderCompiler & compiler ) {
+	const auto build = [&compiler]( const char * name, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
+		const std::optional<renderProgSource_t> source = RepoSource( name, type );
+		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
+	};
+	const auto guiVertex = build( "gui.vertex", shaderStageType_t::VERTEX );
+	const auto guiPixel = build( "gui.pixel", shaderStageType_t::FRAGMENT );
+	const auto shadowVertex = build( "shadow.vertex", shaderStageType_t::VERTEX );
+	if ( !Check( guiVertex && guiPixel && shadowVertex, "the stages compile" ) ) {
+		return std::nullopt;
+	}
+	auto gui = D3D12_LinkProgram( compiler, *guiVertex, &*guiPixel );
+	auto shadow = D3D12_LinkProgram( compiler, *shadowVertex, nullptr );
+	if ( !Check( gui && shadow, "the programs link" ) ) {
+		return std::nullopt;
+	}
+	return testPrograms_t{ std::move( *gui ), std::move( *shadow ) };
+}
+
+[[nodiscard]] UINT KeySamples( const pipelineKey_t & key ) {
+	return d3d12TargetId_t{ static_cast<uint8>( ( key.raster & D3D12_KEY_TARGET_BITS ) >> D3D12_KEY_TARGET_SHIFT ) }.Samples();
+}
+
+// Every family of keys, the line key with the bias of slot, and a key per sample count the adapter has.
+[[nodiscard]] std::vector<pipelineKey_t> TestKeys( const idTestGpu & gpu, uint8 slot ) {
+	std::vector<pipelineKey_t> keys = {
+		Key( 0, D3D12_KEY_STRICT_DEPTH ),
+		Key( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS, 0 ),
+		Key( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE_MINUS_SRC_COLOR | GLS_COLORMASK, 1 ),
+		Key( GLS_SRCBLEND_ONE_MINUS_DST_COLOR | GLS_DSTBLEND_SRC_COLOR | GLS_ALPHAMASK | GLS_DEPTHFUNC_EQUAL, 2 ),
+		Key( GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_MASK( 255 ) | GLS_DEPTHFUNC_GREATER, 2 ),
+		Key( GLS_STENCIL_OP_PASS_INCR_WRAP | GLS_STENCIL_OP_FAIL_DECR_WRAP | GLS_STENCIL_OP_ZFAIL_INVERT, 1 ),
+		Key( GLS_STENCIL_SHADOW_ZPASS | GLS_STENCIL_FUNC_ALWAYS | GLS_COLORMASK | GLS_ALPHAMASK | GLS_DEPTHMASK, 0 ),
+		Key( GLS_POLYMODE_LINE | GLS_POLYGON_OFFSET, 2 ),
+		Key( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, D3D12_KEY_LINES ),
+	};
+	keys[7].depthBias = slot;
+	for ( int samples = 1, index = 0; samples <= 8; samples *= 2, index++ ) {
+		if ( gpu.device.Features().samples[static_cast<size_t>( index )] ) {
+			keys.push_back( Key( 0, d3d12TargetId_t::Of( true, static_cast<UINT>( samples ) ).value << D3D12_KEY_TARGET_SHIFT ) );
+		}
+	}
+	return keys;
+}
+
+// Each key with gui and, on the shadow layout, with shadow; the PSOs drawn with.
+int DrawTestKeys( idD3D12PipelineFactory & factory, testPrograms_t & programs, std::span<const pipelineKey_t> keys ) {
+	int pipelines = 0;
+	for ( pipelineKey_t key : keys ) {
+		key.program = programs.gui.dense;
+		Check( factory.Get( programs.gui, D3D12_NormalizeKey( key ) ) != nullptr, va( "gui: key 0x%016llx raster 0x%02x", key.stateBits, key.raster ) );
+		pipelines++;
+		pipelineKey_t shadowKey = key;
+		shadowKey.layout = LAYOUT_DRAW_SHADOW_VERT;
+		Check( factory.Get( programs.shadow, D3D12_NormalizeKey( shadowKey ) ) != nullptr, va( "shadow: key 0x%016llx", key.stateBits ) );
+		pipelines++;
+	}
+	return pipelines;
+}
+
+// Against WARP's runtime and debug layer: every family of keys.
+void Test_WarpPipelines() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12ShaderCompiler compiler( gpu->library, false );
+	std::optional<testPrograms_t> programs = LinkTestPrograms( compiler );
+	if ( !programs ) {
+		return;
+	}
+	idD3D12RootSignature root( gpu->device, gpu->library );
+	idD3D12PipelineFactory factory( gpu->device, root, nullptr, nullptr );
+	const std::vector<pipelineKey_t> keys = TestKeys( *gpu, factory.Bias().Slot( -2.0f, -100.0f ) );
+	const int pipelines = DrawTestKeys( factory, *programs, keys );
+	Check( factory.CreatedThisFrame() == pipelines && static_cast<int>( programs->gui.pipelines.size() + programs->shadow.pipelines.size() ) == pipelines,
+		"one PSO per key" );
+	const pipelineKey_t again = D3D12_NormalizeKey( keys[1] );
+	Check( factory.Get( programs->gui, again ) == programs->gui.pipelines[1].pso.Get() && factory.CreatedThisFrame() == pipelines,
+		"a kept key is not created again" );
+	Check( factory.TotalStats().drawn == pipelines && factory.TotalStats().warmed == 0 && factory.TotalStats().loaded == 0, "no journal, no library" );
+	CheckNoLayerErrors( *gpu );
+}
+
+// A run draws and records; the next one reads the journal and the library back, its bias slots in another
+// order, and warms every key of its sample count from the library, so its draws create none of them.
+void PipelineWarm( idTestGpu & gpu ) {
+	idD3D12ShaderCompiler compiler( gpu.library, false );
+	idD3D12RootSignature root( gpu.device, gpu.library );
+	std::optional<idD3D12PipelineLibrary> firstLibrary = idD3D12PipelineLibrary::Open( gpu.device, {} );
+	if ( !firstLibrary ) {
+		printf( "  the adapter keeps no pipeline library: the journal alone\n" );
+	}
+	Check( !firstLibrary || ( !firstLibrary->FromFile() && !firstLibrary->Dirty() ), "no file: a new, clean library" );
+	std::vector<byte> journalFile;
+	std::vector<byte> libraryFile;
+	int pipelines = 0;
+	int ofOneSample = 0;
+	{
+		std::optional<testPrograms_t> programs = LinkTestPrograms( compiler );
+		if ( !programs ) {
+			return;
+		}
+		idD3D12PipelineJournal journal;
+		idD3D12PipelineFactory factory( gpu.device, root, &journal, firstLibrary ? &*firstLibrary : nullptr );
+		const std::vector<pipelineKey_t> keys = TestKeys( gpu, factory.Bias().Slot( -2.0f, -100.0f ) );
+		pipelines = DrawTestKeys( factory, *programs, keys );
+		ofOneSample = 2 * static_cast<int>( std::ranges::count_if( keys, []( const pipelineKey_t & key ) { return KeySamples( key ) == 1; } ) );
+		Check( journal.Dirty() && journal.NumPrograms() == 2 && journal.NumEntries() == pipelines, "every key drawn is in the journal" );
+		Check( !firstLibrary || firstLibrary->Dirty(), "and every PSO in the library" );
+		journalFile = journal.Write();
+		if ( firstLibrary ) {
+			libraryFile = firstLibrary->Write();
+			Check( !libraryFile.empty(), "the library serializes" );
+		}
+	}
+
+	std::optional<testPrograms_t> programs = LinkTestPrograms( compiler );
+	if ( !programs ) {
+		return;
+	}
+	idD3D12PipelineJournal journal;
+	Check( journal.Read( journalFile ) && !journal.Dirty(), "the next run reads the journal" );
+	std::optional<idD3D12PipelineLibrary> library = firstLibrary ? idD3D12PipelineLibrary::Open( gpu.device, libraryFile ) : std::nullopt;
+	Check( !firstLibrary || ( library && library->FromFile() && !library->Dirty() ), "and opens the library over its file" );
+	idD3D12PipelineFactory factory( gpu.device, root, &journal, library ? &*library : nullptr );
+	Check( factory.Bias().Slot( 3.0f, 30.0f ) == 1, "another bias takes slot 1 first" );
+	factory.Warm( programs->gui, 1 );
+	factory.Warm( programs->shadow, 1 );
+	const idD3D12PipelineFactory::stats_t warm = factory.TotalStats();
+	Check( warm.warmed == ofOneSample && warm.drawn == 0 && warm.loaded == ( library ? ofOneSample : 0 ) && factory.CreatedThisFrame() == 0,
+		va( "the journal's %d keys of one sample warmed (%d), %d from the library", ofOneSample, warm.warmed, warm.loaded ) );
+	Check( factory.Bias().Num() == 2 && factory.Bias().SlotOf( d3d12DepthBias_t{ -100, -2.0f } ) == 2, "the journal's bias took slot 2" );
+	factory.Warm( programs->gui, 1 );
+	Check( factory.TotalStats().warmed == ofOneSample, "a warmed key is not made again" );
+
+	const std::vector<pipelineKey_t> keys = TestKeys( gpu, factory.Bias().Slot( -2.0f, -100.0f ) );
+	Check( DrawTestKeys( factory, *programs, keys ) == pipelines, "the same draws" );
+	Check( factory.CreatedThisFrame() == pipelines - ofOneSample, va( "only the keys of other sample counts are made by draws: %d of %d",
+		factory.CreatedThisFrame(), pipelines - ofOneSample ) );
+	Check( factory.TotalStats().loaded == ( library ? pipelines : 0 ), "and those come from the library too" );
+	Check( !journal.Dirty() && ( !library || !library->Dirty() ), "nothing new for the journal or the library" );
+
+	if ( library ) {
+		std::vector<byte> stale = libraryFile;
+		stale[8] ^= 1;	// the driver version
+		const std::optional<idD3D12PipelineLibrary> other = idD3D12PipelineLibrary::Open( gpu.device, stale );
+		Check( other && !other->FromFile() && other->Dirty(), "another driver's file: an empty library, written again" );
+		const std::optional<idD3D12PipelineLibrary> cut = idD3D12PipelineLibrary::Open( gpu.device,
+			std::vector<byte>( libraryFile.begin(), libraryFile.begin() + static_cast<ptrdiff_t>( libraryFile.size() / 2 ) ) );
+		Check( cut && !cut->FromFile() && cut->Dirty(), "a file cut short: the same" );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// r_pix 2: nested groups outlive a submit (ended in the list it closes, begun again in the next one);
+// pushes past MAX_DEPTH and their pops are ignored, so the stack stays balanced.
+void Test_WarpDebugGroups() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12DebugGroups groups;
+	groups.Push( gpu->List(), "frame" );
+	groups.Push( gpu->List(), "MRB_DRAW_INTERACTIONS" );
+	Check( groups.Depth() == 2 && groups.PushedThisFrame() == 2, "two nested groups" );
+	groups.CloseAll( gpu->List() );
+	gpu->SubmitChunk();
+	groups.Reopen( gpu->List() );
+	groups.Pop( &gpu->List() );
+	Check( groups.Depth() == 1, "the inner group ends in the next list" );
+
+	constexpr int PUSHES = idD3D12DebugGroups::MAX_DEPTH + 2;
+	const std::string longName( idD3D12DebugGroups::MAX_NAME * 2, 'x' );
+	for ( int i = 0; i < PUSHES; i++ ) {
+		groups.Push( gpu->List(), longName.c_str() );
+	}
+	Check( groups.Depth() == idD3D12DebugGroups::MAX_DEPTH, "the stack stops at MAX_DEPTH" );
+	for ( int i = 0; i < PUSHES; i++ ) {
+		groups.Pop( &gpu->List() );
+	}
+	Check( groups.Depth() == 1, "the pops of the ignored pushes are ignored" );
+	groups.Pop( &gpu->List() );
+	groups.Pop( &gpu->List() );
+	Check( groups.Depth() == 0, "a pop of an empty stack does nothing" );
+	groups.ResetFrameCounters();
+	Check( groups.PushedThisFrame() == 0, "the frame counter restarts" );
+	gpu->WaitIdle();
+	CheckNoLayerErrors( *gpu );
+}
+
+// r_pix 1 and the frame timer: a frame across two lists, a gap in the written slots. Ready reads Waited()
+// only, so a finished GPU is not enough, and a slot not written in the set's last frame is never ready.
+void Timestamps( idTestGpu & gpu ) {
+	idD3D12GpuTimers timers( gpu.device, gpu.queue );
+	if ( !Check( timers.Available() && timers.Frequency() > 0, "a direct queue has timestamps" ) ) {
+		return;
+	}
+	constexpr int SET = 2;
+	timers.BeginFrame( gpu.List() );
+	timers.Write( gpu.List(), SET, 0 );
+	gpu.SubmitChunk();
+	timers.Write( gpu.List(), SET, 1 );
+	timers.Write( gpu.List(), SET, 3 );
+	timers.EndFrame( gpu.List() );
+	Check( timers.WrittenThisFrame() == 3, "three slots written" );
+	Check( !timers.Ready( SET, 0 ) && timers.FrameMicroseconds() == 0, "nothing is ready before its list is submitted" );
+	const uint64 fence = gpu.SubmitChunk();
+	gpu.FinishUnwaited();
+	Check( !timers.Ready( SET, 1 ) && timers.FrameMicroseconds() == 0, "a finished GPU is not enough: Ready reads Waited() only" );
+	std::array<uint64, 4> nanoseconds = {};
+	timers.Read( SET, nanoseconds );
+	Check( nanoseconds == std::array<uint64, 4>{}, "a set not ready reads zeros" );
+
+	gpu.WaitFor( fence );
+	Check( timers.Ready( SET, 0 ) && timers.Ready( SET, 1 ) && timers.Ready( SET, 3 ), "ready once the list is waited for" );
+	Check( !timers.Ready( SET, 2 ) && !timers.Ready( SET - 1, 0 ) && !timers.Ready( SET, idD3D12GpuTimers::SLOTS_PER_SET ),
+		"a slot not written is never ready" );
+	timers.Read( SET, nanoseconds );
+	Check( nanoseconds[0] > 0 && nanoseconds[0] <= nanoseconds[1] && nanoseconds[1] <= nanoseconds[3] && nanoseconds[2] == 0,
+		"GPU order across the two lists; the unwritten slot reads 0" );
+	const uint64 frameMicroseconds = timers.FrameMicroseconds();
+	Check( frameMicroseconds * 1000 + 2000 >= nanoseconds[3] - nanoseconds[0], "the frame timer spans the stamps inside it, to its rounding" );
+
+	timers.ResetFrameCounters();
+	timers.Free();
+	Check( !timers.Ready( SET, 0 ) && timers.WrittenThisFrame() == 0, "Free forgets the r_pix slots" );
+	Check( timers.FrameMicroseconds() == frameMicroseconds, "the frame timer stays" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+// ---- GL's rasterization rules through the real root signature, programs and PSOs -----------------------------
+
+// A SIZE x SIZE RGBA8 + D24S8 target drawn as the recorder draws: base/renderprogs programs, GL clip space through
+// idGLClipToD3D, so memory row r is GL row r (glReadPixels' order). Vertices, indexes and parms share one UPLOAD buffer.
+class idTestRaster {
+public:
+	static constexpr int			SIZE = 64;
+	struct draw_t {
+		uint64						stateBits = 0;
+		int							raster = 0;			// the cull, lines and strict depth bits of pipelineKey_t
+		uint8						stencilRef = 0;
+		uint8						depthBias = 0;		// a slot of Bias()
+		std::pair<float, float>		depthBounds = { 0.0f, 1.0f };
+		int							times = 1;
+	};
+	struct pixels_t {
+		std::vector<uint32>			color;		// R | G << 8 | B << 16 | A << 24
+		std::vector<uint32>			depth;		// the 24 bits
+		std::vector<byte>			stencil;
+		[[nodiscard]] static int	At( int column, int row ) { return row * SIZE + column; }
+	};
+
+	explicit						idTestRaster( idTestGpu & gpu );
+									~idTestRaster();
+									idTestRaster( const idTestRaster & ) = delete;
+	idTestRaster &					operator=( const idTestRaster & ) = delete;
+	[[nodiscard]] bool				Ready() const { return mapped != nullptr && readback && viewHeap && samplerHeap; }
+	// Stages of base/renderprogs ("depth.vertex"); nullptr when they do not build.
+	[[nodiscard]] d3d12Program_t *	Program( const char * vertex, const char * fragment );
+	void							Clear( const idVec4 & rgba, float depthValue, uint8 stencil );
+	void							ClearDepth( float depthValue, const D3D12_RECT & rect );
+	void							Draw( d3d12Program_t & program, const draw_t & draw, std::span<const idDrawVert> verts, std::span<const triIndex_t> indexes );
+	[[nodiscard]] pixels_t			Read();		// waits for the GPU
+	[[nodiscard]] idD3D12DepthBiasTable &	Bias() { return factory.Bias(); }
+
+	std::array<idVec4, MAX_RENDER_PARMS>	parms = {};	// the MVP starts as the identity: positions are GL clip space
+
+private:
+	static constexpr uint64			UPLOAD_BYTES = 4 << 20;
+	static constexpr uint64			ZERO_BYTES = 8192;		// the parms and joints of a stage without any
+	[[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS	Put( const void * data, uint64 bytes );
+	void							Target( D3D12_RESOURCE_STATES colorAfter, D3D12_RESOURCE_STATES depthAfter );
+
+	idTestGpu &						gpu;
+	idD3D12ShaderCompiler			compiler;
+	idD3D12RootSignature			root;
+	idD3D12PipelineFactory			factory;
+	idD3D12DescriptorPool			dsvPool;
+	std::vector<std::unique_ptr<d3d12Program_t>>	programs;
+	idComPtr<ID3D12Resource>		color, depth, upload, readback;
+	d3d12ResourceState_t			colorState, depthState;
+	d3d12Descriptor_t				rtv, dsv;
+	idComPtr<ID3D12DescriptorHeap>	viewHeap, samplerHeap;
+	std::array<D3D12_PLACED_SUBRESOURCE_FOOTPRINT, 3>	footprints = {};	// colour, depth plane, stencil plane
+	byte *							mapped = nullptr;
+	uint64							used = ZERO_BYTES;
+};
+
+idTestRaster::idTestRaster( idTestGpu & owner ) :
+	gpu( owner ),
+	compiler( owner.library, false ),
+	root( owner.device, owner.library ),
+	factory( owner.device, root, nullptr, nullptr ),
+	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ) {
+	ID3D12Device2 & device = gpu.device.Get();
+	D3D12_HEAP_PROPERTIES defaultHeap = {};
+	defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC colorDesc = {};
+	colorDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	colorDesc.Width = SIZE;
+	colorDesc.Height = SIZE;
+	colorDesc.DepthOrArraySize = 1;
+	colorDesc.MipLevels = 1;
+	colorDesc.Format = d3d12TargetId_t::Of( false, 1 ).ColorView();
+	colorDesc.SampleDesc.Count = 1;
+	colorDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	D3D12_RESOURCE_DESC depthDesc = colorDesc;
+	depthDesc.Format = d3d12TargetId_t::DEPTH;
+	depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+	D3D12_CLEAR_VALUE colorClear = {};
+	colorClear.Format = colorDesc.Format;
+	D3D12_CLEAR_VALUE depthClear = {};
+	depthClear.Format = depthDesc.Format;
+	depthClear.DepthStencil = { 1.0f, 0 };
+	if ( !root.Get()
+			|| !gpu.device.Check( device.CreateCommittedResource( &defaultHeap, D3D12_HEAP_FLAG_NONE, &colorDesc, D3D12_RESOURCE_STATE_RENDER_TARGET,
+				&colorClear, IID_PPV_ARGS( &color ) ), "CreateCommittedResource (test colour)" )
+			|| !gpu.device.Check( device.CreateCommittedResource( &defaultHeap, D3D12_HEAP_FLAG_NONE, &depthDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+				&depthClear, IID_PPV_ARGS( &depth ) ), "CreateCommittedResource (test depth)" ) ) {
+		Check( false, "the test target" );
+		return;
+	}
+	colorState.current = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	depthState.current = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	rtv = gpu.rtvPool.Allocate();
+	dsv = dsvPool.Allocate();
+	device.CreateRenderTargetView( color.Get(), nullptr, gpu.rtvPool.Cpu( rtv ) );
+	device.CreateDepthStencilView( depth.Get(), nullptr, dsvPool.Cpu( dsv ) );
+
+	UINT rows[2] = {};
+	UINT64 rowBytes[2] = {};
+	UINT64 colorBytes = 0;
+	device.GetCopyableFootprints( &colorDesc, 0, 1, 0, &footprints[0], rows, rowBytes, &colorBytes );
+	const UINT64 depthBase = ( colorBytes + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1 ) & ~UINT64( D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1 );
+	device.GetCopyableFootprints( &depthDesc, 0, 2, depthBase, &footprints[1], rows, rowBytes, nullptr );
+	const uint64 readbackBytes = footprints[2].Offset + static_cast<uint64>( footprints[2].Footprint.RowPitch ) * SIZE;
+	readback = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_READBACK, readbackBytes, D3D12_RESOURCE_STATE_COPY_DEST, L"test raster readback" );
+	upload = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_UPLOAD, UPLOAD_BYTES, D3D12_RESOURCE_STATE_GENERIC_READ, L"test raster upload" );
+
+	// the table slots no program samples here: null views and point samplers
+	const auto heap = [&]( D3D12_DESCRIPTOR_HEAP_TYPE type ) {
+		const D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { type, MAX_TEXTURE_SLOTS, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+		idComPtr<ID3D12DescriptorHeap> created;
+		gpu.device.Check( device.CreateDescriptorHeap( &heapDesc, IID_PPV_ARGS( &created ) ), "CreateDescriptorHeap (test raster)" );
+		return created;
+	};
+	viewHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+	samplerHeap = heap( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
+	if ( !viewHeap || !samplerHeap || !upload ) {
+		return;
+	}
+	D3D12_SHADER_RESOURCE_VIEW_DESC none = {};
+	none.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	none.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	none.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	none.Texture2D.MipLevels = 1;
+	const D3D12_SAMPLER_DESC sampler = D3D12_SamplerFor( D3D12_PackSampler( POINT_CLAMP ), false );
+	D3D12_CPU_DESCRIPTOR_HANDLE view = viewHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_CPU_DESCRIPTOR_HANDLE samplerSlot = samplerHeap->GetCPUDescriptorHandleForHeapStart();
+	for ( int slot = 0; slot < MAX_TEXTURE_SLOTS; slot++ ) {
+		device.CreateShaderResourceView( nullptr, &none, view );
+		device.CreateSampler( &sampler, samplerSlot );
+		view.ptr += device.GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		samplerSlot.ptr += device.GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
+	}
+	const D3D12_RANGE nothingRead = { 0, 0 };
+	void * cpu = nullptr;
+	if ( gpu.device.Check( upload->Map( 0, &nothingRead, &cpu ), "Map (test raster upload)" ) ) {
+		mapped = static_cast<byte *>( cpu );
+		memset( mapped, 0, ZERO_BYTES );
+	}
+	for ( int row = 0; row < 4; row++ ) {
+		idVec4 & mvp = parms[RENDERPARM_MVPMATRIX_X + row];
+		mvp.Zero();
+		mvp[row] = 1.0f;
+	}
+}
+
+idTestRaster::~idTestRaster() {
+	if ( !gpu.device.IsLost() ) {
+		gpu.WaitIdle();
+	}
+	if ( rtv.IsValid() ) {
+		gpu.rtvPool.Free( rtv );
+	}
+}
+
+d3d12Program_t * idTestRaster::Program( const char * vertexName, const char * fragmentName ) {
+	const auto build = [this]( const char * name, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
+		const std::optional<renderProgSource_t> source = RepoSource( name, type );
+		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
+	};
+	const auto vertex = build( vertexName, shaderStageType_t::VERTEX );
+	const auto fragment = build( fragmentName, shaderStageType_t::FRAGMENT );
+	if ( !Check( vertex && fragment, va( "%s and %s build", vertexName, fragmentName ) ) ) {
+		return nullptr;
+	}
+	auto program = D3D12_LinkProgram( compiler, *vertex, &*fragment );
+	if ( !Check( program.has_value(), va( "%s and %s link", vertexName, fragmentName ) ) ) {
+		return nullptr;
+	}
+	programs.push_back( std::make_unique<d3d12Program_t>( std::move( *program ) ) );
+	programs.back()->dense = static_cast<uint16>( programs.size() );
+	return programs.back().get();
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS idTestRaster::Put( const void * data, uint64 bytes ) {
+	const uint64 offset = ( used + D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - 1 ) & ~uint64( D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - 1 );
+	if ( !Check( offset + bytes <= UPLOAD_BYTES, "the test upload buffer is full" ) ) {
+		return upload->GetGPUVirtualAddress();
+	}
+	memcpy( mapped + offset, data, static_cast<size_t>( bytes ) );
+	used = offset + bytes;
+	return upload->GetGPUVirtualAddress() + offset;
+}
+
+void idTestRaster::Target( D3D12_RESOURCE_STATES colorAfter, D3D12_RESOURCE_STATES depthAfter ) {
+	gpu.barriers.Transition( *color.Get(), colorState, colorAfter );
+	gpu.barriers.Transition( *depth.Get(), depthState, depthAfter );
+	gpu.barriers.Flush();
+}
+
+void idTestRaster::Clear( const idVec4 & rgba, float depthValue, uint8 stencil ) {
+	Target( D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	gpu.List().ClearRenderTargetView( gpu.rtvPool.Cpu( rtv ), rgba.ToFloatPtr(), 0, nullptr );
+	gpu.List().ClearDepthStencilView( dsvPool.Cpu( dsv ), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, depthValue, stencil, 0, nullptr );
+}
+
+void idTestRaster::ClearDepth( float depthValue, const D3D12_RECT & rect ) {
+	Target( D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	gpu.List().ClearDepthStencilView( dsvPool.Cpu( dsv ), D3D12_CLEAR_FLAG_DEPTH, depthValue, 0, 1, &rect );
+}
+
+void idTestRaster::Draw( d3d12Program_t & program, const draw_t & draw, std::span<const idDrawVert> verts, std::span<const triIndex_t> indexes ) {
+	pipelineKey_t key = {};
+	key.stateBits = draw.stateBits & GLS_PIPELINE_BITS;
+	key.layout = LAYOUT_DRAW_VERT;
+	key.raster = static_cast<uint8>( draw.raster | ( d3d12TargetId_t::Of( false, 1 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	key.depthBias = draw.depthBias;
+	key.program = program.dense;
+	ID3D12PipelineState * pso = factory.Get( program, D3D12_NormalizeKey( key ) );
+	if ( !Check( pso != nullptr, va( "a PSO for 0x%016llx", key.stateBits ) ) ) {
+		return;
+	}
+	std::array<idVec4, MAX_RENDER_PARMS> packed;
+	const auto stageParms = [&]( const shaderStageInfo_t & info ) {
+		if ( info.numParms == 0 ) {
+			return upload->GetGPUVirtualAddress();
+		}
+		R_PackRenderParms( packed.data(), parms.data(), info );
+		return Put( packed.data(), static_cast<uint64>( info.numParms ) * sizeof( idVec4 ) );
+	};
+	const D3D12_GPU_VIRTUAL_ADDRESS vertexParms = stageParms( program.vertexInfo );
+	const D3D12_GPU_VIRTUAL_ADDRESS fragmentParms = stageParms( program.fragmentInfo );
+	const D3D12_VERTEX_BUFFER_VIEW vertexView = { Put( verts.data(), verts.size_bytes() ), static_cast<UINT>( verts.size_bytes() ), sizeof( idDrawVert ) };
+	const D3D12_INDEX_BUFFER_VIEW indexView = { Put( indexes.data(), indexes.size_bytes() ), static_cast<UINT>( indexes.size_bytes() ), DXGI_FORMAT_R16_UINT };
+
+	Target( D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { viewHeap.Get(), samplerHeap.Get() };
+	list.SetDescriptorHeaps( 2, heaps );
+	list.SetGraphicsRootSignature( root.Get() );
+	list.SetPipelineState( pso );
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = gpu.rtvPool.Cpu( rtv );
+	const D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = dsvPool.Cpu( dsv );
+	list.OMSetRenderTargets( 1, &rtvHandle, FALSE, &dsvHandle );
+	const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>( SIZE ), static_cast<float>( SIZE ), 0.0f, 1.0f };
+	const D3D12_RECT scissor = { 0, 0, SIZE, SIZE };
+	list.RSSetViewports( 1, &viewport );
+	list.RSSetScissorRects( 1, &scissor );
+	list.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	list.OMSetStencilRef( draw.stencilRef );
+	if ( gpu.device.Features().depthBounds ) {
+		list.OMSetDepthBounds( draw.depthBounds.first, draw.depthBounds.second );
+	}
+	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::VERTEX_PARMS ), vertexParms );
+	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::FRAGMENT_PARMS ), fragmentParms );
+	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), upload->GetGPUVirtualAddress() );
+	list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::TEXTURES ), viewHeap->GetGPUDescriptorHandleForHeapStart() );
+	list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::SAMPLERS ), samplerHeap->GetGPUDescriptorHandleForHeapStart() );
+	list.IASetVertexBuffers( 0, 1, &vertexView );
+	list.IASetIndexBuffer( &indexView );
+	for ( int i = 0; i < draw.times; i++ ) {
+		list.DrawIndexedInstanced( static_cast<UINT>( indexes.size() ), 1, 0, 0, 0 );
+	}
+}
+
+idTestRaster::pixels_t idTestRaster::Read() {
+	pixels_t pixels;
+	Target( D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE );
+	for ( size_t i = 0; i < footprints.size(); i++ ) {
+		D3D12_TEXTURE_COPY_LOCATION destination = {};
+		destination.pResource = readback.Get();
+		destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+		destination.PlacedFootprint = footprints[i];
+		D3D12_TEXTURE_COPY_LOCATION source = {};
+		source.pResource = ( i == 0 ) ? color.Get() : depth.Get();
+		source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+		source.SubresourceIndex = ( i == 2 ) ? 1 : 0;
+		gpu.List().CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+	}
+	gpu.WaitIdle();
+	used = ZERO_BYTES;
+	const D3D12_RANGE everything = { 0, static_cast<SIZE_T>( footprints[2].Offset + static_cast<uint64>( footprints[2].Footprint.RowPitch ) * SIZE ) };
+	void * cpu = nullptr;
+	if ( !gpu.device.Check( readback->Map( 0, &everything, &cpu ), "Map (test raster readback)" ) ) {
+		return pixels;
+	}
+	const byte * bytes = static_cast<const byte *>( cpu );
+	const auto texel = [&]( size_t plane, int column, int row, int texelBytes ) {
+		return bytes + footprints[plane].Offset + static_cast<size_t>( row ) * footprints[plane].Footprint.RowPitch + static_cast<size_t>( column * texelBytes );
+	};
+	pixels.color.resize( SIZE * SIZE );
+	pixels.depth.resize( SIZE * SIZE );
+	pixels.stencil.resize( SIZE * SIZE );
+	for ( int row = 0; row < SIZE; row++ ) {
+		for ( int column = 0; column < SIZE; column++ ) {
+			const int at = pixels_t::At( column, row );
+			memcpy( &pixels.color[at], texel( 0, column, row, 4 ), 4 );
+			memcpy( &pixels.depth[at], texel( 1, column, row, 4 ), 4 );
+			pixels.depth[at] &= 0xFFFFFFu;
+			pixels.stencil[at] = *texel( 2, column, row, 1 );
+		}
+	}
+	const D3D12_RANGE nothingWritten = { 0, 0 };
+	readback->Unmap( 0, &nothingWritten );
+	return pixels;
+}
+
+[[nodiscard]] idDrawVert ClipVertex( float x, float y, float z ) {
+	idDrawVert vertex;
+	vertex.Clear();
+	vertex.xyz.Set( x, y, z );
+	return vertex;
+}
+
+// Counter-clockwise in GL's window (y up): a GL front face. QUAD_CW winds it the other way.
+[[nodiscard]] std::array<idDrawVert, 4> Quad( float x0, float y0, float x1, float y1, float z0, float z1 ) {
+	return { ClipVertex( x0, y0, z0 ), ClipVertex( x1, y0, z1 ), ClipVertex( x1, y1, z1 ), ClipVertex( x0, y1, z0 ) };
+}
+[[nodiscard]] std::array<idDrawVert, 4> Quad( float x0, float y0, float x1, float y1, float z = 0.0f ) {
+	return Quad( x0, y0, x1, y1, z, z );
+}
+constexpr std::array<triIndex_t, 6> QUAD_CCW = { 0, 1, 2, 0, 2, 3 };
+constexpr std::array<triIndex_t, 6> QUAD_CW = { 0, 2, 1, 0, 3, 2 };
+constexpr uint32 RGBA_RED = 0xFF0000FFu;
+constexpr uint32 RGBA_GREEN = 0xFF00FF00u;
+
+// The GL clip coordinates of the centre of a target pixel, its memory row taken as GL's row.
+[[nodiscard]] idVec2 GlCentre( int column, int row ) {
+	constexpr float HALF = idTestRaster::SIZE * 0.5f;
+	return idVec2( ( column + 0.5f ) / HALF - 1.0f, ( row + 0.5f ) / HALF - 1.0f );
+}
+
+// The distance of p from the edge a → b, positive on its left (inside a counter-clockwise triangle).
+[[nodiscard]] float EdgeDistance( const idVec2 & a, const idVec2 & b, const idVec2 & p ) {
+	const idVec2 edge = b - a;
+	return ( edge.x * ( p.y - a.y ) - edge.y * ( p.x - a.x ) ) / edge.Length();
+}
+
+// A quad and a triangle in GL clip space land where glReadPixels finds them in GL's frame.
+void RasterGlRows( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+	raster.parms[RENDERPARM_COLOR] = idVec4( 1.0f, 0.0f, 0.0f, 1.0f );
+	raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_ALWAYS }, Quad( -1.0f, 0.0f, 0.0f, 1.0f ), QUAD_CCW );
+	const idVec2 corners[3] = { idVec2( 0.1f, -0.9f ), idVec2( 0.9f, -0.9f ), idVec2( 0.9f, -0.15f ) };
+	const std::array<idDrawVert, 3> triangle = { ClipVertex( corners[0].x, corners[0].y, 0.0f ), ClipVertex( corners[1].x, corners[1].y, 0.0f ),
+		ClipVertex( corners[2].x, corners[2].y, 0.0f ) };
+	constexpr std::array<triIndex_t, 3> TRIANGLE = { 0, 1, 2 };
+	raster.parms[RENDERPARM_COLOR] = idVec4( 0.0f, 1.0f, 0.0f, 1.0f );
+	raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_ALWAYS }, triangle, TRIANGLE );
+	const idTestRaster::pixels_t pixels = raster.Read();
+	if ( !Check( !pixels.color.empty(), "the read back" ) ) {
+		return;
+	}
+	int wrong = 0;
+	for ( int row = 0; row < idTestRaster::SIZE; row++ ) {
+		for ( int column = 0; column < idTestRaster::SIZE; column++ ) {
+			const idVec2 p = GlCentre( column, row );
+			const float inside = Min( Min( EdgeDistance( corners[0], corners[1], p ), EdgeDistance( corners[1], corners[2], p ) ),
+				EdgeDistance( corners[2], corners[0], p ) );
+			if ( idMath::Fabs( inside ) < 0.01f ) {
+				continue;	// on an edge: the fill rule decides
+			}
+			const uint32 expected = ( inside > 0.0f ) ? RGBA_GREEN : ( p.x < 0.0f && p.y > 0.0f ) ? RGBA_RED : 0u;
+			const uint32 drawn = pixels.color[idTestRaster::pixels_t::At( column, row )];
+			wrong += ( drawn != expected ) ? 1 : 0;
+			Check( drawn == expected, va( "memory row %d column %d: 0x%08x, GL 0x%08x", row, column, drawn, expected ) );
+		}
+	}
+	printf( "  %d pixels off GL's rows\n", wrong );
+	CheckNoLayerErrors( gpu );
+}
+
+// R_PipelineCull and FrontCounterClockwise FALSE against API_Cull: GL's front faces wind counter-clockwise in its window,
+// a mirror swaps the culled face, and the two-sided stencil ops of a shadow volume go to GL's faces.
+void RasterCull( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	const std::array<idDrawVert, 4> left = Quad( -0.9f, -0.5f, -0.1f, 0.5f );		// drawn counter-clockwise
+	const std::array<idDrawVert, 4> right = Quad( 0.1f, -0.5f, 0.9f, 0.5f );		// drawn clockwise
+	const int leftPixel = idTestRaster::pixels_t::At( idTestRaster::SIZE / 4, idTestRaster::SIZE / 2 );
+	const int rightPixel = idTestRaster::pixels_t::At( idTestRaster::SIZE * 3 / 4, idTestRaster::SIZE / 2 );
+	raster.parms[RENDERPARM_COLOR] = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+	for ( const cullType_t cullType : { CT_FRONT_SIDED, CT_BACK_SIDED, CT_TWO_SIDED } ) {
+		for ( const bool mirror : { false, true } ) {
+			for ( const bool enabled : { true, false } ) {
+				// API_Cull: glCullFace( GL_FRONT ) for FRONT_SIDED, GL_BACK for BACK_SIDED, swapped in a mirror; GL_CULL_FACE off for
+				// TWO_SIDED, and while a two-sided pass left it off
+				const bool culling = enabled && cullType != CT_TWO_SIDED;
+				const bool cullsGlFront = culling && ( ( cullType == CT_FRONT_SIDED ) != mirror );
+				const bool cullsGlBack = culling && !cullsGlFront;
+				raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+				const idTestRaster::draw_t draw = { .stateBits = GLS_DEPTHFUNC_ALWAYS, .raster = R_PipelineCull( cullType, enabled, mirror ) };
+				raster.Draw( *program, draw, left, QUAD_CCW );
+				raster.Draw( *program, draw, right, QUAD_CW );
+				const idTestRaster::pixels_t pixels = raster.Read();
+				if ( pixels.color.empty() ) {
+					return;
+				}
+				const bool leftDrawn = pixels.color[leftPixel] != 0;
+				const bool rightDrawn = pixels.color[rightPixel] != 0;
+				Check( leftDrawn == !cullsGlFront && rightDrawn == !cullsGlBack, va( "cull type %d, mirror %d, culling %d: counter-clockwise %s, "
+					"clockwise %s", cullType, mirror ? 1 : 0, enabled ? 1 : 0, leftDrawn ? "drawn" : "culled", rightDrawn ? "drawn" : "culled" ) );
+			}
+		}
+	}
+
+	raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 128 );
+	const idTestRaster::draw_t volume = { .stateBits = GLS_STENCIL_SHADOW_ZPASS | GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK };
+	raster.Draw( *program, volume, left, QUAD_CCW );
+	raster.Draw( *program, volume, right, QUAD_CW );
+	const idTestRaster::pixels_t pixels = raster.Read();
+	if ( !pixels.stencil.empty() ) {
+		Check( pixels.stencil[leftPixel] == 129 && pixels.stencil[rightPixel] == 127, va( "shadow volume: front face %d (GL 129), back face %d (GL 127)",
+			pixels.stencil[leftPixel], pixels.stencil[rightPixel] ) );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// E17: the interaction pass with depth EQUAL hits every pixel the depth pass wrote, though interaction.vertex is another
+// program than depth.vertex: precise keeps the arithmetic of the position the same in both.
+void RasterDepthEqual( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * depthPass = raster.Ready() ? raster.Program( "depth.vertex", "depth.pixel" ) : nullptr;
+	d3d12Program_t * interaction = raster.Ready() ? raster.Program( "interaction.vertex", "interaction.pixel" ) : nullptr;
+	if ( depthPass == nullptr || interaction == nullptr ) {
+		return;
+	}
+	uint32 seed = 7;
+	const auto random = [&seed]( float low, float high ) {
+		seed = seed * 1664525u + 1013904223u;
+		return low + ( high - low ) * static_cast<float>( seed >> 8 ) / static_cast<float>( 1 << 24 );
+	};
+	for ( idVec4 & parm : raster.parms ) {
+		parm.Set( random( -1.0f, 1.0f ), random( -1.0f, 1.0f ), random( -1.0f, 1.0f ), random( -1.0f, 1.0f ) );
+	}
+	raster.parms[RENDERPARM_MVPMATRIX_X].Set( 0.93f, 0.071f, -0.013f, 0.0123f );
+	raster.parms[RENDERPARM_MVPMATRIX_Y].Set( -0.061f, 0.97f, 0.027f, -0.0071f );
+	raster.parms[RENDERPARM_MVPMATRIX_Z].Set( 0.031f, -0.043f, 0.89f, 0.0137f );
+	raster.parms[RENDERPARM_MVPMATRIX_W].Set( 0.011f, -0.023f, 0.037f, 1.0f );
+
+	constexpr int CELLS = 16;
+	std::vector<idDrawVert> grid;
+	for ( int y = 0; y <= CELLS; y++ ) {
+		for ( int x = 0; x <= CELLS; x++ ) {
+			idDrawVert vertex = ClipVertex( -1.2f + 2.4f * x / CELLS, -1.2f + 2.4f * y / CELLS, random( -0.6f, 0.6f ) );
+			vertex.SetTexCoord( random( 0.0f, 4.0f ), random( 0.0f, 4.0f ) );
+			idVec3 normal( random( -1.0f, 1.0f ), random( -1.0f, 1.0f ), 1.0f );
+			idVec3 tangent( 1.0f, random( -1.0f, 1.0f ), random( -1.0f, 1.0f ) );
+			normal.Normalize();
+			tangent.Normalize();
+			vertex.SetNormal( normal );
+			vertex.SetTangent( tangent );
+			vertex.SetColor( 0xFF8040C0u );
+			grid.push_back( vertex );
+		}
+	}
+	std::vector<triIndex_t> indexes;
+	for ( int y = 0; y < CELLS; y++ ) {
+		for ( int x = 0; x < CELLS; x++ ) {
+			const int corner = y * ( CELLS + 1 ) + x;
+			for ( const int offset : { 0, 1, CELLS + 2, 0, CELLS + 2, CELLS + 1 } ) {
+				indexes.push_back( static_cast<triIndex_t>( corner + offset ) );
+			}
+		}
+	}
+	raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+	raster.Draw( *depthPass, { .stateBits = GLS_DEPTHFUNC_LESS | GLS_COLORMASK | GLS_ALPHAMASK }, grid, indexes );
+	raster.Draw( *interaction, { .stateBits = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL | GLS_STENCIL_OP_PASS_INCR },
+		grid, indexes );
+	const idTestRaster::pixels_t pixels = raster.Read();
+	int covered = 0;
+	int missed = 0;
+	for ( size_t i = 0; i < pixels.depth.size(); i++ ) {
+		if ( pixels.depth[i] != 0xFFFFFFu ) {
+			covered++;
+			missed += ( pixels.stencil[i] != 1 ) ? 1 : 0;
+		}
+	}
+	printf( "  %d of %d covered pixels fail EQUAL\n", missed, covered );
+	Check( covered == idTestRaster::SIZE * idTestRaster::SIZE, va( "the grid covers %d pixels", covered ) );
+	Check( missed == 0, va( "%d pixels fail EQUAL", missed ) );
+	CheckNoLayerErrors( gpu );
+}
+
+// The depth test rejects the farther of two quads in either order, with BFG's LESS (GL_LEQUAL) and the strict GL_LESS
+// of GL's initial state; EQUAL lets only the stored depth through.
+void RasterDepthOrder( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	const int centre = idTestRaster::pixels_t::At( idTestRaster::SIZE / 2, idTestRaster::SIZE / 2 );
+	const idVec4 red( 1.0f, 0.0f, 0.0f, 1.0f );
+	const idVec4 green( 0.0f, 1.0f, 0.0f, 1.0f );
+	for ( const int strict : { 0, static_cast<int>( D3D12_KEY_STRICT_DEPTH ) } ) {
+		for ( const bool nearFirst : { true, false } ) {
+			raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+			const idTestRaster::draw_t draw = { .stateBits = GLS_DEPTHFUNC_LESS, .raster = strict };
+			raster.parms[RENDERPARM_COLOR] = nearFirst ? red : green;
+			raster.Draw( *program, draw, Quad( -1.0f, -1.0f, 1.0f, 1.0f, nearFirst ? -0.5f : 0.5f ), QUAD_CCW );
+			raster.parms[RENDERPARM_COLOR] = nearFirst ? green : red;
+			raster.Draw( *program, draw, Quad( -1.0f, -1.0f, 1.0f, 1.0f, nearFirst ? 0.5f : -0.5f ), QUAD_CCW );
+			raster.parms[RENDERPARM_COLOR] = idVec4( 0.0f, 0.0f, 1.0f, 1.0f );
+			raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_EQUAL | GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK | GLS_STENCIL_OP_PASS_INCR },
+				Quad( -1.0f, -1.0f, 1.0f, 1.0f, 0.5f ), QUAD_CCW );
+			const idTestRaster::pixels_t pixels = raster.Read();
+			if ( !Check( !pixels.color.empty(), "the read back" ) ) {
+				return;
+			}
+			Check( pixels.color[centre] == RGBA_RED && pixels.stencil[centre] == 0, va( "strict %d, near quad %s: 0x%08x, stencil %d (GL red, 0)",
+				strict != 0 ? 1 : 0, nearFirst ? "first" : "second", pixels.color[centre], pixels.stencil[centre] ) );
+		}
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// GL's INCR and DECR saturate (D3D12's INCR_SAT, DECR_SAT); INCR_WRAP and DECR_WRAP wrap (D3D12's INCR, DECR).
+void RasterStencilOps( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	struct row_t {
+		const char *				name;
+		uint64						op;
+		uint8						start;
+		int							times;
+		byte						gl;
+	};
+	const row_t rows[] = {
+		{ "INCR", GLS_STENCIL_OP_PASS_INCR, 0, 300, 255 },
+		{ "INCR_WRAP", GLS_STENCIL_OP_PASS_INCR_WRAP, 0, 300, 300 - 256 },
+		{ "DECR", GLS_STENCIL_OP_PASS_DECR, 2, 5, 0 },
+		{ "DECR_WRAP", GLS_STENCIL_OP_PASS_DECR_WRAP, 2, 5, 253 },
+	};
+	for ( const row_t & row : rows ) {
+		raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, row.start );
+		raster.Draw( *program, { .stateBits = row.op | GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK, .times = row.times },
+			Quad( -1.0f, -1.0f, 1.0f, 1.0f ), QUAD_CCW );
+		const idTestRaster::pixels_t pixels = raster.Read();
+		const auto wrong = std::ranges::count_if( pixels.stencil, [&row]( byte s ) { return s != row.gl; } );
+		Check( !pixels.stencil.empty() && wrong == 0, va( "%s %d times from %d: %d, GL %d (%d pixels off)", row.name, row.times, row.start,
+			pixels.stencil.empty() ? -1 : pixels.stencil[0], row.gl, static_cast<int>( wrong ) ) );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// The depth bounds test reads the stored depth, as EXT_depth_bounds_test does, inclusive; (0, 1) lets everything through.
+void RasterDepthBounds( idTestGpu & gpu ) {
+	if ( !gpu.device.Features().depthBounds ) {
+		printf( "  skipped: no depth bounds test (OPTIONS2; WARP's turns the depth test off)\n" );
+		return;
+	}
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	struct row_t {
+		float						min, max;
+		bool						left, right;	// stored 0.25 and 0.75
+	};
+	const row_t rows[] = {
+		{ 0.5f, 1.0f, false, true },
+		{ 0.0f, 0.5f, true, false },
+		{ 0.0f, 1.0f, true, true },
+		{ 0.3f, 0.7f, false, false },
+		{ 0.2f, 0.8f, true, true },
+	};
+	constexpr int HALF = idTestRaster::SIZE / 2;
+	raster.parms[RENDERPARM_COLOR] = idVec4( 1.0f, 0.0f, 0.0f, 1.0f );
+	for ( const row_t & row : rows ) {
+		raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+		raster.ClearDepth( 0.25f, { 0, 0, HALF, idTestRaster::SIZE } );
+		raster.ClearDepth( 0.75f, { HALF, 0, idTestRaster::SIZE, idTestRaster::SIZE } );
+		// the fragments' own depth, 0.05, is outside every bound but the first rows': a test of it would fail them
+		raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK, .depthBounds = { row.min, row.max } },
+			Quad( -1.0f, -1.0f, 1.0f, 1.0f, -0.9f ), QUAD_CCW );
+		const idTestRaster::pixels_t pixels = raster.Read();
+		int wrong = 0;
+		for ( int y = 0; y < idTestRaster::SIZE && !pixels.color.empty(); y++ ) {
+			for ( int x = 0; x < idTestRaster::SIZE; x++ ) {
+				const bool expected = ( x < HALF ) ? row.left : row.right;
+				wrong += ( ( pixels.color[idTestRaster::pixels_t::At( x, y )] == RGBA_RED ) != expected ) ? 1 : 0;
+			}
+		}
+		Check( !pixels.color.empty() && wrong == 0, va( "bounds %.2f .. %.2f: %d pixels off", row.min, row.max, wrong ) );
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// glPolygonOffset( factor, units ) with r = 2^-24 on D24: the slot's DepthBias moves the stored depth by units steps, and its
+// slope bias by factor times the depth slope per pixel.
+void RasterDepthBias( idTestGpu & gpu ) {
+	idTestRaster raster( gpu );
+	d3d12Program_t * program = raster.Ready() ? raster.Program( "color.vertex", "color.pixel" ) : nullptr;
+	if ( program == nullptr ) {
+		return;
+	}
+	const int centre = idTestRaster::pixels_t::At( idTestRaster::SIZE / 2, idTestRaster::SIZE / 2 );
+	const auto depthAt = [&]( float factor, float units, float z0, float z1 ) -> int64 {
+		const uint8 slot = ( factor != 0.0f || units != 0.0f ) ? raster.Bias().Slot( factor, units ) : 0;
+		raster.Clear( idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), 1.0f, 0 );
+		raster.Draw( *program, { .stateBits = GLS_DEPTHFUNC_ALWAYS | ( slot != 0 ? GLS_POLYGON_OFFSET : 0 ), .depthBias = slot },
+			Quad( -1.0f, -1.0f, 1.0f, 1.0f, z0, z1 ), QUAD_CCW );
+		const idTestRaster::pixels_t pixels = raster.Read();
+		return pixels.depth.empty() ? -1 : static_cast<int64>( pixels.depth[centre] );
+	};
+	const int64 flat = depthAt( 0.0f, 0.0f, 0.0f, 0.0f );
+	const int64 up = depthAt( 0.0f, 64.0f, 0.0f, 0.0f ) - flat;
+	const int64 down = depthAt( 0.0f, -64.0f, 0.0f, 0.0f ) - flat;
+	printf( "  units 64: %+lld steps, units -64: %+lld steps\n", up, down );
+	Check( flat > 0 && std::abs( up - 64 ) <= 1 && std::abs( down + 64 ) <= 1, va( "units 64 move the depth %lld and %lld steps", up, down ) );
+
+	// z from -0.5 to 0.5 across the target: a depth slope of 0.5 / SIZE per pixel
+	const int64 sloped = depthAt( 0.0f, 0.0f, -0.5f, 0.5f );
+	const int64 slopeBias = depthAt( 2.0f, 0.0f, -0.5f, 0.5f ) - sloped;
+	const double gl = 2.0 * 0.5 / idTestRaster::SIZE * 16777215.0;
+	printf( "  factor 2: %+lld steps, GL %+.0f\n", slopeBias, gl );
+	Check( std::abs( static_cast<double>( slopeBias ) - gl ) <= gl * 0.02, va( "factor 2 moves the depth %lld steps, GL %.0f", slopeBias, gl ) );
+	CheckNoLayerErrors( gpu );
+}
+
+// ---- screen copies -----------------------------------------------------------------------------------------
+
+// P1 and T6 without a draw: the two surfaces of a copy target, the sampler GL's colour copy sets, and the
+// incomplete texture a mipmap filter makes of a copy at another size.
+void Test_WarpCopyTargets() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	idD3D12TextureStore & store = gpu->textures;
+	store.CreateDefaults();
+	const uint64 bytesBefore = store.Bytes();
+	const samplerDesc_t trilinear = { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::REPEAT, 4.0f, -0.5f };
+	const textureHandle_t color = store.Create( Opts( FMT_RGBA8, 16, 16, 5 ), textureRole_t::COLOR_COPY, trilinear, "_currentRender" );
+	const textureHandle_t depth = store.Create( Opts( FMT_DEPTH, 16, 16, 1 ), textureRole_t::DEPTH_COPY, POINT_CLAMP, "_currentDepth" );
+	if ( !Check( color != textureHandle_t::NONE && depth != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	const d3d12Texture_t & texture = store.Get( color );
+	const ID3D12Resource * created = texture.surface.resource.Get();
+
+	store.RecordUploads( true );
+	const std::vector<byte> pixels = Pattern( 16 * 16 * 4, 7 );
+	store.Upload( color, 0, 0, 16, 16, pixels.data(), 16 );
+	Check( !texture.uploads.empty(), "the upload is recorded" );
+	Check( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 16, 16 ) == &store.Get( color ).surface, "a copy target" );
+	Check( texture.surface.resource.Get() == created && texture.surface.levels == 5 && !texture.copiedResized,
+		"a copy of the creation size goes into the created surface, its mips kept" );
+	Check( texture.uploads.empty(), "a copy forgets the recorded uploads: level 0 is no upload now" );
+	Check( texture.sampler == D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::CLAMP, 4.0f, -0.5f } ),
+		"a colour copy sets LINEAR and CLAMP and keeps the anisotropy and the LOD bias, as GL's copy" );
+
+	const d3d12TextureSurface_t * big = store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 1280, 720 );
+	Check( big != nullptr && big->width == 1280 && big->height == 720 && big->levels == 1, "another size: a new one-level surface" );
+	Check( texture.spare.resource.Get() == created && store.CopySurfacesThisFrame() == 1, "the created surface is the spare" );
+	Check( texture.copiedResized && !texture.IncompleteCopy() && store.SampledView( color, textureKind_t::TEX_2D ) == texture.surface.srv,
+		"a resized copy under LINEAR is complete: it samples its surface" );
+	store.SetSampler( color, trilinear );
+	Check( texture.IncompleteCopy() && store.SampledView( color, textureKind_t::TEX_2D ) == store.Fallback( textureKind_t::TEX_2D ),
+		"a mipmap filter on a resized copy: GL's incomplete texture reads black (T6)" );
+	store.SetSampler( color, { samplerFilter_t::LINEAR_MIP_NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } );
+	Check( texture.IncompleteCopy(), "LINEAR_MIP_NEAREST reads the mips too" );
+	store.SetSampler( color, POINT_CLAMP );
+	Check( !texture.IncompleteCopy(), "NEAREST reads level 0 only" );
+
+	const ID3D12Resource * bigResource = texture.surface.resource.Get();
+	Check( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 960, 540 ) != nullptr && texture.spare.resource.Get() == bigResource
+		&& store.CopySurfacesThisFrame() == 2, "a third size: a new surface, the last one is the spare and the created one is buried" );
+	const ID3D12Resource * smallResource = texture.surface.resource.Get();
+	for ( int i = 0; i < 3; i++ ) {
+		static_cast<void>( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 1280, 720 ) );
+		Check( texture.surface.resource.Get() == bigResource && texture.spare.resource.Get() == smallResource, "the spare swaps in" );
+		static_cast<void>( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 960, 540 ) );
+		Check( texture.surface.resource.Get() == smallResource && texture.spare.resource.Get() == bigResource, "and back" );
+	}
+	Check( store.CopySurfacesThisFrame() == 2, "resolution scaling between two sizes creates nothing (P1)" );
+	Check( store.Bytes() == bytesBefore + texture.surface.bytes + texture.spare.bytes + store.Get( depth ).surface.bytes,
+		"the bytes count both surfaces, not the buried one" );
+	static_cast<void>( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 16, 16 ) );
+	Check( texture.surface.levels == 1 && !texture.copiedResized, "the creation size again, after a third size: a one-level surface, complete" );
+	store.ResetFrameCounters();
+	Check( store.CopySurfacesThisFrame() == 0, "the frame counter restarts" );
+
+	const d3d12TextureSurface_t * depthTarget = store.PrepareCopyTarget( depth, d3d12CopyKind_t::DEPTH, 32, 24 );
+	Check( depthTarget != nullptr && depthTarget->rtv.IsValid() && depthTarget->width == 32 && depthTarget->height == 24,
+		"a depth copy target has an RTV for the depth-copy pass" );
+	Check( store.Get( depth ).sampler == D3D12_PackSampler( POINT_CLAMP ), "a depth copy keeps the sampler, as GL's copy" );
+	printf( "  three warnings follow: copies into the wrong kind of texture\n" );
+	Check( store.PrepareCopyTarget( depth, d3d12CopyKind_t::COLOR, 8, 8 ) == nullptr, "a depth texture is no colour copy target" );
+	Check( store.PrepareCopyTarget( color, d3d12CopyKind_t::DEPTH, 8, 8 ) == nullptr, "a colour texture is no depth copy target" );
+	const textureHandle_t cube = store.Create( Opts( FMT_RGBA8, 4, 4, 1, TT_CUBIC ), textureRole_t::COLOR_COPY, POINT_CLAMP, "cube" );
+	Check( store.PrepareCopyTarget( cube, d3d12CopyKind_t::COLOR, 4, 4 ) == nullptr, "a cube is no copy target" );
+	Check( store.PrepareCopyTarget( textureHandle_t::NONE, d3d12CopyKind_t::COLOR, 8, 8 ) == nullptr, "NONE" );
+	Check( store.PrepareCopyTarget( color, d3d12CopyKind_t::COLOR, 0, 8 ) == nullptr, "an empty box" );
+
+	store.Destroy( color );
+	store.Destroy( depth );
+	store.Destroy( cube );
+	Check( store.Bytes() == bytesBefore, "Destroy buries both surfaces" );
+	gpu->WaitIdle();
+	CheckNoLayerErrors( *gpu );
+}
+
+// The context's copy path over a test GPU: a SIZE x SIZE scene target, the internal passes and the screen
+// copies. The context's List() gives a new list the heaps and the root signature; here Bind() does, before a pass.
+class idTestCopies {
+public:
+	static constexpr int			SIZE = 64;
+	struct box_t {
+		int							x, y, width, height;
+	};
+	// inside, the whole scene, past the right and top, past the left and bottom (GL's coordinates)
+	static constexpr std::array<box_t, 4>	BOXES = { { { 5, 3, 20, 11 }, { 0, 0, SIZE, SIZE }, { 50, 40, 30, 30 }, { -6, -2, 16, 12 } } };
+
+									idTestCopies( idTestGpu & gpu, UINT samples );
+									~idTestCopies();
+									idTestCopies( const idTestCopies & ) = delete;
+	idTestCopies &					operator=( const idTestCopies & ) = delete;
+	[[nodiscard]] bool				Ready() const { return ready; }
+	void							Bind();
+	// The scene colour: a different RGBA per pixel with one sample (an upload), per 4 x 4 block with MSAA (clears).
+	void							FillColor();
+	[[nodiscard]] uint32			ColorAt( int column, int row ) const;	// what FillColor wrote, R | G << 8 | B << 16 | A << 24
+	// The scene depth: a different value per 4 x 4 block (clears).
+	void							FillDepth();
+	[[nodiscard]] static float		DepthAt( int column, int row );
+	// Level 0 of a single-sample texture as 32-bit texels, rows in memory order.
+	[[nodiscard]] std::vector<uint32>	Read( ID3D12Resource & resource, d3d12ResourceState_t & state );
+	[[nodiscard]] static bool		InScene( int column, int row ) { return column >= 0 && row >= 0 && column < SIZE && row < SIZE; }
+
+	idTestGpu &						gpu;
+	UINT							samples;
+	idD3D12ShaderCompiler			compiler;
+	idD3D12RootSignature			root;
+	idD3D12DescriptorPool			dsvPool;
+	idD3D12UploadRing				constants;
+	idD3D12DescriptorRing			descriptors;
+	idD3D12SamplerHeap				samplers;
+	idD3D12SceneTarget				scene;
+	idD3D12InternalPasses			passes;
+	idD3D12ScreenCopies				copies;
+	idD3D12Readback					readback;
+
+private:
+	bool							ready = false;
+};
+
+idTestCopies::idTestCopies( idTestGpu & owner, UINT sampleCount ) :
+	gpu( owner ),
+	samples( sampleCount ),
+	compiler( owner.library, false ),
+	root( owner.device, owner.library ),
+	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
+	constants( owner.device, 1 << 20, L"test constants ring" ),
+	descriptors( owner.device ),
+	samplers( owner.device ),
+	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
+	passes( owner.device, root, compiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
+	copies( owner, owner.barriers, scene, owner.textures, passes, owner.rtvPool ),
+	readback( owner.device, owner, owner.barriers, owner.graveyard ) {
+	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
+		gpu.textures.CreateDefaults();
+	}
+	if ( !root.Get() ) {
+		Check( false, "the root signature" );
+		return;
+	}
+	scene.Create( SIZE, SIZE, samples );
+	passes.CreateDefaults( gpu.textures.Fallback( textureKind_t::TEX_2D ), gpu.textures.Fallback( textureKind_t::TEX_CUBE ) );
+	ready = Check( scene.Color().resource && scene.Depth().resource, va( "a %u-sample scene target", samples ) );
+}
+
+idTestCopies::~idTestCopies() {
+	if ( !gpu.device.IsLost() ) {
+		gpu.WaitIdle();
+	}
+}
+
+void idTestCopies::Bind() {
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
+	list.SetDescriptorHeaps( 2, heaps );
+	list.SetGraphicsRootSignature( root.Get() );
+}
+
+[[nodiscard]] uint32 ScenePattern( int column, int row ) {
+	const uint32 r = static_cast<uint32>( column * 4 );
+	const uint32 g = static_cast<uint32>( row * 4 );
+	const uint32 b = static_cast<uint32>( ( column * 7 + row * 3 ) & 0xFF );
+	const uint32 a = static_cast<uint32>( ( 255 - column - row * 2 ) & 0xFF );
+	return r | ( g << 8 ) | ( b << 16 ) | ( a << 24 );
+}
+
+uint32 idTestCopies::ColorAt( int column, int row ) const {
+	return ( samples == 1 ) ? ScenePattern( column, row ) : ScenePattern( column & ~3, row & ~3 );
+}
+
+float idTestCopies::DepthAt( int column, int row ) {
+	return static_cast<float>( ( row / 4 ) * ( SIZE / 4 ) + column / 4 + 1 ) / 257.0f;
+}
+
+// A multisampled texture takes no copy from a buffer, and a clear sets every sample.
+void idTestCopies::FillColor() {
+	idD3D12SceneTarget::surface_t & color = scene.Color();
+	if ( samples == 1 ) {
+		const D3D12_RESOURCE_DESC desc = color.resource->GetDesc();
+		D3D12_PLACED_SUBRESOURCE_FOOTPRINT placed = {};
+		UINT rows = 0;
+		UINT64 total = 0;
+		gpu.device.Get().GetCopyableFootprints( &desc, 0, 1, 0, &placed, &rows, nullptr, &total );
+		const std::optional<d3d12UploadSpan_t> span = gpu.uploader.Stage( total, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT );
+		if ( !Check( span.has_value(), "staging for the scene pattern" ) ) {
+			return;
+		}
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const uint32 texel = ScenePattern( column, row );
+				memcpy( span->cpu + static_cast<size_t>( row ) * placed.Footprint.RowPitch + column * 4, &texel, 4 );
+			}
+		}
+		gpu.uploader.TextureRegion( *color.resource.Get(), color.state, 0, *span, placed.Footprint, rows );
+		return;
+	}
+	gpu.barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	gpu.barriers.Flush();
+	for ( int row = 0; row < SIZE; row += 4 ) {
+		for ( int column = 0; column < SIZE; column += 4 ) {
+			const uint32 texel = ScenePattern( column, row );
+			const float rgba[4] = { Unorm8( static_cast<byte>( texel ) ), Unorm8( static_cast<byte>( texel >> 8 ) ), Unorm8( static_cast<byte>( texel >> 16 ) ),
+				Unorm8( static_cast<byte>( texel >> 24 ) ) };
+			const D3D12_RECT rect = { column, row, column + 4, row + 4 };
+			gpu.List().ClearRenderTargetView( scene.Rtv( false ), rgba, 1, &rect );
+		}
+	}
+}
+
+void idTestCopies::FillDepth() {
+	idD3D12SceneTarget::surface_t & depth = scene.Depth();
+	gpu.barriers.Transition( *depth.resource.Get(), depth.state, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	gpu.barriers.Flush();
+	for ( int row = 0; row < SIZE; row += 4 ) {
+		for ( int column = 0; column < SIZE; column += 4 ) {
+			const D3D12_RECT rect = { column, row, column + 4, row + 4 };
+			gpu.List().ClearDepthStencilView( scene.Dsv(), D3D12_CLEAR_FLAG_DEPTH, DepthAt( column, row ), 0, 1, &rect );
+		}
+	}
+}
+
+// Level 0 of a single-sample texture as 32-bit texels, rows in memory order; waits for the GPU.
+[[nodiscard]] std::vector<uint32> ReadTexels( idTestGpu & gpu, ID3D12Resource & resource, d3d12ResourceState_t & state ) {
+	const D3D12_RESOURCE_DESC desc = resource.GetDesc();
+	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+	UINT rows = 0;
+	UINT64 total = 0;
+	gpu.device.Get().GetCopyableFootprints( &desc, 0, 1, 0, &footprint, &rows, nullptr, &total );
+	const idComPtr<ID3D12Resource> buffer = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_READBACK, total, D3D12_RESOURCE_STATE_COPY_DEST,
+		L"test copy readback" );
+	if ( !Check( buffer != nullptr, "the readback buffer" ) ) {
+		return {};
+	}
+	gpu.barriers.Transition( resource, state, D3D12_RESOURCE_STATE_COPY_SOURCE );
+	gpu.barriers.Flush();
+	D3D12_TEXTURE_COPY_LOCATION destination = {};
+	destination.pResource = buffer.Get();
+	destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	destination.PlacedFootprint = footprint;
+	D3D12_TEXTURE_COPY_LOCATION source = {};
+	source.pResource = &resource;
+	source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	gpu.List().CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+	gpu.WaitIdle();
+
+	const size_t width = static_cast<size_t>( desc.Width );
+	std::vector<uint32> texels( width * rows );
+	const D3D12_RANGE everything = { 0, static_cast<SIZE_T>( total ) };
+	void * mapped = nullptr;
+	if ( gpu.device.Check( buffer->Map( 0, &everything, &mapped ), "Map (test copy readback)" ) ) {
+		for ( UINT row = 0; row < rows; row++ ) {
+			memcpy( &texels[row * width], static_cast<const byte *>( mapped ) + static_cast<size_t>( row ) * footprint.Footprint.RowPitch, width * 4 );
+		}
+		const D3D12_RANGE nothingWritten = { 0, 0 };
+		buffer->Unmap( 0, &nothingWritten );
+	}
+	return texels;
+}
+
+std::vector<uint32> idTestCopies::Read( ID3D12Resource & resource, d3d12ResourceState_t & state ) {
+	return ReadTexels( gpu, resource, state );
+}
+
+// Every box into one texture, which takes the box's size: texel (c, r) is the scene pixel (x + c, y + r),
+// GL's row order, and the same as idD3D12Readback reads from the (resolved) scene. Texels off the scene are undefined.
+void CopyColorBoxes( idTestGpu & gpu, UINT samples ) {
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const textureHandle_t handle = gpu.textures.Create( Opts( FMT_RGBA8, 16, 16, 5 ), textureRole_t::COLOR_COPY,
+		{ samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::REPEAT, 1.0f, 0.0f }, "_currentRender" );
+	if ( !Check( handle != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	fixture.FillColor();
+	for ( const idTestCopies::box_t & box : idTestCopies::BOXES ) {
+		fixture.copies.Color( handle, box.x, box.y, box.width, box.height );
+		d3d12TextureSurface_t & surface = gpu.textures.Get( handle ).surface;
+		const std::vector<uint32> texels = fixture.Read( *surface.resource.Get(), surface.state );
+		std::vector<byte> rgb( static_cast<size_t>( box.width ) * box.height * 3 );
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		fixture.readback.Read( *resolved.resource.Get(), resolved.state, box.x, box.y, box.width, box.height, rgb.data(), false );
+		if ( !Check( surface.width == box.width && surface.height == box.height && texels.size() == rgb.size() / 3,
+				va( "the texture is the box's %d x %d", box.width, box.height ) ) ) {
+			continue;
+		}
+		int wrong = 0;
+		int unlikeReadback = 0;
+		int compared = 0;
+		for ( int row = 0; row < box.height; row++ ) {
+			for ( int column = 0; column < box.width; column++ ) {
+				if ( !idTestCopies::InScene( box.x + column, box.y + row ) ) {
+					continue;
+				}
+				const size_t at = static_cast<size_t>( row ) * box.width + column;
+				const uint32 texel = texels[at];
+				wrong += ( texel != fixture.ColorAt( box.x + column, box.y + row ) ) ? 1 : 0;
+				const uint32 read = rgb[at * 3] | ( rgb[at * 3 + 1] << 8 ) | ( rgb[at * 3 + 2] << 16 );
+				unlikeReadback += ( ( texel & 0xFFFFFF ) != read ) ? 1 : 0;
+				compared++;
+			}
+		}
+		Check( compared > 0 && wrong == 0, va( "box %d %d %d x %d: %d of %d texels are not the scene pixel of their GL row", box.x, box.y, box.width,
+			box.height, wrong, compared ) );
+		Check( unlikeReadback == 0, va( "box %d %d %d x %d: %d texels unlike the readback", box.x, box.y, box.width, box.height, unlikeReadback ) );
+	}
+	const idD3D12ScreenCopies::stats_t stats = fixture.copies.TakeStats();
+	Check( stats.color == static_cast<int>( idTestCopies::BOXES.size() ) && stats.depth == 0, "the copies are counted" );
+	gpu.textures.Destroy( handle );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+// The depth-copy pass: texel (c, r) holds the depth of scene pixel (x + c, y + r) as the float of its 24 bits,
+// sample 0 under MSAA; 0 off the scene. With one sample the 24 bits are read back as well.
+void CopyDepthBoxes( idTestGpu & gpu, UINT samples ) {
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const textureHandle_t handle = gpu.textures.Create( Opts( FMT_DEPTH, 16, 16, 1 ), textureRole_t::DEPTH_COPY, POINT_CLAMP, "_currentDepth" );
+	if ( !Check( handle != textureHandle_t::NONE, "Create" ) ) {
+		return;
+	}
+	fixture.FillDepth();
+	std::vector<uint32> written;
+	if ( samples == 1 ) {
+		idD3D12SceneTarget::surface_t & depth = fixture.scene.Depth();
+		written = fixture.Read( *depth.resource.Get(), depth.state );
+		for ( uint32 & value : written ) {
+			value &= 0xFFFFFFu;
+		}
+	}
+	constexpr double STEPS = 16777215.0;
+	double maxSteps = 0.0;
+	for ( const idTestCopies::box_t & box : idTestCopies::BOXES ) {
+		fixture.Bind();
+		fixture.copies.Depth( handle, box.x, box.y, box.width, box.height );
+		d3d12TextureSurface_t & surface = gpu.textures.Get( handle ).surface;
+		const std::vector<uint32> texels = fixture.Read( *surface.resource.Get(), surface.state );
+		if ( !Check( surface.width == box.width && surface.height == box.height && texels.size() == static_cast<size_t>( box.width ) * box.height,
+				va( "the texture is the box's %d x %d", box.width, box.height ) ) ) {
+			continue;
+		}
+		int wrong = 0;
+		int unlikeWritten = 0;
+		int offScene = 0;
+		for ( int row = 0; row < box.height; row++ ) {
+			for ( int column = 0; column < box.width; column++ ) {
+				const int px = box.x + column;
+				const int py = box.y + row;
+				const float value = std::bit_cast<float>( texels[static_cast<size_t>( row ) * box.width + column] );
+				if ( !idTestCopies::InScene( px, py ) ) {
+					offScene += ( value != 0.0f ) ? 1 : 0;
+					continue;
+				}
+				wrong += ( std::fabs( static_cast<double>( value ) - idTestCopies::DepthAt( px, py ) ) > 1.0 / STEPS ) ? 1 : 0;
+				if ( !written.empty() ) {
+					// a float holds 24 bits near 1 only to half a step, and AMD converts R24 to float within one ulp
+					const double steps = std::fabs( value * STEPS - written[static_cast<size_t>( py ) * idTestCopies::SIZE + px] );
+					maxSteps = Max( maxSteps, steps );
+					unlikeWritten += ( steps > 1.0 ) ? 1 : 0;
+				}
+			}
+		}
+		Check( wrong == 0, va( "box %d %d %d x %d: %d texels are not the depth of their GL row", box.x, box.y, box.width, box.height, wrong ) );
+		Check( unlikeWritten == 0, va( "box %d %d %d x %d: %d texels are not the 24 bits read back", box.x, box.y, box.width, box.height, unlikeWritten ) );
+		Check( offScene == 0, va( "box %d %d %d x %d: %d texels off the scene are not 0", box.x, box.y, box.width, box.height, offScene ) );
+	}
+	if ( !written.empty() ) {
+		printf( "  the copy is at most %.3f D24 steps from the 24 bits read back\n", maxSteps );
+	}
+
+	// shaders read the copy as R R R 1, like GL's depth texture
+	idTestSampler sampler( gpu );
+	if ( sampler.Ready() ) {
+		gpu.textures.MakeReadable( handle );
+		const idTestCopies::box_t & last = idTestCopies::BOXES.back();
+		const std::array<idVec4, 1> centre = { idVec4( ( 8 + 0.5f ) / last.width, ( 5 + 0.5f ) / last.height, 0.0f, 0.0f ) };
+		const std::vector<idVec4> sampled = sampler.Sample( gpu.textures.SampledView( handle, textureKind_t::TEX_2D ), textureKind_t::TEX_2D,
+			SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP ), centre );
+		const float expected = idTestCopies::DepthAt( last.x + 8, last.y + 5 );
+		Check( !sampled.empty() && Near( sampled[0], idVec4( expected, expected, expected, 1.0f ), 1.5f / 16777215.0f ),
+			va( "sampled %s, depth %.7f", sampled.empty() ? "nothing" : Text( sampled[0] ), expected ) );
+	}
+	gpu.textures.Destroy( handle );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void CopyColor1( idTestGpu & gpu ) {
+	CopyColorBoxes( gpu, 1 );
+}
+
+void CopyColor4( idTestGpu & gpu ) {
+	CopyColorBoxes( gpu, 4 );
+}
+
+void CopyDepth1( idTestGpu & gpu ) {
+	CopyDepthBoxes( gpu, 1 );
+}
+
+void CopyDepth4( idTestGpu & gpu ) {
+	CopyDepthBoxes( gpu, 4 );
+}
+
+// The path of d3d12_removeDevice on WARP with DRED (debug level 3): work in flight, RemoveDevice, every wait
+// returns, the next failing call reports the loss, and the device stays lost. The runtime completes the lists of
+// a device the application removes, so DRED has no unfinished one here; only a real GPU fault leaves one.
+void Test_DeviceLoss() {
+	auto library = idD3D12Library::Load();
+	if ( !Check( library.has_value(), "idD3D12Library::Load" ) ) {
+		return;
+	}
+	auto created = idD3D12Device::Create( *library, "warp", 3 );
+	if ( !Check( created.has_value(), "idD3D12Device::Create( warp, 3 )" ) ) {
+		return;
+	}
+	idTestGpu gpu( std::move( *library ), std::move( *created ), 4 << 20, d3d12BufferPlacement_t::UPLOAD );
+	constexpr uint64 BYTES = 16 << 20;
+	idComPtr<ID3D12Resource> from = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, BYTES, D3D12_RESOURCE_STATE_COMMON, L"test loss from" );
+	idComPtr<ID3D12Resource> to = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, BYTES, D3D12_RESOURCE_STATE_COMMON, L"test loss to" );
+	if ( !Check( from && to, "the buffers" ) ) {
+		return;
+	}
+	for ( int i = 0; i < 16; i++ ) {
+		gpu.List().CopyBufferRegion( to.Get(), 0, from.Get(), 0, BYTES );
+	}
+	const uint64 fence = gpu.SubmitChunk();
+	Check( !gpu.device.IsLost(), "the device works before the removal" );
+	gpu.device.RemoveDevice();
+	gpu.WaitFor( fence );	// returns: a removed device completes every fence
+	Check( gpu.queue.Waited() >= fence, "the wait for the work in flight returned" );
+	Check( !gpu.device.Check( gpu.device.Get().GetDeviceRemovedReason(), "GetDeviceRemovedReason (test)" ), "the removed reason is a failure" );
+	Check( gpu.device.IsLost(), "the device is lost" );
+	gpu.WaitFor( gpu.SubmitChunk() );
+	Check( gpu.device.IsLost(), "a submit and a wait after the loss return, the device stays lost" );
+}
+
+// The line ReportDred prints for a list: the names, the progress and the operation the GPU stopped before.
+void Test_BreadcrumbText() {
+	const D3D12_AUTO_BREADCRUMB_OP history[] = { D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT, D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED,
+		D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER, D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED, D3D12_AUTO_BREADCRUMB_OP_ENDEVENT };
+	UINT done = 2;
+	D3D12_AUTO_BREADCRUMB_NODE node = {};
+	node.pCommandListDebugNameA = "doom3 frame list";
+	node.pCommandQueueDebugNameA = "doom3 direct queue";
+	node.pLastBreadcrumbValue = &done;
+	node.pCommandHistory = history;
+	node.BreadcrumbCount = static_cast<UINT>( std::size( history ) );
+	const idStr stopped = D3D12_BreadcrumbText( node );
+	Check( stopped == "list doom3 frame list on doom3 direct queue: 2 of 5 operations done, stopped before ResourceBarrier", stopped.c_str() );
+	done = node.BreadcrumbCount;
+	node.pCommandListDebugNameA = nullptr;
+	const idStr finished = D3D12_BreadcrumbText( node );
+	Check( finished == "list (unnamed) on doom3 direct queue: 5 of 5 operations done, the last EndEvent", finished.c_str() );
+	const D3D12_AUTO_BREADCRUMB_OP later[] = { static_cast<D3D12_AUTO_BREADCRUMB_OP>( 48 ) };
+	node.pCommandHistory = later;
+	node.BreadcrumbCount = 1;
+	done = 0;
+	const idStr unknown = D3D12_BreadcrumbText( node );
+	Check( unknown == "list (unnamed) on doom3 direct queue: 0 of 1 operations done, stopped before operation 48", unknown.c_str() );
+}
+
+// R_SetColorMappings' ramp, in its float arithmetic.
+[[nodiscard]] d3d12GammaRamp_t ColorMappings( float gamma, float brightness ) {
+	d3d12GammaRamp_t ramp;
+	const float invGamma = 1.0f / gamma;
+	float j = 0.0f;
+	for ( int i = 0; i < 256; i++, j += brightness ) {
+		const int value = idMath::ClampInt( 0, 0xFFFF, idMath::Ftoi( 0xffff * pow( j / 255.0f, invGamma ) + 0.5f ) );
+		ramp.red[i] = ramp.green[i] = ramp.blue[i] = static_cast<uint16>( value );
+	}
+	return ramp;
+}
+
+void Test_GammaIdentity() {
+	Check( D3D12_GammaIsIdentity( D3D12_IdentityGamma() ), "i * 257 is the identity" );
+	Check( D3D12_GammaIsIdentity( ColorMappings( 1.0f, 1.0f ) ), "r_gamma 1, r_brightness 1 (the defaults) build the identity" );
+	Check( !D3D12_GammaIsIdentity( ColorMappings( 1.5f, 1.0f ) ), "r_gamma 1.5 is no identity" );
+	Check( !D3D12_GammaIsIdentity( ColorMappings( 1.0f, 1.2f ) ), "r_brightness 1.2 is no identity" );
+	d3d12GammaRamp_t ramp = D3D12_IdentityGamma();
+	ramp.green[100] = static_cast<uint16>( 100 * 257 + 128 );
+	Check( D3D12_GammaIsIdentity( ramp ), "a value that still rounds to its byte keeps the identity" );
+	ramp.green[100] = static_cast<uint16>( 100 * 257 + 129 );
+	Check( !D3D12_GammaIsIdentity( ramp ), "one value that rounds to the next byte, in one channel, is no identity" );
+}
+
+void Test_SceneSamples() {
+	constexpr std::array<bool, 4> ALL = { true, true, true, true };
+	constexpr std::array<bool, 4> NO_8 = { true, true, true, false };
+	constexpr std::array<bool, 4> ONLY_1 = { true, false, false, false };
+	constexpr std::array<bool, 4> NO_2 = { true, false, true, true };
+	const struct {
+		int							requested;
+		const std::array<bool, 4> *	supported;
+		UINT						samples;
+	} CASES[] = { { 0, &ALL, 1 }, { 1, &ALL, 1 }, { -4, &ALL, 1 }, { 2, &ALL, 2 }, { 3, &ALL, 2 }, { 4, &ALL, 4 }, { 8, &ALL, 8 }, { 16, &ALL, 8 },
+		{ 8, &NO_8, 4 }, { 4, &ONLY_1, 1 }, { 2, &NO_2, 1 }, { 4, &NO_2, 4 } };
+	for ( const auto & c : CASES ) {
+		const UINT samples = D3D12_SceneSamples( c.requested, *c.supported );
+		Check( samples == c.samples, va( "r_multiSamples %d: %u samples, expected %u", c.requested, samples, c.samples ) );
+	}
+}
+
+// The present blit into a stand-in back buffer: rows flipped, the bytes exact under an identity ramp, each colour
+// channel through its LUT under r_gamma 1.5 and alpha kept. With MSAA it reads the resolved scene.
+void PresentBlitRamps( idTestGpu & gpu, UINT samples ) {
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	constexpr int SIZE = idTestCopies::SIZE;
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = SIZE;
+	desc.Height = SIZE;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = idD3D12SwapChain::FORMAT;
+	desc.SampleDesc.Count = 1;
+	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	const D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
+	idComPtr<ID3D12Resource> back;
+	if ( !Check( SUCCEEDED( gpu.device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+			IID_PPV_ARGS( &back ) ) ), "the stand-in back buffer" ) ) {
+		return;
+	}
+	d3d12ResourceState_t backState;
+	backState.current = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	const d3d12Descriptor_t rtv = gpu.rtvPool.Allocate();
+	gpu.device.Get().CreateRenderTargetView( back.Get(), nullptr, gpu.rtvPool.Cpu( rtv ) );
+	fixture.FillColor();
+
+	const d3d12GammaRamp_t identity = ColorMappings( 1.0f, 1.0f );
+	const d3d12GammaRamp_t gamma = ColorMappings( 1.5f, 1.0f );
+	const struct {
+		const char *				name;
+		const d3d12GammaRamp_t *	ramp;
+	} RAMPS[] = { { "identity", &identity }, { "r_gamma 1.5", &gamma }, { "identity again", &identity } };
+	for ( const auto & step : RAMPS ) {
+		fixture.passes.SetGamma( *step.ramp );
+		Check( fixture.passes.GammaIsIdentity() == ( step.ramp == &identity ), va( "%s: GammaIsIdentity", step.name ) );
+		idD3D12SceneTarget::surface_t & source = fixture.scene.Resolved( gpu.barriers, gpu );
+		gpu.barriers.Transition( *source.resource.Get(), source.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		gpu.barriers.Transition( *back.Get(), backState, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		fixture.Bind();
+		fixture.passes.PresentBlit( source.srv, gpu.rtvPool.Cpu( rtv ), SIZE, SIZE );
+		const std::vector<uint32> texels = fixture.Read( *back.Get(), backState );
+		if ( !Check( texels.size() == static_cast<size_t>( SIZE ) * SIZE, va( "%s: the back buffer is read", step.name ) ) ) {
+			continue;
+		}
+		int wrong = 0;
+		int offByOne = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const uint32 scene = fixture.ColorAt( column, SIZE - 1 - row );	// back buffer row 0 is the top of the screen
+				const uint32 shown = texels[static_cast<size_t>( row ) * SIZE + column];
+				for ( int channel = 0; channel < 4; channel++ ) {
+					const uint32 in = ( scene >> ( channel * 8 ) ) & 0xFF;
+					const std::array<uint16, 256> & lut = ( channel == 0 ) ? step.ramp->red : ( ( channel == 1 ) ? step.ramp->green : step.ramp->blue );
+					const uint32 expected = ( channel == 3 ) ? in : ( lut[in] * 255u + 32767u ) / 65535u;
+					const int delta = std::abs( static_cast<int>( ( shown >> ( channel * 8 ) ) & 0xFF ) - static_cast<int>( expected ) );
+					wrong += ( delta > 1 || ( delta == 1 && step.ramp == &identity ) ) ? 1 : 0;
+					offByOne += ( delta == 1 ) ? 1 : 0;
+				}
+			}
+		}
+		Check( wrong == 0, va( "%s, %u sample(s): %d channels unlike the scene through the ramp (%d off by one)", step.name, samples, wrong, offByOne ) );
+	}
+	gpu.WaitIdle();
+	gpu.rtvPool.Free( rtv );
+	CheckNoLayerErrors( gpu );
+}
+
+void PresentBlit1( idTestGpu & gpu ) {
+	PresentBlitRamps( gpu, 1 );
+}
+
+void PresentBlit4( idTestGpu & gpu ) {
+	PresentBlitRamps( gpu, 4 );
+}
+
+// ---- the draw recorder --------------------------------------------------------------------------------------
+
+// The recorder over a test GPU, on a SIZE x SIZE scene target, with a buffer store of its own in the FRAME placement
+// under test. The context's List() gives a new list the heaps, the root signature and an empty bound state; here NewList() does.
+class idTestRecorder {
+public:
+	static constexpr int			SIZE = 64;
+
+									idTestRecorder( idTestGpu & gpu, d3d12BufferPlacement_t framePlacement );
+									~idTestRecorder();
+									idTestRecorder( const idTestRecorder & ) = delete;
+	idTestRecorder &				operator=( const idTestRecorder & ) = delete;
+	[[nodiscard]] bool				Ready() const { return ready; }
+	// base/renderprogs/<name>.vertex and .pixel, linked into the library; NONE when they do not build.
+	[[nodiscard]] programHandle_t	Program( const char * name );
+	void							NewList();
+	void							NextList() { gpu.SubmitChunk(); NewList(); }	// a chunk boundary, as r_d3d12SubmitDraws makes one
+	[[nodiscard]] std::vector<uint32>	ReadColor();	// ends the pass and waits; rows in GL order
+
+	idTestGpu &						gpu;
+	idD3D12ShaderCompiler			compiler;
+	idD3D12RootSignature			root;
+	idD3D12DescriptorPool			dsvPool;
+	idD3D12UploadRing				constants;
+	idD3D12DescriptorRing			descriptors;
+	idD3D12SamplerHeap				samplers;
+	idD3D12BufferStore				buffers;
+	idD3D12ShaderLibrary			shaders;
+	idD3D12PipelineFactory			factory;
+	idD3D12SceneTarget				scene;
+	idD3D12InternalPasses			passes;
+	idD3D12DrawRecorder				recorder;
+
+private:
+	bool							ready = false;
+};
+
+idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t framePlacement ) :
+	gpu( owner ),
+	compiler( owner.library, false ),
+	root( owner.device, owner.library ),
+	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
+	constants( owner.device, 1 << 20, L"test constants ring" ),
+	descriptors( owner.device ),
+	samplers( owner.device ),
+	buffers( owner.device, owner.graveyard, owner.uploader, owner.barriers, framePlacement ),
+	shaders( compiler, owner.graveyard ),
+	factory( owner.device, root, nullptr, nullptr ),
+	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
+	passes( owner.device, root, compiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
+	recorder( owner.device, owner, owner.barriers, scene, passes, factory, shaders, buffers, owner.textures, owner.srvPool, constants, descriptors,
+		samplers ) {
+	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
+		gpu.textures.CreateDefaults();
+	}
+	if ( !root.Get() ) {
+		Check( false, "the root signature" );
+		return;
+	}
+	buffers.CreateDefaults();
+	scene.Create( SIZE, SIZE, 1 );
+	passes.CreateDefaults( gpu.textures.Fallback( textureKind_t::TEX_2D ), gpu.textures.Fallback( textureKind_t::TEX_CUBE ) );
+	ready = Check( scene.Color().resource && scene.Depth().resource && buffers.ZeroJoints() != 0, "the scene target and the zero joints" );
+}
+
+idTestRecorder::~idTestRecorder() {
+	if ( !gpu.device.IsLost() ) {
+		gpu.WaitIdle();
+	}
+	buffers.DestroyAll();
+	shaders.DestroyAll();
+}
+
+programHandle_t idTestRecorder::Program( const char * name ) {
+	const auto build = [&]( shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
+		const std::optional<renderProgSource_t> source = RepoSource( name, type );
+		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
+	};
+	const auto vertex = build( shaderStageType_t::VERTEX );
+	const auto fragment = build( shaderStageType_t::FRAGMENT );
+	if ( !Check( vertex && fragment, va( "%s builds", name ) ) ) {
+		return programHandle_t::NONE;
+	}
+	auto program = D3D12_LinkProgram( compiler, *vertex, &*fragment );
+	if ( !Check( program.has_value(), va( "%s links", name ) ) ) {
+		return programHandle_t::NONE;
+	}
+	return shaders.AddProgram( std::move( *program ) );
+}
+
+void idTestRecorder::NewList() {
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
+	list.SetDescriptorHeaps( 2, heaps );
+	list.SetGraphicsRootSignature( root.Get() );
+	recorder.NewList();
+}
+
+std::vector<uint32> idTestRecorder::ReadColor() {
+	recorder.EndPass();
+	idD3D12SceneTarget::surface_t & color = scene.Color();
+	return ReadTexels( gpu, *color.resource.Get(), color.state );
+}
+
+// A skinned quad per list from a FRAME set (vertices, indexes, joints) in one placement. A STAGED buffer decays to
+// COMMON with every list, so it transitions again in the next one, before the root CBV of its joints is set (the
+// layer's #527 otherwise). Joint set 0 moves the quad left, set 1 right; joints read as zeros would draw nothing.
+void DrawFrameBuffers( idTestGpu & gpu, d3d12BufferPlacement_t placement ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	constexpr float HALF_WIDTH = 0.45f;
+	constexpr float HALF_HEIGHT = 0.9f;
+	constexpr std::array<float, 2> SHIFT = { -0.5f, 0.5f };
+	constexpr int SET_BYTES = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;	// jointOffset steps
+	constexpr int SET_VECTORS = SET_BYTES / static_cast<int>( sizeof( idVec4 ) );
+
+	idTestRecorder fixture( gpu, placement );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const programHandle_t program = fixture.Program( "depth_skinned" );
+	const d3d12Program_t * linked = fixture.shaders.FindProgram( program );
+	if ( !Check( linked != nullptr && linked->info.usesJoints, "depth_skinned reads joints" ) ) {
+		return;
+	}
+
+	std::array<idDrawVert, 4> verts;
+	constexpr float CORNERS[4][2] = { { -HALF_WIDTH, -HALF_HEIGHT }, { HALF_WIDTH, -HALF_HEIGHT }, { HALF_WIDTH, HALF_HEIGHT }, { -HALF_WIDTH, HALF_HEIGHT } };
+	for ( size_t i = 0; i < verts.size(); i++ ) {
+		verts[i].Clear();
+		verts[i].xyz.Set( CORNERS[i][0], CORNERS[i][1], 0.0f );
+		verts[i].color2[0] = 255;		// joint 0 (color) with weight 1
+	}
+	constexpr std::array<triIndex_t, 6> INDEXES = { 0, 1, 2, 0, 2, 3 };
+	// idVec4's constructor leaves it uninitialized, so "= {}" would zero nothing
+	std::array<idVec4, 2 * SET_VECTORS> joints;		// one 3 x 4 joint per set: rows X, Y, Z
+	joints.fill( vec4_zero );
+	for ( size_t set = 0; set < SHIFT.size(); set++ ) {
+		idVec4 * rows = &joints[set * SET_VECTORS];
+		rows[0].Set( 1.0f, 0.0f, 0.0f, SHIFT[set] );
+		rows[1].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+		rows[2].Set( 0.0f, 0.0f, 1.0f, 0.0f );
+	}
+
+	fixture.NewList();
+	const auto create = [&]( bufferType_t type, std::span<const std::byte> data ) {
+		return fixture.buffers.Create( type, bufferUsage_t::FRAME, static_cast<int>( data.size() ), data.data() );
+	};
+	const bufferHandle_t vertexBuffer = create( bufferType_t::VERTEX, std::as_bytes( std::span( verts ) ) );
+	const bufferHandle_t indexBuffer = create( bufferType_t::INDEX, std::as_bytes( std::span( INDEXES ) ) );
+	const bufferHandle_t jointBuffer = create( bufferType_t::JOINT, std::as_bytes( std::span( joints ) ) );
+	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && jointBuffer != bufferHandle_t::NONE, "the FRAME set" ) ) {
+		return;
+	}
+	Check( fixture.buffers.Get( jointBuffer ).placement == placement, va( "the joints in %s", D3D12_PlacementName( placement ) ) );
+
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	for ( int row = 0; row < 4; row++ ) {
+		parms[RENDERPARM_MVPMATRIX_X + row][row] = 1.0f;	// the identity: the joints' positions are GL clip space
+	}
+	renderLatch_t latch;
+	latch.stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK;
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	latch.program = program;
+	renderLatch_t clearLatch = latch;	// glClear obeys glDepthMask: this one writes depth
+	clearLatch.stateBits = 0;
+	clearDesc_t clear = {};
+	clear.rect = latch.viewport;
+	clear.color = clear.depth = clear.stencil = true;
+	clear.colorWriteMask = 0xF;
+	std::fill( std::begin( clear.rgba ), std::end( clear.rgba ), 1.0f );
+	fixture.recorder.Clear( clearLatch, clear );
+
+	pipelineKey_t key = {};
+	key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+	key.layout = LAYOUT_DRAW_VERT;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.jointBuffer = jointBuffer;
+	dc.numIndexes = static_cast<int>( INDEXES.size() );
+	dc.numJoints = 1;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	fixture.recorder.Draw( latch, key, dc );
+	fixture.NextList();
+	dc.jointOffset = SET_BYTES;
+	fixture.recorder.Draw( latch, key, dc );
+	const d3d12DrawStats_t stats = fixture.recorder.TakeStats();
+	Check( stats.draws == 2 && stats.skipped == 0, va( "two draws recorded (%d, %d skipped)", stats.draws, stats.skipped ) );
+
+	const std::vector<uint32> texels = fixture.ReadColor();
+	if ( Check( texels.size() == static_cast<size_t>( SIZE ) * SIZE, "the scene is read" ) ) {
+		int wrong = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const float x = ( static_cast<float>( column ) + 0.5f ) * 2.0f / SIZE - 1.0f;
+				const float y = ( static_cast<float>( row ) + 0.5f ) * 2.0f / SIZE - 1.0f;
+				const bool covered = std::ranges::any_of( SHIFT, [&]( float shift ) { return idMath::Fabs( x - shift ) < HALF_WIDTH; } )
+					&& idMath::Fabs( y ) < HALF_HEIGHT;
+				wrong += ( texels[static_cast<size_t>( row ) * SIZE + column] != ( covered ? 0xFF000000u : 0xFFFFFFFFu ) ) ? 1 : 0;
+			}
+		}
+		Check( wrong == 0, va( "%s: %d pixels unlike both quads, black over white", D3D12_PlacementName( placement ), wrong ) );
+	}
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	fixture.buffers.Destroy( jointBuffer );
+	CheckNoLayerErrors( gpu );
+}
+
+// Every value of r_d3d12FrameBuffers the adapter has.
+void DrawFrameBufferPlacements( idTestGpu & gpu ) {
+	for ( const d3d12BufferPlacement_t placement : { d3d12BufferPlacement_t::UPLOAD, d3d12BufferPlacement_t::STAGED, d3d12BufferPlacement_t::GPU_UPLOAD } ) {
+		if ( placement == d3d12BufferPlacement_t::GPU_UPLOAD && !gpu.device.Features().gpuUploadHeap ) {
+			printf( "  %s skipped: the adapter has no GPU upload heap\n", D3D12_PlacementName( placement ) );
+			continue;
+		}
+		DrawFrameBuffers( gpu, placement );
+	}
+}
+
+template <void ( *RULE )( idTestGpu & )>
+void OnWarp() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
+		RULE( *gpu );
+	}
+}
+
+template <void ( *RULE )( idTestGpu & )>
+void OnGpu() {
+	if ( const std::unique_ptr<idTestGpu> gpu = CreateHardware( 16 << 20 ) ) {
+		RULE( *gpu );
+	}
+}
+
+struct testCase_t {
+	const char *	name;
+	void			( *run )();
+};
+
+constexpr testCase_t TESTS[] = {
+	{ "Ring_Wrap", Test_RingWrap },
+	{ "Ring_Release", Test_RingRelease },
+	{ "Ring_Full", Test_RingFull },
+	{ "Handle_Generations", Test_HandleGenerations },
+	{ "Handle_FindDead", Test_HandleFindDead },
+	{ "Handle_LowestFree", Test_HandleLowestFree },
+	{ "Handle_Clear", Test_HandleClear },
+	{ "Handle_Full", Test_HandleFull },
+	{ "Handle_FindDuringAdd", Test_HandleFindDuringAdd },
+	{ "Warp_StaticBuffer", Test_WarpStaticBuffer },
+	{ "Warp_FrameBuffers", Test_WarpFrameBuffers },
+	{ "Warp_FrameBuffersStaged", Test_WarpFrameBuffersStaged },
+	{ "Gpu_FrameBuffersGpuUpload", Test_GpuFrameBuffersGpuUpload },
+	{ "Warp_LargeStage", Test_WarpLargeStage },
+	{ "Warp_GravesWaitForWaited", Test_WarpGravesWaitForWaited },
+	{ "Warp_RingRetiresByWaited", Test_WarpRingRetiresByWaited },
+	{ "Format_Table", Test_FormatTable },
+	{ "Sampler_Packing", Test_SamplerPacking },
+	{ "Sampler_Map", Test_SamplerMap },
+	{ "Warp_SamplerTables", Test_WarpSamplerTables },
+	{ "Warp_TextureFormats", Test_WarpTextureFormats },
+	{ "Gpu_TextureFormats", Test_GpuTextureFormats },
+	{ "Warp_Borders", Test_WarpBorders },
+	{ "Gpu_Borders", Test_GpuBorders },
+	{ "Warp_UnalignedBlocks", Test_WarpUnalignedBlocks },
+	{ "Gpu_UnalignedBlocks", Test_GpuUnalignedBlocks },
+	{ "Warp_CubeFaces", Test_WarpCubeFaces },
+	{ "Warp_TextureLevels", Test_WarpTextureLevels },
+	{ "Warp_TextureGraves", Test_WarpTextureGraves },
+	{ "Hlsl_Rules", Test_HlslRules },
+	{ "Hlsl_Pow", Test_HlslPow },
+	{ "Hlsl_Golden", Test_HlslGolden },
+	{ "Hlsl_AllSources", Test_HlslAllSources },
+	{ "Hlsl_ReflectionMatchesGl", Test_HlslReflectionMatchesGl },
+	{ "Pipeline_Blend", Test_PipelineBlend },
+	{ "Pipeline_Depth", Test_PipelineDepth },
+	{ "Pipeline_Stencil", Test_PipelineStencil },
+	{ "Pipeline_Raster", Test_PipelineRaster },
+	{ "Pipeline_Inputs", Test_PipelineInputs },
+	{ "Pipeline_Normalize", Test_PipelineNormalize },
+	{ "Pipeline_DepthBiasTable", Test_DepthBiasTable },
+	{ "Pipeline_Journal", Test_PipelineJournal },
+	{ "Warp_Pipelines", Test_WarpPipelines },
+	{ "Warp_PipelineWarm", OnWarp<PipelineWarm> },
+	{ "Gpu_PipelineWarm", OnGpu<PipelineWarm> },
+	{ "Warp_DebugGroups", Test_WarpDebugGroups },
+	{ "Warp_Timestamps", OnWarp<Timestamps> },
+	{ "Gpu_Timestamps", OnGpu<Timestamps> },
+	{ "Warp_RasterGlRows", OnWarp<RasterGlRows> },
+	{ "Gpu_RasterGlRows", OnGpu<RasterGlRows> },
+	{ "Warp_RasterCull", OnWarp<RasterCull> },
+	{ "Gpu_RasterCull", OnGpu<RasterCull> },
+	{ "Warp_RasterDepthEqual", OnWarp<RasterDepthEqual> },
+	{ "Gpu_RasterDepthEqual", OnGpu<RasterDepthEqual> },
+	{ "Warp_RasterDepthOrder", OnWarp<RasterDepthOrder> },
+	{ "Gpu_RasterDepthOrder", OnGpu<RasterDepthOrder> },
+	{ "Warp_RasterStencilOps", OnWarp<RasterStencilOps> },
+	{ "Gpu_RasterStencilOps", OnGpu<RasterStencilOps> },
+	{ "Warp_RasterDepthBounds", OnWarp<RasterDepthBounds> },
+	{ "Gpu_RasterDepthBounds", OnGpu<RasterDepthBounds> },
+	{ "Warp_RasterDepthBias", OnWarp<RasterDepthBias> },
+	{ "Gpu_RasterDepthBias", OnGpu<RasterDepthBias> },
+	{ "Warp_CopyTargets", Test_WarpCopyTargets },
+	{ "Warp_CopyColor", OnWarp<CopyColor1> },
+	{ "Gpu_CopyColor", OnGpu<CopyColor1> },
+	{ "Warp_CopyColorMsaa", OnWarp<CopyColor4> },
+	{ "Gpu_CopyColorMsaa", OnGpu<CopyColor4> },
+	{ "Warp_CopyDepth", OnWarp<CopyDepth1> },
+	{ "Gpu_CopyDepth", OnGpu<CopyDepth1> },
+	{ "Warp_CopyDepthMsaa", OnWarp<CopyDepth4> },
+	{ "Gpu_CopyDepthMsaa", OnGpu<CopyDepth4> },
+	{ "Warp_DeviceLoss", Test_DeviceLoss },
+	{ "Output_BreadcrumbText", Test_BreadcrumbText },
+	{ "Output_GammaIdentity", Test_GammaIdentity },
+	{ "Output_SceneSamples", Test_SceneSamples },
+	{ "Warp_PresentBlit", OnWarp<PresentBlit1> },
+	{ "Gpu_PresentBlit", OnGpu<PresentBlit1> },
+	{ "Warp_PresentBlitMsaa", OnWarp<PresentBlit4> },
+	{ "Gpu_PresentBlitMsaa", OnGpu<PresentBlit4> },
+	{ "Warp_DrawFrameBuffers", OnWarp<DrawFrameBufferPlacements> },
+	{ "Gpu_DrawFrameBuffers", OnGpu<DrawFrameBufferPlacements> },
+};
+
+}	// namespace
+
+int main( int argc, char ** argv ) {
+	const char * filter = ( argc > 1 && idStr::Icmp( argv[1], "all" ) != 0 ) ? argv[1] : nullptr;
+	if ( getenv( "D3D12_TESTS_VERBOSE" ) != nullptr ) {
+		maxFailuresPerTest = 1 << 30;
+	}
+	idLib::common = common;	// idParser and idLexer report through it
+	idLib::Init();
+	printf( "d3d12 tests\n" );
+
+	int numRun = 0;
+	int numFailedTests = 0;
+	for ( const testCase_t & test : TESTS ) {
+		if ( filter != nullptr && strstr( test.name, filter ) == nullptr ) {
+			continue;
+		}
+		numFailuresInTest = 0;
+		printf( "[ RUN  ] %s\n", test.name );
+		fflush( stdout );
+		test.run();
+		if ( numFailuresInTest > maxFailuresPerTest ) {
+			printf( "  ... %d more failures\n", numFailuresInTest - maxFailuresPerTest );
+		}
+		printf( "[ %s ] %s\n", ( numFailuresInTest == 0 ) ? " OK " : "FAIL", test.name );
+		numRun++;
+		numFailedTests += ( numFailuresInTest != 0 ) ? 1 : 0;
+	}
+
+	printf( "\n%d tests, %d checks, %d failed checks, %d failed tests\n", numRun, numChecks, numFailures, numFailedTests );
+	return ( numFailedTests == 0 ) ? 0 : 1;
+}

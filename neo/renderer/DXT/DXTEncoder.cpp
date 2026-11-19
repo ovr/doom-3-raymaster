@@ -52,24 +52,11 @@ idDxtEncoder::NV4XHardwareBugFix
 ========================
 */
 void idDxtEncoder::NV4XHardwareBugFix( byte *minColor, byte *maxColor ) const {
-#ifdef ID_WIN_X86_ASM
-	int minq = ( ( minColor[0] << 16 ) | ( minColor[1] << 8 ) | minColor[2] ) & 0x00F8FCF8;
-	int maxq = ( ( maxColor[0] << 16 ) | ( maxColor[1] << 8 ) | maxColor[2] ) & 0x00F8FCF8;
-	int mask = -( minq > maxq ) & 0x00FFFFFF;
-	int min = *(int *)minColor;
-	int max = *(int *)maxColor;
-	min ^= max;
-	max ^= ( min & mask );
-	min ^= max;
-	*(int *)minColor = min;
-	*(int *)maxColor = max;
-#else
 	if ( ColorTo565( minColor ) > ColorTo565( maxColor ) ) {
 		SwapValues( minColor[0], maxColor[0] );
 		SwapValues( minColor[1], maxColor[1] );
 		SwapValues( minColor[2], maxColor[2] );
 	}
-#endif
 }
 
 /*
@@ -958,19 +945,6 @@ int idDxtEncoder::GetMinMaxNormalYHQ( const byte *colorBlock, byte *minColor, by
 	return bestError;
 }
 
-#if defined( ID_WIN_X86_ASM )
-ALIGN16( static float SIMD_SSE2_float_scale[4] ) = { 2.0f / 255.0f, 2.0f / 255.0f, 2.0f / 255.0f, 2.0f / 255.0f };
-ALIGN16( static float SIMD_SSE2_float_descale[4] ) = { 255.0f / 2.0f, 255.0f / 2.0f, 255.0f / 2.0f, 255.0f / 2.0f };
-ALIGN16( static float SIMD_SSE2_float_zero[4] ) = { 0.0f, 0.0f, 0.0f, 0.0f };
-ALIGN16( static float SIMD_SSE2_float_one[4] ) = { 1.0f, 1.0f, 1.0f, 1.0f };
-ALIGN16( static float SIMD_SSE2_float_half[4] ) = { 0.5f, 0.5f, 0.5f, 0.5f };
-ALIGN16( static float SIMD_SSE2_float_255[4] ) = { 255.0f, 255.0f, 255.0f, 255.0f };
-ALIGN16( static float SIMD_SP_rsqrt_c0[4] ) = { 3.0f, 3.0f, 3.0f, 3.0f };
-ALIGN16( static float SIMD_SP_rsqrt_c1[4] ) = { -0.5f, -0.5f, -0.5f, -0.5f };
-ALIGN16( static dword SIMD_SSE2_dword_maskFirstThree[4] ) = { 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000 };
-ALIGN16( static dword SIMD_SSE2_dword_maskWords[4] ) = { 0x0000FFFF, 0x0000FFFF, 0x0000FFFF, 0x00000000 };
-#define R_SHUFFLE_PS( x, y, z, w )	(( (w) & 3 ) << 6 | ( (z) & 3 ) << 4 | ( (y) & 3 ) << 2 | ( (x) & 3 ))
-#endif
 
 /*
 ========================
@@ -978,47 +952,6 @@ NormalDistanceDXT1
 ========================
 */
 int NormalDistanceDXT1( const int *vector, const int *normalized ) {
-#if defined( ID_WIN_X86_ASM )
-	int result;
-	__asm {
-		mov			esi, vector
-		mov			edi, normalized
-		cvtdq2ps	xmm0, [esi]
-		mulps		xmm0, SIMD_SSE2_float_scale
-		subps		xmm0, SIMD_SSE2_float_one
-		pand		xmm0, SIMD_SSE2_dword_maskFirstThree
-		movaps		xmm1, xmm0
-		mulps		xmm1, xmm1
-		pshufd		xmm2, xmm1, R_SHUFFLE_PS( 2, 3, 0, 1 )
-		addps		xmm2, xmm1
-		pshufd		xmm1, xmm2, R_SHUFFLE_PS( 1, 0, 1, 0 )
-		addps		xmm2, xmm1
-
-		rsqrtps		xmm1, xmm2
-		mulps		xmm2, xmm1
-		mulps		xmm2, xmm1
-		subps		xmm2, SIMD_SP_rsqrt_c0
-		mulps		xmm1, SIMD_SP_rsqrt_c1
-		mulps		xmm2, xmm1
-
-		mulps		xmm0, xmm2
-		addps		xmm0, SIMD_SSE2_float_one
-		mulps		xmm0, SIMD_SSE2_float_descale
-		addps		xmm0, SIMD_SSE2_float_half
-		maxps		xmm0, SIMD_SSE2_float_zero
-		minps		xmm0, SIMD_SSE2_float_255
-		cvttps2dq	xmm0, xmm0
-		psubd		xmm0, [edi]
-		pand		xmm0, SIMD_SSE2_dword_maskWords
-		pmullw		xmm0, xmm0
-		pshufd		xmm1, xmm0, R_SHUFFLE_PS( 2, 3, 0, 1 )
-		paddd		xmm0, xmm1
-		pshufd		xmm1, xmm0, R_SHUFFLE_PS( 1, 0, 1, 0 )
-		paddd		xmm0, xmm1
-		movd		result, xmm0
-	}
-	return result;
-#else
 	float floatNormal[3];
 	byte intNormal[4];
 	floatNormal[0] = vector[0] * ( 2.0f / 255.0f ) - 1.0f;
@@ -1035,7 +968,6 @@ int NormalDistanceDXT1( const int *vector, const int *normalized ) {
 					( ( intNormal[ 1 ] - normalized[ 1 ] ) * ( intNormal[ 1 ] - normalized[ 1 ] ) ) +
 					( ( intNormal[ 2 ] - normalized[ 2 ] ) * ( intNormal[ 2 ] - normalized[ 2 ] ) );
 	return result;
-#endif
 }
 
 /*
@@ -1044,57 +976,6 @@ NormalDistanceDXT5
 ========================
 */
 int NormalDistanceDXT5( const int *vector, const int *normalized ) {
-#if defined( ID_WIN_X86_ASM )
-	int result;
-	__asm {
-		mov			esi, vector
-		mov			edi, normalized
-#if 0	// object-space
-		pshufd		xmm0, [esi], R_SHUFFLE_PS( 0, 1, 3, 2 )
-#else
-		pshufd		xmm0, [esi], R_SHUFFLE_PS( 1, 2, 3, 0 )
-#endif
-		cvtdq2ps	xmm0, xmm0
-		mulps		xmm0, SIMD_SSE2_float_scale
-		subps		xmm0, SIMD_SSE2_float_one
-		pand		xmm0, SIMD_SSE2_dword_maskFirstThree
-		movaps		xmm1, xmm0
-		mulps		xmm1, xmm1
-		pshufd		xmm2, xmm1, R_SHUFFLE_PS( 2, 3, 0, 1 )
-		addps		xmm2, xmm1
-		pshufd		xmm1, xmm2, R_SHUFFLE_PS( 1, 0, 1, 0 )
-		addps		xmm2, xmm1
-
-		rsqrtps		xmm1, xmm2
-		mulps		xmm2, xmm1
-		mulps		xmm2, xmm1
-		subps		xmm2, SIMD_SP_rsqrt_c0
-		mulps		xmm1, SIMD_SP_rsqrt_c1
-		mulps		xmm2, xmm1
-
-		mulps		xmm0, xmm2
-		addps		xmm0, SIMD_SSE2_float_one
-		mulps		xmm0, SIMD_SSE2_float_descale
-		addps		xmm0, SIMD_SSE2_float_half
-		maxps		xmm0, SIMD_SSE2_float_zero
-		minps		xmm0, SIMD_SSE2_float_255
-		cvttps2dq	xmm0, xmm0
-#if 0	// object-space
-		pshufd		xmm3, [edi], R_SHUFFLE_PS( 0, 1, 3, 2 )
-#else
-		pshufd		xmm3, [edi], R_SHUFFLE_PS( 1, 2, 3, 0 )
-#endif
-		psubd		xmm0, xmm3
-		pand		xmm0, SIMD_SSE2_dword_maskWords
-		pmullw		xmm0, xmm0
-		pshufd		xmm1, xmm0, R_SHUFFLE_PS( 2, 3, 0, 1 )
-		paddd		xmm0, xmm1
-		pshufd		xmm1, xmm0, R_SHUFFLE_PS( 1, 0, 1, 0 )
-		paddd		xmm0, xmm1
-		movd		result, xmm0
-	}
-	return result;
-#else
 #if 0	// object-space
 	const int c0 = 0;
 	const int c1 = 1;
@@ -1120,7 +1001,6 @@ int NormalDistanceDXT5( const int *vector, const int *normalized ) {
 					( ( intNormal[ c1 ] - normalized[ c1 ] ) * ( intNormal[ c1 ] - normalized[ c1 ] ) ) +
 					( ( intNormal[ c2 ] - normalized[ c2 ] ) * ( intNormal[ c2 ] - normalized[ c2 ] ) );
 	return result;
-#endif
 }
 
 /*

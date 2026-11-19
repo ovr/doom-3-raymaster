@@ -4,18 +4,18 @@ This file provides guidance to AI coding agents (Claude Code, Codex, etc.) when 
 
 `AGENTS_LOCAL.md` exists in the repository root, read it as well: it holds local, machine-specific instructions and is not committed (git-ignored).
 
-DOOM 3 BFG Edition (id Tech 4, GPL) ported to a CMake build on modern Windows. Only 32-bit MSVC (Win32/x86) builds are supported. You need VS2022 or its Build Tools, the Windows 10 SDK, and XAudio2 2.9 (Windows 10+). The legacy DirectX SDK is not used.
+DOOM 3 BFG Edition (id Tech 4, GPL) ported to a CMake build on modern Windows. Only 64-bit MSVC (x64) builds are supported; the x86 build was dropped. You need VS2022 or its Build Tools, the Windows 10 SDK, and XAudio2 2.9 (Windows 10+). The legacy DirectX SDK is not used.
 
 ## Build
 
 ```
-cmake --preset vs2022-win32          # configure (VS 2022 generator, Win32)
+cmake --preset vs2022-x64            # configure (VS 2022 generator, x64)
 cmake --build --preset release       # also: debug, retail
 ```
 
 - zlib is a git submodule in `third_party/zlib` (upstream madler/zlib at a release tag), compiled into the `external` target from its `.c` files. After cloning run `git submodule update --init`, or configure stops with that hint.
-- The output is `build\vs2022-win32\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-win32` can also be opened in Visual Studio.
-- For Ninja, run these from an "x86 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x86`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
+- The output is `build\vs2022-x64\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-x64` can also be opened in Visual Studio.
+- For Ninja, run these from an "x64 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x64`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
 - `Retail` is `Release` plus `ID_RETAIL`.
 - The language is **C++23**. The root `CMakeLists.txt` sets `CMAKE_CXX_STANDARD 23` and pins `/std:c++23preview` (CMake would otherwise pick `/std:c++latest`), plus `/Zc:__cplusplus`. You need MSVC 19.43 (VS 2022 17.13) or newer.
 - C++20 and later imply the `/permissive-` conformance mode. That means:
@@ -26,7 +26,7 @@ cmake --build --preset release       # also: debug, retail
 - `doomclassic` and `timidity` keep `/Zc:strictStrings-`, because the 1993 C code passes literals as `char *` everywhere.
 - Build all three configs after language-level changes. `Debug` and `Retail` compile code that `Release` doesn't (`assert` bodies, `#ifndef ID_RETAIL`).
 - Engine code builds at /W4. `-DD3BFG_WARNINGS_AS_ERRORS=ON` adds /WX.
-- The Bink videos play through FFmpeg (optional). `tools\ffmpeg\build-ffmpeg-win32.cmd` builds a minimal 32-bit LGPL FFmpeg 7.1 into `external\ffmpeg-win32` (gitignored; needs MSYS2 in `C:\msys64` with `pacman -S make diffutils`), then re-run the configure. CMake finds it there (`-DD3BFG_FFMPEG_ROOT=<dir>` to point elsewhere), defines `USE_FFMPEG` and copies `avformat-61.dll`, `avcodec-61.dll` and `avutil-59.dll` next to the exe. Copy them into the game install with the exe. Without FFmpeg, or without the DLLs at runtime (they are delay-loaded), the videos stay black.
+- The Bink videos play through FFmpeg (optional). `tools\ffmpeg\build-ffmpeg-x64.cmd` builds a minimal 64-bit LGPL FFmpeg 7.1 into `external\ffmpeg-x64` (gitignored; needs MSYS2 in `C:\msys64` with `pacman -S make diffutils`), then re-run the configure. CMake finds it there (`-DD3BFG_FFMPEG_ROOT=<dir>` to point elsewhere), defines `USE_FFMPEG` and copies `avformat-61.dll`, `avcodec-61.dll` and `avutil-59.dll` next to the exe. Copy them into the game install with the exe. Without FFmpeg, or without the DLLs at runtime (they are delay-loaded), the videos stay black.
 
 ## Tests
 
@@ -34,16 +34,17 @@ cmake --build --preset release       # also: debug, retail
 
 ```
 cmake --build --preset release --target idlibTests
-ctest --test-dir build/vs2022-win32 -C Release
-build/vs2022-win32/bin/Release/idlibTests.exe LCP_Symmetric   # one test (substring filter), or "all"
-build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/DAZ
+ctest --test-dir build/vs2022-x64 -C Release
+build/vs2022-x64/bin/Release/idlibTests.exe LCP_Symmetric   # one test (substring filter), or "all"
+build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DAZ
 ```
 
 - Run the tests in `Release`. Some tests feed out-of-range inputs on purpose. In `Debug`, those trip `assert`, and `AssertFailed` calls `common->Warning` on the NULL stub `common`, so the test crashes.
 - The runner enables FTZ/DAZ by default, like the engine, and `noftz` turns that off.
 - Set `IDLIB_TESTS_VERBOSE=1` to print every failed check. By default each test prints its first 20.
 - `lcp_generic.cpp` recompiles `Lcp.cpp` under renamed classes (`idLCP_*_Generic`) with the SSE macros undefined, so the solvers can be compared. Right now both copies are the same code (see SIMD below).
-- `ctest` also runs `renderApiLeaks` (`tools/check-render-api-leaks.ps1`): it fails when a file outside `neo/renderer/OpenGL/`, `win_glimp.cpp` and `win_qgl.cpp` uses an OpenGL name. `precompiled.h` does not include `qgl.h`, so GL types don't compile there either.
+- `ctest` also runs `renderApiLeaks` (`tools/check-render-api-leaks.ps1`): it fails when a file outside `neo/renderer/OpenGL/`, `win_glimp.cpp` and `win_qgl.cpp` uses an OpenGL name, or a file outside `neo/renderer/D3D12/` and `neo/tests/d3d12_*` a Direct3D 12, DXGI or D3DCompiler name. `precompiled.h` includes neither API's headers, so their types don't compile there either.
+- `ctest` also runs `d3d12Tests` (see Direct3D 12 below).
 - There is no lint step and no other test suite. Game code is checked by running the game and the visual demos (below).
 
 ## Architecture
@@ -55,14 +56,14 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 **Layout of `neo/`:**
 - `idlib/`: the base library (math, containers, strings, the `idSIMD` processor, the parallel job system).
 - `framework/`: common, cvars, the console, the file system, and the main frame loop (`common_frame.cpp`).
-- `renderer/`: the frontend and an OpenGL backend. Shaders are loaded at runtime from `base/renderprogs/gl/`.
+- `renderer/`: the frontend, the backend interface `RenderBackend.h` (its contract is the comment at its top) and two backends: `OpenGL/` (the default; it converts `base/renderprogs/*.vertex` and `*.pixel` to GLSL, kept in `renderprogs/glsl/`) and `D3D12/` (below).
 - `d3xp/`: game logic (entities, AI, physics, scripts), compiled into the same exe rather than as a game DLL.
 - `cm/`: the collision model.
 - `aas/`: bot/AI navigation.
 - `sound/`: XAudio2.
 - `swf/`: the Flash-based UI.
 - `ui/`: legacy GUIs.
-- `sys/win32/`: the platform layer (window/GL creation in `win_glimp.cpp`, input, the wndproc, the sampling profiler `win_profiler.cpp`).
+- `sys/win32/`: the platform layer (the window in `win_window.cpp`, the WGL context in `win_glimp.cpp`, input, the wndproc, the sampling profiler `win_profiler.cpp`).
 
 **Threading and frame loop.**
 - With `com_smp 1` (the default), `idGameThread` (`framework/Common_local.h`) runs game logic and the renderer frontend, while the main thread runs the render backend for the previous frame.
@@ -70,12 +71,24 @@ build/vs2022-win32/bin/Release/idlibTests.exe all noftz       # run without FTZ/
 - Parallel work goes through `idParallelJobList` (`idlib/ParallelJobList.h`).
 - `common->Printf` from non-main threads is queued and flushed by the main thread.
 
-**SIMD paths are disabled.** The `ID_WIN_X86_SSE*`/`ID_WIN_X86_MMX*` defines are commented out in `neo/idlib/sys/sys_defines.h`, so idLib's `#ifdef ID_WIN_X86_SSE*_INTRIN` branches (LCP, MatX, etc.) compile to their generic C++ fallbacks. The shipped game used SSE, so these generic paths are barely tested and have hidden real bugs. For example, a wrong unrolled loop in `DotProduct_SIMD` in `idlib/math/Lcp.cpp` produced NaN ragdolls, and NaN bounds then made every collision query test the whole world. `idSIMD_SSE` in `Simd_SSE.cpp` still uses intrinsics unconditionally.
+**SIMD paths are disabled.** `neo/idlib/sys/sys_defines.h` doesn't define `ID_WIN_X86_SSE*_INTRIN`, so idLib's `#ifdef ID_WIN_X86_SSE*_INTRIN` branches (LCP, MatX, etc.) compile to their generic C++ fallbacks. The shipped game used SSE, so these generic paths are barely tested and have hidden real bugs. For example, a wrong unrolled loop in `DotProduct_SIMD` in `idlib/math/Lcp.cpp` produced NaN ragdolls, and NaN bounds then made every collision query test the whole world. `idSIMD_SSE` in `Simd_SSE.cpp` still uses intrinsics unconditionally.
 
 **Physics notes.**
 - `idPhysics_AF` (`d3xp/physics/Physics_AF.cpp`) builds row-padded `idMatX` systems with `MATX_ALLOCA`, whose padding is uninitialized, and solves them with `idLCP`.
 - `idLCP::Solve` leaves the matrix columns permuted, so callers must not reuse the matrix.
 - `af_checkInvalid 1` (the default) reports the first solver stage that produced a non-finite AF state.
+
+## Direct3D 12
+
+- `+set r_renderApi d3d12` runs the renderer on `neo/renderer/D3D12/`; OpenGL stays the default. `r_renderApi` is read once at startup and archived, so `set r_renderApi d3d12` in the console takes effect at the next start. It needs a GPU with feature level 11_0. `d3d12.dll`, `dxgi.dll` and `d3dcompiler_47.dll` are loaded from System32 at its Init, never linked, so an OpenGL run never loads the HLSL compiler.
+- The backend emits HLSL from the render program sources `base/renderprogs/*.vertex` and `*.pixel` and compiles it with FXC, so copy `base/renderprogs` into the game install with the exe (`run-vdemos.ps1 -Api d3d12` does).
+- Its caches live in `fs_savepath/base/renderprogs/dxbc`: the DXBC of every shader (`r_d3d12ShaderCache 1`), the PSO keys of earlier runs (`pipelines.journal`, made again when their program is created at Init or a level load) and the driver's pipeline library (`pipelines.bin`, `r_d3d12PipelineLibrary 1`). Delete the folder for a cold start; a stale or broken file is rebuilt on its own.
+- `r_debugContext` (read at Init): 1 = the debug layer, whose messages appear in the log as `d3d12 debug: <SEVERITY> ...` (it needs the Windows optional feature Graphics Tools); 2 = plus GPU-based validation, several times slower (give the demo scripts `-TimeoutScale 6`); 3 = plus DRED, which prints where the GPU stopped when the device is lost.
+- Cvars: `r_d3d12Adapter` (empty = the high-performance GPU, `warp`, or an index), `r_d3d12Stats 1` (draws, PSOs, uploads, submits, waits and GPU ms once a second, and a `com_showFPS` line), `r_d3d12SubmitDraws` (256), `r_d3d12FrameBuffers` (0: the per-frame vertex cache stays in UPLOAD heaps), `r_d3d12ShowImage <texture>`, `r_d3d12DumpHLSL 1`, `r_d3d12CaptureBackBuffer 1`, `r_d3d12CheckImages 1`. Commands: `d3d12_compileAll`, `d3d12_checkImages`, `d3d12_removeDevice`. `r_pix` works on both APIs.
+- `d3d12Tests` (`neo/tests/d3d12_tests.cpp`, in ctest) runs the backend's parts without a window, on a WARP device with the debug layer (the ones a driver could get wrong also on the GPU), and the HLSL emitter and FXC over every render program against `neo/tests/d3d12_golden` (`D3D12_TESTS_WRITE_GOLDEN=1` rewrites them). `build/vs2022-x64/bin/Release/d3d12Tests.exe <filter>` runs the tests whose names contain the filter, `all` every test.
+- The visual gate is `tools\vdemo\compare-apis.ps1 -Stage <name> -Demos <list> [-Gbv] [-Layer <layer>]`. Two D3D12 runs, with and without the debug layer (and with `-Gbv` a third under GPU-based validation), must give byte-identical frames and no layer message. `analyze.py` then holds the frames to the bars of `tools/vdemo/bars-d3d12.json` against the OpenGL reference (`-Baseline`, by default `research/vdemo/gl-ref`, a local OpenGL run of the same demos; `research/vdemo/d3d12-ref` keeps the D3D12 frames of the last gate). Run `_x4_gui` with `-Layer clear`, and `_x7_heathaze` in a call of its own. A lone 2x2 or 4x2 brighter block in one frame of one run is a known AMD driver flake: run the pair again, it must not repeat.
+- Direct3D 12 has to look no worse than OpenGL, not the same: driver filtering differences, compiler last-bit noise and thin edge lines are fine. Judge a bar miss by eye on the heat maps and contact sheets that analyze.py writes. OpenGL's own frames stay byte-identical when shared code changes.
+- Names stay in their folder: Direct3D 12, DXGI and D3DCompiler names only in `neo/renderer/D3D12/` and `neo/tests/d3d12_*`, OpenGL names never there (renderApiLeaks). Shared code calls `renderBackend` only.
 
 ## Code conventions that bite
 

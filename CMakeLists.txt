@@ -3,15 +3,15 @@ cmake_minimum_required(VERSION 3.21)
 project(Doom3BFG LANGUAGES C CXX)
 
 # ---------------------------------------------------------------------------
-# Platform checks: the code base is Win32 / MSVC / 32-bit only.
+# Platform checks: the code base is Windows / MSVC / x64 only.
 # ---------------------------------------------------------------------------
 if(NOT MSVC)
 	message(FATAL_ERROR "Doom 3 BFG can only be built with MSVC.")
 endif()
-if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
 	message(FATAL_ERROR
-		"Doom 3 BFG must be built as 32-bit (x86). "
-		"Use the Visual Studio generator with '-A Win32' or an x86 Native Tools prompt.")
+		"Doom 3 BFG must be built as 64-bit (x64). "
+		"Use the Visual Studio generator with '-A x64' or an x64 Native Tools prompt.")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -87,8 +87,7 @@ function(d3bfg_configure_target tgt)
 		/W${ARG_WARNING_LEVEL}
 		/Zi
 		$<$<CONFIG:Debug>:/Od /RTC1>
-		# /Oy- keeps frame pointers so profilers (and sys_profile) can walk call stacks
-		$<$<NOT:$<CONFIG:Debug>>:/O2 /Ob2 /Oi /GF /GS- /Gy /Oy->
+		$<$<NOT:$<CONFIG:Debug>>:/O2 /Ob2 /Oi /GF /GS- /Gy>
 	)
 	if(ARG_WITH_INLINES)
 		target_compile_definitions(${tgt} PRIVATE $<$<CONFIG:Debug>:_INLINEDEBUG>)
@@ -107,7 +106,6 @@ function(d3bfg_neo_common tgt)
 	target_compile_definitions(${tgt} PRIVATE
 		_CRT_SECURE_NO_DEPRECATE
 		_CRT_NONSTDC_NO_DEPRECATE
-		_USE_32BIT_TIME_T
 	)
 	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}" "${D3BFG_ZLIB_DIR}")
 endfunction()

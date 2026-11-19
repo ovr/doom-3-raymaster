@@ -542,7 +542,7 @@ int idFile::WriteBool( const bool value ) {
  =================
  */
 int idFile::WriteString( const char *value ) {
-	int len = strlen( value );
+	int len = idStr::Length( value );
 	WriteInt( len );
     return Write( value, len );
 }
@@ -718,7 +718,7 @@ int idFile_Memory::Read( void *buffer, int len ) {
 	}
 
 	if ( curPtr + len > filePtr + fileSize ) {
-		len = filePtr + fileSize - curPtr;
+		len = static_cast<int>( filePtr + fileSize - curPtr );
 	}
 	memcpy( buffer, curPtr, len );
 	curPtr += len;
@@ -766,13 +766,13 @@ int idFile_Memory::Write( const void *buffer, int len ) {
 		return 0;
 	}
 
-	int alloc = curPtr + len + 1 - filePtr - allocated; // need room for len+1
+	const ptrdiff_t alloc = ( curPtr - filePtr ) + len + 1 - static_cast<ptrdiff_t>( allocated ); // need room for len+1
 	if ( alloc > 0 ) {
 		if ( maxSize != 0 ) {
-			common->Error( "idFile_Memory::Write: exceeded maximum size %d", maxSize );
+			common->Error( "idFile_Memory::Write: exceeded maximum size %zu", maxSize );
 			return 0;
 		}
-		int extra = granularity * ( 1 + alloc / granularity );
+		const size_t extra = static_cast<size_t>( granularity ) * ( 1 + alloc / granularity );
 		char *newPtr = (char *) Mem_Alloc( allocated + extra, TAG_IDFILE );
 		if ( allocated ) {
 			memcpy( newPtr, filePtr, allocated );
@@ -819,7 +819,7 @@ idFile_Memory::Length
 =================
 */
 int idFile_Memory::Length() const {
-	return fileSize;
+	return static_cast<int>( fileSize );
 }
 
 /*
@@ -840,7 +840,7 @@ idFile_Memory::PreAllocate
 void idFile_Memory::PreAllocate( size_t len ) {
 	if ( len > allocated ) {
 		if ( maxSize != 0 ) {
-			idLib::Error( "idFile_Memory::SetLength: exceeded maximum size %d", maxSize );
+			idLib::Error( "idFile_Memory::SetLength: exceeded maximum size %zu", maxSize );
 		}
 		char * newPtr = (char *)Mem_Alloc( len, TAG_IDFILE );
 		if ( allocated > 0 ) {
@@ -1002,7 +1002,7 @@ idFile_Memory::TruncateData
 */
 void idFile_Memory::TruncateData( size_t len ) {
 	if ( len > allocated ) {
-		idLib::Error( "idFile_Memory::TruncateData: len (%d) exceeded allocated size (%d)", len, allocated );
+		idLib::Error( "idFile_Memory::TruncateData: len (%zu) exceeded allocated size (%zu)", len, allocated );
 	} else {
 		fileSize = len;
 	}

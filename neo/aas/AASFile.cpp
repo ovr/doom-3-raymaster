@@ -1204,8 +1204,8 @@ bool idAASFileLocal::Load( const idStr &fileName, unsigned int mapFileCRC ) {
 idAASFileLocal::MemorySize
 ================
 */
-int idAASFileLocal::MemorySize() const {
-	int size;
+size_t idAASFileLocal::MemorySize() const {
+	size_t size;
 
 	size = planeList.Size();
 	size += vertices.Size();
@@ -1229,7 +1229,7 @@ idAASFileLocal::PrintInfo
 ================
 */
 void idAASFileLocal::PrintInfo() const {
-	common->Printf( "%6d KB file size\n", MemorySize() >> 10 );
+	common->Printf( "%6zu KB file size\n", MemorySize() >> 10 );
 	common->Printf( "%6d areas\n", areas.Num() );
 	common->Printf( "%6d max tree depth\n", MaxTreeDepth() );
 	ReportRoutingEfficiency();

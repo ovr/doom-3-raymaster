@@ -126,7 +126,7 @@ FakeWndProc
 Only used to get wglExtensions
 ====================
 */
-static LONG WINAPI FakeWndProc (
+static LRESULT CALLBACK FakeWndProc (
     HWND    hWnd,
     UINT    uMsg,
     WPARAM  wParam,
@@ -220,7 +220,7 @@ static void GLW_CreateFakeWindowClass() {
 	memset( &wc, 0, sizeof( wc ) );
 
 	wc.style         = 0;
-	wc.lpfnWndProc   = (WNDPROC) FakeWndProc;
+	wc.lpfnWndProc   = FakeWndProc;
 	wc.cbClsExtra    = 0;
 	wc.cbWndExtra    = 0;
 	wc.hInstance     = win32.hInstance;
@@ -435,7 +435,7 @@ static bool GLW_InitDriver( const glContextParms_t & parms ) {
 
 	// the same SetPixelFormat is used either way
 	if ( SetPixelFormat( glw.hDC, glw.pixelformat, &glw.pfd ) == FALSE ) {
-		common->Printf( "...^3SetPixelFormat failed^0\n", glw.hDC );
+		common->Printf( "...^3SetPixelFormat failed^0\n" );
 		return false;
 	}
 

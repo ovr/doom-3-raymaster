@@ -1634,10 +1634,11 @@ void idDeclManagerLocal::ListDecls_f( const idCmdArgs &args ) {
 	int		i, j;
 	int		totalDecls = 0;
 	int		totalText = 0;
-	int		totalStructs = 0;
+	size_t	totalStructs = 0;
 
 	for ( i = 0; i < declManagerLocal.declTypes.Num(); i++ ) {
-		int size, num;
+		size_t size;
+		int num;
 
 		if ( declManagerLocal.declTypes[i] == NULL ) {
 			continue;
@@ -1655,7 +1656,7 @@ void idDeclManagerLocal::ListDecls_f( const idCmdArgs &args ) {
 		}
 		totalStructs += size;
 
-		common->Printf( "%4ik %4i %s\n", size >> 10, num, declManagerLocal.declTypes[i]->typeName.c_str() );
+		common->Printf( "%4zuk %4i %s\n", size >> 10, num, declManagerLocal.declTypes[i]->typeName.c_str() );
 	}
 
 	for ( i = 0 ; i < declManagerLocal.loadedFiles.Num() ; i++ ) {
@@ -1664,7 +1665,7 @@ void idDeclManagerLocal::ListDecls_f( const idCmdArgs &args ) {
 	}
 
 	common->Printf( "%i total decls is %i decl files\n", totalDecls, declManagerLocal.loadedFiles.Num() );
-	common->Printf( "%iKB in text, %iKB in structures\n", totalText >> 10, totalStructs >> 10 );
+	common->Printf( "%iKB in text, %zuKB in structures\n", totalText >> 10, totalStructs >> 10 );
 }
 
 /*
@@ -2282,7 +2283,7 @@ void idDeclLocal::MakeDefault() {
 	self->FreeData();
 
 	// parse
-	self->Parse( defaultText, strlen( defaultText ), false );
+	self->Parse( defaultText, idStr::Length( defaultText ), false );
 
 	// we could still eventually hit the recursion if we have enough Error() calls inside Parse...
 	--recursionLevel;

@@ -79,11 +79,19 @@ int     Z_FreeMemory (void);
 
 template< class _type_ >
 bool MallocForLump( int lump, size_t size, _type_ * & ptr, int tag ) {
-	ptr = static_cast< _type_ * >( Z_Malloc( size, tag, 0 ) );
+	ptr = static_cast< _type_ * >( Z_Malloc( static_cast< int >( size ), tag, 0 ) );
 
 	return true;
 }
 
+// Unowned array of count elements; sized from the element type, never a hardcoded 4.
+template< class T >
+void Z_MallocArray( T * & ptr, int count, int tag ) {
+	ptr = static_cast< T * >( Z_Malloc( static_cast< int >( count * sizeof( T ) ), tag, nullptr ) );
+}
+
+// Block sizes and headers are multiples of this, so every user block is 16-byte aligned.
+inline constexpr int ZONE_ALIGN = 16;
 
 typedef struct memblock_s
 {
@@ -93,7 +101,10 @@ typedef struct memblock_s
     int			id;	// should be ZONEID
     struct memblock_s*	next;
     struct memblock_s*	prev;
+    void*		pad;	// rounds the header up to ZONE_ALIGN (alignas would warn C4324 at /W4)
 } memblock_t;
+
+static_assert( sizeof( memblock_t ) % ZONE_ALIGN == 0 );
 
 
 //

@@ -324,7 +324,7 @@ public:
 	static int			ColorIndex( int c );
 	static idVec4 &		ColorForIndex( int i );
 
-	friend int			sprintf( idStr &dest, const char *fmt, ... );
+	friend int			sprintf( idStr &dest, VERIFY_FORMAT_STRING const char *fmt, ... );
 	friend int			vsprintf( idStr &dest, const char *fmt, va_list ap );
 
 	void				ReAllocate( int amount, bool keepold );				// reallocate string data buffer
@@ -484,7 +484,7 @@ ID_INLINE idStr::idStr( const char *text ) {
 	int l;
 
 	if ( text ) {
-		l = strlen( text );
+		l = idStr::Length( text );
 		EnsureAlloced( l + 1 );
 		strcpy( data, text );
 		len = l;
@@ -494,7 +494,7 @@ ID_INLINE idStr::idStr( const char *text ) {
 ID_INLINE idStr::idStr( const char *text, int start, int end ) {
 	Construct();
 	int i;
-	int l = strlen( text );
+	int l = idStr::Length( text );
 
 	if ( end > l ) {
 		end = l;
@@ -756,7 +756,7 @@ ID_INLINE int idStr::Cmpn( const char *text, int n ) const {
 
 ID_INLINE int idStr::CmpPrefix( const char *text ) const {
 	assert( text );
-	return idStr::Cmpn( data, text, strlen( text ) );
+	return idStr::Cmpn( data, text, idStr::Length( text ) );
 }
 
 ID_INLINE int idStr::Icmp( const char *text ) const {
@@ -771,7 +771,7 @@ ID_INLINE int idStr::Icmpn( const char *text, int n ) const {
 
 ID_INLINE int idStr::IcmpPrefix( const char *text ) const {
 	assert( text );
-	return idStr::Icmpn( data, text, strlen( text ) );
+	return idStr::Icmpn( data, text, idStr::Length( text ) );
 }
 
 ID_INLINE int idStr::IcmpNoColor( const char *text ) const {
@@ -791,7 +791,7 @@ ID_INLINE int idStr::IcmpnPath( const char *text, int n ) const {
 
 ID_INLINE int idStr::IcmpPrefixPath( const char *text ) const {
 	assert( text );
-	return idStr::IcmpnPath( data, text, strlen( text ) );
+	return idStr::IcmpnPath( data, text, idStr::Length( text ) );
 }
 
 ID_INLINE int idStr::Length() const {
@@ -851,7 +851,7 @@ ID_INLINE void idStr::Append( const char *text ) {
 	int i;
 
 	if ( text ) {
-		newLen = len + strlen( text );
+		newLen = len + idStr::Length( text );
 		EnsureAlloced( newLen + 1 );
 		for ( i = 0; text[ i ]; i++ ) {
 			data[ len + i ] = text[ i ];
@@ -903,7 +903,7 @@ ID_INLINE void idStr::Insert( const char *text, int index ) {
 		index = len;
 	}
 
-	l = strlen( text );
+	l = idStr::Length( text );
 	EnsureAlloced( len + l + 1 );
 	for ( i = len; i >= index; i-- ) {
 		data[i+l] = data[i];
@@ -1076,10 +1076,9 @@ ID_INLINE bool idStr::CheckExtension( const char *ext ) {
 	return idStr::CheckExtension( data, ext );
 }
 
+// idStr lengths are ints, strings of 2 GB and more are not supported
 ID_INLINE int idStr::Length( const char *s ) {
-	int i;
-	for ( i = 0; s[i]; i++ ) {}
-	return i;
+	return static_cast<int>( strlen( s ) );
 }
 
 ID_INLINE char *idStr::ToLower( char *s ) {

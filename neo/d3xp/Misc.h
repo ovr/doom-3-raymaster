@@ -292,7 +292,7 @@ private:
 	void					Event_StartRagdoll();
 	void					Event_AnimDone( int animIndex );
 	void					Event_Footstep();
-	void					Event_LaunchMissiles( const char *projectilename, const char *sound, const char *launchjoint, const char *targetjoint, int numshots, int framedelay );
+	void					Event_LaunchMissiles( const char *projectilename, const char *sound, const char *launchjoint, const char *targetjoint, int numshots, float framedelay );
 	void					Event_LaunchMissilesUpdate( int launchjoint, int targetjoint, int numshots, int framedelay );
 	void					Event_SetAnimation( const char *animName );
 	void					Event_GetAnimationLength();

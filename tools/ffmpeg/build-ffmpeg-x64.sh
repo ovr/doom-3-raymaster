@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# The minimal 32-bit LGPL FFmpeg (bink demuxer and decoders) as MSVC DLLs in external/ffmpeg-win32.
-# Run it through build-ffmpeg-win32.cmd, or from MSYS2 bash inside the x86 VS 2022 prompt with
+# The minimal 64-bit LGPL FFmpeg (bink demuxer and decoders) as MSVC DLLs in external/ffmpeg-x64.
+# Run it through build-ffmpeg-x64.cmd, or from MSYS2 bash inside the x64 VS 2022 prompt with
 # MSYS2_PATH_TYPE=inherit.
 
 set -euo pipefail
 
 usage() {
 	cat <<'USAGE'
-build-ffmpeg-win32.sh [--prefix DIR] [--work DIR] [--asm|--no-asm] [--jobs N]
-  --prefix  install dir, default <repo>/external/ffmpeg-win32 (include/, lib/, bin/)
+build-ffmpeg-x64.sh [--prefix DIR] [--work DIR] [--asm|--no-asm] [--jobs N]
+  --prefix  install dir, default <repo>/external/ffmpeg-x64 (include/, lib/, bin/)
   --work    download + build dir, default <repo>/build/ffmpeg
   --asm     nasm for the x86 SIMD code (pacman -S nasm); --no-asm (default) builds plain C
 MSYS2 needs: pacman -S make diffutils
@@ -23,7 +23,7 @@ FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "${script_dir}/../.." && pwd)"
 
-prefix="${repo_dir}/external/ffmpeg-win32"
+prefix="${repo_dir}/external/ffmpeg-x64"
 work="${repo_dir}/build/ffmpeg"
 use_asm=0
 jobs="$(nproc 2>/dev/null || echo 4)"
@@ -44,12 +44,12 @@ die() { echo "error: $*" >&2; exit 1; }
 
 # ---- toolchain checks ------------------------------------------------------------------------
 
-command -v cl >/dev/null 2>&1 || die "cl.exe not on PATH: run from an x86 VS 2022 developer environment with MSYS2_PATH_TYPE=inherit (or use build-ffmpeg-win32.cmd)"
-# the cl banner may be localized ("for x86", "для x86"): only look at the target arch token
+command -v cl >/dev/null 2>&1 || die "cl.exe not on PATH: run from an x64 VS 2022 developer environment with MSYS2_PATH_TYPE=inherit (or use build-ffmpeg-x64.cmd)"
+# the cl banner may be localized ("for x64", "для x64"): only look at the target arch token
 cl_banner="$( (cl 2>&1 || true) | head -n1)"
 case "$cl_banner" in
-	*" x86"*) ;;
-	*) die "cl.exe is not the x86 compiler (need the x86 Native Tools environment): ${cl_banner}" ;;
+	*" x64"*) ;;
+	*) die "cl.exe is not the x64 compiler (need the x64 Native Tools environment): ${cl_banner}" ;;
 esac
 for tool in make cmp curl tar xz sha256sum; do
 	command -v "$tool" >/dev/null 2>&1 || die "'$tool' missing in MSYS2 (pacman -S make diffutils)"
@@ -86,7 +86,7 @@ src="${work}/ffmpeg-${FFMPEG_VERSION}"
 rm -rf "$src"
 tar -xJf "$tarball" -C "$work"
 
-obj="${work}/build-x86"
+obj="${work}/build-x64"
 rm -rf "$obj"
 mkdir -p "$obj"
 
@@ -96,7 +96,7 @@ cd "$obj"
 "${src}/configure" \
 	--prefix="$prefix" \
 	--toolchain=msvc \
-	--arch=x86 \
+	--arch=x86_64 \
 	--target-os=win32 \
 	--enable-shared \
 	--disable-static \

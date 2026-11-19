@@ -522,13 +522,13 @@ EV_BuildStairs
 		    continue;
 					
 		tsec = (sec->lines[i])->frontsector;
-		newsecnum = tsec-::g->sectors;
+		newsecnum = static_cast< int >( tsec-::g->sectors );
 		
 		if (secnum != newsecnum)
 		    continue;
 
 		tsec = (sec->lines[i])->backsector;
-		newsecnum = tsec - ::g->sectors;
+		newsecnum = static_cast< int >( tsec - ::g->sectors );
 
 		if (tsec->floorpic != texture)
 		    continue;

@@ -78,7 +78,7 @@ bool MA_ParseHeaderIndex(maAttribHeader_t* header, int& minIndex, int& maxIndex,
 	idParser miniParse;
 	idToken token;
 
-	miniParse.LoadMemory(header->name, strlen(header->name), headerType);
+	miniParse.LoadMemory(header->name, idStr::Length(header->name), headerType);
 	if(skipString) {
 		miniParse.SkipUntilString(skipString);
 	}
@@ -968,7 +968,7 @@ maModel_t *MA_Parse( const char *buffer, const char* filename, bool verbose ) {
 
 	idParser parser;
 	parser.SetFlags(LEXFL_NOSTRINGCONCAT);
-	parser.LoadMemory(buffer, strlen(buffer), filename);
+	parser.LoadMemory(buffer, idStr::Length(buffer), filename);
 
 	idToken token;
 	while(parser.ReadToken(&token)) {

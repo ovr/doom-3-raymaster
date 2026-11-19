@@ -31,10 +31,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "qgl.h"
 
 #include "../tr_local.h"
+#include "../RenderProgSource.h"
 #include "gl_Backend.h"
-
-idCVar r_skipStripDeadCode( "r_skipStripDeadCode", "0", CVAR_BOOL, "Skip stripping dead code" );
-
 
 #define VERTEX_UNIFORM_ARRAY_NAME				"_va_"
 #define FRAGMENT_UNIFORM_ARRAY_NAME				"_fa_"
@@ -44,403 +42,101 @@ static const int AT_VS_OUT = BIT( 2 );
 static const int AT_PS_IN  = BIT( 3 );
 static const int AT_PS_OUT = BIT( 4 );
 
-struct idCGBlock {
-	idStr prefix;	// tokens that comes before the name
-	idStr name;		// the name
-	idStr postfix;	// tokens that comes after the name
-	bool used;		// whether or not this block is referenced anywhere
-};
+// the GLSL input of a PC vertex attribute (R_VertexInputs has the semantics)
+static const char * GL_VertexInputName( int attribIndex ) {
+	switch ( attribIndex ) {
+		case PC_ATTRIB_INDEX_VERTEX:	return "in_Position";
+		case PC_ATTRIB_INDEX_ST:		return "in_TexCoord";
+		case PC_ATTRIB_INDEX_NORMAL:	return "in_Normal";
+		case PC_ATTRIB_INDEX_TANGENT:	return "in_Tangent";
+		case PC_ATTRIB_INDEX_COLOR:		return "in_Color";
+		case PC_ATTRIB_INDEX_COLOR2:	return "in_Color2";
+		default:						return nullptr;
+	}
+}
 
-/*
-================================================
-attribInfo_t
-================================================
-*/
+// the GLSL names of the semantics of the other in and out structs
 struct attribInfo_t {
 	const char *	type;
 	const char *	name;
 	const char *	semantic;
 	const char *	glsl;
-	int				bind;
 	int				flags;
-	int				vertexMask;
 };
 
-/*
-================================================
-vertexMask_t
-
-NOTE: There is a PS3 dependency between the bit flag specified here and the vertex
-attribute index and attribute semantic specified in DeclRenderProg.cpp because the
-stored render prog vertexMask is initialized with cellCgbGetVertexConfiguration().
-The ATTRIB_INDEX_ defines are used to make sure the vertexMask_t and attrib assignment
-in DeclRenderProg.cpp are in sync.
-
-Even though VERTEX_MASK_XYZ_SHORT and VERTEX_MASK_ST_SHORT are not real attributes,
-they come before the VERTEX_MASK_MORPH to reduce the range of vertex program
-permutations defined by the vertexMask_t bits on the Xbox 360 (see MAX_VERTEX_DECLARATIONS).
-================================================
-*/
-enum vertexMask_t {
-	VERTEX_MASK_XYZ			= BIT( PC_ATTRIB_INDEX_VERTEX ),
-	VERTEX_MASK_ST			= BIT( PC_ATTRIB_INDEX_ST ),
-	VERTEX_MASK_NORMAL		= BIT( PC_ATTRIB_INDEX_NORMAL ),
-	VERTEX_MASK_COLOR		= BIT( PC_ATTRIB_INDEX_COLOR ),
-	VERTEX_MASK_TANGENT		= BIT( PC_ATTRIB_INDEX_TANGENT ),
-	VERTEX_MASK_COLOR2		= BIT( PC_ATTRIB_INDEX_COLOR2 ),
-};
-
-attribInfo_t attribsPC[] = {
-	// vertex attributes
-	{ "float4",		"position",		"POSITION",		"in_Position",			PC_ATTRIB_INDEX_VERTEX,			AT_VS_IN,		VERTEX_MASK_XYZ },
-	{ "float2",		"texcoord",		"TEXCOORD0",	"in_TexCoord",			PC_ATTRIB_INDEX_ST,				AT_VS_IN,		VERTEX_MASK_ST },
-	{ "float4",		"normal",		"NORMAL",		"in_Normal",			PC_ATTRIB_INDEX_NORMAL,			AT_VS_IN,		VERTEX_MASK_NORMAL },
-	{ "float4",		"tangent",		"TANGENT",		"in_Tangent",			PC_ATTRIB_INDEX_TANGENT,		AT_VS_IN,		VERTEX_MASK_TANGENT },
-	{ "float4",		"color",		"COLOR0",		"in_Color",				PC_ATTRIB_INDEX_COLOR,			AT_VS_IN,		VERTEX_MASK_COLOR },
-	{ "float4",		"color2",		"COLOR1",		"in_Color2",			PC_ATTRIB_INDEX_COLOR2,			AT_VS_IN,		VERTEX_MASK_COLOR2 },
-
+static constexpr attribInfo_t attribsPC[] = {
 	// pre-defined vertex program output
-	{ "float4",		"position",		"POSITION",		"gl_Position",			0,	AT_VS_OUT,		0 },
-	{ "float",		"clip0",		"CLP0",			"gl_ClipDistance[0]",	0,	AT_VS_OUT,		0 },
-	{ "float",		"clip1",		"CLP1",			"gl_ClipDistance[1]",	0,	AT_VS_OUT,		0 },
-	{ "float",		"clip2",		"CLP2",			"gl_ClipDistance[2]",	0,	AT_VS_OUT,		0 },
-	{ "float",		"clip3",		"CLP3",			"gl_ClipDistance[3]",	0,	AT_VS_OUT,		0 },
-	{ "float",		"clip4",		"CLP4",			"gl_ClipDistance[4]",	0,	AT_VS_OUT,		0 },
-	{ "float",		"clip5",		"CLP5",			"gl_ClipDistance[5]",	0,	AT_VS_OUT,		0 },
+	{ "float4",		"position",		"POSITION",		"gl_Position",			AT_VS_OUT },
+	{ "float",		"clip0",		"CLP0",			"gl_ClipDistance[0]",	AT_VS_OUT },
+	{ "float",		"clip1",		"CLP1",			"gl_ClipDistance[1]",	AT_VS_OUT },
+	{ "float",		"clip2",		"CLP2",			"gl_ClipDistance[2]",	AT_VS_OUT },
+	{ "float",		"clip3",		"CLP3",			"gl_ClipDistance[3]",	AT_VS_OUT },
+	{ "float",		"clip4",		"CLP4",			"gl_ClipDistance[4]",	AT_VS_OUT },
+	{ "float",		"clip5",		"CLP5",			"gl_ClipDistance[5]",	AT_VS_OUT },
 
 	// pre-defined fragment program input
-	{ "float4",		"position",		"WPOS",			"gl_FragCoord",			0,	AT_PS_IN,		0 },
-	{ "half4",		"hposition",	"WPOS",			"gl_FragCoord",			0,	AT_PS_IN,		0 },
-	{ "float",		"facing",		"FACE",			"gl_FrontFacing",		0,	AT_PS_IN,		0 },
+	{ "float4",		"position",		"WPOS",			"gl_FragCoord",			AT_PS_IN },
+	{ "half4",		"hposition",	"WPOS",			"gl_FragCoord",			AT_PS_IN },
+	{ "float",		"facing",		"FACE",			"gl_FrontFacing",		AT_PS_IN },
 
 	// fragment program output
-	{ "float4",		"color",		"COLOR",		"gl_FragColor",		0,	AT_PS_OUT,		0 }, // GLSL version 1.2 doesn't allow for custom color name mappings
-	{ "half4",		"hcolor",		"COLOR",		"gl_FragColor",		0,	AT_PS_OUT,		0 },
-	{ "float4",		"color0",		"COLOR0",		"gl_FragColor",		0,	AT_PS_OUT,		0 },
-	{ "float4",		"color1",		"COLOR1",		"gl_FragColor",		1,	AT_PS_OUT,		0 },
-	{ "float4",		"color2",		"COLOR2",		"gl_FragColor",		2,	AT_PS_OUT,		0 },
-	{ "float4",		"color3",		"COLOR3",		"gl_FragColor",		3,	AT_PS_OUT,		0 },
-	{ "float",		"depth",		"DEPTH",		"gl_FragDepth",		4,	AT_PS_OUT,		0 },
+	{ "float4",		"color",		"COLOR",		"gl_FragColor",		AT_PS_OUT }, // GLSL version 1.2 doesn't allow for custom color name mappings
+	{ "half4",		"hcolor",		"COLOR",		"gl_FragColor",		AT_PS_OUT },
+	{ "float4",		"color0",		"COLOR0",		"gl_FragColor",		AT_PS_OUT },
+	{ "float4",		"color1",		"COLOR1",		"gl_FragColor",		AT_PS_OUT },
+	{ "float4",		"color2",		"COLOR2",		"gl_FragColor",		AT_PS_OUT },
+	{ "float4",		"color3",		"COLOR3",		"gl_FragColor",		AT_PS_OUT },
+	{ "float",		"depth",		"DEPTH",		"gl_FragDepth",		AT_PS_OUT },
 
 	// vertex to fragment program pass through
-	{ "float4",		"color",		"COLOR",		"gl_FrontColor",			0,	AT_VS_OUT,	0 },
-	{ "float4",		"color0",		"COLOR0",		"gl_FrontColor",			0,	AT_VS_OUT,	0 },
-	{ "float4",		"color1",		"COLOR1",		"gl_FrontSecondaryColor",	0,	AT_VS_OUT,	0 },
+	{ "float4",		"color",		"COLOR",		"gl_FrontColor",			AT_VS_OUT },
+	{ "float4",		"color0",		"COLOR0",		"gl_FrontColor",			AT_VS_OUT },
+	{ "float4",		"color1",		"COLOR1",		"gl_FrontSecondaryColor",	AT_VS_OUT },
 
 
-	{ "float4",		"color",		"COLOR",		"gl_Color",				0,	AT_PS_IN,	0 },
-	{ "float4",		"color0",		"COLOR0",		"gl_Color",				0,	AT_PS_IN,	0 },
-	{ "float4",		"color1",		"COLOR1",		"gl_SecondaryColor",	0,	AT_PS_IN,	0 },
+	{ "float4",		"color",		"COLOR",		"gl_Color",				AT_PS_IN },
+	{ "float4",		"color0",		"COLOR0",		"gl_Color",				AT_PS_IN },
+	{ "float4",		"color1",		"COLOR1",		"gl_SecondaryColor",	AT_PS_IN },
 
-	{ "half4",		"hcolor",		"COLOR",		"gl_Color",				0,	AT_PS_IN,		0 },
-	{ "half4",		"hcolor0",		"COLOR0",		"gl_Color",				0,	AT_PS_IN,		0 },
-	{ "half4",		"hcolor1",		"COLOR1",		"gl_SecondaryColor",	0,	AT_PS_IN,		0 },
+	{ "half4",		"hcolor",		"COLOR",		"gl_Color",				AT_PS_IN },
+	{ "half4",		"hcolor0",		"COLOR0",		"gl_Color",				AT_PS_IN },
+	{ "half4",		"hcolor1",		"COLOR1",		"gl_SecondaryColor",	AT_PS_IN },
 
-	{ "float4",		"texcoord0",	"TEXCOORD0_centroid",	"vofi_TexCoord0",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord1",	"TEXCOORD1_centroid",	"vofi_TexCoord1",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord2",	"TEXCOORD2_centroid",	"vofi_TexCoord2",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord3",	"TEXCOORD3_centroid",	"vofi_TexCoord3",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord4",	"TEXCOORD4_centroid",	"vofi_TexCoord4",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord5",	"TEXCOORD5_centroid",	"vofi_TexCoord5",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord6",	"TEXCOORD6_centroid",	"vofi_TexCoord6",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord7",	"TEXCOORD7_centroid",	"vofi_TexCoord7",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord8",	"TEXCOORD8_centroid",	"vofi_TexCoord8",	0,	AT_PS_IN,	0 },
-	{ "float4",		"texcoord9",	"TEXCOORD9_centroid",	"vofi_TexCoord9",	0,	AT_PS_IN,	0 },
+	{ "float4",		"texcoord0",	"TEXCOORD0_centroid",	"vofi_TexCoord0",	AT_PS_IN },
+	{ "float4",		"texcoord1",	"TEXCOORD1_centroid",	"vofi_TexCoord1",	AT_PS_IN },
+	{ "float4",		"texcoord2",	"TEXCOORD2_centroid",	"vofi_TexCoord2",	AT_PS_IN },
+	{ "float4",		"texcoord3",	"TEXCOORD3_centroid",	"vofi_TexCoord3",	AT_PS_IN },
+	{ "float4",		"texcoord4",	"TEXCOORD4_centroid",	"vofi_TexCoord4",	AT_PS_IN },
+	{ "float4",		"texcoord5",	"TEXCOORD5_centroid",	"vofi_TexCoord5",	AT_PS_IN },
+	{ "float4",		"texcoord6",	"TEXCOORD6_centroid",	"vofi_TexCoord6",	AT_PS_IN },
+	{ "float4",		"texcoord7",	"TEXCOORD7_centroid",	"vofi_TexCoord7",	AT_PS_IN },
+	{ "float4",		"texcoord8",	"TEXCOORD8_centroid",	"vofi_TexCoord8",	AT_PS_IN },
+	{ "float4",		"texcoord9",	"TEXCOORD9_centroid",	"vofi_TexCoord9",	AT_PS_IN },
 
-	{ "float4",		"texcoord0",	"TEXCOORD0",	"vofi_TexCoord0",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord1",	"TEXCOORD1",	"vofi_TexCoord1",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord2",	"TEXCOORD2",	"vofi_TexCoord2",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord3",	"TEXCOORD3",	"vofi_TexCoord3",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord4",	"TEXCOORD4",	"vofi_TexCoord4",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord5",	"TEXCOORD5",	"vofi_TexCoord5",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord6",	"TEXCOORD6",	"vofi_TexCoord6",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord7",	"TEXCOORD7",	"vofi_TexCoord7",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord8",	"TEXCOORD8",	"vofi_TexCoord8",		0,	AT_VS_OUT | AT_PS_IN,	0 },
-	{ "float4",		"texcoord9",	"TEXCOORD9",	"vofi_TexCoord9",		0,	AT_VS_OUT | AT_PS_IN,	0 },
+	{ "float4",		"texcoord0",	"TEXCOORD0",	"vofi_TexCoord0",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord1",	"TEXCOORD1",	"vofi_TexCoord1",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord2",	"TEXCOORD2",	"vofi_TexCoord2",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord3",	"TEXCOORD3",	"vofi_TexCoord3",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord4",	"TEXCOORD4",	"vofi_TexCoord4",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord5",	"TEXCOORD5",	"vofi_TexCoord5",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord6",	"TEXCOORD6",	"vofi_TexCoord6",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord7",	"TEXCOORD7",	"vofi_TexCoord7",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord8",	"TEXCOORD8",	"vofi_TexCoord8",		AT_VS_OUT | AT_PS_IN },
+	{ "float4",		"texcoord9",	"TEXCOORD9",	"vofi_TexCoord9",		AT_VS_OUT | AT_PS_IN },
 
-	{ "half4",		"htexcoord0",	"TEXCOORD0",	"vofi_TexCoord0",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord1",	"TEXCOORD1",	"vofi_TexCoord1",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord2",	"TEXCOORD2",	"vofi_TexCoord2",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord3",	"TEXCOORD3",	"vofi_TexCoord3",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord4",	"TEXCOORD4",	"vofi_TexCoord4",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord5",	"TEXCOORD5",	"vofi_TexCoord5",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord6",	"TEXCOORD6",	"vofi_TexCoord6",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord7",	"TEXCOORD7",	"vofi_TexCoord7",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord8",	"TEXCOORD8",	"vofi_TexCoord8",		0,	AT_PS_IN,		0 },
-	{ "half4",		"htexcoord9",	"TEXCOORD9",	"vofi_TexCoord9",		0,	AT_PS_IN,		0 },
-	{ "float",		"fog",			"FOG",			"gl_FogFragCoord",		0,	AT_VS_OUT,		0 },
-	{ "float4",		"fog",			"FOG",			"gl_FogFragCoord",		0,	AT_PS_IN,		0 },
-	{ NULL,			NULL,			NULL,			NULL,					0,	0,				0 }
+	{ "half4",		"htexcoord0",	"TEXCOORD0",	"vofi_TexCoord0",		AT_PS_IN },
+	{ "half4",		"htexcoord1",	"TEXCOORD1",	"vofi_TexCoord1",		AT_PS_IN },
+	{ "half4",		"htexcoord2",	"TEXCOORD2",	"vofi_TexCoord2",		AT_PS_IN },
+	{ "half4",		"htexcoord3",	"TEXCOORD3",	"vofi_TexCoord3",		AT_PS_IN },
+	{ "half4",		"htexcoord4",	"TEXCOORD4",	"vofi_TexCoord4",		AT_PS_IN },
+	{ "half4",		"htexcoord5",	"TEXCOORD5",	"vofi_TexCoord5",		AT_PS_IN },
+	{ "half4",		"htexcoord6",	"TEXCOORD6",	"vofi_TexCoord6",		AT_PS_IN },
+	{ "half4",		"htexcoord7",	"TEXCOORD7",	"vofi_TexCoord7",		AT_PS_IN },
+	{ "half4",		"htexcoord8",	"TEXCOORD8",	"vofi_TexCoord8",		AT_PS_IN },
+	{ "half4",		"htexcoord9",	"TEXCOORD9",	"vofi_TexCoord9",		AT_PS_IN },
+	{ "float",		"fog",			"FOG",			"gl_FogFragCoord",		AT_VS_OUT },
+	{ "float4",		"fog",			"FOG",			"gl_FogFragCoord",		AT_PS_IN },
 };
-
-const char * types[] = {
-	"int",
-	"float",
-	"half",
-	"fixed",
-	"bool",
-	"cint",
-	"cfloat",
-	"void"
-};
-static const int numTypes = sizeof( types ) / sizeof( types[0] );
-
-const char * typePosts[] = {
-	"1", "2", "3", "4",
-	"1x1", "1x2", "1x3", "1x4",
-	"2x1", "2x2", "2x3", "2x4",
-	"3x1", "3x2", "3x3", "3x4",
-	"4x1", "4x2", "4x3", "4x4"
-};
-static const int numTypePosts = sizeof( typePosts ) / sizeof( typePosts[0] );
-
-const char * prefixes[] = {
-	"static",
-	"const",
-	"uniform",
-	"struct",
-
-	"sampler",
-
-	"sampler1D",
-	"sampler2D",
-	"sampler3D",
-	"samplerCUBE",
-
-	"sampler1DShadow",		// GLSL
-	"sampler2DShadow",		// GLSL
-	"sampler3DShadow",		// GLSL
-	"samplerCubeShadow",	// GLSL
-
-	"sampler2DMS",			// GLSL
-};
-static const int numPrefixes = sizeof( prefixes ) / sizeof( prefixes[0] );
-
-// For GLSL we need to have the names for the renderparms so we can look up their run time indices within the renderprograms
-static const char * GLSLParmNames[] = {
-	"rpScreenCorrectionFactor",
-	"rpWindowCoord",
-	"rpDiffuseModifier",
-	"rpSpecularModifier",
-
-	"rpLocalLightOrigin",
-	"rpLocalViewOrigin",
-
-	"rpLightProjectionS",
-	"rpLightProjectionT",
-	"rpLightProjectionQ",
-	"rpLightFalloffS",
-
-	"rpBumpMatrixS",
-	"rpBumpMatrixT",
-
-	"rpDiffuseMatrixS",
-	"rpDiffuseMatrixT",
-
-	"rpSpecularMatrixS",
-	"rpSpecularMatrixT",
-
-	"rpVertexColorModulate",
-	"rpVertexColorAdd",
-
-	"rpColor",
-	"rpViewOrigin",
-	"rpGlobalEyePos",
-
-	"rpMVPmatrixX",
-	"rpMVPmatrixY",
-	"rpMVPmatrixZ",
-	"rpMVPmatrixW",
-
-	"rpModelMatrixX",
-	"rpModelMatrixY",
-	"rpModelMatrixZ",
-	"rpModelMatrixW",
-
-	"rpProjectionMatrixX",
-	"rpProjectionMatrixY",
-	"rpProjectionMatrixZ",
-	"rpProjectionMatrixW",
-
-	"rpModelViewMatrixX",
-	"rpModelViewMatrixY",
-	"rpModelViewMatrixZ",
-	"rpModelViewMatrixW",
-
-	"rpTextureMatrixS",
-	"rpTextureMatrixT",
-
-	"rpTexGen0S",
-	"rpTexGen0T",
-	"rpTexGen0Q",
-	"rpTexGen0Enabled",
-
-	"rpTexGen1S",
-	"rpTexGen1T",
-	"rpTexGen1Q",
-	"rpTexGen1Enabled",
-
-	"rpWobbleSkyX",
-	"rpWobbleSkyY",
-	"rpWobbleSkyZ",
-
-	"rpOverbright",
-	"rpEnableSkinning",
-	"rpAlphaTest"
-};
-
-/*
-========================
-StripDeadCode
-========================
-*/
-idStr StripDeadCode( const idStr & in, const char * name ) {
-	if ( r_skipStripDeadCode.GetBool() ) {
-		return in;
-	}
-
-	//idLexer src( LEXFL_NOFATALERRORS );
-	idParser src( LEXFL_NOFATALERRORS );
-	src.LoadMemory( in.c_str(), in.Length(), name );
-	src.AddDefine("PC");
-
-	idList< idCGBlock, TAG_RENDERPROG > blocks;
-
-	blocks.SetNum( 100 );
-
-	idToken token;
-	while ( !src.EndOfFile() ) {
-		idCGBlock & block = blocks.Alloc();
-		// read prefix
-		while ( src.ReadToken( &token ) ) {
-			bool found = false;
-			for ( int i = 0; i < numPrefixes; i++ ) {
-				if ( token == prefixes[i] ) {
-					found = true;
-					break;
-				}
-			}
-			if ( !found ) {
-				for ( int i = 0; i < numTypes; i++ ) {
-					if ( token == types[i] ) {
-						found = true;
-						break;
-					}
-					int typeLen = idStr::Length( types[i] );
-					if ( token.Cmpn( types[i], typeLen ) == 0 ) {
-						for ( int j = 0; j < numTypePosts; j++ ) {
-							if ( idStr::Cmp( token.c_str() + typeLen, typePosts[j] ) == 0 ) {
-								found = true;
-								break;
-							}
-						}
-						if ( found ) {
-							break;
-						}
-					}
-				}
-			}
-			if ( found ) {
-				if ( block.prefix.Length() > 0 && token.WhiteSpaceBeforeToken() ) {
-					block.prefix += ' ';
-				}
-				block.prefix += token;
-			} else {
-				src.UnreadToken( &token );
-				break;
-			}
-		}
-		if ( !src.ReadToken( &token ) ) {
-			blocks.SetNum( blocks.Num() - 1 );
-			break;
-		}
-		block.name = token;
-
-		if ( src.PeekTokenString( "=" ) || src.PeekTokenString( ":" ) || src.PeekTokenString( "[" ) ) {
-			src.ReadToken( &token );
-			block.postfix = token;
-			while ( src.ReadToken( &token ) ) {
-				if ( token == ";" ) {
-					block.postfix += ';';
-					break;
-				} else {
-					if ( token.WhiteSpaceBeforeToken() ){
-						block.postfix += ' ';
-					}
-					block.postfix += token;
-				}
-			}
-		} else if ( src.PeekTokenString( "(" ) ) {
-			idStr parms, body;
-			src.ParseBracedSection( parms, -1, true, '(', ')' );
-			if ( src.CheckTokenString( ";" ) ) {
-				block.postfix = parms + ";";
-			} else {
-				src.ParseBracedSection( body, -1, true, '{', '}' );
-				block.postfix = parms + " " + body;
-			}
-		} else if ( src.PeekTokenString( "{" ) ) {
-			src.ParseBracedSection( block.postfix, -1, true, '{', '}' );
-			if ( src.CheckTokenString( ";" ) ) {
-				block.postfix += ';';
-			}
-		} else if ( src.CheckTokenString( ";" ) ) {
-			block.postfix = idStr( ';' );
-		} else {
-			src.Warning( "Could not strip dead code -- unknown token %s\n", token.c_str() );
-			return in;
-		}
-	}
-
-	idList<int, TAG_RENDERPROG> stack;
-	for ( int i = 0; i < blocks.Num(); i++ ) {
-		blocks[i].used = ( ( blocks[i].name == "main" )
-			|| blocks[i].name.Right( 4 ) == "_ubo"
-			);
-
-		if ( blocks[i].name == "include" ) {
-			blocks[i].used = true;
-			blocks[i].name = ""; // clear out the include tag
-		}
-
-		if ( blocks[i].used ) {
-			stack.Append( i );
-		}
-	}
-
-	while ( stack.Num() > 0 ) {
-		int i = stack[stack.Num() - 1];
-		stack.SetNum( stack.Num() - 1 );
-
-		idLexer src( LEXFL_NOFATALERRORS );
-		src.LoadMemory( blocks[i].postfix.c_str(), blocks[i].postfix.Length(), name );
-		while ( src.ReadToken( &token ) ) {
-			for ( int j = 0; j < blocks.Num(); j++ ) {
-				if ( !blocks[j].used ) {
-					if ( token == blocks[j].name ) {
-						blocks[j].used = true;
-						stack.Append( j );
-					}
-				}
-			}
-		}
-	}
-
-	idStr out;
-
-	for ( int i = 0; i < blocks.Num(); i++ ) {
-		if ( blocks[i].used ) {
-			out += blocks[i].prefix;
-			out += ' ';
-			out += blocks[i].name;
-			out += ' ';
-			out += blocks[i].postfix;
-			out += '\n';
-		}
-	}
-
-	return out;
-}
 
 struct typeConversion_t {
 	const char * typeCG;
@@ -603,10 +299,15 @@ void ParseInOutStruct( idLexer & src, int attribType, idList< inOutVariable_t > 
 		}
 
 		// convert the semantic to a GLSL name
-		for ( int i = 0; attribsPC[i].semantic != NULL; i++ ) {
-			if ( ( attribsPC[i].flags & attribType ) != 0 ) {
-				if ( var.nameGLSL.Cmp( attribsPC[i].semantic ) == 0 ) {
-					var.nameGLSL = attribsPC[i].glsl;
+		if ( attribType == AT_VS_IN ) {
+			const char * glsl = GL_VertexInputName( R_VertexAttribIndex( var.nameGLSL.c_str() ) );
+			if ( glsl != nullptr ) {
+				var.nameGLSL = glsl;
+			}
+		} else {
+			for ( const attribInfo_t & attrib : attribsPC ) {
+				if ( ( attrib.flags & attribType ) != 0 && var.nameGLSL.Cmp( attrib.semantic ) == 0 ) {
+					var.nameGLSL = attrib.glsl;
 					break;
 				}
 			}
@@ -895,20 +596,6 @@ idStr ConvertCG2GLSL( const idStr & in, const char * name, bool isVertexProgram,
 
 /*
 ================================================================================================
-GL_RenderParmName
-================================================================================================
-*/
-static const char * GL_RenderParmName( int rp ) {
-	if ( rp >= RENDERPARM_USER ) {
-		int userParmIndex = rp - RENDERPARM_USER;
-		return va("rpUser%d", userParmIndex );
-	}
-	assert( rp < RENDERPARM_TOTAL );
-	return GLSLParmNames[ rp ];
-}
-
-/*
-================================================================================================
 GL_NewShaderStage
 ================================================================================================
 */
@@ -933,12 +620,10 @@ shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, co
 	const GLenum target = ( stage == shaderStageType_t::FRAGMENT ) ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER;
 	info.numParms = 0;
 
-	idStr inFile;
+	const idStr inFile = R_RenderProgPath( name, stage );
 	idStr outFileHLSL;
 	idStr outFileGLSL;
 	idStr outFileUniforms;
-	inFile.Format( "renderprogs\\%s", name );
-	inFile.StripFileExtension();
 	outFileHLSL.Format( "renderprogs\\glsl\\%s", name );
 	outFileHLSL.StripFileExtension();
 	outFileGLSL.Format( "renderprogs\\glsl\\%s", name );
@@ -946,12 +631,10 @@ shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, co
 	outFileUniforms.Format( "renderprogs\\glsl\\%s", name );
 	outFileUniforms.StripFileExtension();
 	if ( target == GL_FRAGMENT_SHADER ) {
-		inFile += ".pixel";
 		outFileHLSL += "_fragment.hlsl";
 		outFileGLSL += "_fragment.glsl";
 		outFileUniforms += "_fragment.uniforms";
 	} else {
-		inFile += ".vertex";
 		outFileHLSL += "_vertex.hlsl";
 		outFileGLSL += "_vertex.glsl";
 		outFileUniforms += "_vertex.uniforms";
@@ -973,13 +656,12 @@ shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, co
 			return GL_NewShaderStage( 0, name, info );
 		}
 
-		void * hlslFileBuffer = NULL;
-		int len = fileSystem->ReadFile( inFile.c_str(), &hlslFileBuffer );
-		if ( len <= 0 ) {
+		// nullopt after the file was found: unreadable, or a uniform no parm names (warned)
+		const std::optional<renderProgSource_t> source = R_LoadRenderProgSource( name, stage );
+		if ( !source ) {
 			return GL_NewShaderStage( 0, name, info );
 		}
-		idStr hlslCode( ( const char* ) hlslFileBuffer );
-		idStr programHLSL = StripDeadCode( hlslCode, inFile );
+		const idStr & programHLSL = source->text;
 		programGLSL = ConvertCG2GLSL( programHLSL, inFile, target == GL_VERTEX_SHADER, programUniforms );
 
 		fileSystem->WriteFile( outFileHLSL, programHLSL.c_str(), programHLSL.Length(), "fs_basepath" );
@@ -1009,26 +691,14 @@ shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, co
 	idLexer src( programUniforms, programUniforms.Length(), "uniforms" );
 	idToken token;
 	while ( src.ReadToken( &token ) ) {
-		int index = -1;
-		for ( int i = 0; i < RENDERPARM_TOTAL && index == -1; i++ ) {
-			const char * parmName = GL_RenderParmName( i );
-			if ( token == parmName ) {
-				index = i;
-			}
-		}
-		for ( int i = 0; i < idRenderProgManager::MAX_GLSL_USER_PARMS && index == -1; i++ ) {
-			const char * parmName = GL_RenderParmName( RENDERPARM_USER + i );
-			if ( token == parmName ) {
-				index = RENDERPARM_USER + i;
-			}
-		}
-		if ( index == -1 ) {
+		const std::optional<renderParm_t> parm = R_FindRenderParm( token.c_str() );
+		if ( !parm ) {
 			idLib::Error( "couldn't find uniform %s for %s", token.c_str(), outFileGLSL.c_str() );
 		}
 		if ( info.numParms == MAX_RENDER_PARMS ) {
 			idLib::Error( "more than %d uniforms for %s", MAX_RENDER_PARMS, outFileGLSL.c_str() );
 		}
-		info.parms[info.numParms++] = static_cast<uint8>( index );
+		info.parms[info.numParms++] = static_cast<uint8>( *parm );
 	}
 
 	// create and compile the shader
@@ -1056,8 +726,7 @@ shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, co
 				const char separator = '\n';
 				idList<idStr> lines;
 				lines.Clear();
-				idStr source( programGLSL );
-				lines.Append( source );
+				lines.Append( programGLSL );
 				for ( int index = 0, ofs = lines[index].Find( separator ); ofs != -1; index++, ofs = lines[index].Find( separator ) ) {
 					lines.Append( lines[index].c_str() + ofs + 1 );
 					lines[index].CapLength( ofs );
@@ -1124,10 +793,8 @@ programHandle_t idRenderBackendGL::CreateProgram( shaderHandle_t vertex, shaderH
 		}
 
 		// bind vertex attribute locations
-		for ( int i = 0; attribsPC[i].glsl != NULL; i++ ) {
-			if ( ( attribsPC[i].flags & AT_VS_IN ) != 0 ) {
-				qglBindAttribLocation( program, attribsPC[i].bind, attribsPC[i].glsl );
-			}
+		for ( const renderProgVertexInput_t & input : R_VertexInputs() ) {
+			qglBindAttribLocation( program, input.index, GL_VertexInputName( input.index ) );
 		}
 
 		qglLinkProgram( program );
@@ -1190,9 +857,9 @@ programHandle_t idRenderBackendGL::CreateProgram( shaderHandle_t vertex, shaderH
 
 	// the rest of what the program needs from a draw: queries only, they change nothing in GL
 	info.usesJoints = ( blockIndex != -1 );
-	for ( int i = 0; attribsPC[i].glsl != NULL; i++ ) {
-		if ( ( attribsPC[i].flags & AT_VS_IN ) != 0 && qglGetAttribLocation( program, attribsPC[i].glsl ) != -1 ) {
-			info.attribMask = static_cast<uint16>( info.attribMask | ( 1 << attribsPC[i].bind ) );
+	for ( const renderProgVertexInput_t & input : R_VertexInputs() ) {
+		if ( qglGetAttribLocation( program, GL_VertexInputName( input.index ) ) != -1 ) {
+			info.attribMask = static_cast<uint16>( info.attribMask | ( 1 << input.index ) );
 		}
 	}
 	GLint numUniforms = 0;

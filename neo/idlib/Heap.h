@@ -49,13 +49,13 @@ static const int MAX_TAGS = 256;
 
 
 
-void *		Mem_Alloc16( const int size, const memTag_t tag );
+void *		Mem_Alloc16( const size_t size, const memTag_t tag );
 void		Mem_Free16( void *ptr );
 
-ID_INLINE void *	Mem_Alloc( const int size, const memTag_t tag ) { return Mem_Alloc16( size, tag ); }
+ID_INLINE void *	Mem_Alloc( const size_t size, const memTag_t tag ) { return Mem_Alloc16( size, tag ); }
 ID_INLINE void		Mem_Free( void *ptr ) { Mem_Free16( ptr ); }
 
-void *		Mem_ClearedAlloc( const int size, const memTag_t tag );
+void *		Mem_ClearedAlloc( const size_t size, const memTag_t tag );
 char *		Mem_CopyString( const char *in );
 
 /*
@@ -546,16 +546,18 @@ public:
 	void							SetSize( int s, bool isBaseBlock ) { size = isBaseBlock ? -s : s; }
 	bool							IsBaseBlock() const { return ( size < 0 ); }
 
+	int								size;					// size in bytes of the block
 #ifdef DYNAMIC_BLOCK_ALLOC_CHECK
-	int								id[3];
+	int								id[3];					// with size, fills the first 16 bytes
 	void *							allocator;
 #endif
-
-	int								size;					// size in bytes of the block
 	idDynamicBlock<type> *			prev;					// previous memory block
 	idDynamicBlock<type> *			next;					// next memory block
 	idBTreeNode<idDynamicBlock<type>,int> *node;			// node in the B-Tree with free blocks
 };
+
+// GetMemory() follows the header, so the header keeps the 16-byte alignment of the blocks
+static_assert( sizeof( idDynamicBlock<byte> ) % 16 == 0, "idDynamicBlock header must be a multiple of 16 bytes" );
 
 template<class type, int baseBlockSize, int minBlockSize, memTag_t _tag_ = TAG_BLOCKALLOC>
 class idDynamicBlockAlloc {

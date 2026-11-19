@@ -250,7 +250,33 @@ set(GAME_D3XP_SOURCES
 )
 
 
+# the Direct3D 12 backend (r_renderApi d3d12): always built, with /WX (CMakeLists.txt)
+set(D3D12_SOURCES
+	renderer/D3D12/d3d12_Buffers.cpp
+	renderer/D3D12/d3d12_Context.cpp
+	renderer/D3D12/d3d12_Copies.cpp
+	renderer/D3D12/d3d12_Descriptors.cpp
+	renderer/D3D12/d3d12_Device.cpp
+	renderer/D3D12/d3d12_Diagnostics.cpp
+	renderer/D3D12/d3d12_Draw.cpp
+	renderer/D3D12/d3d12_Formats.cpp
+	renderer/D3D12/d3d12_HlslEmitter.cpp
+	renderer/D3D12/d3d12_InternalPasses.cpp
+	renderer/D3D12/d3d12_Memory.cpp
+	renderer/D3D12/d3d12_Output.cpp
+	renderer/D3D12/d3d12_Pipelines.cpp
+	renderer/D3D12/d3d12_Programs.cpp
+	renderer/D3D12/d3d12_RenderBackend.cpp
+	renderer/D3D12/d3d12_RingAllocator.cpp
+	renderer/D3D12/d3d12_ShaderCompiler.cpp
+	renderer/D3D12/d3d12_StateMap.cpp
+	renderer/D3D12/d3d12_Textures.cpp
+	renderer/D3D12/d3d12_Timers.cpp
+)
+
+
 set(DOOMEXE_SOURCES
+	${D3D12_SOURCES}
 	aas/AASFile.cpp
 	aas/AASFile_optimize.cpp
 	aas/AASFile_sample.cpp
@@ -347,6 +373,7 @@ set(DOOMEXE_SOURCES
 	renderer/RenderBackend.cpp
 	renderer/RenderEntity.cpp
 	renderer/RenderLog.cpp
+	renderer/RenderProgSource.cpp
 	renderer/RenderProgs.cpp
 	renderer/RenderSystem.cpp
 	renderer/RenderSystem_init.cpp

@@ -40,6 +40,8 @@ If you have questions concerning this license or the applicable additional terms
 ================================================================================================
 */
 
+idCVar r_glCheckLatch( "r_glCheckLatch", "0", CVAR_RENDERER | CVAR_BOOL, "compare GL's face culling and depth function with the latch rules on every draw" );
+
 // the indexes of a draw are triIndex_t
 static const GLenum GL_INDEX_TYPE = GL_UNSIGNED_SHORT;
 static_assert( sizeof( triIndex_t ) == sizeof( GLushort ) );
@@ -98,6 +100,9 @@ void idRenderBackendGL::API_DrawIndexed( const drawCall_t & dc ) {
 #ifdef _DEBUG
 	DebugCheckDraw( dc );
 #endif
+	if ( r_glCheckLatch.GetBool() ) {
+		CheckLatch();
+	}
 
 	if ( dc.jointBuffer != bufferHandle_t::NONE ) {
 		qglBindBufferRange( GL_UNIFORM_BUFFER, 0, GL_Buffer( dc.jointBuffer )->bufferObject, dc.jointOffset, dc.numJoints * sizeof( idJointMat ) );
@@ -126,6 +131,47 @@ void idRenderBackendGL::API_DrawIndexed( const drawCall_t & dc ) {
 							  GL_INDEX_TYPE,
 							  reinterpret_cast<triIndex_t *>( static_cast<uintptr_t>( dc.indexOffset ) ),
 							  dc.baseVertex );
+}
+
+// What a pipeline backend builds from latch.cullEnabled and latch.depthFuncStrict, against GL itself.
+void idRenderBackendGL::CheckLatch() {
+	GLenum depthFunc = GL_LESS;
+	if ( !latch.depthFuncStrict ) {
+		switch ( latch.stateBits & GLS_DEPTHFUNC_BITS ) {
+			case GLS_DEPTHFUNC_EQUAL:	depthFunc = GL_EQUAL; break;
+			case GLS_DEPTHFUNC_ALWAYS:	depthFunc = GL_ALWAYS; break;
+			case GLS_DEPTHFUNC_GREATER:	depthFunc = GL_GEQUAL; break;
+			default:					depthFunc = GL_LEQUAL; break;
+		}
+	}
+	const GLenum cullMode = ( ( latch.cull == CT_BACK_SIDED ) != latch.viewIsMirror ) ? GL_BACK : GL_FRONT;
+	const bool oneSided = latch.cullEnabled && latch.cull != CT_TWO_SIDED;
+
+	GLint gotDepthFunc = 0;
+	GLint gotCullMode = 0;
+	qglGetIntegerv( GL_DEPTH_FUNC, &gotDepthFunc );
+	qglGetIntegerv( GL_CULL_FACE_MODE, &gotCullMode );
+	const bool gotCullEnabled = ( qglIsEnabled( GL_CULL_FACE ) == GL_TRUE );
+
+	latchChecks++;
+	if ( gotCullEnabled == latch.cullEnabled && static_cast<GLenum>( gotDepthFunc ) == depthFunc
+			&& ( !oneSided || static_cast<GLenum>( gotCullMode ) == cullMode ) ) {
+		return;
+	}
+	if ( latchMismatches++ < MAX_LATCH_WARNINGS ) {
+		common->Warning( "r_glCheckLatch: mismatch at draw %d: GL_CULL_FACE %d, latch %d; GL_DEPTH_FUNC 0x%x, latch 0x%x; GL_CULL_FACE_MODE 0x%x, latch 0x%x (cull %d, mirror %d)",
+			latchChecks, gotCullEnabled ? 1 : 0, latch.cullEnabled ? 1 : 0, gotDepthFunc, depthFunc,
+			gotCullMode, oneSided ? cullMode : 0, latch.cull, latch.viewIsMirror ? 1 : 0 );
+	}
+}
+
+// Shutdown and vid_restart print what r_glCheckLatch found since the last report.
+void idRenderBackendGL::ReportLatchChecks() {
+	if ( latchChecks > 0 ) {
+		common->Printf( "r_glCheckLatch: %d draws checked, %d mismatches\n", latchChecks, latchMismatches );
+	}
+	latchChecks = 0;
+	latchMismatches = 0;
 }
 
 #ifdef _DEBUG

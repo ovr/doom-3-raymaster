@@ -70,6 +70,9 @@ set_source_files_properties(
 	TARGET_DIRECTORY Doom3BFG
 	PROPERTIES SKIP_PRECOMPILE_HEADERS ON
 )
+# renderer/D3D12/ is new code without warnings: /WX in every config, with no build option. Its DLLs are
+# loaded from System32 at Init (idD3D12Library), so no d3d12, dxgi or d3dcompiler import library is linked.
+set_source_files_properties(${D3D12_SOURCES} TARGET_DIRECTORY Doom3BFG PROPERTIES COMPILE_OPTIONS /WX)
 
 target_link_libraries(Doom3BFG PRIVATE
 	idLib
@@ -82,7 +85,6 @@ target_link_libraries(Doom3BFG PRIVATE
 )
 target_link_options(Doom3BFG PRIVATE
 	/STACK:16777216,16777216
-	/LARGEADDRESSAWARE
 	/DEBUG
 	$<$<CONFIG:Debug>:/MAP>
 	$<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
@@ -90,9 +92,9 @@ target_link_options(Doom3BFG PRIVATE
 set_target_properties(Doom3BFG PROPERTIES FOLDER "neo")
 set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT Doom3BFG)
 
-# FFmpeg (optional, tools/ffmpeg/build-ffmpeg-win32.cmd) plays the Bink videos, without it they
+# FFmpeg (optional, tools/ffmpeg/build-ffmpeg-x64.cmd) plays the Bink videos, without it they
 # stay black. The DLLs are delay-loaded and copied next to the exe, which starts without them.
-set(D3BFG_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-win32" CACHE PATH
+set(D3BFG_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-x64" CACHE PATH
 	"FFmpeg for the Bink videos (include/, bin/*.dll, bin/ or lib/*.lib); empty or missing disables them")
 
 set(D3BFG_FFMPEG_FOUND OFF)
@@ -135,7 +137,7 @@ if(D3BFG_FFMPEG_FOUND)
 	)
 else()
 	message(STATUS "FFmpeg not found in '${D3BFG_FFMPEG_ROOT}': Bink videos off "
-		"(build it with tools/ffmpeg/build-ffmpeg-win32.cmd or set D3BFG_FFMPEG_ROOT)")
+		"(build it with tools/ffmpeg/build-ffmpeg-x64.cmd or set D3BFG_FFMPEG_ROOT)")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -164,6 +166,51 @@ target_link_options(idlibTests PRIVATE /LARGEADDRESSAWARE /DEBUG)
 set_target_properties(idlibTests PROPERTIES FOLDER "tests")
 add_test(NAME idlibTests COMMAND idlibTests)
 
-# renderApiLeaks: no OpenGL name outside neo/renderer/OpenGL/ and the two WGL files
+# d3d12Tests: the ring, the handle table, the format, sampler and pipeline state tables, the uploader, buffer
+# and texture stores, the PSO factory, the debug groups, the GPU timers, the screen copies and the draw recorder on a WARP
+# device (the texture border, decoding, timer, copy and draw tests also on the GPU), and the HLSL emitter and FXC over
+# base/renderprogs against neo/tests/d3d12_golden
+#   bin/<config>/d3d12Tests.exe [filter]
+add_executable(d3d12Tests
+	tests/d3d12_tests.cpp
+	tests/d3d12_test_stubs.cpp
+	renderer/D3D12/d3d12_Buffers.cpp
+	renderer/D3D12/d3d12_Copies.cpp
+	renderer/D3D12/d3d12_Descriptors.cpp
+	renderer/D3D12/d3d12_Device.cpp
+	renderer/D3D12/d3d12_Draw.cpp
+	renderer/D3D12/d3d12_Formats.cpp
+	renderer/D3D12/d3d12_HlslEmitter.cpp
+	renderer/D3D12/d3d12_InternalPasses.cpp
+	renderer/D3D12/d3d12_Memory.cpp
+	renderer/D3D12/d3d12_Output.cpp
+	renderer/D3D12/d3d12_Pipelines.cpp
+	renderer/D3D12/d3d12_Programs.cpp
+	renderer/D3D12/d3d12_RingAllocator.cpp
+	renderer/D3D12/d3d12_ShaderCompiler.cpp
+	renderer/D3D12/d3d12_StateMap.cpp
+	renderer/D3D12/d3d12_Textures.cpp
+	renderer/D3D12/d3d12_Timers.cpp
+	renderer/DXT/DXTDecoder.cpp
+	renderer/RenderProgSource.cpp
+)
+d3bfg_neo_common(d3d12Tests)
+# /W3 like idlibTests: at /W4 the PCH of old idLib headers warns again. Doom3BFG builds the D3D12 files at /W4;
+# /WX per file, as for D3D12_SOURCES above, whose property this directory shares.
+d3bfg_configure_target(d3d12Tests WARNING_LEVEL 3 WITH_INLINES)
+set_source_files_properties(tests/d3d12_tests.cpp tests/d3d12_test_stubs.cpp PROPERTIES COMPILE_OPTIONS /WX)
+target_compile_definitions(d3d12Tests PRIVATE
+	__DOOM__ _MBCS _CONSOLE
+	D3D12_TESTS_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+	$<$<CONFIG:Retail>:ID_RETAIL>
+)
+target_precompile_headers(d3d12Tests PRIVATE "${D3BFG_PCH}")
+target_link_libraries(d3d12Tests PRIVATE idLib winmm dbghelp dxguid)
+target_link_options(d3d12Tests PRIVATE /DEBUG)
+set_target_properties(d3d12Tests PROPERTIES FOLDER "tests")
+add_test(NAME d3d12Tests COMMAND d3d12Tests)
+
+# renderApiLeaks: no OpenGL name outside neo/renderer/OpenGL/ and the two WGL files, no D3D12 or DXGI
+# name outside neo/renderer/D3D12/
 add_test(NAME renderApiLeaks
 	COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/check-render-api-leaks.ps1")

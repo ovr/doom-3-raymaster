@@ -52,6 +52,10 @@ public:
 	// one virtual step that ends exactly on a 1 / vdemo_fps grid of that tic.
 	[[nodiscard]] virtual uint64	FrameLoopMicroseconds( int ticMilliseconds, double residual ) = 0;
 
+	// The clock of the Flash GUIs: Sys_Milliseconds, but while a demo runs the virtual clock since
+	// the demo began, so HUD animations, text effects and their random seeds repeat between runs.
+	[[nodiscard]] virtual int	GuiMilliseconds() const = 0;
+
 	// once per frame before the game thread starts: runs the timeline commands of this frame's
 	// tics, replaces the player's usercmd and tags the frame the game thread is about to build
 	virtual void			RunFrame( bool gameRunning, int numGameFrames, float renderAlpha, usercmd_t & cmd ) = 0;

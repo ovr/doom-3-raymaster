@@ -82,9 +82,36 @@ idRenderProgManager::~idRenderProgManager() {
 R_ReloadShaders
 ================================================================================================
 */
-static void R_ReloadShaders( const idCmdArgs &args ) {	
+static void R_ReloadShaders( const idCmdArgs &args ) {
 	renderProgManager.KillAllShaders();
 	renderProgManager.LoadAllShaders();
+}
+
+// renderProgInfo [file]: the console, or fs_savepath/<file>. The lines carry no handles or API
+// names, so the files of two runs or two backends diff line by line.
+static void R_RenderProgInfo_f( const idCmdArgs & args ) {
+	if ( args.Argc() > 2 ) {
+		// the console splits an unquoted name at '-', and the cut name would be written silently
+		common->Printf( "usage: renderProgInfo [file] (quote a file name that has a '-')\n" );
+		return;
+	}
+	const idStrList lines = renderProgManager.ProgramInfoLines();
+	if ( args.Argc() < 2 ) {
+		for ( int i = 0; i < lines.Num(); i++ ) {
+			common->Printf( "%s\n", lines[i].c_str() );
+		}
+		return;
+	}
+	idStr text;
+	for ( int i = 0; i < lines.Num(); i++ ) {
+		text += lines[i];
+		text += '\n';
+	}
+	if ( fileSystem->WriteFile( args.Argv( 1 ), text.c_str(), text.Length() ) <= 0 ) {
+		common->Warning( "renderProgInfo: couldn't write %s", args.Argv( 1 ) );
+		return;
+	}
+	common->Printf( "renderProgInfo: %d lines written to %s\n", lines.Num(), args.Argv( 1 ) );
 }
 
 /*
@@ -172,6 +199,7 @@ void idRenderProgManager::Init() {
 	vertexShaders[builtinShaders[BUILTIN_FOG_SKINNED]].usesJoints = true;
 
 	cmdSystem->AddCommand( "reloadShaders", R_ReloadShaders, CMD_FL_RENDERER, "reloads shaders" );
+	cmdSystem->AddCommand( "renderProgInfo", R_RenderProgInfo_f, CMD_FL_RENDERER, "lists what the render backend reported for every loaded program; renderProgInfo <file> writes it to fs_savepath" );
 }
 
 /*
@@ -444,5 +472,34 @@ idRenderProgManager::ZeroUniforms
 */
 void idRenderProgManager::ZeroUniforms() {
 	memset( renderParms.Ptr(), 0, renderParms.Allocated() );
+}
+
+static idStr R_ParmList( const shaderStageInfo_t & info ) {
+	if ( info.numParms == 0 ) {
+		return "-";
+	}
+	idStr list;
+	for ( int i = 0; i < info.numParms; i++ ) {
+		list += va( ( i > 0 ) ? ",%d" : "%d", info.parms[i] );
+	}
+	return list;
+}
+
+idStrList idRenderProgManager::ProgramInfoLines() const {
+	idStrList lines;
+	lines.Append( va( "# renderProgInfo: %d programs, %d vertex and %d fragment stages; parms are renderParm_t indexes",
+		renderProgs.Num(), vertexShaders.Num(), fragmentShaders.Num() ) );
+	for ( int i = 0; i < renderProgs.Num(); i++ ) {
+		const renderProg_t & prog = renderProgs[i];
+		const vertexShader_t * vertex = ( prog.vertexShaderIndex >= 0 ) ? &vertexShaders[prog.vertexShaderIndex] : nullptr;
+		const fragmentShader_t * fragment = ( prog.fragmentShaderIndex >= 0 ) ? &fragmentShaders[prog.fragmentShaderIndex] : nullptr;
+		const programInfo_t & info = prog.info;
+		lines.Append( va( "%d %s vs=%s fs=%s loaded=%d samplerMask=0x%04x cubeMask=0x%04x attribMask=0x%04x usesJoints=%d vsParms=%s fsParms=%s",
+			i, prog.name.IsEmpty() ? "-" : prog.name.c_str(),
+			( vertex != nullptr ) ? vertex->name.c_str() : "-", ( fragment != nullptr ) ? fragment->name.c_str() : "-",
+			( prog.handle != programHandle_t::NONE ) ? 1 : 0, info.samplerMask, info.cubeMask, info.attribMask, info.usesJoints ? 1 : 0,
+			( vertex != nullptr ) ? R_ParmList( vertex->info ).c_str() : "-", ( fragment != nullptr ) ? R_ParmList( fragment->info ).c_str() : "-" ) );
+	}
+	return lines;
 }
 

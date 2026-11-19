@@ -46,6 +46,10 @@ class idRestoreGame;
 
 #define MAX_STATEMENTS		131072			// statement_t - 18 bytes last I checked
 
+// Entities and objects are stored in globals, object fields and on the interpreter stack as
+// entity number + 1, never as pointers, so their slot is an int on every platform.
+constexpr int SCRIPT_ENTITY_SIZE = sizeof( int );
+
 typedef enum {
 	ev_error = -1, ev_void, ev_scriptevent, ev_namespace, ev_string, ev_float, ev_vector, ev_entity, ev_field, ev_function, ev_virtualfunction, ev_pointer, ev_object, ev_jumpoffset, ev_argsize, ev_boolean
 } etype_t;
@@ -292,7 +296,6 @@ defined in script.
 ***********************************************************************/
 
 typedef union varEval_s {
-	idScriptObject			**objectPtrPtr;
 	char					*stringPtr;
 	float					*floatPtr;
 	idVec3					*vectorPtr;
@@ -339,7 +342,7 @@ public:
 	int						DepthOfScope( const idVarDef *otherScope ) const;
 
 	void					SetFunction( function_t *func );
-	void					SetObject( idScriptObject *object );
+	void					SetNullObject();
 	void					SetValue( const eval_t &value, bool constant );
 	void					SetString( const char *string, bool constant );
 

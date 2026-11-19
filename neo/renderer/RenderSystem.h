@@ -211,6 +211,8 @@ public:
 	// (about a second), most expensive first; returns how many were filled, 0 without r_pix 1.
 	// Not thread safe against SwapCommandBuffers, call it while building the frame.
 	virtual int				GetRenderPassTimings( std::span<renderPassTiming_t> passes ) const = 0;
+	// One com_showFPS line of the render API (r_d3d12Stats), "" for none. Changes only in SwapCommandBuffers.
+	[[nodiscard]] virtual const char *	GetBackendStats() const = 0;
 
 	virtual void			SetColor( const idVec4 & rgba ) = 0;
 	virtual void			SetColor4( float r, float g, float b, float a ) { SetColor( idVec4( r, g, b, a ) ); }

@@ -460,7 +460,7 @@ void idFile_SaveGamePipelined::WriteBlock() {
 
 	compressedLength += bytesIO;
 
-	nativeFile->Write( dataIO, bytesIO );
+	nativeFile->Write( dataIO, static_cast<int>( bytesIO ) );
 
 	dataIO = NULL;
 	bytesIO = 0;
@@ -1012,7 +1012,7 @@ int idFile_SaveGamePipelined::Read( void * buffer, int length ) {
 		while ( bytesZlib == 0 ) {
 			PumpUncompressedBlock();
 			if ( bytesZlib == 0 && zStreamEndHit ) {
-				return ioCount;
+				return static_cast<int>( ioCount );	// at most length
 			}
 		}
 
@@ -1026,7 +1026,7 @@ int idFile_SaveGamePipelined::Read( void * buffer, int length ) {
 		ioCount += copyFromBlock;
 		lengthRemaining -= copyFromBlock;
 	}
-	return ioCount;
+	return static_cast<int>( ioCount );	// at most length
 }
 
 /*

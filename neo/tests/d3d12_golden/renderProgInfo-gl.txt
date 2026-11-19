@@ -1,0 +1,47 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# renderProgInfo: 43 programs, 42 vertex and 40 fragment stages; parms are renderParm_t indexes
+0 gui vs=gui.vfp fs=gui.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0119 usesJoints=0 vsParms=21,22,23,24 fsParms=-
+1 color vs=color.vfp fs=color.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24 fsParms=18
+2 simpleshade vs=simpleshade.vfp fs=simpleshade.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24 fsParms=-
+3 texture vs=texture.vfp fs=texture.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24,37,38,39,40,42 fsParms=18
+4 texture_color vs=texture_color.vfp fs=texture_color.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0109 usesJoints=0 vsParms=16,17,18,21,22,23,24,37,38,39,40,42 fsParms=52
+5 texture_color_skinned vs=texture_color_skinned.vfp fs=texture_color_skinned.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0119 usesJoints=1 vsParms=16,17,18,21,22,23,24,37,38,39,40,42 fsParms=52
+6 texture_color_texgen vs=texture_color_texgen.vfp fs=texture_color_texgen.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0009 usesJoints=0 vsParms=16,17,18,21,22,23,24,37,38,39,40,41 fsParms=-
+7 interaction vs=interaction.vfp fs=interaction.vfp loaded=1 samplerMask=0x001f cubeMask=0x0000 attribMask=0x030d usesJoints=0 vsParms=4,5,6,7,8,9,10,11,12,13,14,15,16,17,21,22,23,24 fsParms=2,3
+8 interaction_skinned vs=interaction_skinned.vfp fs=interaction_skinned.vfp loaded=1 samplerMask=0x001f cubeMask=0x0000 attribMask=0x031d usesJoints=1 vsParms=4,5,6,7,8,9,10,11,12,13,14,15,21,22,23,24 fsParms=2,3
+9 interactionAmbient vs=interactionAmbient.vfp fs=interactionAmbient.vfp loaded=1 samplerMask=0x001f cubeMask=0x0000 attribMask=0x030d usesJoints=0 vsParms=4,5,6,7,8,9,10,11,12,13,14,15,16,17,21,22,23,24 fsParms=2,3
+10 interactionAmbient_skinned vs=interactionAmbient_skinned.vfp fs=interactionAmbient_skinned.vfp loaded=1 samplerMask=0x001f cubeMask=0x0000 attribMask=0x031d usesJoints=1 vsParms=4,5,6,7,8,9,10,11,12,13,14,15,16,17,21,22,23,24 fsParms=2,3
+11 environment vs=environment.vfp fs=environment.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0001 attribMask=0x0005 usesJoints=0 vsParms=5,18,21,22,23,24 fsParms=-
+12 environment_skinned vs=environment_skinned.vfp fs=environment_skinned.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0001 attribMask=0x001d usesJoints=1 vsParms=5,18,21,22,23,24 fsParms=-
+13 bumpyEnvironment vs=bumpyEnvironment.vfp fs=bumpyEnvironment.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0001 attribMask=0x0305 usesJoints=0 vsParms=5,18,21,22,23,24,25,26,27 fsParms=-
+14 bumpyEnvironment_skinned vs=bumpyEnvironment_skinned.vfp fs=bumpyEnvironment_skinned.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0001 attribMask=0x031d usesJoints=1 vsParms=5,18,21,22,23,24,25,26,27 fsParms=-
+15 depth vs=depth.vfp fs=depth.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24 fsParms=-
+16 depth_skinned vs=depth_skinned.vfp fs=depth_skinned.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0019 usesJoints=1 vsParms=21,22,23,24 fsParms=-
+17 shadowDebug vs=shadowDebug.vfp fs=shadowDebug.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=4,21,22,23,24 fsParms=18
+18 shadowDebug_skinned vs=shadowDebug_skinned.vfp fs=shadowDebug_skinned.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0019 usesJoints=1 vsParms=4,21,22,23,24 fsParms=18
+19 blendlight vs=blendlight.vfp fs=blendlight.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24,39,40,41,43 fsParms=18
+20 fog vs=fog.vfp fs=fog.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24,39,40,43,44 fsParms=18
+21 fog_skinned vs=fog_skinned.vfp fs=fog_skinned.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0000 attribMask=0x0019 usesJoints=1 vsParms=21,22,23,24,39,40,43,44 fsParms=18
+22 skybox vs=skybox.vfp fs=skybox.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0001 attribMask=0x0009 usesJoints=0 vsParms=5,16,17,21,22,23,24 fsParms=-
+23 wobblesky vs=wobblesky.vfp fs=wobblesky.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0001 attribMask=0x0009 usesJoints=0 vsParms=5,16,17,21,22,23,24,47,48,49 fsParms=-
+24 postprocess vs=postprocess.vfp fs=postprocess.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=- fsParms=-
+25 stereoDeGhost vs=stereoDeGhost.vfp fs=stereoDeGhost.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24 fsParms=18
+26 stereoWarp vs=stereoWarp.vfp fs=stereoWarp.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24 fsParms=-
+27 zcullReconstruct vs=zcullReconstruct.vfp fs=zcullReconstruct.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=- fsParms=-
+28 bink vs=bink.vfp fs=bink.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24 fsParms=18
+29 bink_gui vs=bink_gui.vfp fs=bink_gui.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0119 usesJoints=0 vsParms=21,22,23,24 fsParms=-
+30 stereoInterlace vs=stereoInterlace.vfp fs=stereoInterlace.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24 fsParms=-
+31 motionBlur vs=motionBlur.vfp fs=motionBlur.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=- fsParms=21,22,23,24,31,50
+32 shadow vs=shadow.vp fs=- loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=4,21,22,23,24 fsParms=-
+33 shadow_skinned vs=shadow_skinned.vp fs=- loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0019 usesJoints=1 vsParms=4,21,22,23,24 fsParms=-
+34 heatHazeWithMaskAndVertex vs=heatHazeWithMaskAndVertex.vfp fs=heatHazeWithMaskAndVertex.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0119 usesJoints=1 vsParms=21,22,23,24,30,32,35,51,128,129 fsParms=1
+35 heatHazeWithMask vs=heatHazeWithMask.vfp fs=heatHazeWithMask.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0119 usesJoints=1 vsParms=21,22,23,24,30,32,35,51,128,129 fsParms=1
+36 heatHazeWithMaskAndVertex vs=heatHazeWithMaskAndVertex.vfp fs=heatHazeWithMask.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0119 usesJoints=1 vsParms=21,22,23,24,30,32,35,51,128,129 fsParms=1
+37 heatHaze vs=heatHaze.vfp fs=heatHaze.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0000 attribMask=0x0119 usesJoints=1 vsParms=21,22,23,24,30,32,35,51,128,129 fsParms=1
+38 bloodorb_draw vs=bloodorb_draw.vfp fs=bloodorb_draw.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24 fsParms=-
+39 bloodorb1_capture vs=bloodorb1_capture.vfp fs=bloodorb1_capture.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24,128 fsParms=-
+40 bloodorb2_capture vs=bloodorb2_capture.vfp fs=bloodorb2_capture.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24,128,129,130 fsParms=-
+41 bloodorb3_capture vs=bloodorb3_capture.vfp fs=bloodorb3_capture.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24,128,129,130 fsParms=-
+42 enviroSuit vs=enviroSuit.vfp fs=enviroSuit.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24,129 fsParms=-

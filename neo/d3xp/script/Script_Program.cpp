@@ -39,12 +39,12 @@ idTypeDef	type_namespace( ev_namespace, &def_namespace, "namespace", sizeof( voi
 idTypeDef	type_string( ev_string, &def_string, "string", MAX_STRING_LEN, NULL );
 idTypeDef	type_float( ev_float, &def_float, "float", sizeof( float ), NULL );
 idTypeDef	type_vector( ev_vector, &def_vector, "vector", sizeof( idVec3 ), NULL );
-idTypeDef	type_entity( ev_entity, &def_entity, "entity", sizeof( int * ), NULL );					// stored as entity number pointer
+idTypeDef	type_entity( ev_entity, &def_entity, "entity", SCRIPT_ENTITY_SIZE, NULL );
 idTypeDef	type_field( ev_field, &def_field, "field", sizeof( void * ), NULL );
 idTypeDef	type_function( ev_function, &def_function, "function", sizeof( void * ), &type_void );
 idTypeDef	type_virtualfunction( ev_virtualfunction, &def_virtualfunction, "virtual function", sizeof( int ), NULL );
 idTypeDef	type_pointer( ev_pointer, &def_pointer, "pointer", sizeof( void * ), NULL );
-idTypeDef	type_object( ev_object, &def_object, "object", sizeof( int * ), NULL );					// stored as entity number pointer
+idTypeDef	type_object( ev_object, &def_object, "object", SCRIPT_ENTITY_SIZE, NULL );
 idTypeDef	type_jumpoffset( ev_jumpoffset, &def_jumpoffset, "<jump>", sizeof( int ), NULL );		// only used for jump opcodes
 idTypeDef	type_argsize( ev_argsize, &def_argsize, "<argsize>", sizeof( int ), NULL );				// only used for function call and thread opcodes
 idTypeDef	type_boolean( ev_boolean, &def_boolean, "boolean", sizeof( int ), NULL );
@@ -640,14 +640,13 @@ void idVarDef::SetFunction( function_t *func ) {
 
 /*
 ============
-idVarDef::SetObject
+idVarDef::SetNullObject
 ============
 */
-void idVarDef::SetObject( idScriptObject *object ) {
+void idVarDef::SetNullObject() {
 	assert( typeDef );
-	initialized = initialized;
 	assert( typeDef->Inherits( &type_object ) );
-	*value.objectPtrPtr = object;
+	*value.entityNumberPtr = 0;
 }
 
 /*
@@ -777,7 +776,7 @@ void idVarDef::PrintInfo( idFile *file, int instructionPointer ) const {
 			switch( etype ) {
 			case ev_string :
 				file->Printf( "\"" );
-				len = strlen( value.stringPtr );
+				len = idStr::Length( value.stringPtr );
 				ch = value.stringPtr;
 				for( i = 0; i < len; i++, ch++ ) {
 					if ( idStr::CharIsPrintable( *ch ) ) {
@@ -899,7 +898,7 @@ idScriptObject::Save
 ================
 */
 void idScriptObject::Save( idSaveGame *savefile ) const {
-	size_t size;
+	int size;
 
 	if ( type == &type_object && data == NULL ) {
 		// Write empty string for uninitialized object
@@ -948,7 +947,7 @@ Allocates an object and initializes memory.
 ============
 */
 bool idScriptObject::SetType( const char *typeName ) {
-	size_t size;
+	int size;
 	idTypeDef *newtype;
 
 	// lookup the type
@@ -989,7 +988,7 @@ Resets the memory for the script object without changing its type.
 ============
 */
 void idScriptObject::ClearObject() {
-	size_t size;
+	int size;
 
 	if ( type != &type_object ) {
 		// init object memory
@@ -1706,12 +1705,11 @@ called after all files are compiled to report memory usage.
 ==============
 */
 void idProgram::CompileStats() {
-	int	memused;
-	int	memallocated;
-	int	numdefs;
-	int	stringspace;
-	int funcMem;
-	int	i;
+	size_t	memused;
+	size_t	memallocated;
+	size_t	stringspace;
+	size_t	funcMem;
+	int		i;
 
 	gameLocal.Printf( "---------- Compile stats ----------\n" );
 	gameLocal.DPrintf( "Files loaded:\n" );
@@ -1723,7 +1721,6 @@ void idProgram::CompileStats() {
 	}
 	stringspace += fileList.Size();
 
-	numdefs = varDefs.Num();
 	memused = varDefs.Num() * sizeof( idVarDef );
 	memused += types.Num() * sizeof( idTypeDef );
 	memused += stringspace;
@@ -1744,14 +1741,14 @@ void idProgram::CompileStats() {
 	memused += sizeof( variables );
 
 	gameLocal.Printf( "\nMemory usage:\n" );
-	gameLocal.Printf( "     Strings: %d, %d bytes\n", fileList.Num(), stringspace );
-	gameLocal.Printf( "  Statements: %d, %d bytes\n", statements.Num(), statements.MemoryUsed() );
-	gameLocal.Printf( "   Functions: %d, %d bytes\n", functions.Num(), funcMem );
+	gameLocal.Printf( "     Strings: %d, %zu bytes\n", fileList.Num(), stringspace );
+	gameLocal.Printf( "  Statements: %d, %zu bytes\n", statements.Num(), statements.MemoryUsed() );
+	gameLocal.Printf( "   Functions: %d, %zu bytes\n", functions.Num(), funcMem );
 	gameLocal.Printf( "   Variables: %d bytes\n", numVariables );
-	gameLocal.Printf( "    Mem used: %d bytes\n", memused );
-	gameLocal.Printf( " Static data: %d bytes\n", sizeof( idProgram ) );
-	gameLocal.Printf( "   Allocated: %d bytes\n", memallocated );
-	gameLocal.Printf( " Thread size: %d bytes\n\n", sizeof( idThread ) );
+	gameLocal.Printf( "    Mem used: %zu bytes\n", memused );
+	gameLocal.Printf( " Static data: %zu bytes\n", sizeof( idProgram ) );
+	gameLocal.Printf( "   Allocated: %zu bytes\n", memallocated );
+	gameLocal.Printf( " Thread size: %zu bytes\n\n", sizeof( idThread ) );
 }
 
 /*

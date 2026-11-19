@@ -1,0 +1,15 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# _x7_heathaze: d3xpdm1, whose pack lacks the heatHaze stages. On GL the first load fails to link heatHaze and the retry loads (loadAttempts 2).
+# Run it alone: after a map that linked heatHaze there is no failure, and after this one every later map with heatHaze fails to load.
+map game/mp/d3xpdm1
+at 0 god
+at 0 notarget
+impulse 40 16
+move 10 250 yaw=90
+move 260 300 pitch=30
+move 300 340 pitch=-30
+end 340
+capture 0 340 every=10 fps=60
+capture 120 125

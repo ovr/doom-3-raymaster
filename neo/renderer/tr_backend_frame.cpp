@@ -74,29 +74,60 @@ static void RB_DrawFlickerBox() {
 	}
 }
 
-/*
-=============
-RB_SetBuffer
-=============
-*/
-static void	RB_SetBuffer() {
+// r_testClearPattern: tools/vdemo/check-pattern.py rebuilds the frame from these rectangles, in GL
+// coordinates (origin at the bottom left); keep the two in step.
+static void RB_DrawTestClearPattern() {
+	if ( !r_testClearPattern.GetBool() ) {
+		return;
+	}
+	const auto clearRect = []( int x, int y, int width, int height, int r, int g, int b ) {
+		renderBackend->Scissor( x, y, width, height );
+		renderBackend->Clear( true, false, false, 0, r / 255.0f, g / 255.0f, b / 255.0f, 1.0f );
+	};
+	const int width = tr.GetWidth();
+	const int height = tr.GetHeight();
+	renderBackend->State( 0 );
+	renderBackend->Scissor( 0, 0, width, height );
+	renderBackend->Clear( true, true, true, 0, 32 / 255.0f, 64 / 255.0f, 96 / 255.0f, 1.0f );
+	clearRect( 0, 0, 64, 32, 255, 0, 0 );
+	clearRect( width - 64, 0, 64, 32, 0, 255, 0 );
+	clearRect( 0, height - 32, 64, 32, 0, 0, 255 );
+	clearRect( width - 64, height - 32, 64, 32, 255, 255, 255 );
+	clearRect( 100, 50, 1, 1, 255, 255, 0 );
+	if ( renderBackend->Caps().maskedColorClear ) {
+		renderBackend->State( GLS_GREENMASK | GLS_BLUEMASK | GLS_ALPHAMASK );
+		clearRect( width / 2 - 64, height / 2 - 32, 128, 64, 255, 255, 255 );
+	}
+}
+
+// the debug tools that draw last, then the end of the frame (mono and stereo)
+static void RB_EndFrame() {
+	RB_DrawFlickerBox();
+	RB_DrawTestClearPattern();
+	renderBackend->EndDrawStream();
+
+	// the timestamps and debug groups of r_pix close inside the frame; EndFrame hands the frame to the GPU
+	renderLog.EndFrame();
+	renderBackend->EndFrame();
+}
+
+// The colour clear at the start of a frame, or of a stereo eye, which is always cleared (black by default).
+// r_clear 0 leaves a mono frame what the frame before left in the target, as the mono path always did:
+// GL's swap chain buffer, D3D12's scene target. r_singleArea leaves pixels unrendered, so it clears too.
+static void RB_SetBuffer( bool stereoEye ) {
+	const bool requested = r_clear.GetFloat() != 0.0f || idStr::Length( r_clear.GetString() ) != 1 || r_singleArea.GetBool();
+	if ( !requested && !stereoEye ) {
+		return;
+	}
 	RENDERLOG_PRINTF( "---------- RB_SetBuffer ----------\n" );
 
 	renderBackend->Scissor( 0, 0, tr.GetWidth(), tr.GetHeight() );
-
-	// clear screen for debugging
-	// automatically enable this with several other debug tools
-	// that might leave unrendered portions of the screen
-	if ( r_clear.GetFloat() || idStr::Length( r_clear.GetString() ) != 1 || r_singleArea.GetBool() ) {
-		float c[3];
-		if ( sscanf( r_clear.GetString(), "%f %f %f", &c[0], &c[1], &c[2] ) == 3 ) {
-			renderBackend->Clear( true, false, false, 0, c[0], c[1], c[2], 1.0f );
-		} else if ( r_clear.GetInteger() == 2 ) {
-			renderBackend->Clear( true, false, false, 0, 0.0f, 0.0f,  0.0f, 1.0f );
-		} else {
-			renderBackend->Clear( true, false, false, 0, 0.4f, 0.0f, 0.25f, 1.0f );
-		}
+	idVec3 c( 0.0f, 0.0f, 0.0f );
+	if ( requested && sscanf( r_clear.GetString(), "%f %f %f", &c.x, &c.y, &c.z ) != 3 ) {
+		// a partial parse has written c.x ("2" gives red): r_clear 2 is black, anything else the debug purple
+		c = r_clear.GetInteger() == 2 ? idVec3( 0.0f, 0.0f, 0.0f ) : idVec3( 0.4f, 0.0f, 0.25f );
 	}
+	renderBackend->Clear( true, false, false, 0, c.x, c.y, c.z, 1.0f );
 }
 
 /*
@@ -200,7 +231,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 				}
 				break;
 			case RC_SET_BUFFER:
-				RB_SetBuffer();
+				RB_SetBuffer( true );
 				break;
 			case RC_COPY_RENDER:
 				RB_CopyRender( cmds );
@@ -381,13 +412,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		break;
 	}
 
-	// debug tool
-	RB_DrawFlickerBox();
-
-	renderLog.EndFrame();
-
-	// make sure the drawing is actually started
-	renderBackend->EndFrame();
+	RB_EndFrame();
 
 	// we may choose to sync to the swapbuffers before the next frame
 
@@ -417,6 +442,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	}
 
 	renderBackend->BeginFrame();
+	renderBackend->BeginDrawStream();
 
 	resolutionScale.SetCurrentGPUFrameTime( commonLocal.GetRendererGPUMicroseconds() );
 
@@ -451,6 +477,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			}
 			break;
 		case RC_SET_BUFFER:
+			RB_SetBuffer( false );
 			c_setBuffers++;
 			break;
 		case RC_COPY_RENDER:
@@ -466,11 +493,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		}
 	}
 
-	RB_DrawFlickerBox();
-
-	// the timestamps and debug groups of r_pix close inside the frame; EndFrame hands the frame to the GPU
-	renderLog.EndFrame();
-	renderBackend->EndFrame();
+	RB_EndFrame();
 
 	// stop rendering on this thread
 	uint64 backEndFinishTime = Sys_Microseconds();

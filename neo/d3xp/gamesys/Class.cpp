@@ -35,6 +35,9 @@ instancing of objects.
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
 
+#include <array>
+#include <type_traits>
+#include <utility>
 
 #include "../Game_local.h"
 
@@ -242,8 +245,13 @@ idList<idTypeInfo *, TAG_IDCLASS>	idClass::typenums;
 
 bool	idClass::initialized	= false;
 int		idClass::typeNumBits	= 0;
-int		idClass::memused		= 0;
+size_t	idClass::memused		= 0;
 int		idClass::numobjects		= 0;
+
+// idClass::operator new puts the allocation size in front of every object. The header is 16
+// bytes so that the object keeps the 16-byte alignment of Mem_Alloc.
+static constexpr size_t CLASS_HEADER_SIZE = 16;
+static_assert( CLASS_HEADER_SIZE >= sizeof( size_t ) && CLASS_HEADER_SIZE % 16 == 0 );
 
 /*
 ================
@@ -286,11 +294,11 @@ idClass::FindUninitializedMemory
 */
 void idClass::FindUninitializedMemory() {
 #ifdef ID_DEBUG_UNINITIALIZED_MEMORY
-	unsigned long *ptr = ( ( unsigned long * )this ) - 1;
-	int size = *ptr;
+	const byte *header = reinterpret_cast<const byte *>( this ) - CLASS_HEADER_SIZE;
+	const int size = static_cast<int>( *reinterpret_cast<const size_t *>( header ) - CLASS_HEADER_SIZE );
 	assert( ( size & 3 ) == 0 );
-	size >>= 2;
-	for ( int i = 0; i < size; i++ ) {
+	const uint32 *ptr = reinterpret_cast<const uint32 *>( this );
+	for ( int i = 0; i < ( size >> 2 ); i++ ) {
 		if ( ptr[i] == 0xcdcdcdcd ) {
 			const char *varName = GetTypeVariableName( GetClassname(), i << 2 );
 			gameLocal.Warning( "type '%s' has uninitialized variable %s (offset %d)", GetClassname(), varName, i << 2 );
@@ -324,7 +332,7 @@ idClass::DisplayInfo_f
 ================
 */
 void idClass::DisplayInfo_f( const idCmdArgs &args ) {
-	gameLocal.Printf( "Class memory status: %i bytes allocated in %i objects\n", memused, numobjects );
+	gameLocal.Printf( "Class memory status: %zu bytes allocated in %i objects\n", memused, numobjects );
 }
 
 /*
@@ -442,15 +450,14 @@ idClass::new
 ================
 */
 void * idClass::operator new( size_t s ) {
-	int *p;
-
-	s += sizeof( int );
-	p = (int *)Mem_Alloc( s, TAG_IDCLASS );
-	*p = s;
+	s += CLASS_HEADER_SIZE;
+	assert( s <= INT_MAX );
+	byte *p = static_cast<byte *>( Mem_Alloc( static_cast<int>( s ), TAG_IDCLASS ) );
+	*reinterpret_cast<size_t *>( p ) = s;
 	memused += s;
 	numobjects++;
 
-	return p + 1;
+	return p + CLASS_HEADER_SIZE;
 }
 
 /*
@@ -459,13 +466,11 @@ idClass::delete
 ================
 */
 void idClass::operator delete( void *ptr ) {
-	int *p;
-
 	if ( ptr ) {
-		p = ( ( int * )ptr ) - 1;
-		memused -= *p;
+		byte *p = static_cast<byte *>( ptr ) - CLASS_HEADER_SIZE;
+		memused -= *reinterpret_cast<const size_t *>( p );
 		numobjects--;
-        Mem_Free( p );
+		Mem_Free( p );
 	}
 }
 
@@ -787,7 +792,7 @@ idClass::ProcessEventArgs
 bool idClass::ProcessEventArgs( const idEventDef *ev, int numargs, ... ) {
 	idTypeInfo	*c;
 	int			num;
-	int			data[ D_EVENT_MAXARGS ];
+	eventArg_t	data[ D_EVENT_MAXARGS ];
 	va_list		args;
 	
 	assert( ev );
@@ -890,12 +895,52 @@ bool idClass::ProcessEvent( const idEventDef *ev, idEventArg arg1, idEventArg ar
 	return ProcessEventArgs( ev, 8, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8 );
 }
 
+// Calls a handler through a member pointer whose parameters follow the event's format: float for
+// a float arg (an XMM register), a pointer-sized value for any other arg (an integer register).
+namespace {
+
+template<bool isFloat>
+using eventParm_t = std::conditional_t<isFloat, float, void *>;
+
+template<bool isFloat>
+eventParm_t<isFloat> EventParm( eventArg_t arg ) {
+	if constexpr ( isFloat ) {
+		return EventArgToFloat( arg );
+	} else {
+		return reinterpret_cast<void *>( arg );
+	}
+}
+
+template<unsigned floatMask, size_t... arg>
+void CallEventHandler( idClass *obj, eventCallback_t callback, const eventArg_t *data, std::index_sequence<arg...> ) {
+	using handler_t = void ( idClass::* )( eventParm_t<( ( floatMask >> arg ) & 1 ) != 0>... );
+	( obj->*reinterpret_cast<handler_t>( callback ) )( EventParm<( ( floatMask >> arg ) & 1 ) != 0>( data[ arg ] )... );
+}
+
+using eventDispatch_t = void ( * )( idClass *obj, eventCallback_t callback, const eventArg_t *data );
+
+template<size_t numArgs, unsigned floatMask>
+void DispatchEvent( idClass *obj, eventCallback_t callback, const eventArg_t *data ) {
+	CallEventHandler<floatMask>( obj, callback, data, std::make_index_sequence<numArgs>() );
+}
+
+template<size_t numArgs, unsigned... floatMask>
+constexpr std::array<eventDispatch_t, sizeof...( floatMask )> MakeEventDispatch( std::integer_sequence<unsigned, floatMask...> ) {
+	return { &DispatchEvent<numArgs, floatMask>... };
+}
+
+// one dispatcher per float mask of an arg count
+template<size_t numArgs>
+constexpr std::array<eventDispatch_t, ( 1u << numArgs )> eventDispatch = MakeEventDispatch<numArgs>( std::make_integer_sequence<unsigned, ( 1u << numArgs )>() );
+
+}
+
 /*
 ================
 idClass::ProcessEventArgPtr
 ================
 */
-bool idClass::ProcessEventArgPtr( const idEventDef *ev, int *data ) {
+bool idClass::ProcessEventArgPtr( const idEventDef *ev, const eventArg_t *data ) {
 	idTypeInfo	*c;
 	int			num;
 	eventCallback_t	callback;
@@ -911,7 +956,7 @@ bool idClass::ProcessEventArgPtr( const idEventDef *ev, int *data ) {
 	}
 
 	if ( g_debugTriggers.GetBool() && ( ev == &EV_Activate ) && IsType( idEntity::Type ) ) {
-		const idEntity *ent = *reinterpret_cast<idEntity **>( data );
+		const idEntity *ent = reinterpret_cast<const idEntity *>( data[ 0 ] );
 		gameLocal.Printf( "%d: '%s' activated by '%s'\n", gameLocal.framenum, static_cast<idEntity *>( this )->GetName(), ent ? ent->GetName() : "NULL" );
 	}
 
@@ -924,83 +969,23 @@ bool idClass::ProcessEventArgPtr( const idEventDef *ev, int *data ) {
 
 	callback = c->eventMap[ num ];
 
-#if !CPU_EASYARGS
-
-/*
-on ppc architecture, floats are passed in a seperate set of registers
-the function prototypes must have matching float declaration
-
-http://developer.apple.com/documentation/DeveloperTools/Conceptual/MachORuntime/2rt_powerpc_abi/chapter_9_section_5.html
-*/
-
-	switch( ev->GetFormatspecIndex() ) {
-	case 1 << D_EVENT_MAXARGS :
-		( this->*callback )();
-		break;
-
-// generated file - see CREATE_EVENT_CODE
-#include "Callbacks.cpp"
-
-	default:
-		gameLocal.Warning( "Invalid formatspec on event '%s'", ev->GetName() );
-		break;
-	}
-
-#else
-
-	assert( D_EVENT_MAXARGS == 8 );
+	static_assert( D_EVENT_MAXARGS == 8, "add a dispatch case per arg count" );
+	const unsigned floatMask = ev->GetFormatspecIndex() & ( ( 1u << D_EVENT_MAXARGS ) - 1 );
 
 	switch( ev->GetNumArgs() ) {
-	case 0 :
-		( this->*callback )();
-		break;
-
-	case 1 :
-		typedef void ( idClass::*eventCallback_1_t )( const int );
-		( this->*( eventCallback_1_t )callback )( data[ 0 ] );
-		break;
-
-	case 2 :
-		typedef void ( idClass::*eventCallback_2_t )( const int, const int );
-		( this->*( eventCallback_2_t )callback )( data[ 0 ], data[ 1 ] );
-		break;
-
-	case 3 :
-		typedef void ( idClass::*eventCallback_3_t )( const int, const int, const int );
-		( this->*( eventCallback_3_t )callback )( data[ 0 ], data[ 1 ], data[ 2 ] );
-		break;
-
-	case 4 :
-		typedef void ( idClass::*eventCallback_4_t )( const int, const int, const int, const int );
-		( this->*( eventCallback_4_t )callback )( data[ 0 ], data[ 1 ], data[ 2 ], data[ 3 ] );
-		break;
-
-	case 5 :
-		typedef void ( idClass::*eventCallback_5_t )( const int, const int, const int, const int, const int );
-		( this->*( eventCallback_5_t )callback )( data[ 0 ], data[ 1 ], data[ 2 ], data[ 3 ], data[ 4 ] );
-		break;
-
-	case 6 :
-		typedef void ( idClass::*eventCallback_6_t )( const int, const int, const int, const int, const int, const int );
-		( this->*( eventCallback_6_t )callback )( data[ 0 ], data[ 1 ], data[ 2 ], data[ 3 ], data[ 4 ], data[ 5 ] );
-		break;
-
-	case 7 :
-		typedef void ( idClass::*eventCallback_7_t )( const int, const int, const int, const int, const int, const int, const int );
-		( this->*( eventCallback_7_t )callback )( data[ 0 ], data[ 1 ], data[ 2 ], data[ 3 ], data[ 4 ], data[ 5 ], data[ 6 ] );
-		break;
-
-	case 8 :
-		typedef void ( idClass::*eventCallback_8_t )( const int, const int, const int, const int, const int, const int, const int, const int );
-		( this->*( eventCallback_8_t )callback )( data[ 0 ], data[ 1 ], data[ 2 ], data[ 3 ], data[ 4 ], data[ 5 ], data[ 6 ], data[ 7 ] );
-		break;
-
+	case 0 :	( this->*callback )(); break;
+	case 1 :	eventDispatch<1>[ floatMask ]( this, callback, data ); break;
+	case 2 :	eventDispatch<2>[ floatMask ]( this, callback, data ); break;
+	case 3 :	eventDispatch<3>[ floatMask ]( this, callback, data ); break;
+	case 4 :	eventDispatch<4>[ floatMask ]( this, callback, data ); break;
+	case 5 :	eventDispatch<5>[ floatMask ]( this, callback, data ); break;
+	case 6 :	eventDispatch<6>[ floatMask ]( this, callback, data ); break;
+	case 7 :	eventDispatch<7>[ floatMask ]( this, callback, data ); break;
+	case 8 :	eventDispatch<8>[ floatMask ]( this, callback, data ); break;
 	default:
 		gameLocal.Warning( "Invalid formatspec on event '%s'", ev->GetName() );
 		break;
 	}
-
-#endif
 
 	return true;
 }

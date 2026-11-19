@@ -69,15 +69,14 @@ void Z_ClearZone (memzone_t* zone)
     // NULL indicates a free block.
     block->user = NULL;	
 
-    block->size = zone->size - sizeof(memzone_t);
+    block->size = zone->size - static_cast< int >( sizeof(memzone_t) );
 }
 
 void *I_ZoneBase( int *size )
 {
-	enum
-	{
-		HEAP_SIZE = 15 * 1024 * 1024			// SMF - was 10 * 1024 * 1024
-	};
+	// x64 level structs are pointer-heavy and ~40% larger than on x86 (was 15 MB there).
+	constexpr int HEAP_SIZE = 32 * 1024 * 1024;
+	static_assert( HEAP_SIZE % ZONE_ALIGN == 0 );
 	*size = HEAP_SIZE;
 	return malloc( HEAP_SIZE );
 }
@@ -109,7 +108,7 @@ void Z_Init (void)
     // NULL indicates a free block.
     block->user = NULL;
     
-    block->size = ::g->mainzone->size - sizeof(memzone_t);
+    block->size = ::g->mainzone->size - static_cast< int >( sizeof(memzone_t) );
 }
 
 int NumAlloc = 0;
@@ -192,16 +191,16 @@ Z_Malloc
     memblock_t* newblock;
     memblock_t*	base;
 	NumAlloc += size;
-    	
-	size = (size + 3) & ~3;
-    
+
+	size = (size + ZONE_ALIGN - 1) & ~(ZONE_ALIGN - 1);
+
     // scan through the block list,
     // looking for the first free block
     // of sufficient size,
     // throwing out any purgable blocks along the way.
 
     // account for size of block header
-    size += sizeof(memblock_t);
+    size += static_cast< int >( sizeof(memblock_t) );
     
     // if there is a free block behind the rover,
     //  back up over them
@@ -438,7 +437,7 @@ Z_ChangeTag2
     if (block->id != ZONEID)
 	I_Error ("Z_ChangeTag: freed a pointer without ZONEID");
 
-    if (tag >= PU_PURGELEVEL && (unsigned)block->user < 0x100)
+    if (tag >= PU_PURGELEVEL && reinterpret_cast< uintptr_t >( block->user ) < 0x100)
 	I_Error ("Z_ChangeTag: an owner is required for purgable blocks");
 
     block->tag = tag;

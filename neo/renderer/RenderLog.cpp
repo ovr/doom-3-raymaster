@@ -237,10 +237,10 @@ void idRenderPassTimer::BeginFrame() {
 	if ( flags != requestedFlags ) {
 		requestedFlags = flags;
 		if ( ( flags & TIMING ) != 0 && !renderBackend->Caps().timestamps ) {
-			common->Printf( "r_pix: no GPU time per pass, GL_ARB_timer_query (glQueryCounter) is not available\n" );
+			common->Printf( "r_pix: no GPU time per pass, %s has no timestamps here\n", renderBackend->Caps().apiName );
 		}
 		if ( ( flags & DEBUG_GROUPS ) != 0 && !renderBackend->Caps().debugGroups ) {
-			common->Printf( "r_pix: no debug groups, GL_KHR_debug is not available\n" );
+			common->Printf( "r_pix: no debug groups, %s has none here\n", renderBackend->Caps().apiName );
 		}
 	}
 	if ( flags == 0 ) {

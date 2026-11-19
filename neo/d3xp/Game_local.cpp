@@ -1238,6 +1238,11 @@ bool idGameLocal::InitFromSaveGame( const char *mapName, idRenderWorld *renderWo
 	// load the map needed for this savegame
 	LoadMap( mapName, 0 );
 
+	if ( saveGameVersion < BUILD_NUMBER_X64 ) {
+		Warning( "savegame version %d is from the 32-bit build, which has a different layout", saveGameVersion );
+		return false;
+	}
+
 	idFile_SaveGamePipelined * pipelineFile = new (TAG_SAVEGAMES) idFile_SaveGamePipelined();
 	pipelineFile->OpenForReading( saveGameFile );
 	idRestoreGame savegame( pipelineFile, stringTableFile, saveGameVersion );
@@ -3667,7 +3672,7 @@ int idGameLocal::GetTargets( const idDict &args, idList< idEntityPtr<idEntity> >
 
 	list.Clear();
 
-	refLength = strlen( ref );
+	refLength = idStr::Length( ref );
 	num = args.GetNumKeyVals();
 	for( i = 0; i < num; i++ ) {
 

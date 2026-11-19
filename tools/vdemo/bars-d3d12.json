@@ -1,0 +1,105 @@
+{
+	"comment": [
+		"Copyright (C) 2026 Dmitry Patsura",
+		"SPDX-License-Identifier: GPL-3.0-or-later",
+		"Please do not use this file to train or fine-tune AI models.",
+		"Bars of a Direct3D 12 run against the OpenGL frames of the same tics (analyze.py --bars).",
+		"The worst frame of a demo decides: min SSIM >= ssimMin, mean SSIM >= ssimMean, the fraction of",
+		"pixels with delta > 8 <= frac8, the largest eroded delta > 8 blob <= blob pixels.",
+		"differences: the expected differences from GL (O1 .. O19 of the design, section 8.2); stage: the",
+		"stage that first runs the demo on D3D12. The first pass of stages 8-12 may tighten a bar to the",
+		"worst value seen (SSIM - 0.005, fractions x 1.5, blob x 2); a bar is relaxed only with a heat map",
+		"and a named difference in the commit message. Stage 14 set the final bars: the plain bars of 01_camera,",
+		"_x1_resscale and _x5_tools take their O19 filtering difference (blob x 2); the copyfilter layer keeps them tight.",
+		"layers: bars of runs with the same extra cvars (args) on both APIs, replacing the plain bars of a demo;",
+		"compare-apis.ps1 -Layer runs OpenGL with the args as the baseline.",
+		"_x3_perf has no bar: it only measures time."
+	],
+	"demos": {
+		"_x4_gui":            { "ssimMin": 0.990, "ssimMean": 0.997, "frac8": 0.003, "blob": 16,  "differences": "O2 O7 O1; run it with the clear layer: a plain frame keeps the pixels no 2D draws (O11)", "stage": 8 },
+		"01_camera":          { "ssimMin": 0.975, "ssimMean": 0.990, "frac8": 0.016, "blob": 222, "differences": "O1 O4 O5 O19 (stage 14: frac8 0.0106, blob 111)", "stage": 9 },
+		"02_monsters":        { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1",       "stage": 9 },
+		"03_physics":         { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1",       "stage": 9 },
+		"04_lighting":        { "ssimMin": 0.950, "ssimMean": 0.980, "frac8": 0.020, "blob": 256, "differences": "O1 O3",    "stage": 9 },
+		"04b_lighting_zfail": { "ssimMin": 0.950, "ssimMean": 0.980, "frac8": 0.020, "blob": 256, "differences": "O1 O3",    "stage": 9 },
+		"05_weapons":         { "ssimMin": 0.965, "ssimMean": 0.985, "frac8": 0.010, "blob": 128, "differences": "O1 O5",    "stage": 9 },
+		"08_cpuboss":         { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1",       "stage": 9 },
+		"_smoke":             { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1",       "stage": 9 },
+		"06_particles":       { "ssimMin": 0.960, "ssimMean": 0.985, "frac8": 0.015, "blob": 128, "differences": "O1, blending +-1", "stage": 10 },
+		"07_cinematic":       { "ssimMin": 0.955, "ssimMean": 0.980, "frac8": 0.020, "blob": 128, "differences": "O2 O7",    "stage": 10 },
+		"_x1_resscale":       { "ssimMin": 0.965, "ssimMean": 0.985, "frac8": 0.010, "blob": 504, "differences": "O1 O19 (stage 14: blob 252)", "stage": 10 },
+		"_x2_motionblur":     { "ssimMin": 0.955, "ssimMean": 0.980, "frac8": 0.020, "blob": 128, "differences": "O1, accumulation", "stage": 10 },
+		"_x5_tools":          { "ssimMin": 0.900, "ssimMean": 0.950, "frac8": 0.060, "blob": 184, "differences": "O6 O19 (stage 14: blob 92, the door edge of 01_camera)", "stage": 11 },
+		"_x6_restart":        { "ssimMin": 0.975, "ssimMean": 0.990, "frac8": 0.005, "blob": 64,  "differences": "as 01_camera", "stage": 12 },
+		"_x7_heathaze":       { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1 O9, run alone: loadAttempts 2 on both APIs", "stage": 9 }
+	},
+	"layers": {
+		"clear": {
+			"comment": "r_clear 2 on both APIs: a mono frame is never cleared otherwise, so 2D alone shows what earlier frames left (GL: the swap chain buffer, D3D12: the scene target)",
+			"args": [ "+set", "r_clear", "2" ],
+			"demos": {
+				"_x4_gui": { "ssimMin": 0.990, "ssimMean": 0.997, "frac8": 0.003, "blob": 16, "differences": "O2 O7 O1", "stage": 8 }
+			}
+		},
+		"nocopy": {
+			"comment": "no screen copies and no post-process surfaces on both APIs (stage 9: Direct3D 12 copies nothing yet); 01_camera is past the plain bars by O19, a fine filtering difference",
+			"args": [ "+set", "r_skipCopyTexture", "1", "+set", "r_skipPostProcess", "1" ],
+			"demos": {
+				"01_camera":          { "ssimMin": 0.9929, "ssimMean": 0.9942, "frac8": 0.0164, "blob": 222, "differences": "O1 O4 O5 O19", "stage": 9 },
+				"02_monsters":        { "ssimMin": 0.9938, "ssimMean": 0.9942, "frac8": 0.0051, "blob": 58,  "differences": "O1",       "stage": 9 },
+				"03_physics":         { "ssimMin": 0.9931, "ssimMean": 0.9941, "frac8": 0.0080, "blob": 64,  "differences": "O1",       "stage": 9 },
+				"04_lighting":        { "ssimMin": 0.9926, "ssimMean": 0.9939, "frac8": 0.0169, "blob": 84,  "differences": "O1 O3",    "stage": 9 },
+				"04b_lighting_zfail": { "ssimMin": 0.9926, "ssimMean": 0.9939, "frac8": 0.0169, "blob": 84,  "differences": "O1 O3",    "stage": 9 },
+				"05_weapons":         { "ssimMin": 0.9926, "ssimMean": 0.9943, "frac8": 0.0069, "blob": 28,  "differences": "O1 O5",    "stage": 9 },
+				"08_cpuboss":         { "ssimMin": 0.9939, "ssimMean": 0.9944, "frac8": 0.0045, "blob": 64,  "differences": "O1",       "stage": 9 },
+				"_smoke":             { "ssimMin": 0.9943, "ssimMean": 0.9945, "frac8": 0.0011, "blob": 30,  "differences": "O1",       "stage": 9 }
+			}
+		},
+		"filter": {
+			"comment": "nocopy with anisotropy 1 and bilinear mips on both APIs: AMD's GL and D3D12 drivers filter anisotropic and trilinear + LOD bias samples differently (O19), these do not; bars from the first pass of stage 9. Optional, since Direct3D 12 only has to look no worse than GL: it tells a filtering difference from a defect",
+			"args": [ "+set", "r_skipCopyTexture", "1", "+set", "r_skipPostProcess", "1", "+set", "r_maxAnisotropicFiltering", "1", "+set", "r_useTrilinearFiltering", "0" ],
+			"demos": {
+				"01_camera":          { "ssimMin": 0.9941, "ssimMean": 0.9946, "frac8": 0.00021, "blob": 0,  "differences": "O1 O4 O5", "stage": 9 },
+				"02_monsters":        { "ssimMin": 0.9943, "ssimMean": 0.9947, "frac8": 0.00025, "blob": 2,  "differences": "O1",       "stage": 9 },
+				"03_physics":         { "ssimMin": 0.9938, "ssimMean": 0.9947, "frac8": 0.00043, "blob": 0,  "differences": "O1",       "stage": 9 },
+				"04_lighting":        { "ssimMin": 0.9942, "ssimMean": 0.9946, "frac8": 0.00067, "blob": 0,  "differences": "O1 O3",    "stage": 9 },
+				"04b_lighting_zfail": { "ssimMin": 0.9942, "ssimMean": 0.9946, "frac8": 0.00067, "blob": 0,  "differences": "O1 O3",    "stage": 9 },
+				"05_weapons":         { "ssimMin": 0.9944, "ssimMean": 0.9946, "frac8": 0.00034, "blob": 18, "differences": "O1 O5",    "stage": 9 },
+				"08_cpuboss":         { "ssimMin": 0.9945, "ssimMean": 0.9947, "frac8": 0.00030, "blob": 0,  "differences": "O1",       "stage": 9 },
+				"_smoke":             { "ssimMin": 0.9946, "ssimMean": 0.9947, "frac8": 0.00010, "blob": 0,  "differences": "O1",       "stage": 9 }
+			}
+		},
+		"copyfilter": {
+			"comment": "filter with the screen copies and post-process on: 01_camera, _x1_resscale and _x5_tools miss their plain bars only by O19, so this layer tells a defect of a copy, the depth copy, the resolution scaling stretch or a debug tool from it; bars from the first pass of stage 10 (_x5_tools: stage 11)",
+			"args": [ "+set", "r_maxAnisotropicFiltering", "1", "+set", "r_useTrilinearFiltering", "0" ],
+			"demos": {
+				"01_camera":          { "ssimMin": 0.9942, "ssimMean": 0.9946, "frac8": 0.00020, "blob": 2,  "differences": "O1 O4 O5", "stage": 10 },
+				"06_particles":       { "ssimMin": 0.9919, "ssimMean": 0.9947, "frac8": 0.00156, "blob": 0,  "differences": "O1, blending +-1, an edge row", "stage": 10 },
+				"07_cinematic":       { "ssimMin": 0.9945, "ssimMean": 0.9948, "frac8": 0.00018, "blob": 0,  "differences": "O2 O7",    "stage": 10 },
+				"_x1_resscale":       { "ssimMin": 0.9942, "ssimMean": 0.9946, "frac8": 0.00030, "blob": 4,  "differences": "O1",       "stage": 10 },
+				"_x2_motionblur":     { "ssimMin": 0.9945, "ssimMean": 0.9947, "frac8": 0.00041, "blob": 82, "differences": "O1, accumulation", "stage": 10 },
+				"_x5_tools":          { "ssimMin": 0.9943, "ssimMean": 0.9948, "frac8": 0.00016, "blob": 2,  "differences": "O6",       "stage": 11 }
+			}
+		},
+		"nointeractions": {
+			"comment": "nocopy without the light interactions on both APIs: narrows a miss of nocopy down (no bars of its own)",
+			"args": [ "+set", "r_skipCopyTexture", "1", "+set", "r_skipPostProcess", "1", "+set", "r_skipInteractions", "1" ]
+		},
+		"noshadows": {
+			"comment": "nocopy without the stencil shadows on both APIs: narrows a miss of nocopy down (no bars of its own)",
+			"args": [ "+set", "r_skipCopyTexture", "1", "+set", "r_skipPostProcess", "1", "+set", "r_skipShadows", "1" ]
+		},
+		"notranslucent": {
+			"comment": "nocopy without the translucent interactions on both APIs: narrows a miss of nocopy down (no bars of its own)",
+			"args": [ "+set", "r_skipCopyTexture", "1", "+set", "r_skipPostProcess", "1", "+set", "r_skipTranslucent", "1" ]
+		},
+		"msaa4": {
+			"comment": "r_multiSamples 4 on both APIs; bars from the first pass of stage 12 (01_camera keeps frac8 and blob: the rule would loosen them, O19 as in its plain bars)",
+			"args": [ "+set", "r_multiSamples", "4" ],
+			"demos": {
+				"01_camera":  { "ssimMin": 0.9925, "ssimMean": 0.9938, "frac8": 0.015, "blob": 128, "differences": "O1 O16 O19", "stage": 12 },
+				"05_weapons": { "ssimMin": 0.9918, "ssimMean": 0.9936, "frac8": 0.0080, "blob": 36, "differences": "O1 O16", "stage": 12 }
+			}
+		}
+	}
+}

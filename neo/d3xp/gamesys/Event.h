@@ -33,8 +33,9 @@ Event are used for scheduling tasks and for linking script commands.
 #ifndef __SYS_EVENT_H__
 #define __SYS_EVENT_H__
 
-#define D_EVENT_MAXARGS				8			// if changed, enable the CREATE_EVENT_CODE define in Event.cpp to generate switch statement for idClass::ProcessEventArgPtr.
-												// running the game will then generate c:\doom\base\events.txt, the contents of which should be copied into the switch statement.
+#include <bit>
+
+#define D_EVENT_MAXARGS				8			// idClass::ProcessEventArgPtr has a dispatch case per arg count
 
 #define D_EVENT_VOID				( ( char )0 )
 #define D_EVENT_INTEGER				'd'
@@ -47,6 +48,18 @@ Event are used for scheduling tasks and for linking script commands.
 
 #define MAX_EVENTS					4096
 
+// One argument as handed to an event handler: an int, a pointer, or a float's bits in the low
+// 32 bits. Pointer-sized, so each slot maps onto one register or stack slot of the Win64 call.
+using eventArg_t = intptr_t;
+
+ID_INLINE eventArg_t EventArgFromFloat( float value ) {
+	return static_cast<eventArg_t>( std::bit_cast<uint32_t>( value ) );
+}
+
+ID_INLINE float EventArgToFloat( eventArg_t arg ) {
+	return std::bit_cast<float>( static_cast<uint32_t>( arg ) );
+}
+
 class idClass;
 class idTypeInfo;
 
@@ -57,7 +70,7 @@ private:
 	unsigned int				formatspecIndex;
 	int							returnType;
 	int							numargs;
-	size_t						argsize;
+	int							argsize;
 	int							argOffset[ D_EVENT_MAXARGS ];
 	int							eventnum;
 	const idEventDef *			next;
@@ -74,7 +87,7 @@ public:
 	char						GetReturnType() const;
 	int							GetEventNum() const;
 	int							GetNumArgs() const;
-	size_t						GetArgSize() const;
+	int							GetArgSize() const;
 	int							GetArgOffset( int arg ) const;
 
 	static int					NumEventCommands();
@@ -97,6 +110,9 @@ private:
 
 	static idDynamicBlockAlloc<byte, 16 * 1024, 256> eventDataAllocator;
 
+	void						GetArgs( eventArg_t args[ D_EVENT_MAXARGS ] );
+	void						SaveArgs( idSaveGame *savefile ) const;
+	void						RestoreArgs( idRestoreGame *savefile );
 
 public:
 	static bool					initialized;
@@ -104,8 +120,8 @@ public:
 								~idEvent();
 
 	static idEvent				*Alloc( const idEventDef *evdef, int numargs, va_list args );
-	static void					CopyArgs( const idEventDef *evdef, int numargs, va_list args, int data[ D_EVENT_MAXARGS ]  );
-	
+	static void					CopyArgs( const idEventDef *evdef, int numargs, va_list args, eventArg_t data[ D_EVENT_MAXARGS ] );
+
 	void						Free();
 	void						Schedule( idClass *object, const idTypeInfo *cls, int time );
 	byte						*GetData();
@@ -120,9 +136,6 @@ public:
 	// save games
 	static void					Save( idSaveGame *savefile );					// archives object for save game file
 	static void					Restore( idRestoreGame *savefile );				// unarchives object from save game file
-	static void					SaveTrace( idSaveGame *savefile, const trace_t &trace );
-	static void					RestoreTrace( idRestoreGame *savefile, trace_t &trace );
-	
 };
 
 /*
@@ -184,7 +197,7 @@ ID_INLINE int idEventDef::GetNumArgs() const {
 idEventDef::GetArgSize
 ================
 */
-ID_INLINE size_t idEventDef::GetArgSize() const {
+ID_INLINE int idEventDef::GetArgSize() const {
 	return argsize;
 }
 
