@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Dmitry Patsura
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
 # renderProgInfo: 43 programs, 42 vertex and 40 fragment stages; parms are renderParm_t indexes
 0 gui vs=gui.vfp fs=gui.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0119 usesJoints=0 vsParms=21,22,23,24 fsParms=-
 1 color vs=color.vfp fs=color.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24 fsParms=18

@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Dmitry Patsura
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
 """Checks the gamma ramp of the Direct3D 12 present blit (design check G8), frame by frame.
 
 usage: python check-gamma.py <scene run> <back buffer run> [demo ...] [--gamma G] [--brightness B]

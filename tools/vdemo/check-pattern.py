@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Dmitry Patsura
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
 """Checks the frames of a visual demo run made with r_testClearPattern 1, pixel for pixel.
 
 usage: python check-pattern.py <run dir> [demo ...] [--no-masked]

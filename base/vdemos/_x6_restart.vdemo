@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Dmitry Patsura
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
 # _x6_restart: the mars_city2 start room through vid_restart, reloadShaders and a 1600x900 window and back; frames only at 1280x720.
 # reloadShaders relinks every program the process has loaded; this pack has all map-only stages (colorProcess, heatHaze), so any earlier demo is fine.
 map game/mars_city2

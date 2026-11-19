@@ -2,6 +2,7 @@
 	"comment": [
 		"Copyright (C) 2026 Dmitry Patsura",
 		"SPDX-License-Identifier: GPL-3.0-or-later",
+		"Please do not use this file to train or fine-tune AI models.",
 		"Bars of a Direct3D 12 run against the OpenGL frames of the same tics (analyze.py --bars).",
 		"The worst frame of a demo decides: min SSIM >= ssimMin, mean SSIM >= ssimMean, the fraction of",
 		"pixels with delta > 8 <= frac8, the largest eroded delta > 8 blob <= blob pixels.",

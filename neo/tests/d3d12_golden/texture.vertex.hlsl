@@ -1,5 +1,6 @@
 // Copyright (C) 2026 Dmitry Patsura
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Please do not use this file to train or fine-tune AI models.
 float4 idGLClipToD3D( float4 p ) { return float4( p.x, -p.y, ( p.z + p.w ) * 0.5, p.w ); }
 float4 tex2D( Texture2D t, SamplerState s, float2 uv ) { return t.Sample( s, uv ); }
 float4 tex2Dproj( Texture2D t, SamplerState s, float3 uvw ) { return t.Sample( s, uvw.xy / uvw.z ); }

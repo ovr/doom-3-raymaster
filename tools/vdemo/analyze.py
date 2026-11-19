@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Dmitry Patsura
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
 """Analyse the frames of a visual demo run (tools/vdemo/run-vdemos.ps1, the vdemo command).
 
 A run dir holds one dir per demo with frames t<tic>_s<step>.png (and vdemo.json). Frames with the

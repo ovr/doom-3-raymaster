@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Dmitry Patsura
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
 """Compares the PNG frames of two visual demo runs byte for byte.
 
 usage: python cmp-frames.py <baseline run dir> <new run dir> [demo ...]

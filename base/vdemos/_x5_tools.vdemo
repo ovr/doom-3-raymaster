@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Dmitry Patsura
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
 # _x5_tools: 01_camera with the debug drawing on (wireframe of the front faces, light scissors, portals) and a screenshot.
 include 01_camera
 set r_showTris 2
