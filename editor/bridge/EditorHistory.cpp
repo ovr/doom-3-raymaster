@@ -30,22 +30,37 @@ void idEditorHistory::Add( const char * label, const idList<editorChange_t> & ch
 	position = steps.Num();
 }
 
-void idEditorHistory::Undo( idEditorWorld & world ) {
+bool idEditorHistory::Undo( idEditorWorld & world ) {
 	if ( !CanUndo() ) {
-		return;
+		return false;
 	}
 	const step_t & step = steps[--position];
 	for ( int i = step.changes.Num() - 1; i >= 0; i-- ) {
 		world.SetMapArgs( step.changes[i].index, step.changes[i].before );
 	}
+	return ChangesList( step.changes );
 }
 
-void idEditorHistory::Redo( idEditorWorld & world ) {
+bool idEditorHistory::Redo( idEditorWorld & world ) {
 	if ( !CanRedo() ) {
-		return;
+		return false;
 	}
 	const step_t & step = steps[position++];
 	for ( int i = 0; i < step.changes.Num(); i++ ) {
 		world.SetMapArgs( step.changes[i].index, step.changes[i].after );
 	}
+	return ChangesList( step.changes );
+}
+
+bool idEditorHistory::ChangesList( const idList<editorChange_t> & changes ) {
+	for ( int i = 0; i < changes.Num(); i++ ) {
+		const idDict & before = changes[i].before;
+		const idDict & after = changes[i].after;
+		if ( idStr::Cmp( before.GetString( "name" ), after.GetString( "name" ) ) != 0
+				|| idStr::Cmp( before.GetString( "classname" ), after.GetString( "classname" ) ) != 0
+				|| ( before.GetNumKeyVals() == 0 ) != ( after.GetNumKeyVals() == 0 ) ) {
+			return true;
+		}
+	}
+	return false;
 }

@@ -29,10 +29,13 @@ public:
 	// true when the selection changed
 	bool				Select( int index, bool toggle );
 	bool				ClearSelection();
+	// drops the entities an edit removed; true when the selection changed
+	bool				DropRemoved( const idEditorWorld & world );
 
 	void				SetMode( mode_t newMode ) { mode = newMode; }
 	// 0 = no snapping
 	void				SetGridSize( float size ) { gridSize = size; }
+	[[nodiscard]] float	GridSize() const { return gridSize; }
 
 	// a press on the gizmo starts a drag: true, and the click is not a selection
 	[[nodiscard]] bool	BeginDrag( const idEditorWorld & world, const idVec3 & rayStart, const idVec3 & rayDir, const idVec3 & viewOrigin );

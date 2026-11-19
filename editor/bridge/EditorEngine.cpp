@@ -23,6 +23,9 @@ namespace {
 
 constexpr char		EDITOR_TITLE[] = "Doom 3 Editor";
 constexpr float		PICK_DISTANCE = 16384.0f;
+constexpr float		CREATE_DISTANCE = 192.0f;		// a new entity appears this far in front of the camera
+constexpr float		CREATE_WALL_GAP = 24.0f;
+constexpr float		DUPLICATE_OFFSET = 16.0f;
 constexpr int		EDIT_FRAME_MSEC = 8;			// the edit view's frame time: 125 frames a second
 
 // the engine as the UI sees it, and the UI as the engine sees it
@@ -49,6 +52,12 @@ public:
 	void				EnumSelection( editorSelectionVisitor_t visitor, void * context ) override;
 	void				SetGizmo( int gizmo ) override;
 	void				SetGridSize( float size ) override { tool.SetGridSize( size ); }
+	void				EnumEntityKeys( int index, editorKeyVisitor_t visitor, void * context ) override;
+	void				SetEntityKey( int index, const char * key, const char * value ) override;
+	void				EnumEntityClasses( editorClassVisitor_t visitor, void * context ) override;
+	void				CreateEntity( const char * classname ) override;
+	void				DuplicateSelection() override;
+	void				DeleteSelection() override;
 	void				GetDocumentState( editorDocumentState_t & state ) const override;
 	void				Undo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorUndo\n" ); }
 	void				Redo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorRedo\n" ); }
@@ -62,9 +71,28 @@ public:
 	void				SaveMapNow();
 	// value nullptr removes the key
 	void				SetKeyNow( const char * entityName, const char * key, const char * value );
+	// A console command runs inside the frame, between its parts, where an edit is as safe as
+	// between two frames.
+	template<typename editFunction>
+	void				RunEdit( editFunction && edit ) {
+		const bool wasInFrame = inFrame;
+		inFrame = false;
+		edit();
+		inFrame = wasInFrame;
+	}
 	// -1 and a print when the open map has no such entity
 	[[nodiscard]] int	FindEntity( const char * entityName ) const;
 
+private:
+	[[nodiscard]] bool	IsEntity( int index ) const { return index > 0 && index < world.NumEntities() && !world.Entity( index ).removed; }
+	// no edit while the engine runs a frame or a drag holds the entities
+	[[nodiscard]] bool	CanEdit() const { return world.IsOpen() && !inFrame && !tool.Dragging(); }
+	// applies the changes as one step of the history and tells the UI
+	void				Edit( const char * label, const idList<editorChange_t> & changes );
+	void				AfterEdit( bool listChanged );
+	void				SelectOnly( const idList<int> & indices );
+
+public:
 	// idEditorViewClient
 	void				ViewMouseDown( int x, int y, bool ctrl ) override;
 	void				ViewMouseMove( int x, int y ) override;
@@ -102,6 +130,8 @@ void idEditorEngineLocal::Init( idEditorHost * host ) {
 	editorEngine = this;
 	Sys_EngineInit( instance, cmdLine.c_str(), this );
 	started = true;
+	// an entity of any class can be put into any map
+	fileSystem->MountAllMapResources();
 	view.Attach( Viewport() );
 	view.SetClient( this );
 }
@@ -197,15 +227,13 @@ void idEditorEngineLocal::CloseMapNow() {
 
 void idEditorEngineLocal::UndoNow() {
 	if ( world.IsOpen() && history.CanUndo() && !tool.Dragging() ) {
-		history.Undo( world );
-		ui->OnDocumentChanged();
+		AfterEdit( history.Undo( world ) );
 	}
 }
 
 void idEditorEngineLocal::RedoNow() {
 	if ( world.IsOpen() && history.CanRedo() && !tool.Dragging() ) {
-		history.Redo( world );
-		ui->OnDocumentChanged();
+		AfterEdit( history.Redo( world ) );
 	}
 }
 
@@ -223,21 +251,54 @@ void idEditorEngineLocal::SaveMapNow() {
 }
 
 int idEditorEngineLocal::FindEntity( const char * entityName ) const {
-	for ( int i = 1; i < world.NumEntities(); i++ ) {
-		if ( idStr::Icmp( world.MapArgs( i ).GetString( "name" ), entityName ) == 0 ) {
-			return i;
-		}
+	const int index = world.IsOpen() ? world.FindEntity( entityName ) : -1;
+	if ( index == -1 ) {
+		common->Printf( "The open map has no entity named '%s'.\n", entityName );
 	}
-	common->Printf( "The open map has no entity named '%s'.\n", entityName );
-	return -1;
+	return index;
 }
 
 void idEditorEngineLocal::SetKeyNow( const char * entityName, const char * key, const char * value ) {
 	const int index = FindEntity( entityName );
-	if ( index == -1 || tool.Dragging() ) {
+	if ( index != -1 ) {
+		RunEdit( [&] { SetEntityKey( index, key, value ); } );
+	}
+}
+
+void idEditorEngineLocal::Edit( const char * label, const idList<editorChange_t> & changes ) {
+	if ( changes.Num() == 0 ) {
 		return;
 	}
+	for ( int i = 0; i < changes.Num(); i++ ) {
+		world.SetMapArgs( changes[i].index, changes[i].after );
+	}
+	history.Add( label, changes );
+	AfterEdit( idEditorHistory::ChangesList( changes ) );
+}
 
+void idEditorEngineLocal::AfterEdit( bool listChanged ) {
+	const bool selectionChanged = tool.DropRemoved( world );
+	if ( listChanged ) {
+		ui->OnEntitiesChanged();
+	}
+	if ( selectionChanged || listChanged ) {
+		ui->OnSelectionChanged();
+	}
+	ui->OnDocumentChanged();
+}
+
+void idEditorEngineLocal::SelectOnly( const idList<int> & indices ) {
+	tool.ClearSelection();
+	for ( int i = 0; i < indices.Num(); i++ ) {
+		tool.Select( indices[i], true );
+	}
+	ui->OnSelectionChanged();
+}
+
+void idEditorEngineLocal::SetEntityKey( int index, const char * key, const char * value ) {
+	if ( !CanEdit() || !IsEntity( index ) || key == nullptr || key[0] == '\0' ) {
+		return;
+	}
 	idList<editorChange_t> changes;
 	editorChange_t & change = changes.Alloc();
 	change.index = index;
@@ -248,13 +309,166 @@ void idEditorEngineLocal::SetKeyNow( const char * entityName, const char * key, 
 	} else {
 		change.after.Delete( key );
 	}
-	world.SetMapArgs( index, change.after );
-	history.Add( va( "Set %s", key ), changes );
-	ui->OnDocumentChanged();
+	// an entity without a class is a removed one
+	if ( change.after.GetString( "classname" )[0] == '\0' ) {
+		common->Printf( "An entity needs its classname.\n" );
+		return;
+	}
+	const idKeyValue * const was = change.before.FindKey( key );
+	const idKeyValue * const is = change.after.FindKey( key );
+	if ( ( was == nullptr ) == ( is == nullptr ) && ( was == nullptr || was->GetValue() == is->GetValue() ) ) {
+		return;
+	}
+	Edit( va( "Set %s", key ), changes );
+}
+
+// The entityDef documents a key as "editor_<kind> <key>" "<description>".
+void idEditorEngineLocal::EnumEntityKeys( int index, editorKeyVisitor_t visitor, void * context ) {
+	if ( !IsEntity( index ) ) {
+		return;
+	}
+	const idDict & mapArgs = world.MapArgs( index );
+	const idDict & allArgs = world.Entity( index ).args;
+	const idDict * const def = gameEdit->FindEntityDefDict( mapArgs.GetString( "classname" ), false );
+
+	const auto documented = [def]( const char * key, const char * & description ) -> int {
+		description = "";
+		int type = ( idStr::Icmp( key, "_color" ) == 0 ) ? EDITOR_KEY_COLOR : EDITOR_KEY_TEXT;
+		if ( def == nullptr ) {
+			return type;
+		}
+		for ( const idKeyValue * kv = def->MatchPrefix( "editor_" ); kv != nullptr; kv = def->MatchPrefix( "editor_", kv ) ) {
+			const int space = kv->GetKey().Find( ' ' );
+			if ( space != -1 && idStr::Icmp( kv->GetKey().c_str() + space + 1, key ) == 0 ) {
+				description = kv->GetValue().c_str();
+				if ( kv->GetKey().Icmpn( "editor_bool ", 12 ) == 0 ) {
+					type = EDITOR_KEY_BOOL;
+				} else if ( kv->GetKey().Icmpn( "editor_color ", 13 ) == 0 ) {
+					type = EDITOR_KEY_COLOR;
+				}
+				break;
+			}
+		}
+		return type;
+	};
+
+	for ( int i = 0; i < mapArgs.GetNumKeyVals(); i++ ) {
+		const idKeyValue * const kv = mapArgs.GetKeyVal( i );
+		editorKeyInfo_t info = { kv->GetKey().c_str(), kv->GetValue().c_str(), "", EDITOR_KEY_TEXT, true };
+		info.type = documented( info.key, info.description );
+		visitor( context, info );
+	}
+	if ( def == nullptr ) {
+		return;
+	}
+	for ( const idKeyValue * kv = def->MatchPrefix( "editor_" ); kv != nullptr; kv = def->MatchPrefix( "editor_", kv ) ) {
+		const int space = kv->GetKey().Find( ' ' );
+		if ( space == -1 ) {
+			continue;
+		}
+		const char * const key = kv->GetKey().c_str() + space + 1;
+		if ( key[0] == '\0' || mapArgs.FindKey( key ) != nullptr ) {
+			continue;
+		}
+		editorKeyInfo_t info = { key, allArgs.GetString( key ), "", EDITOR_KEY_TEXT, false };
+		info.type = documented( key, info.description );
+		visitor( context, info );
+	}
+}
+
+// Only the names: parsing an entityDef caches its media.
+void idEditorEngineLocal::EnumEntityClasses( editorClassVisitor_t visitor, void * context ) {
+	if ( !started ) {
+		return;
+	}
+	const int num = declManager->GetNumDecls( DECL_ENTITYDEF );
+	for ( int i = 0; i < num; i++ ) {
+		visitor( context, declManager->DeclByIndex( DECL_ENTITYDEF, i, false )->GetName() );
+	}
+}
+
+void idEditorEngineLocal::CreateEntity( const char * classname ) {
+	if ( !CanEdit() ) {
+		return;
+	}
+	if ( gameEdit->FindEntityDefDict( classname, false ) == nullptr ) {
+		common->Printf( "There is no entityDef '%s'.\n", classname );
+		return;
+	}
+	// in front of the camera, before the wall it looks at
+	const idVec3 forward = view.Axis()[0];
+	float distance = CREATE_DISTANCE;
+	modelTrace_t trace = {};
+	if ( world.RenderWorld()->Trace( trace, view.Origin(), view.Origin() + forward * CREATE_DISTANCE, 0.0f, false ) ) {
+		distance = Max( CREATE_WALL_GAP, trace.fraction * CREATE_DISTANCE - CREATE_WALL_GAP );
+	}
+	idVec3 origin = view.Origin() + forward * distance;
+	if ( tool.GridSize() > 0.0f ) {
+		for ( int axis = 0; axis < 3; axis++ ) {
+			origin[axis] = idMath::Rint( origin[axis] / tool.GridSize() ) * tool.GridSize();
+		}
+	}
+
+	idList<editorChange_t> changes;
+	editorChange_t & change = changes.Alloc();
+	change.index = world.AddEntity();
+	change.after.Set( "classname", classname );
+	change.after.Set( "name", world.UniqueName( classname ) );
+	change.after.SetVector( "origin", origin );
+	Edit( va( "Create %s", classname ), changes );
+
+	idList<int> created;
+	created.Append( change.index );
+	SelectOnly( created );
+}
+
+void idEditorEngineLocal::DuplicateSelection() {
+	if ( !CanEdit() ) {
+		return;
+	}
+	const float step = ( tool.GridSize() > 0.0f ) ? tool.GridSize() * 2.0f : DUPLICATE_OFFSET;
+	idList<editorChange_t> changes;
+	idList<int> copies;
+	for ( int i = 0; i < tool.NumSelected(); i++ ) {
+		const int source = tool.Selected( i );
+		// a brush entity's geometry is compiled into the map
+		if ( !IsEntity( source ) || world.HasPrimitives( source ) ) {
+			continue;
+		}
+		editorChange_t & change = changes.Alloc();
+		change.index = world.AddEntity();
+		change.after = world.MapArgs( source );
+		change.after.Set( "name", world.UniqueName( change.after.GetString( "classname" ) ) );
+		if ( change.after.FindKey( "origin" ) != nullptr ) {
+			change.after.SetVector( "origin", change.after.GetVector( "origin" ) + idVec3( step, step, 0.0f ) );
+		}
+		// shown now, so the next copy gets another name
+		world.SetMapArgs( change.index, change.after );
+		copies.Append( change.index );
+	}
+	if ( changes.Num() > 0 ) {
+		Edit( ( changes.Num() == 1 ) ? "Duplicate" : va( "Duplicate %d entities", changes.Num() ), changes );
+		SelectOnly( copies );
+	}
+}
+
+void idEditorEngineLocal::DeleteSelection() {
+	if ( !CanEdit() ) {
+		return;
+	}
+	idList<editorChange_t> changes;
+	for ( int i = 0; i < tool.NumSelected(); i++ ) {
+		if ( IsEntity( tool.Selected( i ) ) ) {
+			editorChange_t & change = changes.Alloc();
+			change.index = tool.Selected( i );
+			change.before = world.MapArgs( change.index );
+		}
+	}
+	Edit( ( changes.Num() == 1 ) ? "Delete" : va( "Delete %d entities", changes.Num() ), changes );
 }
 
 void idEditorEngineLocal::SelectEntity( int index, bool add ) {
-	if ( index >= world.NumEntities() || tool.Dragging() ) {
+	if ( ( index > 0 && !IsEntity( index ) ) || tool.Dragging() ) {
 		return;
 	}
 	if ( tool.Select( index, add ) ) {
@@ -310,13 +524,16 @@ void idEditorEngineLocal::ViewMouseUp() {
 void idEditorEngineLocal::EnumEntities( editorEntityVisitor_t visitor, void * context ) {
 	for ( int i = 0; i < world.NumEntities(); i++ ) {
 		const editorMapEntity_t & entity = world.Entity( i );
+		if ( entity.removed ) {
+			continue;
+		}
 		const editorEntityInfo_t info = { i, entity.args.GetString( "name" ), entity.args.GetString( "classname" ), entity.isLight, entity.modelHandle != -1 };
 		visitor( context, info );
 	}
 }
 
 void idEditorEngineLocal::LookAtEntity( int index ) {
-	if ( index <= 0 || index >= world.NumEntities() ) {
+	if ( !IsEntity( index ) ) {
 		return;
 	}
 	// from where the camera is now, at a distance that shows the whole entity
@@ -423,6 +640,28 @@ CONSOLE_COMMAND_SHIP( editorSelect, "selects an entity of the open map by name a
 			editorEngine->SelectEntity( index, false );
 			editorEngine->LookAtEntity( index );
 		}
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorCreate, "makes an entity of a class in front of the editor's camera", nullptr ) {
+	if ( args.Argc() != 2 ) {
+		common->Printf( "usage: editorCreate <entityDef>\n" );
+		return;
+	}
+	if ( NeedEditor() ) {
+		editorEngine->RunEdit( [&args] { editorEngine->CreateEntity( args.Argv( 1 ) ); } );
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorDuplicate, "duplicates the entities selected in the editor", nullptr ) {
+	if ( NeedEditor() ) {
+		editorEngine->RunEdit( [] { editorEngine->DuplicateSelection(); } );
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorDelete, "removes the entities selected in the editor", nullptr ) {
+	if ( NeedEditor() ) {
+		editorEngine->RunEdit( [] { editorEngine->DeleteSelection(); } );
 	}
 }
 

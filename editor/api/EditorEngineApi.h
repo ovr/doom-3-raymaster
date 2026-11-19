@@ -21,7 +21,7 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 3;
+constexpr int EDITOR_API_VERSION = 4;
 
 // what a drag in the viewport does to the selection
 enum editorGizmo_t : int {
@@ -58,6 +58,24 @@ using editorMapVisitor_t = void ( * )( void * context, const editorMapInfo_t & m
 using editorEntityVisitor_t = void ( * )( void * context, const editorEntityInfo_t & entity );
 using editorSelectionVisitor_t = void ( * )( void * context, int entityIndex );
 
+// how the inspector edits a key
+enum editorKeyType_t : int {
+	EDITOR_KEY_TEXT,
+	EDITOR_KEY_BOOL,
+	EDITOR_KEY_COLOR		// "r g b", each 0 .. 1
+};
+
+// A key of an entity. inMap: the map file sets it; otherwise value is the entityDef's default.
+struct editorKeyInfo_t {
+	const char *		key;
+	const char *		value;
+	const char *		description;	// from the entityDef's editor_* keys, "" when it has none
+	int					type;			// editorKeyType_t
+	bool				inMap;
+};
+using editorKeyVisitor_t = void ( * )( void * context, const editorKeyInfo_t & key );
+using editorClassVisitor_t = void ( * )( void * context, const char * classname );
+
 // implemented by the UI
 class idEditorHost {
 public:
@@ -81,6 +99,8 @@ public:
 	// a map was opened or closed: CurrentMap() and the entities are new
 	virtual void		OnMapChanged() = 0;
 
+	// entities were made, removed or renamed: EnumEntities() is new
+	virtual void		OnEntitiesChanged() = 0;
 	// the selection changed, in the viewport or through SelectEntity()
 	virtual void		OnSelectionChanged() = 0;
 	// an edit, an undo, a redo or a save: GetDocumentState() is new
@@ -130,6 +150,19 @@ public:
 	// the gizmo at the selection (editorGizmo_t) and the step of a move, 0 = no snapping
 	virtual void		SetGizmo( int gizmo ) = 0;
 	virtual void		SetGridSize( float size ) = 0;
+
+	// The keys of an entity: the map's own first, then the ones its entityDef documents.
+	virtual void		EnumEntityKeys( int index, editorKeyVisitor_t visitor, void * context ) = 0;
+	// One step of the history. value nullptr takes the key out of the map: the default is back.
+	virtual void		SetEntityKey( int index, const char * key, const char * value ) = 0;
+
+	// every entityDef, for the palette
+	virtual void		EnumEntityClasses( editorClassVisitor_t visitor, void * context ) = 0;
+	// Makes an entity in front of the camera and selects it.
+	virtual void		CreateEntity( const char * classname ) = 0;
+	// The selection; brush entities are not duplicated, the copies become the selection.
+	virtual void		DuplicateSelection() = 0;
+	virtual void		DeleteSelection() = 0;
 
 	// Undo, Redo and SaveMap happen in the next frame and end in OnDocumentChanged().
 	// The map is saved into the project folder (fs_savepath), never into the game install.

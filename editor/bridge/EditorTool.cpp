@@ -113,6 +113,16 @@ bool idEditorTool::ClearSelection() {
 	return true;
 }
 
+bool idEditorTool::DropRemoved( const idEditorWorld & world ) {
+	const int before = selection.Num();
+	for ( int i = selection.Num() - 1; i >= 0; i-- ) {
+		if ( selection[i] >= world.NumEntities() || world.Entity( selection[i] ).removed ) {
+			selection.RemoveIndex( i );
+		}
+	}
+	return selection.Num() != before;
+}
+
 bool idEditorTool::Pivot( const idEditorWorld & world, idVec3 & pivot ) const {
 	if ( selection.Num() == 0 || selection[0] >= world.NumEntities() ) {
 		return false;

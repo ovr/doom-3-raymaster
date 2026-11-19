@@ -854,8 +854,12 @@ bool idMapFile::Write( const char *fileName, const char *ext, const char *basePa
 
 	fp->WriteFloatString( "Version %f\n", (float) CURRENT_MAP_VERSION );
 
+	// an entity without key/values is one an editor removed and keeps for its undo
+	int written = 0;
 	for ( i = 0; i < entities.Num(); i++ ) {
-		entities[i]->Write( fp, i );
+		if ( entities[i]->epairs.GetNumKeyVals() > 0 ) {
+			entities[i]->Write( fp, written++ );
+		}
 	}
 
 	idLib::fileSystem->CloseFile( fp );

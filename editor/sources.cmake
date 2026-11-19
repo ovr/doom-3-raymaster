@@ -25,11 +25,15 @@ set(EDITOR_UI_SOURCES
 	api/EditorEngineApi.h
 	ui/EngineClient.cpp
 	ui/EngineClient.h
+	ui/Inspector.cpp
+	ui/Inspector.h
 	ui/MainWindow.cpp
 	ui/MainWindow.h
 	ui/OutputLog.cpp
 	ui/OutputLog.h
 	ui/Outliner.cpp
+	ui/Palette.cpp
+	ui/Palette.h
 	ui/Outliner.h
 	ui/UiMain.cpp
 	ui/ViewportHost.cpp

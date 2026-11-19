@@ -184,6 +184,8 @@ public:
 	virtual bool			InProductionMode() = 0;
 	virtual bool			UsingResourceFiles() = 0;
 	virtual void			UnloadMapResources( const char *name ) = 0;
+	// Every map's resource file at once, for an editor: media of any map can then be used in any other.
+	virtual void			MountAllMapResources() = 0;
 	virtual void			UnloadResourceContainer( const char *name ) = 0;
 	virtual void			StartPreload( const idStrList &_preload ) = 0;
 	virtual void			StopPreload() = 0;

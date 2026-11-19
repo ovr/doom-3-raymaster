@@ -25,14 +25,16 @@
 
 #include "../api/EditorEngineApi.h"
 #include "EngineClient.h"
+#include "Inspector.h"
 #include "Outliner.h"
+#include "Palette.h"
 #include "OutputLog.h"
 #include "ViewportHost.h"
 
 namespace {
 
 // bump when the set of docks changes in a way an old saved layout would break
-constexpr int LAYOUT_VERSION = 3;
+constexpr int LAYOUT_VERSION = 4;
 constexpr float GRID_SIZES[] = { 0.0f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
 constexpr int DEFAULT_GRID = 4;		// index into GRID_SIZES
 constexpr int MAP_NAME_ROLE = Qt::UserRole;
@@ -106,9 +108,25 @@ MainWindow::MainWindow( idEditorEngine * engine_, QWidget * parent ) : QMainWind
 	outlinerDock->setWidget( outliner );
 	addDockWidget( Qt::RightDockWidgetArea, outlinerDock );
 
+	inspector = new Inspector( engine, this );
+	inspectorDock = new QDockWidget( tr( "Inspector" ), this );
+	inspectorDock->setObjectName( QStringLiteral( "InspectorDock" ) );
+	inspectorDock->setWidget( inspector );
+	addDockWidget( Qt::RightDockWidgetArea, inspectorDock );
+
+	palette = new Palette( engine, this );
+	paletteDock = new QDockWidget( tr( "Entity Classes" ), this );
+	paletteDock->setObjectName( QStringLiteral( "PaletteDock" ) );
+	paletteDock->setWidget( palette );
+	addDockWidget( Qt::LeftDockWidgetArea, paletteDock );
+
 	client = new EngineClient( engine, viewport, this );
 	connect( client, &EngineClient::mapChanged, this, &MainWindow::MapChanged );
+	connect( client, &EngineClient::entitiesChanged, outliner, &Outliner::Reload );
 	connect( client, &EngineClient::selectionChanged, outliner, &Outliner::SyncSelection );
+	// queued: an edit made in the inspector must not rebuild its list under its own handler
+	connect( client, &EngineClient::selectionChanged, inspector, &Inspector::Refresh, Qt::QueuedConnection );
+	connect( client, &EngineClient::documentChanged, inspector, &Inspector::Refresh, Qt::QueuedConnection );
 	connect( client, &EngineClient::documentChanged, this, &MainWindow::DocumentChanged );
 	connect( client, &EngineClient::printed, outputLog, &OutputLog::Append );
 	connect( client, &EngineClient::aboutToShutdown, this, &MainWindow::SaveLayout );
@@ -148,6 +166,12 @@ void MainWindow::CreateMenus() {
 	redoAction->setShortcuts( { QKeySequence( Qt::CTRL | Qt::Key_Y ), QKeySequence( Qt::CTRL | Qt::SHIFT | Qt::Key_Z ) } );
 	connect( redoAction, &QAction::triggered, this, [this] { engine->Redo(); } );
 	editMenu->addSeparator();
+	QAction * const duplicateAction = editMenu->addAction( tr( "D&uplicate" ) );
+	duplicateAction->setShortcut( QKeySequence( Qt::CTRL | Qt::Key_D ) );
+	connect( duplicateAction, &QAction::triggered, this, [this] { engine->DuplicateSelection(); } );
+	QAction * const deleteAction = editMenu->addAction( tr( "De&lete" ) );
+	deleteAction->setShortcut( QKeySequence::Delete );
+	connect( deleteAction, &QAction::triggered, this, [this] { engine->DeleteSelection(); } );
 	QAction * const deselectAction = editMenu->addAction( tr( "&Deselect All" ) );
 	deselectAction->setShortcut( QKeySequence( Qt::Key_Escape ) );
 	connect( deselectAction, &QAction::triggered, this, [this] { engine->SelectEntity( 0, false ); } );
@@ -187,6 +211,8 @@ void MainWindow::CreateMenus() {
 	QMenu * const viewMenu = menuBar()->addMenu( tr( "&View" ) );
 	viewMenu->addAction( tools->toggleViewAction() );
 	viewMenu->addAction( outlinerDock->toggleViewAction() );
+	viewMenu->addAction( inspectorDock->toggleViewAction() );
+	viewMenu->addAction( paletteDock->toggleViewAction() );
 	viewMenu->addAction( outputDock->toggleViewAction() );
 	viewMenu->addSeparator();
 	QAction * const consoleAction = viewMenu->addAction( tr( "&Console Command" ) );
@@ -277,6 +303,10 @@ void MainWindow::MapChanged() {
 	const QString map = QString::fromLocal8Bit( engine->CurrentMap() );
 	closeMapAction->setEnabled( !map.isEmpty() );
 	outliner->Reload();
+	if ( !map.isEmpty() ) {
+		palette->Load();
+	}
+	inspector->Refresh();
 	DocumentChanged();
 	statusBar()->showMessage( map.isEmpty()
 		? tr( "File > Open Map starts editing. Without a map: click the viewport to play in it, Shift+Esc gives the mouse and the keys back." )

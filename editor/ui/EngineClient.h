@@ -40,12 +40,14 @@ public:
 	void				OnFatalError( const char * text ) override;
 	void				OnPrint( const char * text ) override;
 	void				OnMapChanged() override { emit mapChanged(); }
+	void				OnEntitiesChanged() override { emit entitiesChanged(); }
 	void				OnSelectionChanged() override { emit selectionChanged(); }
 	void				OnDocumentChanged() override { emit documentChanged(); }
 
 signals:
 	void				printed( const QString & text );
 	void				mapChanged();
+	void				entitiesChanged();
 	void				selectionChanged();
 	void				documentChanged();
 	// the last thing before the engine and the process end

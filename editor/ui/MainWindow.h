@@ -6,7 +6,9 @@
 #include <QMainWindow>
 
 class EngineClient;
+class Inspector;
 class Outliner;
+class Palette;
 class OutputLog;
 class QAction;
 class QDockWidget;
@@ -46,6 +48,10 @@ private:
 	QAction *			saveAction = nullptr;
 	QAction *			undoAction = nullptr;
 	QAction *			redoAction = nullptr;
+	Inspector *			inspector = nullptr;
+	QDockWidget *		inspectorDock = nullptr;
+	QDockWidget *		paletteDock = nullptr;
+	Palette *			palette = nullptr;
 	bool				closing = false;
 	EngineClient *		client;
 };

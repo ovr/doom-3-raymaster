@@ -21,6 +21,9 @@ const idBounds		DEFAULT_MARKER_BOUNDS( idVec3( -8.0f, -8.0f, -8.0f ), idVec3( 8.
 void MergedSpawnArgs( const idDict & mapArgs, idDict & out ) {
 	out = mapArgs;
 	const char * const classname = mapArgs.GetString( "classname" );
+	if ( classname[0] == '\0' ) {
+		return;
+	}
 	if ( const idDict * const defaults = gameEdit->FindEntityDefDict( classname, false ) ) {
 		out.SetDefaults( defaults );
 	}
@@ -120,8 +123,39 @@ void idEditorWorld::SetMapArgs( int index, const idDict & mapArgs ) {
 	ShowEntity( index );
 }
 
+int idEditorWorld::AddEntity() {
+	const int index = mapFile.AddEntity( new ( TAG_IDLIB ) idMapEntity );
+	entities.Alloc().removed = true;
+	assert( entities.Num() == mapFile.GetNumEntities() );
+	return index;
+}
+
+int idEditorWorld::FindEntity( const char * name ) const {
+	for ( int i = 1; i < entities.Num(); i++ ) {
+		if ( !entities[i].removed && idStr::Icmp( entities[i].args.GetString( "name" ), name ) == 0 ) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+idStr idEditorWorld::UniqueName( const char * base ) const {
+	for ( int n = 1; ; n++ ) {
+		const idStr name = va( "%s_%d", base, n );
+		if ( FindEntity( name ) == -1 ) {
+			return name;
+		}
+	}
+}
+
 void idEditorWorld::ShowEntity( int index ) {
 	editorMapEntity_t & entity = entities[index];
+	entity.removed = ( index != 0 && entity.args.GetNumKeyVals() == 0 );
+	if ( entity.removed ) {
+		FreeEntity( entity );
+		entity.isLight = false;
+		return;
+	}
 	entity.origin = entity.args.GetVector( "origin", "0 0 0" );
 	entity.bounds = MarkerBounds( entity.args );
 
@@ -245,7 +279,7 @@ int idEditorWorld::Pick( const idVec3 & start, const idVec3 & dir, float maxDist
 	// the boxes of what has no model
 	for ( int i = 1; i < entities.Num(); i++ ) {
 		const editorMapEntity_t & entity = entities[i];
-		if ( entity.modelHandle != -1 ) {
+		if ( entity.modelHandle != -1 || entity.removed ) {
 			continue;
 		}
 		float scale = 0.0f;
@@ -273,7 +307,9 @@ void idEditorWorld::GetStartView( idVec3 & origin, idAngles & angles ) const {
 	idBounds all;
 	all.Clear();
 	for ( int i = 1; i < entities.Num(); i++ ) {
-		all.AddPoint( entities[i].origin );
+		if ( !entities[i].removed ) {
+			all.AddPoint( entities[i].origin );
+		}
 	}
 	if ( !all.IsCleared() ) {
 		origin = all.GetCenter();
@@ -284,7 +320,7 @@ void idEditorWorld::DrawMarkers( const idVec3 & viewOrigin ) {
 	const float maxDistanceSqr = Square( MARKER_DISTANCE );
 	for ( int i = 1; i < entities.Num(); i++ ) {
 		const editorMapEntity_t & entity = entities[i];
-		if ( entity.modelHandle != -1 || ( entity.origin - viewOrigin ).LengthSqr() > maxDistanceSqr ) {
+		if ( entity.modelHandle != -1 || entity.removed || ( entity.origin - viewOrigin ).LengthSqr() > maxDistanceSqr ) {
 			continue;
 		}
 		idVec3 color = entity.isLight ? entity.args.GetVector( "_color", "1 1 1" ) : entity.args.GetVector( "editor_color", "0.3 0.6 1" );

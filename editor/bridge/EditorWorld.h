@@ -18,6 +18,9 @@
 
 	The map file is the document: SetMapArgs() is the only way an entity changes, and Save() writes
 	the file into fs_savepath, never into the game install.
+
+	An entity keeps its index for as long as the map is open. A removed one stays in the list
+	without key/values, so an undo can bring it back, and is not written.
 */
 
 struct editorMapEntity_t {
@@ -30,6 +33,7 @@ struct editorMapEntity_t {
 	idBounds			bounds;				// around the origin, for the entities nothing draws
 	idVec3				origin = vec3_origin;
 	bool				isLight = false;
+	bool				removed = false;
 };
 
 class idEditorWorld {
@@ -49,8 +53,15 @@ public:
 
 	// the key/values as the map file has them, without the entityDef's defaults
 	[[nodiscard]] const idDict &	MapArgs( int index ) const { return mapFile.GetEntity( index )->epairs; }
-	// replaces them and shows the entity as they now describe it
+	// replaces them and shows the entity as they now describe it; no key/values remove the entity
 	void				SetMapArgs( int index, const idDict & mapArgs );
+	// a new, removed entity for SetMapArgs() to fill
+	[[nodiscard]] int	AddEntity();
+	[[nodiscard]] bool	HasPrimitives( int index ) const { return mapFile.GetEntity( index )->GetNumPrimitives() > 0; }
+	// -1 when no entity has the name
+	[[nodiscard]] int	FindEntity( const char * name ) const;
+	// "<base>_<n>" that no entity has yet
+	[[nodiscard]] idStr	UniqueName( const char * base ) const;
 
 	// what the entity covers in the world: its model, or its marker box
 	[[nodiscard]] idBounds	WorldBounds( int index ) const;

@@ -169,6 +169,7 @@ public:
 	virtual bool			InProductionMode() { return ( resourceFiles.Num() > 0 ) |  ( com_productionMode.GetInteger() != 0 ); }
 	virtual bool			UsingResourceFiles() { return resourceFiles.Num() > 0; }
 	virtual void			UnloadMapResources( const char *name );
+	virtual void			MountAllMapResources();
 	virtual void			UnloadResourceContainer( const char *name );
 	idFile *				GetResourceContainer( int idx ) {
 		if ( idx >= 0 && idx < resourceFiles.Num() ) {
@@ -562,6 +563,21 @@ void idFileSystemLocal::UnloadMapResources( const char *name ) {
 
 	if ( resourceFiles.Num() > 0 ) {
 		RemoveMapResourceFile( va( "%s.resources", name ) );
+	}
+}
+
+// A map opened later mounts its own file once more, on top: the last one wins a lookup.
+void idFileSystemLocal::MountAllMapResources() {
+	if ( resourceFiles.Num() == 0 ) {
+		return;
+	}
+	std::unique_ptr<idFileList> files( ListFilesTree( "maps", ".resources" ) );
+	for ( int i = 0; i < files->GetNumFiles(); i++ ) {
+		if ( FindResourceFile( files->GetFile( i ) ) == -1 ) {
+			idStr name = files->GetFile( i );
+			name.StripPath();
+			AddResourceFile( name );
+		}
 	}
 }
 

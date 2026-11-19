@@ -5,7 +5,7 @@
 
 class idEditorWorld;
 
-// one entity's map key/values before and after an edit
+// one entity's map key/values before and after an edit; none = the entity does not exist
 struct editorChange_t {
 	int					index = 0;
 	idDict				before;
@@ -31,8 +31,11 @@ public:
 	// "" when there is nothing to undo or redo
 	[[nodiscard]] const char *	UndoLabel() const { return CanUndo() ? steps[position - 1].label.c_str() : ""; }
 	[[nodiscard]] const char *	RedoLabel() const { return CanRedo() ? steps[position].label.c_str() : ""; }
-	void				Undo( idEditorWorld & world );
-	void				Redo( idEditorWorld & world );
+	// both return ChangesList() of the step
+	bool				Undo( idEditorWorld & world );
+	bool				Redo( idEditorWorld & world );
+	// an entity appears, goes, or gets another name or class: lists of entities are out of date
+	[[nodiscard]] static bool	ChangesList( const idList<editorChange_t> & changes );
 
 	// the map differs from the file on disk
 	[[nodiscard]] bool	IsDirty() const { return position != savedPosition; }
