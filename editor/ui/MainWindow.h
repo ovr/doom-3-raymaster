@@ -33,6 +33,8 @@ private:
 	void				ShowAbout();
 	void				ChooseMap();
 	void				MapChanged();
+	void				DocumentChanged();
+	[[nodiscard]] bool	ConfirmDiscard();
 
 	idEditorEngine *	engine;
 	ViewportHost *		viewport;
@@ -41,5 +43,9 @@ private:
 	Outliner *			outliner;
 	QDockWidget *		outlinerDock;
 	QAction *			closeMapAction = nullptr;
+	QAction *			saveAction = nullptr;
+	QAction *			undoAction = nullptr;
+	QAction *			redoAction = nullptr;
+	bool				closing = false;
 	EngineClient *		client;
 };

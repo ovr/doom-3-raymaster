@@ -21,13 +21,17 @@ public:
 
 	// reads the entities again, after a map was opened or closed
 	void				Reload();
+	// shows the engine's selection in the list
+	void				SyncSelection();
 
 private:
 	void				ApplyFilter( const QString & text );
 	void				Activate( QTreeWidgetItem * item );
+	void				SelectionEdited();
 
 	idEditorEngine *	engine;
 	QLineEdit *			filter;
 	QTreeWidget *		tree;
 	QLabel *			count;
+	bool				syncing = false;	// the list is being set from the engine's selection
 };

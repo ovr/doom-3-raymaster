@@ -5,10 +5,13 @@
 #pragma hdrstop
 #include "idlib/precompiled.h"
 
+#include <windowsx.h>
+
 #include "EditorView.h"
 
 namespace {
 
+constexpr float		FOV_X = 90.0f;
 constexpr float		LOOK_DEGREES_PER_PIXEL = 0.15f;
 constexpr float		MAX_PITCH = 89.0f;
 constexpr float		WHEEL_STEP = 64.0f;				// units per wheel notch
@@ -51,6 +54,28 @@ void idEditorView::SetView( const idVec3 & newOrigin, const idAngles & newAngles
 	angles.roll = 0.0f;
 }
 
+void idEditorView::GetFov( float & fovX, float & fovY ) const {
+	RECT rect = {};
+	GetClientRect( window, &rect );
+	const float aspect = static_cast<float>( Max( 1L, rect.right ) ) / static_cast<float>( Max( 1L, rect.bottom ) );
+	fovX = FOV_X;
+	fovY = RAD2DEG( 2.0f * idMath::ATan( idMath::Tan( DEG2RAD( fovX ) * 0.5f ) / aspect ) );
+}
+
+idVec3 idEditorView::RayThroughPixel( int x, int y ) const {
+	RECT rect = {};
+	GetClientRect( window, &rect );
+	float fovX, fovY;
+	GetFov( fovX, fovY );
+	// -1 .. 1 across the window, left and up positive like the view axis
+	const float left = 1.0f - 2.0f * ( static_cast<float>( x ) + 0.5f ) / static_cast<float>( Max( 1L, rect.right ) );
+	const float up = 1.0f - 2.0f * ( static_cast<float>( y ) + 0.5f ) / static_cast<float>( Max( 1L, rect.bottom ) );
+	const idMat3 axis = angles.ToMat3();
+	idVec3 dir = axis[0] + axis[1] * ( left * idMath::Tan( DEG2RAD( fovX ) * 0.5f ) ) + axis[2] * ( up * idMath::Tan( DEG2RAD( fovY ) * 0.5f ) );
+	dir.Normalize();
+	return dir;
+}
+
 void idEditorView::StartLook() {
 	if ( looking ) {
 		return;
@@ -70,6 +95,10 @@ void idEditorView::StopLook() {
 	looking = false;
 	ReleaseCapture();
 	ShowCursor( TRUE );
+	// the keys back to the host, for its shortcuts
+	if ( GetFocus() == window ) {
+		SetFocus( GetParent( window ) );
+	}
 }
 
 void idEditorView::Frame() {
@@ -123,6 +152,29 @@ bool idEditorView::HandleMessage( UINT message, WPARAM wParam, LPARAM lParam, LR
 		case WM_CAPTURECHANGED:
 			if ( reinterpret_cast<HWND>( lParam ) != window ) {
 				StopLook();
+				if ( leftDown ) {
+					leftDown = false;
+					client->ViewMouseUp();
+				}
+			}
+			return true;
+		case WM_LBUTTONDOWN:
+			if ( !looking && client != nullptr ) {
+				leftDown = true;
+				SetCapture( window );
+				client->ViewMouseDown( GET_X_LPARAM( lParam ), GET_Y_LPARAM( lParam ), ( wParam & MK_CONTROL ) != 0 );
+			}
+			return true;
+		case WM_MOUSEMOVE:
+			if ( leftDown ) {
+				client->ViewMouseMove( GET_X_LPARAM( lParam ), GET_Y_LPARAM( lParam ) );
+			}
+			return true;
+		case WM_LBUTTONUP:
+			if ( leftDown ) {
+				leftDown = false;
+				ReleaseCapture();
+				client->ViewMouseUp();
 			}
 			return true;
 		case WM_MOUSEWHEEL: {
@@ -146,13 +198,10 @@ bool idEditorView::HandleMessage( UINT message, WPARAM wParam, LPARAM lParam, LR
 		case WM_SYSKEYDOWN:
 		case WM_SYSKEYUP:
 		case WM_CHAR:
-		case WM_LBUTTONDOWN:
-		case WM_LBUTTONUP:
 		case WM_MBUTTONDOWN:
 		case WM_MBUTTONUP:
 		case WM_XBUTTONDOWN:
 		case WM_XBUTTONUP:
-		case WM_MOUSEMOVE:
 			return true;
 	}
 	return false;

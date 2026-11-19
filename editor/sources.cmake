@@ -9,7 +9,11 @@ set(EDITOR_BRIDGE_SOURCES
 	bridge/EditorCheck.cpp
 	bridge/EditorEngine.cpp
 	bridge/EditorEngine.h
+	bridge/EditorHistory.cpp
+	bridge/EditorHistory.h
 	bridge/EditorMain.cpp
+	bridge/EditorTool.cpp
+	bridge/EditorTool.h
 	bridge/EditorView.cpp
 	bridge/EditorView.h
 	bridge/EditorWorld.cpp

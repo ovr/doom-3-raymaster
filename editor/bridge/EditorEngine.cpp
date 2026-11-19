@@ -14,15 +14,19 @@
 
 #include "../api/EditorEngineApi.h"
 #include "EditorEngine.h"
+#include "EditorHistory.h"
+#include "EditorTool.h"
 #include "EditorView.h"
 #include "EditorWorld.h"
 
 namespace {
 
 constexpr char		EDITOR_TITLE[] = "Doom 3 Editor";
+constexpr float		PICK_DISTANCE = 16384.0f;
+constexpr int		EDIT_FRAME_MSEC = 8;			// the edit view's frame time: 125 frames a second
 
 // the engine as the UI sees it, and the UI as the engine sees it
-class idEditorEngineLocal final : public idEditorEngine, public idEngineHost {
+class idEditorEngineLocal final : public idEditorEngine, public idEngineHost, public idEditorViewClient {
 public:
 	idEditorEngineLocal( HINSTANCE instance_, const char * cmdLine_ ) : instance( instance_ ), cmdLine( cmdLine_ ) {}
 
@@ -41,10 +45,30 @@ public:
 	[[nodiscard]] const char *	CurrentMap() const override { return world.Name(); }
 	void				EnumEntities( editorEntityVisitor_t visitor, void * context ) override;
 	void				LookAtEntity( int index ) override;
+	void				SelectEntity( int index, bool add ) override;
+	void				EnumSelection( editorSelectionVisitor_t visitor, void * context ) override;
+	void				SetGizmo( int gizmo ) override;
+	void				SetGridSize( float size ) override { tool.SetGridSize( size ); }
+	void				GetDocumentState( editorDocumentState_t & state ) const override;
+	void				Undo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorUndo\n" ); }
+	void				Redo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorRedo\n" ); }
+	void				SaveMap() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorSaveMap\n" ); }
 
-	// the console commands behind OpenMap() and CloseMap()
+	// the console commands behind the queued calls
 	void				OpenMapNow( const char * name );
 	void				CloseMapNow();
+	void				UndoNow();
+	void				RedoNow();
+	void				SaveMapNow();
+	// value nullptr removes the key
+	void				SetKeyNow( const char * entityName, const char * key, const char * value );
+	// -1 and a print when the open map has no such entity
+	[[nodiscard]] int	FindEntity( const char * entityName ) const;
+
+	// idEditorViewClient
+	void				ViewMouseDown( int x, int y, bool ctrl ) override;
+	void				ViewMouseMove( int x, int y ) override;
+	void				ViewMouseUp() override;
 
 	// idEngineHost
 	void *				ParentWindow() override { return ui->ViewportParent(); }
@@ -63,8 +87,11 @@ private:
 	idEditorHost *		ui = nullptr;
 	bool				started = false;
 	bool				inFrame = false;
+	int					lastFrameMsec = 0;
 	idEditorWorld		world;
 	idEditorView		view;
+	idEditorTool		tool;
+	idEditorHistory		history;
 };
 
 // for the console commands; nullptr in the bare shell
@@ -76,6 +103,7 @@ void idEditorEngineLocal::Init( idEditorHost * host ) {
 	Sys_EngineInit( instance, cmdLine.c_str(), this );
 	started = true;
 	view.Attach( Viewport() );
+	view.SetClient( this );
 }
 
 void idEditorEngineLocal::Frame() {
@@ -83,6 +111,15 @@ void idEditorEngineLocal::Frame() {
 	if ( !started || inFrame ) {
 		return;
 	}
+	// Nothing paces the edit view (no game tics), and an editor has no use for a thousand frames a second.
+	if ( world.IsOpen() ) {
+		const int sinceLast = Sys_Milliseconds() - lastFrameMsec;
+		if ( sinceLast >= 0 && sinceLast < EDIT_FRAME_MSEC ) {
+			Sys_Sleep( EDIT_FRAME_MSEC - sinceLast );
+		}
+	}
+	lastFrameMsec = Sys_Milliseconds();
+
 	inFrame = true;
 	Sys_EngineFrame();
 	inFrame = false;
@@ -138,6 +175,8 @@ void idEditorEngineLocal::CloseMap() {
 }
 
 void idEditorEngineLocal::OpenMapNow( const char * name ) {
+	tool.Reset();
+	history.Clear();
 	if ( world.Open( name ) ) {
 		idVec3 origin;
 		idAngles angles;
@@ -149,9 +188,123 @@ void idEditorEngineLocal::OpenMapNow( const char * name ) {
 }
 
 void idEditorEngineLocal::CloseMapNow() {
+	tool.Reset();
+	history.Clear();
 	world.Close();
 	view.SetEditMode( false );
 	ui->OnMapChanged();
+}
+
+void idEditorEngineLocal::UndoNow() {
+	if ( world.IsOpen() && history.CanUndo() && !tool.Dragging() ) {
+		history.Undo( world );
+		ui->OnDocumentChanged();
+	}
+}
+
+void idEditorEngineLocal::RedoNow() {
+	if ( world.IsOpen() && history.CanRedo() && !tool.Dragging() ) {
+		history.Redo( world );
+		ui->OnDocumentChanged();
+	}
+}
+
+void idEditorEngineLocal::SaveMapNow() {
+	if ( !world.IsOpen() ) {
+		common->Printf( "No map is open in the editor.\n" );
+		return;
+	}
+	if ( world.Save() ) {
+		history.MarkSaved();
+		ui->OnDocumentChanged();
+	} else {
+		common->Warning( "Editor: %s could not be saved", world.Name() );
+	}
+}
+
+int idEditorEngineLocal::FindEntity( const char * entityName ) const {
+	for ( int i = 1; i < world.NumEntities(); i++ ) {
+		if ( idStr::Icmp( world.MapArgs( i ).GetString( "name" ), entityName ) == 0 ) {
+			return i;
+		}
+	}
+	common->Printf( "The open map has no entity named '%s'.\n", entityName );
+	return -1;
+}
+
+void idEditorEngineLocal::SetKeyNow( const char * entityName, const char * key, const char * value ) {
+	const int index = FindEntity( entityName );
+	if ( index == -1 || tool.Dragging() ) {
+		return;
+	}
+
+	idList<editorChange_t> changes;
+	editorChange_t & change = changes.Alloc();
+	change.index = index;
+	change.before = world.MapArgs( index );
+	change.after = change.before;
+	if ( value != nullptr ) {
+		change.after.Set( key, value );
+	} else {
+		change.after.Delete( key );
+	}
+	world.SetMapArgs( index, change.after );
+	history.Add( va( "Set %s", key ), changes );
+	ui->OnDocumentChanged();
+}
+
+void idEditorEngineLocal::SelectEntity( int index, bool add ) {
+	if ( index >= world.NumEntities() || tool.Dragging() ) {
+		return;
+	}
+	if ( tool.Select( index, add ) ) {
+		ui->OnSelectionChanged();
+	}
+}
+
+void idEditorEngineLocal::EnumSelection( editorSelectionVisitor_t visitor, void * context ) {
+	for ( int i = 0; i < tool.NumSelected(); i++ ) {
+		visitor( context, tool.Selected( i ) );
+	}
+}
+
+void idEditorEngineLocal::SetGizmo( int gizmo ) {
+	if ( !tool.Dragging() ) {
+		tool.SetMode( ( gizmo == EDITOR_GIZMO_ROTATE ) ? idEditorTool::mode_t::ROTATE : idEditorTool::mode_t::MOVE );
+	}
+}
+
+void idEditorEngineLocal::GetDocumentState( editorDocumentState_t & state ) const {
+	state.dirty = history.IsDirty();
+	state.canUndo = history.CanUndo();
+	state.canRedo = history.CanRedo();
+	state.undoLabel = history.UndoLabel();
+	state.redoLabel = history.RedoLabel();
+}
+
+void idEditorEngineLocal::ViewMouseDown( int x, int y, bool ctrl ) {
+	if ( !world.IsOpen() ) {
+		return;
+	}
+	const idVec3 dir = view.RayThroughPixel( x, y );
+	if ( tool.BeginDrag( world, view.Origin(), dir, view.Origin() ) ) {
+		return;
+	}
+	if ( tool.Select( world.Pick( view.Origin(), dir, PICK_DISTANCE ), ctrl ) ) {
+		ui->OnSelectionChanged();
+	}
+}
+
+void idEditorEngineLocal::ViewMouseMove( int x, int y ) {
+	if ( tool.Dragging() ) {
+		tool.Drag( world, view.Origin(), view.RayThroughPixel( x, y ) );
+	}
+}
+
+void idEditorEngineLocal::ViewMouseUp() {
+	if ( tool.EndDrag( world, history ) ) {
+		ui->OnDocumentChanged();
+	}
 }
 
 void idEditorEngineLocal::EnumEntities( editorEntityVisitor_t visitor, void * context ) {
@@ -181,7 +334,14 @@ bool idEditorEngineLocal::DrawScene() {
 		return false;
 	}
 	view.Frame();
-	world.Draw( view.Origin(), view.Axis(), Sys_Milliseconds() );
+	// The lines of the last frame: the game clears them every tic, nothing does here, and a full
+	// line buffer silently drops the new ones.
+	const int now = Sys_Milliseconds();
+	world.RenderWorld()->DebugClearLines( now );
+	tool.Draw( world, view.Origin() );
+	float fovX, fovY;
+	view.GetFov( fovX, fovY );
+	world.Draw( view.Origin(), view.Axis(), fovX, fovY, now );
 	return true;
 }
 
@@ -227,6 +387,48 @@ CONSOLE_COMMAND_SHIP( editorOpenMap, "opens a map in the editor: editorOpenMap g
 CONSOLE_COMMAND_SHIP( editorCloseMap, "closes the map open in the editor", nullptr ) {
 	if ( NeedEditor() ) {
 		editorEngine->CloseMapNow();
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorUndo, "undoes the last edit of the map open in the editor", nullptr ) {
+	if ( NeedEditor() ) {
+		editorEngine->UndoNow();
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorRedo, "redoes the edit undone last", nullptr ) {
+	if ( NeedEditor() ) {
+		editorEngine->RedoNow();
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorSetKey, "sets a key of an entity of the open map, or removes it: editorSetKey <entity> <key> [value]", nullptr ) {
+	if ( args.Argc() < 3 || args.Argc() > 4 ) {
+		common->Printf( "usage: editorSetKey <entity name> <key> [value]\n" );
+		return;
+	}
+	if ( NeedEditor() ) {
+		editorEngine->SetKeyNow( args.Argv( 1 ), args.Argv( 2 ), ( args.Argc() == 4 ) ? args.Argv( 3 ) : nullptr );
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorSelect, "selects an entity of the open map by name and puts the camera in front of it", nullptr ) {
+	if ( args.Argc() != 2 ) {
+		common->Printf( "usage: editorSelect <entity name>\n" );
+		return;
+	}
+	if ( NeedEditor() ) {
+		const int index = editorEngine->FindEntity( args.Argv( 1 ) );
+		if ( index != -1 ) {
+			editorEngine->SelectEntity( index, false );
+			editorEngine->LookAtEntity( index );
+		}
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorSaveMap, "saves the map open in the editor into fs_savepath", nullptr ) {
+	if ( NeedEditor() ) {
+		editorEngine->SaveMapNow();
 	}
 }
 

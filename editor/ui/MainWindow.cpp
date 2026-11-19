@@ -5,6 +5,10 @@
 #include "MainWindow.h"
 
 #include <QAction>
+#include <QActionGroup>
+#include <QComboBox>
+#include <QLabel>
+#include <QToolBar>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDialog>
@@ -28,7 +32,9 @@
 namespace {
 
 // bump when the set of docks changes in a way an old saved layout would break
-constexpr int LAYOUT_VERSION = 2;
+constexpr int LAYOUT_VERSION = 3;
+constexpr float GRID_SIZES[] = { 0.0f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
+constexpr int DEFAULT_GRID = 4;		// index into GRID_SIZES
 constexpr int MAP_NAME_ROLE = Qt::UserRole;
 
 [[nodiscard]] QSettings Settings() {
@@ -102,6 +108,8 @@ MainWindow::MainWindow( idEditorEngine * engine_, QWidget * parent ) : QMainWind
 
 	client = new EngineClient( engine, viewport, this );
 	connect( client, &EngineClient::mapChanged, this, &MainWindow::MapChanged );
+	connect( client, &EngineClient::selectionChanged, outliner, &Outliner::SyncSelection );
+	connect( client, &EngineClient::documentChanged, this, &MainWindow::DocumentChanged );
 	connect( client, &EngineClient::printed, outputLog, &OutputLog::Append );
 	connect( client, &EngineClient::aboutToShutdown, this, &MainWindow::SaveLayout );
 	connect( outputLog, &OutputLog::commandEntered, client, &EngineClient::Execute );
@@ -118,14 +126,66 @@ void MainWindow::CreateMenus() {
 	QAction * const openMapAction = fileMenu->addAction( tr( "&Open Map..." ) );
 	openMapAction->setShortcut( QKeySequence::Open );
 	connect( openMapAction, &QAction::triggered, this, &MainWindow::ChooseMap );
+	saveAction = fileMenu->addAction( tr( "&Save Map" ) );
+	saveAction->setShortcut( QKeySequence::Save );
+	connect( saveAction, &QAction::triggered, this, [this] { engine->SaveMap(); } );
 	closeMapAction = fileMenu->addAction( tr( "&Close Map" ) );
-	connect( closeMapAction, &QAction::triggered, this, [this] { engine->CloseMap(); } );
+	connect( closeMapAction, &QAction::triggered, this, [this] {
+		if ( ConfirmDiscard() ) {
+			engine->CloseMap();
+		}
+	} );
 	fileMenu->addSeparator();
 	QAction * const exitAction = fileMenu->addAction( tr( "E&xit" ) );
 	exitAction->setShortcut( QKeySequence( Qt::ALT | Qt::Key_F4 ) );
 	connect( exitAction, &QAction::triggered, this, &QWidget::close );
 
+	QMenu * const editMenu = menuBar()->addMenu( tr( "&Edit" ) );
+	undoAction = editMenu->addAction( tr( "&Undo" ) );
+	undoAction->setShortcut( QKeySequence::Undo );
+	connect( undoAction, &QAction::triggered, this, [this] { engine->Undo(); } );
+	redoAction = editMenu->addAction( tr( "&Redo" ) );
+	redoAction->setShortcuts( { QKeySequence( Qt::CTRL | Qt::Key_Y ), QKeySequence( Qt::CTRL | Qt::SHIFT | Qt::Key_Z ) } );
+	connect( redoAction, &QAction::triggered, this, [this] { engine->Redo(); } );
+	editMenu->addSeparator();
+	QAction * const deselectAction = editMenu->addAction( tr( "&Deselect All" ) );
+	deselectAction->setShortcut( QKeySequence( Qt::Key_Escape ) );
+	connect( deselectAction, &QAction::triggered, this, [this] { engine->SelectEntity( 0, false ); } );
+
+	// the gizmo and the grid, as in other editors: W moves, E rotates
+	QToolBar * const tools = addToolBar( tr( "Tools" ) );
+	tools->setObjectName( QStringLiteral( "ToolsBar" ) );
+	auto * const gizmoGroup = new QActionGroup( this );
+	QAction * const moveAction = tools->addAction( tr( "Move" ) );
+	moveAction->setShortcut( QKeySequence( Qt::Key_W ) );
+	moveAction->setToolTip( tr( "Move the selection along an axis (W)" ) );
+	QAction * const rotateAction = tools->addAction( tr( "Rotate" ) );
+	rotateAction->setShortcut( QKeySequence( Qt::Key_E ) );
+	rotateAction->setToolTip( tr( "Turn the selection around an axis, in steps of 15 degrees (E)" ) );
+	for ( QAction * const action : { moveAction, rotateAction } ) {
+		action->setCheckable( true );
+		gizmoGroup->addAction( action );
+	}
+	moveAction->setChecked( true );
+	connect( moveAction, &QAction::triggered, this, [this] { engine->SetGizmo( EDITOR_GIZMO_MOVE ); } );
+	connect( rotateAction, &QAction::triggered, this, [this] { engine->SetGizmo( EDITOR_GIZMO_ROTATE ); } );
+	editMenu->addSeparator();
+	editMenu->addAction( moveAction );
+	editMenu->addAction( rotateAction );
+
+	tools->addSeparator();
+	tools->addWidget( new QLabel( tr( " Grid " ), tools ) );
+	auto * const grid = new QComboBox( tools );
+	for ( const float size : GRID_SIZES ) {
+		grid->addItem( ( size == 0.0f ) ? tr( "Off" ) : QString::number( size ), size );
+	}
+	grid->setCurrentIndex( DEFAULT_GRID );
+	grid->setToolTip( tr( "The step of a move, in map units" ) );
+	connect( grid, &QComboBox::currentIndexChanged, this, [this, grid] { engine->SetGridSize( grid->currentData().toFloat() ); } );
+	tools->addWidget( grid );
+
 	QMenu * const viewMenu = menuBar()->addMenu( tr( "&View" ) );
+	viewMenu->addAction( tools->toggleViewAction() );
 	viewMenu->addAction( outlinerDock->toggleViewAction() );
 	viewMenu->addAction( outputDock->toggleViewAction() );
 	viewMenu->addSeparator();
@@ -153,8 +213,37 @@ void MainWindow::Start() {
 
 void MainWindow::closeEvent( QCloseEvent * event ) {
 	// the engine goes first, while its window still exists; the process ends there
-	client->RequestQuit();
 	event->ignore();
+	if ( closing || ConfirmDiscard() ) {
+		closing = true;
+		client->RequestQuit();
+	}
+}
+
+bool MainWindow::ConfirmDiscard() {
+	editorDocumentState_t state = {};
+	engine->GetDocumentState( state );
+	if ( !state.dirty ) {
+		return true;
+	}
+	const QString map = QString::fromLocal8Bit( engine->CurrentMap() );
+	return QMessageBox::question( this, tr( "Unsaved Changes" ), tr( "%1 has changes that are not saved. Discard them?" ).arg( map ),
+		QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel ) == QMessageBox::Discard;
+}
+
+void MainWindow::DocumentChanged() {
+	editorDocumentState_t state = {};
+	engine->GetDocumentState( state );
+	const QString map = QString::fromLocal8Bit( engine->CurrentMap() );
+	const QString undoLabel = QString::fromLocal8Bit( state.undoLabel );
+	const QString redoLabel = QString::fromLocal8Bit( state.redoLabel );
+
+	setWindowTitle( map.isEmpty() ? tr( "Doom 3 Editor" ) : tr( "%1%2 - Doom 3 Editor" ).arg( map, state.dirty ? QStringLiteral( "*" ) : QString() ) );
+	saveAction->setEnabled( !map.isEmpty() );
+	undoAction->setEnabled( state.canUndo );
+	undoAction->setText( undoLabel.isEmpty() ? tr( "&Undo" ) : tr( "&Undo %1" ).arg( undoLabel ) );
+	redoAction->setEnabled( state.canRedo );
+	redoAction->setText( redoLabel.isEmpty() ? tr( "&Redo" ) : tr( "&Redo %1" ).arg( redoLabel ) );
 }
 
 void MainWindow::RestoreLayout() {
@@ -175,6 +264,9 @@ void MainWindow::SaveLayout() {
 }
 
 void MainWindow::ChooseMap() {
+	if ( !ConfirmDiscard() ) {
+		return;
+	}
 	const QString name = AskForMap( this, engine );
 	if ( !name.isEmpty() ) {
 		engine->OpenMap( name.toLocal8Bit().constData() );
@@ -183,12 +275,12 @@ void MainWindow::ChooseMap() {
 
 void MainWindow::MapChanged() {
 	const QString map = QString::fromLocal8Bit( engine->CurrentMap() );
-	setWindowTitle( map.isEmpty() ? tr( "Doom 3 Editor" ) : tr( "%1 - Doom 3 Editor" ).arg( map ) );
 	closeMapAction->setEnabled( !map.isEmpty() );
 	outliner->Reload();
+	DocumentChanged();
 	statusBar()->showMessage( map.isEmpty()
 		? tr( "File > Open Map starts editing. Without a map: click the viewport to play in it, Shift+Esc gives the mouse and the keys back." )
-		: tr( "Hold the right mouse button in the viewport to look around; W A S D fly, Q / E down and up, Shift faster, the wheel sets the speed." ) );
+		: tr( "Click selects (Ctrl adds), drag the gizmo to move or turn. Hold the right mouse button to look; W A S D fly, Q / E down and up, Shift faster." ) );
 }
 
 void MainWindow::ShowAbout() {

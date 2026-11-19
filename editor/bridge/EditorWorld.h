@@ -15,10 +15,15 @@
 
 	So an entity of any class shows up without being spawned, and a changed key is one
 	UpdateEntityDef away. What a script or the AI would do at run time is not shown.
+
+	The map file is the document: SetMapArgs() is the only way an entity changes, and Save() writes
+	the file into fs_savepath, never into the game install.
 */
 
 struct editorMapEntity_t {
 	idDict				args;				// the map's own key/values over the entityDef's
+	renderEntity_t		renderEntity;		// valid while modelHandle != -1
+	renderLight_t		renderLight;		// valid while lightHandle != -1
 	qhandle_t			modelHandle = -1;
 	qhandle_t			lightHandle = -1;
 	idJointMat *		joints = nullptr;	// the pose of a skinned model, Mem_Alloc16
@@ -36,20 +41,33 @@ public:
 	void				Close();
 	[[nodiscard]] bool	IsOpen() const { return world != nullptr; }
 	[[nodiscard]] const char *	Name() const { return mapName.c_str(); }
+	// into fs_savepath/maps
+	[[nodiscard]] bool	Save();
 
 	[[nodiscard]] int	NumEntities() const { return entities.Num(); }
 	[[nodiscard]] const editorMapEntity_t &	Entity( int index ) const { return entities[index]; }
-	[[nodiscard]] idMapFile &	MapFile() { return mapFile; }
+
+	// the key/values as the map file has them, without the entityDef's defaults
+	[[nodiscard]] const idDict &	MapArgs( int index ) const { return mapFile.GetEntity( index )->epairs; }
+	// replaces them and shows the entity as they now describe it
+	void				SetMapArgs( int index, const idDict & mapArgs );
+
+	// what the entity covers in the world: its model, or its marker box
+	[[nodiscard]] idBounds	WorldBounds( int index ) const;
+	// the nearest entity on the ray, the world's own geometry hiding what is behind it; -1 = none
+	[[nodiscard]] int	Pick( const idVec3 & start, const idVec3 & dir, float maxDistance ) const;
 
 	// where a new view starts: the player start, or the middle of the entities
 	void				GetStartView( idVec3 & origin, idAngles & angles ) const;
 
-	void				Draw( const idVec3 & origin, const idMat3 & axis, int timeMsec );
+	[[nodiscard]] idRenderWorld *	RenderWorld() const { return world; }
+	void				Draw( const idVec3 & origin, const idMat3 & axis, float fovX, float fovY, int timeMsec );
 
 private:
-	void				AddEntity( const idMapEntity & mapEntity );
+	// from entities[index].args: adds, updates or frees the model and the light
+	void				ShowEntity( int index );
 	void				FreeEntity( editorMapEntity_t & entity );
-	void				PoseSkinnedModel( editorMapEntity_t & entity, renderEntity_t & renderEntity ) const;
+	void				PoseSkinnedModel( editorMapEntity_t & entity ) const;
 	void				DrawMarkers( const idVec3 & viewOrigin );
 
 	idStr				mapName;

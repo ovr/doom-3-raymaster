@@ -13,8 +13,7 @@
 namespace {
 
 // entities without a model are drawn as a box when the view is this near
-constexpr float		MARKER_DISTANCE = 1500.0f;
-constexpr float		DEFAULT_FOV_X = 90.0f;
+constexpr float		MARKER_DISTANCE = 512.0f;
 constexpr float		PLAYER_EYE_HEIGHT = 68.0f;
 const idBounds		DEFAULT_MARKER_BOUNDS( idVec3( -8.0f, -8.0f, -8.0f ), idVec3( 8.0f, 8.0f, 8.0f ) );
 
@@ -69,10 +68,11 @@ bool idEditorWorld::Open( const char * name ) {
 
 	if ( ok ) {
 		mapName = cleanName;
-		entities.SetNum( 0 );
 		entities.SetGranularity( 1024 );
-		for ( int i = 0; i < mapFile.GetNumEntities(); i++ ) {
-			AddEntity( *mapFile.GetEntity( i ) );
+		entities.SetNum( mapFile.GetNumEntities() );
+		for ( int i = 0; i < entities.Num(); i++ ) {
+			MergedSpawnArgs( mapFile.GetEntity( i )->epairs, entities[i].args );
+			ShowEntity( i );
 		}
 		// as the game does after spawning; the frontend also needs the interaction table this makes
 		world->GenerateAllInteractions();
@@ -107,43 +107,76 @@ void idEditorWorld::Close() {
 	}
 }
 
-void idEditorWorld::AddEntity( const idMapEntity & mapEntity ) {
-	editorMapEntity_t & entity = entities.Alloc();
-	MergedSpawnArgs( mapEntity.epairs, entity.args );
+bool idEditorWorld::Save() {
+	if ( !IsOpen() ) {
+		return false;
+	}
+	return mapFile.Write( idStr( "maps/" ) + mapName, ".map", "fs_savepath" );
+}
+
+void idEditorWorld::SetMapArgs( int index, const idDict & mapArgs ) {
+	mapFile.GetEntity( index )->epairs = mapArgs;
+	MergedSpawnArgs( mapArgs, entities[index].args );
+	ShowEntity( index );
+}
+
+void idEditorWorld::ShowEntity( int index ) {
+	editorMapEntity_t & entity = entities[index];
 	entity.origin = entity.args.GetVector( "origin", "0 0 0" );
 	entity.bounds = MarkerBounds( entity.args );
 
 	// the worldspawn's geometry is the world's areas, which InitFromMap already made
-	if ( entities.Num() == 1 ) {
+	if ( index == 0 ) {
 		return;
 	}
 
 	entity.isLight = ( idStr::Icmp( entity.args.GetString( "spawnclass" ), "idLight" ) == 0 );
 	if ( entity.isLight ) {
-		renderLight_t renderLight;
-		gameEdit->ParseSpawnArgsToRenderLight( &entity.args, &renderLight );
-		entity.lightHandle = world->AddLightDef( &renderLight );
+		gameEdit->ParseSpawnArgsToRenderLight( &entity.args, &entity.renderLight );
+		if ( entity.lightHandle == -1 ) {
+			entity.lightHandle = world->AddLightDef( &entity.renderLight );
+		} else {
+			world->UpdateLightDef( entity.lightHandle, &entity.renderLight );
+		}
+	} else if ( entity.lightHandle != -1 ) {
+		world->FreeLightDef( entity.lightHandle );
+		entity.lightHandle = -1;
 	}
 
-	if ( entity.args.GetString( "model" )[0] == '\0' ) {
+	bool hasModel = false;
+	if ( entity.args.GetString( "model" )[0] != '\0' ) {
+		gameEdit->ParseSpawnArgsToRenderEntity( &entity.args, &entity.renderEntity );
+		hasModel = ( entity.renderEntity.hModel != nullptr && !entity.renderEntity.hModel->IsDefaultModel() );
+	}
+	if ( !hasModel ) {
+		if ( entity.modelHandle != -1 ) {
+			world->FreeEntityDef( entity.modelHandle );
+			entity.modelHandle = -1;
+		}
 		return;
 	}
-	renderEntity_t renderEntity;
-	gameEdit->ParseSpawnArgsToRenderEntity( &entity.args, &renderEntity );
-	if ( renderEntity.hModel == nullptr || renderEntity.hModel->IsDefaultModel() ) {
-		return;
+
+	// Pick() finds the map entity of a hit model by this
+	entity.renderEntity.entityNum = index;
+	if ( entity.renderEntity.hModel->NumJoints() > 0 ) {
+		PoseSkinnedModel( entity );
 	}
-	if ( renderEntity.hModel->NumJoints() > 0 ) {
-		PoseSkinnedModel( entity, renderEntity );
+	if ( entity.modelHandle == -1 ) {
+		entity.modelHandle = world->AddEntityDef( &entity.renderEntity );
+	} else {
+		world->UpdateEntityDef( entity.modelHandle, &entity.renderEntity );
 	}
-	entity.modelHandle = world->AddEntityDef( &renderEntity );
 }
 
 // A skinned model cannot be drawn without joints: the first frame of its idle animation, or the
 // bind pose when the class has none.
-void idEditorWorld::PoseSkinnedModel( editorMapEntity_t & entity, renderEntity_t & renderEntity ) const {
+void idEditorWorld::PoseSkinnedModel( editorMapEntity_t & entity ) const {
+	renderEntity_t & renderEntity = entity.renderEntity;
 	const idRenderModel * const model = renderEntity.hModel;
 	const int numJoints = model->NumJoints();
+	if ( entity.joints != nullptr ) {
+		Mem_Free16( entity.joints );
+	}
 	entity.joints = static_cast<idJointMat *>( Mem_Alloc16( SIMD_ROUND_JOINTS( numJoints ) * sizeof( idJointMat ), TAG_JOINTMAT ) );
 
 	const char * const classname = entity.args.GetString( "classname" );
@@ -183,6 +216,47 @@ void idEditorWorld::FreeEntity( editorMapEntity_t & entity ) {
 	}
 }
 
+idBounds idEditorWorld::WorldBounds( int index ) const {
+	const editorMapEntity_t & entity = entities[index];
+	idBounds bounds;
+	if ( entity.modelHandle != -1 ) {
+		bounds.FromTransformedBounds( entity.renderEntity.bounds, entity.renderEntity.origin, entity.renderEntity.axis );
+	} else {
+		bounds = entity.bounds.Translate( entity.origin );
+	}
+	return bounds;
+}
+
+int idEditorWorld::Pick( const idVec3 & start, const idVec3 & dir, float maxDistance ) const {
+	if ( world == nullptr ) {
+		return -1;
+	}
+	int picked = -1;
+	float distance = maxDistance;
+
+	// models, and the world's geometry as entity 0
+	modelTrace_t trace = {};
+	if ( world->Trace( trace, start, start + dir * maxDistance, 0.0f, false ) && trace.entity != nullptr ) {
+		distance = trace.fraction * maxDistance;
+		const int index = trace.entity->entityNum;
+		picked = ( index > 0 && index < entities.Num() ) ? index : -1;
+	}
+
+	// the boxes of what has no model
+	for ( int i = 1; i < entities.Num(); i++ ) {
+		const editorMapEntity_t & entity = entities[i];
+		if ( entity.modelHandle != -1 ) {
+			continue;
+		}
+		float scale = 0.0f;
+		if ( entity.bounds.Translate( entity.origin ).RayIntersection( start, dir, scale ) && scale >= 0.0f && scale < distance ) {
+			distance = scale;
+			picked = i;
+		}
+	}
+	return picked;
+}
+
 void idEditorWorld::GetStartView( idVec3 & origin, idAngles & angles ) const {
 	angles.Zero();
 	origin.Zero();
@@ -218,7 +292,7 @@ void idEditorWorld::DrawMarkers( const idVec3 & viewOrigin ) {
 	}
 }
 
-void idEditorWorld::Draw( const idVec3 & origin, const idMat3 & axis, int timeMsec ) {
+void idEditorWorld::Draw( const idVec3 & origin, const idMat3 & axis, float fovX, float fovY, int timeMsec ) {
 	if ( world == nullptr ) {
 		return;
 	}
@@ -227,10 +301,8 @@ void idEditorWorld::Draw( const idVec3 & origin, const idMat3 & axis, int timeMs
 	renderView_t view = {};
 	view.vieworg = origin;
 	view.viewaxis = axis;
-	view.fov_x = DEFAULT_FOV_X;
-	// the vertical angle that keeps pixels square for this window
-	const float aspect = static_cast<float>( renderSystem->GetWidth() ) / static_cast<float>( Max( 1, renderSystem->GetHeight() ) );
-	view.fov_y = RAD2DEG( 2.0f * idMath::ATan( idMath::Tan( DEG2RAD( view.fov_x ) * 0.5f ) / aspect ) );
+	view.fov_x = fovX;
+	view.fov_y = fovY;
 	view.time[0] = timeMsec;
 	view.time[1] = timeMsec;
 	for ( float & parm : view.shaderParms ) {

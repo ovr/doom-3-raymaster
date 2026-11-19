@@ -37,7 +37,8 @@ int WINAPI WinMain( _In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ LPSTR cmdL
 
 	// One thread: nothing of a frame is pending between two frames, so the editor can change the world there.
 	// A window inside the host's, whatever the saved video mode says.
-	engineCmdLine += " +set com_smp 0 +set r_fullscreen 0";
+	// The maps the editor saves are loose files, which must win over the copies in the resource files.
+	engineCmdLine += " +set com_smp 0 +set r_fullscreen 0 +set fs_resourceLoadPriority 0";
 
 	return bare ? Editor_RunBare( instance, engineCmdLine.c_str() ) : Editor_RunUi( instance, engineCmdLine.c_str() );
 }

@@ -21,7 +21,22 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 2;
+constexpr int EDITOR_API_VERSION = 3;
+
+// what a drag in the viewport does to the selection
+enum editorGizmo_t : int {
+	EDITOR_GIZMO_MOVE,
+	EDITOR_GIZMO_ROTATE
+};
+
+// the state of the open map's history, for the Edit menu; the labels are "" when there is no step
+struct editorDocumentState_t {
+	bool				dirty;
+	bool				canUndo;
+	bool				canRedo;
+	const char *		undoLabel;
+	const char *		redoLabel;
+};
 
 // a map the game data declares (a mapDef): name is what OpenMap takes, "game/mc_underground"
 struct editorMapInfo_t {
@@ -41,6 +56,7 @@ struct editorEntityInfo_t {
 // the strings are valid during the call only
 using editorMapVisitor_t = void ( * )( void * context, const editorMapInfo_t & map );
 using editorEntityVisitor_t = void ( * )( void * context, const editorEntityInfo_t & entity );
+using editorSelectionVisitor_t = void ( * )( void * context, int entityIndex );
 
 // implemented by the UI
 class idEditorHost {
@@ -64,6 +80,11 @@ public:
 
 	// a map was opened or closed: CurrentMap() and the entities are new
 	virtual void		OnMapChanged() = 0;
+
+	// the selection changed, in the viewport or through SelectEntity()
+	virtual void		OnSelectionChanged() = 0;
+	// an edit, an undo, a redo or a save: GetDocumentState() is new
+	virtual void		OnDocumentChanged() = 0;
 
 protected:
 						~idEditorHost() = default;
@@ -100,6 +121,22 @@ public:
 	virtual void		EnumEntities( editorEntityVisitor_t visitor, void * context ) = 0;
 	// puts the camera in front of the entity
 	virtual void		LookAtEntity( int index ) = 0;
+
+	// The selection. In the viewport: a click selects, Ctrl+click adds or removes.
+	// add = false replaces the selection; index 0 or less with add = false clears it.
+	virtual void		SelectEntity( int index, bool add ) = 0;
+	virtual void		EnumSelection( editorSelectionVisitor_t visitor, void * context ) = 0;
+
+	// the gizmo at the selection (editorGizmo_t) and the step of a move, 0 = no snapping
+	virtual void		SetGizmo( int gizmo ) = 0;
+	virtual void		SetGridSize( float size ) = 0;
+
+	// Undo, Redo and SaveMap happen in the next frame and end in OnDocumentChanged().
+	// The map is saved into the project folder (fs_savepath), never into the game install.
+	virtual void		GetDocumentState( editorDocumentState_t & state ) const = 0;
+	virtual void		Undo() = 0;
+	virtual void		Redo() = 0;
+	virtual void		SaveMap() = 0;
 
 protected:
 						~idEditorEngine() = default;

@@ -7,6 +7,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QSet>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -34,6 +35,8 @@ Outliner::Outliner( idEditorEngine * engine_, QWidget * parent ) : QWidget( pare
 	tree->setSortingEnabled( true );
 	tree->sortByColumn( COLUMN_NAME, Qt::AscendingOrder );
 	tree->header()->setSectionResizeMode( COLUMN_NAME, QHeaderView::Stretch );
+	tree->setSelectionMode( QAbstractItemView::ExtendedSelection );
+	connect( tree, &QTreeWidget::itemSelectionChanged, this, &Outliner::SelectionEdited );
 	connect( tree, &QTreeWidget::itemActivated, this, &Outliner::Activate );
 
 	count = new QLabel( this );
@@ -82,6 +85,39 @@ void Outliner::ApplyFilter( const QString & text ) {
 		shown += match ? 1 : 0;
 	}
 	count->setText( ( shown == total ) ? tr( "%1 entities" ).arg( total ) : tr( "%1 of %2 entities" ).arg( shown ).arg( total ) );
+}
+
+void Outliner::SyncSelection() {
+	QSet<int> selected;
+	engine->EnumSelection( []( void * context, int index ) {
+		static_cast<QSet<int> *>( context )->insert( index );
+	}, &selected );
+
+	syncing = true;
+	QTreeWidgetItem * first = nullptr;
+	for ( int i = 0; i < tree->topLevelItemCount(); i++ ) {
+		QTreeWidgetItem * const item = tree->topLevelItem( i );
+		const bool isSelected = selected.contains( item->data( COLUMN_NAME, ENTITY_INDEX_ROLE ).toInt() );
+		item->setSelected( isSelected );
+		if ( isSelected && first == nullptr ) {
+			first = item;
+		}
+	}
+	if ( first != nullptr ) {
+		tree->scrollToItem( first );
+	}
+	syncing = false;
+}
+
+void Outliner::SelectionEdited() {
+	if ( syncing ) {
+		return;
+	}
+	const QList<QTreeWidgetItem *> items = tree->selectedItems();
+	engine->SelectEntity( 0, false );
+	for ( const QTreeWidgetItem * const item : items ) {
+		engine->SelectEntity( item->data( COLUMN_NAME, ENTITY_INDEX_ROLE ).toInt(), true );
+	}
 }
 
 void Outliner::Activate( QTreeWidgetItem * item ) {
