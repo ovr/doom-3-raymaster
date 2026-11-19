@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../idlib/precompiled.h"
 
 #include "win_local.h"
+#include "../../framework/EngineHost.h"
 #include "../../renderer/tr_local.h"
 
 #include <Windowsx.h>
@@ -138,6 +139,45 @@ void WIN_Sizing(WORD side, RECT *rect)
 
 /*
 ====================
+Sys_SetAppActive
+
+The window was activated or deactivated: WM_ACTIVATE, or the host for a child window.
+====================
+*/
+void Sys_SetAppActive( bool active ) {
+	win32.activeApp = active;
+	if ( win32.activeApp ) {
+		idKeyInput::ClearStates();
+		Sys_GrabMouseCursor( true );
+		if ( common->IsInitialized() ) {
+			SetCursor( NULL );
+		}
+	} else {
+		win32.movingWindow = false;
+		if ( common->IsInitialized() ) {
+			SetCursor( LoadCursor( 0, IDC_ARROW ) );
+		}
+	}
+
+	// a fullscreen window gives the desktop back when it loses focus
+	// (restores the desktop display mode and gamma, minimizes itself)
+	if ( R_IsInitialized() ) {
+		if ( win32.activeApp ) {
+			Win_WindowActivated();
+		} else {
+			Win_WindowDeactivated();
+		}
+	}
+
+	// start playing the game sound world
+	soundSystem->SetMute( !win32.activeApp );
+
+	// we do not actually grab or release the mouse here,
+	// that will be done next time through the main loop
+}
+
+/*
+====================
 MainWndProc
 
 main window procedure
@@ -217,43 +257,12 @@ LRESULT CALLBACK MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 			// we should activate immediately.  If we are here because
 			// the mouse was clicked on a title bar or drag control,
 			// don't activate until the mouse button is released
-			{
-				int	fActive, fMinimized;
-
-				fActive = LOWORD(wParam);
-				fMinimized = (BOOL) HIWORD(wParam);
-
-				win32.activeApp = (fActive != WA_INACTIVE);
-				if ( win32.activeApp ) {
-					idKeyInput::ClearStates();
-					Sys_GrabMouseCursor( true );
-					if ( common->IsInitialized() ) {
-						SetCursor( NULL );
-					}
-				}
-
-				if ( fActive == WA_INACTIVE ) {
-					win32.movingWindow = false;
-					if ( common->IsInitialized() ) {
-						SetCursor( LoadCursor( 0, IDC_ARROW ) );
-					}
-				}
-
-				// a fullscreen window gives the desktop back when it loses focus
-				// (restores the desktop display mode and gamma, minimizes itself)
-				if ( R_IsInitialized() ) {
-					if ( win32.activeApp ) {
-						Win_WindowActivated();
-					} else {
-						Win_WindowDeactivated();
-					}
-				}
-
-				// start playing the game sound world
-				soundSystem->SetMute( !win32.activeApp );
-
-				// we do not actually grab or release the mouse here,
-				// that will be done next time through the main loop
+			Sys_SetAppActive( LOWORD(wParam) != WA_INACTIVE );
+			break;
+		case WM_MOUSEACTIVATE:
+			// a child of a host's window takes the keyboard when it is clicked
+			if ( engineHost != nullptr ) {
+				SetFocus( hWnd );
 			}
 			break;
 		case WM_TIMER: {
@@ -269,7 +278,7 @@ LRESULT CALLBACK MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 			break;
 
 		case WM_SYSKEYDOWN:
-			if ( wParam == 13 ) {	// alt-enter toggles full-screen
+			if ( wParam == 13 && engineHost == nullptr ) {	// alt-enter toggles full-screen
 				cvarSystem->SetCVarBool( "r_fullscreen", !renderSystem->IsFullScreen() );
 				cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "vid_restart\n" );
 				return 0;

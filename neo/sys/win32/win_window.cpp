@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "win_local.h"
 #include "rc/doom_resource.h"
+#include "../../framework/EngineHost.h"
 #include "../../renderer/tr_local.h"
 
 // last gamma ramp set by the renderer, re-applied after alt-tab
@@ -109,7 +110,8 @@ The renderer calls this when the user adjusts r_gamma or r_brightness
 ========================
 */
 void Sys_SetDeviceGammaRamp( const unsigned short red[256], const unsigned short green[256], const unsigned short blue[256] ) {
-	if ( !win32.hWnd ) {
+	// the ramp is the whole display's, which a window inside a host's must not change
+	if ( !win32.hWnd || engineHost != nullptr ) {
 		return;
 	}
 
@@ -637,7 +639,17 @@ static bool Win_CreateWindow( windowParms_t parms ) {
 
 	int				stylebits;
 	int				exstyle;
-	if ( parms.fullScreen != 0 ) {
+	HWND			parent = NULL;
+	if ( engineHost != nullptr ) {
+		// a borderless child that fills the host's viewport
+		exstyle = 0;
+		stylebits = WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS;
+		parent = static_cast<HWND>( engineHost->ParentWindow() );
+		x = 0;
+		y = 0;
+		w = parms.width;
+		h = parms.height;
+	} else if ( parms.fullScreen != 0 ) {
 		// not WS_EX_TOPMOST, otherwise the window stays on top of
 		// everything after alt-tab
 		exstyle = WS_EX_APPWINDOW;
@@ -648,12 +660,12 @@ static bool Win_CreateWindow( windowParms_t parms ) {
 	}
 
 	win32.hWnd = CreateWindowEx (
-		 exstyle, 
+		 exstyle,
 		 WIN32_WINDOW_CLASS_NAME,
 		 GAME_NAME,
 		 stylebits,
 		 x, y, w, h,
-		 NULL,
+		 parent,
 		 NULL,
 		 win32.hInstance,
 		 NULL);
@@ -663,14 +675,20 @@ static bool Win_CreateWindow( windowParms_t parms ) {
 		return false;
 	}
 
-	::SetTimer( win32.hWnd, 0, 100, NULL );
+	// the timer runs frames inside the modal move and size loop, which a child never enters
+	if ( engineHost == nullptr ) {
+		::SetTimer( win32.hWnd, 0, 100, NULL );
+	}
 
 	ShowWindow( win32.hWnd, SW_SHOW );
 	UpdateWindow( win32.hWnd );
 	common->Printf( "...created window @ %d,%d (%dx%d)\n", x, y, w, h );
 
-	SetForegroundWindow( win32.hWnd );
-	SetFocus( win32.hWnd );
+	// the host decides when its window comes to the front
+	if ( engineHost == nullptr ) {
+		SetForegroundWindow( win32.hWnd );
+		SetFocus( win32.hWnd );
+	}
 
 	screenConfig.isFullscreen = parms.fullScreen;
 
@@ -803,6 +821,11 @@ bool Sys_CreateWindow( const windowParms_t & requestedParms ) {
 	HDC		hDC;
 
 	windowParms_t parms = requestedParms;
+	if ( engineHost != nullptr ) {
+		// the host's viewport, whatever the video cvars say
+		parms = {};
+		engineHost->GetViewportSize( parms.width, parms.height );
+	}
 	Win_ResolveBorderlessParms( parms );
 
 	common->Printf( "Creating the window with fullscreen:%i borderless:%i\n", parms.fullScreen, parms.borderless );
@@ -872,6 +895,19 @@ Sets up the screen based on passed parms..
 ===================
 */
 bool Sys_SetWindowMode( const windowParms_t & requestedParms ) {
+	// the host sizes the child window; a video restart only picks the size up again
+	if ( engineHost != nullptr ) {
+		RECT rect;
+		if ( !GetClientRect( win32.hWnd, &rect ) || rect.right <= 0 || rect.bottom <= 0 ) {
+			return false;
+		}
+		screenConfig.isFullscreen = 0;
+		screenConfig.nativeScreenWidth = rect.right;
+		screenConfig.nativeScreenHeight = rect.bottom;
+		screenConfig.displayFrequency = Win_GetDisplayFrequency();
+		return true;
+	}
+
 	windowParms_t parms = requestedParms;
 	Win_ResolveBorderlessParms( parms );
 

@@ -2,8 +2,6 @@
 
 include(sources.cmake)
 
-set(D3BFG_PCH "${CMAKE_CURRENT_SOURCE_DIR}/idlib/precompiled.h")
-
 # ---------------------------------------------------------------------------
 # idLib
 #

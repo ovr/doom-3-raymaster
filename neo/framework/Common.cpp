@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 #include "Common_local.h"
+#include "EngineHost.h"
 
 #include "ConsoleHistory.h"
 
@@ -93,6 +94,9 @@ idGameEdit *	gameEdit = NULL;
 
 idCommonLocal	commonLocal;
 idCommon *		common = &commonLocal;
+
+// set by Sys_EngineInit for an executable that embeds the engine, nullptr in the game
+idEngineHost *	engineHost = nullptr;
 
 
 idCVar com_skipIntroVideos( "com_skipIntroVideos", "0", CVAR_BOOL , "skips the startup videos for this launch only (a game restart after a settings change sets it)" );
@@ -195,6 +199,12 @@ idCommonLocal::Quit
 ==================
 */
 void idCommonLocal::Quit() {
+
+	// the host closes its windows first, then comes back through Sys_EngineShutdown
+	if ( engineHost != nullptr ) {
+		engineHost->OnQuitRequested();
+		return;
+	}
 
 	// don't try to shutdown if we are in a recursive error
 	if ( !com_errorEntered ) {
@@ -1066,7 +1076,7 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 
 		const int legalMinTime = 4000;
 		// the config, with com_skipStartupVideos, was executed before the renderer started
-		const bool skipVideo = com_skipIntroVideos.GetBool() || com_skipStartupVideos.GetBool();
+		const bool skipVideo = com_skipIntroVideos.GetBool() || com_skipStartupVideos.GetBool() || engineHost != nullptr;
 		const bool showVideo = !skipVideo && fileSystem->UsingResourceFiles();
 		if ( showVideo ) {
 			RenderBink( "video\\loadvideo.bik" );
@@ -1152,9 +1162,12 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 
 		AddStartupCommands();
 
-		StartMenu( true );
+		// a host starts with an empty viewport: no main menu and no wait on the legal screen
+		if ( engineHost == nullptr ) {
+			StartMenu( true );
+		}
 
-		while ( Sys_Milliseconds() - legalStartTime < legalMinTime ) {
+		while ( engineHost == nullptr && Sys_Milliseconds() - legalStartTime < legalMinTime ) {
 			RenderSplash();
 			Sys_GenerateEvents();
 			Sys_Sleep( 10 );

@@ -34,6 +34,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #define DINPUT_BUFFERSIZE           256
 
+// DirectInput wants a top-level window; the engine window is a child inside a host's
+static HWND IN_CooperativeWindow() {
+	return GetAncestor( win32.hWnd, GA_ROOT );
+}
+
 /*
 ============================================================
 
@@ -99,7 +104,7 @@ bool IN_StartupKeyboard() {
     // Set the cooperativity level to let DirectInput know how
     // this device should interact with the system and with other
     // DirectInput applications.
-    hr = win32.g_pKeyboard->SetCooperativeLevel( win32.hWnd, dwCoopFlags );
+    hr = win32.g_pKeyboard->SetCooperativeLevel( IN_CooperativeWindow(), dwCoopFlags );
     if( hr == DIERR_UNSUPPORTED && !bForeground && bExclusive ) {
         common->Printf("keyboard: SetCooperativeLevel() returned DIERR_UNSUPPORTED.\nFor security reasons, background exclusive keyboard access is not allowed.\n");
         return false;
@@ -215,7 +220,7 @@ bool IN_InitDIMouse() {
 	}
     
 	// set the cooperativity level.
-	hr = win32.g_pMouse->SetCooperativeLevel( win32.hWnd, DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+	hr = win32.g_pMouse->SetCooperativeLevel( IN_CooperativeWindow(), DISCL_EXCLUSIVE | DISCL_FOREGROUND);
 
 	if (FAILED(hr)) {
 		common->Printf ("mouse: Couldn't set DI coop level\n");
@@ -282,7 +287,7 @@ void IN_ActivateMouse() {
 	}
 
 	// set the cooperativity level.
-	hr = win32.g_pMouse->SetCooperativeLevel( win32.hWnd, DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+	hr = win32.g_pMouse->SetCooperativeLevel( IN_CooperativeWindow(), DISCL_EXCLUSIVE | DISCL_FOREGROUND);
 }
 
 /*

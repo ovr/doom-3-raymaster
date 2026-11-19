@@ -90,6 +90,13 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 - Direct3D 12 has to look no worse than OpenGL, not the same: driver filtering differences, compiler last-bit noise and thin edge lines are fine. Judge a bar miss by eye on the heat maps and contact sheets that analyze.py writes. OpenGL's own frames stay byte-identical when shared code changes.
 - Names stay in their folder: Direct3D 12, DXGI and D3DCompiler names only in `neo/renderer/D3D12/` and `neo/tests/d3d12_*`, OpenGL names never there (renderApiLeaks). Shared code calls `renderBackend` only.
 
+## Editor
+
+- `editor/` holds the level and material editor. `Doom3Editor.exe` is the same engine objects as the game (`d3bfg_link_engine`) plus `editor/bridge/`, the engine-side half; its sources are listed in `editor/sources.cmake`. The Qt user interface will be a separate DLL: no Qt code may share a module with the engine's `operator new` and the `Str.h` macros.
+- The engine is embedded through `idEngineHost` (`neo/framework/EngineHost.h`). `engineHost` is `nullptr` in the game, so every branch on it is dead there. A host owns the top-level window and the message loop and drives `Sys_EngineInit`, `Sys_EngineFrame` and `Sys_EngineShutdown` (`sys/win32/win_entry.h`); the engine window is a child of the host's, with no intro, legal splash, main menu, gamma ramp or single-instance check.
+- The editor always runs with `com_smp 0`: nothing of a frame is pending between two frames, so the bridge may change the world, the decls and the render world there.
+- `Doom3Editor.exe --bare +devmap <map>` is a plain Win32 frame around the viewport with the game's own input, for testing the hosting on both render APIs. It also runs the visual demos (`+vdemo <name> quit`): its Direct3D 12 frames are byte-identical to the game's, its OpenGL frames differ in thin filtering details because the GPU driver has a profile for the name `Doom3BFG.exe`.
+
 ## Code conventions that bite
 
 - **Write modern C++, standard C++23.** New and changed code uses the current language: `nullptr`, `constexpr`, `auto`, range-for, lambdas, `enum class`, `std::unique_ptr`/move semantics, `override`, `[[nodiscard]]`, `std::span`/`std::string_view`, and so on. Don't add things deprecated or removed since C++17:
