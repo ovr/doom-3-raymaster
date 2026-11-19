@@ -722,7 +722,7 @@ unsigned int idMapEntity::GetGeometryCRC() const {
 idMapFile::Parse
 ===============
 */
-bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath ) {
+bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath, bool asWritten ) {
 	// no string concatenation for epairs and allow path names for materials
 	idLexer src( LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
 	idToken token;
@@ -771,7 +771,7 @@ bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath ) {
 	SetGeometryCRC();
 
 	// if the map has a worldspawn
-	if ( entities.Num() ) {
+	if ( entities.Num() && !asWritten ) {
 
 		// "removeEntities" "classname" can be set in the worldspawn to remove all entities with the given classname
 		const idKeyValue *removeEntities = entities[0]->epairs.MatchPrefix( "removeEntities", NULL );
@@ -835,7 +835,7 @@ bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath ) {
 idMapFile::Write
 ============
 */
-bool idMapFile::Write( const char *fileName, const char *ext, bool fromBasePath ) {
+bool idMapFile::Write( const char *fileName, const char *ext, const char *basePath ) {
 	int i;
 	idStr qpath;
 	idFile *fp;
@@ -845,12 +845,7 @@ bool idMapFile::Write( const char *fileName, const char *ext, bool fromBasePath 
 
 	idLib::common->Printf( "writing %s...\n", qpath.c_str() );
 
-	if ( fromBasePath ) {
-		fp = idLib::fileSystem->OpenFileWrite( qpath, "fs_basepath" );
-	}
-	else {
-		fp = idLib::fileSystem->OpenExplicitFileWrite( qpath );
-	}
+	fp = idLib::fileSystem->OpenFileWrite( qpath, basePath );
 
 	if ( !fp ) {
 		idLib::common->Warning( "Couldn't open %s\n", qpath.c_str() );

@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 #include "Common_local.h"
+#include "EngineHost.h"
 #include "VisualDemo.h"
 #include "../renderer/Image.h"
 #include "../renderer/ImageOpts.h"
@@ -257,6 +258,8 @@ void idCommonLocal::Draw() {
 
 	if ( loadGUI != NULL ) {
 		loadGUI->Render( renderSystem, Sys_Milliseconds() );
+	} else if ( engineHost != nullptr && !mapSpawned && engineHost->DrawScene() ) {
+		// the host drew its own world
 	} else if ( currentGame == DOOM_CLASSIC || currentGame == DOOM2_CLASSIC ) {
 		const float sysWidth = renderSystem->GetWidth() * renderSystem->GetPixelAspect();
 		const float sysHeight = renderSystem->GetHeight();

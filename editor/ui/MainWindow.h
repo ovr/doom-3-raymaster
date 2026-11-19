@@ -6,7 +6,9 @@
 #include <QMainWindow>
 
 class EngineClient;
+class Outliner;
 class OutputLog;
+class QAction;
 class QDockWidget;
 class ViewportHost;
 class idEditorEngine;
@@ -29,10 +31,15 @@ private:
 	void				RestoreLayout();
 	void				SaveLayout();
 	void				ShowAbout();
+	void				ChooseMap();
+	void				MapChanged();
 
 	idEditorEngine *	engine;
 	ViewportHost *		viewport;
 	OutputLog *			outputLog;
 	QDockWidget *		outputDock;
+	Outliner *			outliner;
+	QDockWidget *		outlinerDock;
+	QAction *			closeMapAction = nullptr;
 	EngineClient *		client;
 };

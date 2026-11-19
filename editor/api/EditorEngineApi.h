@@ -21,7 +21,26 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 1;
+constexpr int EDITOR_API_VERSION = 2;
+
+// a map the game data declares (a mapDef): name is what OpenMap takes, "game/mc_underground"
+struct editorMapInfo_t {
+	const char *		name;
+	const char *		title;
+};
+
+// an entity of the open map; index 0 is the worldspawn
+struct editorEntityInfo_t {
+	int					index;
+	const char *		name;
+	const char *		classname;
+	bool				isLight;
+	bool				hasModel;
+};
+
+// the strings are valid during the call only
+using editorMapVisitor_t = void ( * )( void * context, const editorMapInfo_t & map );
+using editorEntityVisitor_t = void ( * )( void * context, const editorEntityInfo_t & entity );
 
 // implemented by the UI
 class idEditorHost {
@@ -42,6 +61,9 @@ public:
 
 	// a console print, without colour codes
 	virtual void		OnPrint( const char * text ) = 0;
+
+	// a map was opened or closed: CurrentMap() and the entities are new
+	virtual void		OnMapChanged() = 0;
 
 protected:
 						~idEditorHost() = default;
@@ -67,6 +89,17 @@ public:
 
 	// queues a console command for the next frame; safe from PumpEvents()
 	virtual void		ExecuteCommand( const char * text ) = 0;
+
+	// The map being edited. Opening and closing happen in the next frame and end in OnMapChanged().
+	// While a map is open the viewport is the edit view: hold the right button to look and fly.
+	virtual void		EnumMaps( editorMapVisitor_t visitor, void * context ) = 0;
+	virtual void		OpenMap( const char * name ) = 0;
+	virtual void		CloseMap() = 0;
+	// "" when no map is open
+	[[nodiscard]] virtual const char *	CurrentMap() const = 0;
+	virtual void		EnumEntities( editorEntityVisitor_t visitor, void * context ) = 0;
+	// puts the camera in front of the entity
+	virtual void		LookAtEntity( int index ) = 0;
 
 protected:
 						~idEditorEngine() = default;

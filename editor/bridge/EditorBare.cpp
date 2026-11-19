@@ -38,6 +38,7 @@ public:
 	void				OnQuitRequested() override { quit = true; }
 	void				OnFatalError( const char * text ) override;
 	void				OnPrint( const char * ) override {}
+	bool				DrawScene() override { return false; }
 
 private:
 	static LRESULT CALLBACK	WndProc( HWND window, UINT message, WPARAM wParam, LPARAM lParam );

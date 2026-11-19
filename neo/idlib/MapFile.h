@@ -190,8 +190,11 @@ public:
 							// normally this will use a .reg file instead of a .map file if it exists,
 							// which is what the game and dmap want, but the editor will want to always
 							// load a .map file
-	bool					Parse( const char *filename, bool ignoreRegion = false, bool osPath = false );
-	bool					Write( const char *fileName, const char *ext, bool fromBasePath = true );
+							// asWritten keeps the file as it is on disk for an editor that saves it again:
+							// the worldspawn directives (removeEntities, moveFuncGroups, ...) are not applied
+	bool					Parse( const char *filename, bool ignoreRegion = false, bool osPath = false, bool asWritten = false );
+							// into the directory of the given path cvar; never the game install by default
+	bool					Write( const char *fileName, const char *ext, const char *basePath = "fs_savepath" );
 							// get the number of entities in the map
 	int						GetNumEntities() const { return entities.Num(); }
 							// get the specified entity

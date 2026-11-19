@@ -39,9 +39,11 @@ public:
 	void				OnQuitRequested() override { quitRequested = true; }
 	void				OnFatalError( const char * text ) override;
 	void				OnPrint( const char * text ) override;
+	void				OnMapChanged() override { emit mapChanged(); }
 
 signals:
 	void				printed( const QString & text );
+	void				mapChanged();
 	// the last thing before the engine and the process end
 	void				aboutToShutdown();
 

@@ -35,6 +35,10 @@ public:
 
 	// every console print, colour codes removed, on the main thread
 	virtual void		OnPrint( const char * text ) = 0;
+
+	// While no game map runs the host may draw the 3D view of the frame itself (the editor's
+	// world); false leaves the engine's black screen.
+	virtual bool		DrawScene() = 0;
 };
 
 extern idEngineHost *	engineHost;
