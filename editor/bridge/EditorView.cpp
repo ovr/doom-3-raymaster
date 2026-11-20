@@ -163,7 +163,7 @@ bool idEditorView::HandleMessage( UINT message, WPARAM wParam, LPARAM lParam, LR
 			if ( !looking && client != nullptr ) {
 				leftDown = true;
 				SetCapture( window );
-				client->ViewMouseDown( GET_X_LPARAM( lParam ), GET_Y_LPARAM( lParam ), ( wParam & MK_CONTROL ) != 0 );
+				client->ViewMouseDown( GET_X_LPARAM( lParam ), GET_Y_LPARAM( lParam ), ( wParam & MK_CONTROL ) != 0, ( wParam & MK_SHIFT ) != 0 );
 			}
 			return true;
 		case WM_MOUSEMOVE:

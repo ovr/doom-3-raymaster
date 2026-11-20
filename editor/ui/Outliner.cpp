@@ -4,6 +4,7 @@
 
 #include "Outliner.h"
 
+#include <QHash>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -15,7 +16,7 @@
 
 namespace {
 
-enum Column { COLUMN_NAME, COLUMN_CLASS, NUM_COLUMNS };
+enum Column { COLUMN_NAME, COLUMN_CLASS, COLUMN_PRIMITIVES, NUM_COLUMNS };
 constexpr int ENTITY_INDEX_ROLE = Qt::UserRole;
 
 }	// namespace
@@ -28,7 +29,9 @@ Outliner::Outliner( idEditorEngine * engine_, QWidget * parent ) : QWidget( pare
 
 	tree = new QTreeWidget( this );
 	tree->setColumnCount( NUM_COLUMNS );
-	tree->setHeaderLabels( { tr( "Name" ), tr( "Class" ) } );
+	tree->setObjectName( QStringLiteral( "outlinerTree" ) );
+	tree->setHeaderLabels( { tr( "Name" ), tr( "Class" ), tr( "Brushes" ) } );
+	tree->headerItem()->setToolTip( COLUMN_PRIMITIVES, tr( "The brushes and patches of the entity; they are not listed one by one" ) );
 	tree->setRootIsDecorated( false );
 	tree->setUniformRowHeights( true );
 	tree->setAlternatingRowColors( true );
@@ -61,9 +64,9 @@ void Outliner::Reload() {
 		const QString classname = QString::fromLocal8Bit( entity.classname );
 		QString name = QString::fromLocal8Bit( entity.name );
 		if ( name.isEmpty() ) {
-			name = QStringLiteral( "(%1 %2)" ).arg( classname ).arg( entity.index );
+			name = ( entity.index == 0 ) ? classname : QStringLiteral( "(%1 %2)" ).arg( classname ).arg( entity.index );
 		}
-		auto * const item = new QTreeWidgetItem( { name, classname } );
+		auto * const item = new QTreeWidgetItem( { name, classname, QString() } );
 		item->setData( COLUMN_NAME, ENTITY_INDEX_ROLE, entity.index );
 		static_cast<QList<QTreeWidgetItem *> *>( context )->append( item );
 	}, &items );
@@ -71,6 +74,26 @@ void Outliner::Reload() {
 
 	tree->setSortingEnabled( true );
 	ApplyFilter( filter->text() );
+	UpdateBrushCounts();
+}
+
+void Outliner::UpdateBrushCounts() {
+	QHash<int, int> counts;
+	engine->EnumEntities( []( void * context, const editorEntityInfo_t & entity ) {
+		static_cast<QHash<int, int> *>( context )->insert( entity.index, entity.numPrimitives );
+	}, &counts );
+	for ( int i = 0; i < tree->topLevelItemCount(); i++ ) {
+		QTreeWidgetItem * const item = tree->topLevelItem( i );
+		const int index = item->data( COLUMN_NAME, ENTITY_INDEX_ROLE ).toInt();
+		const int number = counts.value( index, 0 );
+		// the world always says how many it has
+		const QString text = ( number > 0 || index == 0 ) ? QString::number( number ) : QString();
+		if ( item->text( COLUMN_PRIMITIVES ) != text ) {
+			item->setText( COLUMN_PRIMITIVES, text );
+		}
+	}
+	// for the UI script: the rows are sorted, the world is not always the first
+	tree->setProperty( "worldBrushes", counts.value( 0, 0 ) );
 }
 
 void Outliner::ApplyFilter( const QString & text ) {

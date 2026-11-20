@@ -57,6 +57,21 @@ int					numPreviewModels = 0;
 
 }	// namespace
 
+// cleared for a brush that encloses no volume
+static idBounds BoundsOfPrimitive( const idMapPrimitive & primitive ) {
+	idBounds bounds;
+	bounds.Clear();
+	if ( primitive.GetType() == idMapPrimitive::TYPE_BRUSH ) {
+		editorBrushWindings_t windings;
+		if ( editorBrush::Windings( static_cast<const idMapBrush &>( primitive ), windings ) ) {
+			bounds = editorBrush::Bounds( windings );
+		}
+	} else if ( primitive.GetType() == idMapPrimitive::TYPE_PATCH ) {
+		bounds = editorBrush::PatchBounds( static_cast<const idMapPatch &>( primitive ) );
+	}
+	return bounds;
+}
+
 void idEditorWorld::MergedSpawnArgs( const idDict & mapArgs, idDict & out ) {
 	out = mapArgs;
 	const char * const classname = mapArgs.GetString( "classname" );
@@ -253,6 +268,7 @@ void idEditorWorld::ShowPreview() {
 
 void idEditorWorld::Close() {
 	FreeWorld();
+	primitiveBounds.DeleteContents( true );
 	entities.Clear();
 	mapFile.RemoveAllEntities();
 	leakPoints.Clear();
@@ -300,6 +316,16 @@ void idEditorWorld::ApplyPrimitive( const editorPrimitiveChange_t & change, bool
 	// the worldspawn can have thousands of primitives: only the changed one is made again
 	const bool oneView = ( change.entity == 0 && world != nullptr && entity.views != nullptr && entity.views->Num() == mapEntity->GetNumPrimitives() );
 
+	idList<idBounds> * const cached = ( change.entity < primitiveBounds.Num() ) ? primitiveBounds[change.entity] : nullptr;
+	if ( cached != nullptr ) {
+		if ( before != nullptr ) {
+			cached->RemoveIndex( change.primitive );
+		}
+		if ( after != nullptr ) {
+			cached->Insert( BoundsOfPrimitive( *after ), change.primitive );
+		}
+	}
+
 	if ( before != nullptr ) {
 		delete mapEntity->RemovePrimitive( change.primitive );
 		if ( oneView ) {
@@ -323,6 +349,22 @@ void idEditorWorld::ApplyPrimitive( const editorPrimitiveChange_t & change, bool
 	} else if ( world != nullptr && !entity.removed ) {
 		ShowEntity( change.entity );
 	}
+}
+
+const idList<idBounds> & idEditorWorld::PrimitiveBounds( int entity ) const {
+	while ( primitiveBounds.Num() <= entity ) {
+		primitiveBounds.Append( nullptr );
+	}
+	if ( primitiveBounds[entity] == nullptr ) {
+		auto * const list = new ( TAG_IDLIB ) idList<idBounds>;
+		const idMapEntity * const mapEntity = mapFile.GetEntity( entity );
+		list->SetNum( mapEntity->GetNumPrimitives() );
+		for ( int i = 0; i < list->Num(); i++ ) {
+			( *list )[i] = BoundsOfPrimitive( *mapEntity->GetPrimitive( i ) );
+		}
+		primitiveBounds[entity] = list;
+	}
+	return *primitiveBounds[entity];
 }
 
 bool idEditorWorld::BrushWindings( int entity, int primitive, editorBrushWindings_t & windings ) const {

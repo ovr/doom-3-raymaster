@@ -21,7 +21,7 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 9;
+constexpr int EDITOR_API_VERSION = 10;
 
 // what the content browser lists
 enum editorAssetKind_t : int {
@@ -46,6 +46,12 @@ enum editorGizmo_t : int {
 	EDITOR_GIZMO_ROTATE
 };
 
+// what the left button does in the viewport
+enum editorTool_t : int {
+	EDITOR_TOOL_SELECT,			// click selects, the gizmo moves or turns
+	EDITOR_TOOL_BOX				// a drag draws a rectangle that becomes a brush
+};
+
 // the state of the open map's history, for the Edit menu; the labels are "" when there is no step
 struct editorDocumentState_t {
 	bool				dirty;			// differs from the file, or a new map that was never saved
@@ -61,6 +67,50 @@ struct editorDocumentState_t {
 	int					leakPoints;		// of the last build's leak line, 0 = none
 	bool				leakShown;
 	float				gridSize;		// 0 = no snapping
+	int					tool;			// editorTool_t
+	float				boxHeight;		// how high the box tool's brush is, as it is now (never 0)
+};
+
+// how a 2D view draws a primitive
+enum editorViewBrushKind_t : int {
+	EDITOR_VIEW_BRUSH_DRAWN,
+	EDITOR_VIEW_BRUSH_HIDDEN,	// caulk, nodraw
+	EDITOR_VIEW_BRUSH_PORTAL,
+	EDITOR_VIEW_BRUSH_CLIP,
+	EDITOR_VIEW_BRUSH_TRIGGER,
+	EDITOR_VIEW_PATCH			// its box only: mins and maxs, no edges
+};
+
+// A brush or a patch for a 2D view, in world coordinates. edges holds numEdges lines, six floats
+// each (two points); valid during the call only.
+struct editorViewBrush_t {
+	int					entity;			// 0 = the worldspawn
+	int					primitive;
+	int					kind;			// editorViewBrushKind_t
+	bool				selected;		// the brush, or its entity
+	float				mins[3];
+	float				maxs[3];
+	int					numEdges;
+	const float *		edges;
+};
+using editorViewBrushVisitor_t = void ( * )( void * context, const editorViewBrush_t & brush );
+
+// an entity for a 2D view: its box in the world; one with primitives is drawn by its brushes
+struct editorViewEntity_t {
+	int					index;
+	bool				isLight;
+	bool				selected;
+	bool				hasPrimitives;
+	float				origin[3];
+	float				mins[3];
+	float				maxs[3];
+};
+using editorViewEntityVisitor_t = void ( * )( void * context, const editorViewEntity_t & entity );
+
+// the edit view's camera
+struct editorCamera_t {
+	float				origin[3];
+	float				forward[3];
 };
 
 // how a build ended
@@ -202,6 +252,9 @@ public:
 	// the build ended; OnDocumentChanged() follows
 	virtual void		OnBuildFinished( const editorBuildResult_t & result ) = 0;
 
+	// one line for the status bar: why a click did nothing ("a patch cannot be edited")
+	virtual void		OnStatus( const char * text ) = 0;
+
 	// the console asked for a material in the material editor (editorEditMaterial)
 	virtual void		OnEditMaterial( const char * name ) = 0;
 
@@ -241,6 +294,8 @@ public:
 	virtual void		OpenMap( const char * name ) = 0;
 	// A map of a worldspawn and nothing else, "editor/room1"; no file is written before SaveMap().
 	virtual void		NewMap( const char * name ) = 0;
+	// a maps/<name>.map exists, in the game data or in the project folder
+	[[nodiscard]] virtual bool	MapExists( const char * name ) const = 0;
 	virtual void		CloseMap() = 0;
 	// "" when no map is open
 	[[nodiscard]] virtual const char *	CurrentMap() const = 0;
@@ -257,13 +312,22 @@ public:
 	virtual void		SetGizmo( int gizmo ) = 0;
 	// also what new brushes, brush moves and face moves snap to
 	virtual void		SetGridSize( float size ) = 0;
+	// editorTool_t; ends in OnDocumentChanged()
+	virtual void		SetTool( int tool ) = 0;
+	// how high the box tool makes its brush; 0 = eight steps of the grid
+	virtual void		SetBoxHeight( float height ) = 0;
 
 	/*
 		Brushes. The selection is either entities or brushes, never both:
 
 		  click on a brush of the worldspawn    selects the brush; Ctrl+click adds or removes one
 		  click on the one selected brush       selects the face under the cursor
+		  Shift+click on a brush                selects the brush and that face at once
 		  click on a brush entity               selects the entity (SelectBrush() reaches its brushes)
+
+		With brushes selected the move gizmo moves them; with a face selected it is one arrow along
+		the normal that moves the face. With EDITOR_TOOL_BOX a drag draws a rectangle on the face
+		or the grid plane (z = 0) under the cursor and letting go makes a brush of it.
 
 		The edits work on the selected brushes and are one step of the history each. They do
 		nothing while GetDocumentState() says playing or building. An edit makes geometryDirty.
@@ -291,6 +355,16 @@ public:
 	virtual void		MakeBrushEntity( const char * classname ) = 0;
 	// the primitives of the selected brush entities go to the worldspawn, the entities are removed
 	virtual void		MoveBrushesToWorld() = 0;
+	// The selection, brushes or entities (their "origin"), moved as one step; snapped to the grid.
+	virtual void		MoveSelection( const float delta[3] ) = 0;
+	// the entityDefs that are made of brushes (func_static first), for MakeBrushEntity()
+	virtual void		EnumBrushEntityClasses( editorClassVisitor_t visitor, void * context ) = 0;
+
+	// For a 2D view: the primitives and the entities that touch the box, in world coordinates.
+	// At most maxBrushes primitives are visited; false when there were more.
+	virtual bool		EnumViewBrushes( const float mins[3], const float maxs[3], int maxBrushes, editorViewBrushVisitor_t visitor, void * context ) = 0;
+	virtual void		EnumViewEntities( const float mins[3], const float maxs[3], editorViewEntityVisitor_t visitor, void * context ) = 0;
+	virtual void		GetCamera( editorCamera_t & camera ) const = 0;
 
 	// The keys of an entity: the map's own first, then the ones its entityDef documents.
 	virtual void		EnumEntityKeys( int index, editorKeyVisitor_t visitor, void * context ) = 0;
@@ -342,6 +416,8 @@ public:
 	virtual void		CancelBuild() = 0;
 	// the leak line of the last build that leaked
 	virtual void		ShowLeak( bool show ) = 0;
+	// puts the camera at the start of the leak line, looking along it
+	virtual void		GoToLeak() = 0;
 
 	// Play in Editor: saves the open map when it has changes, builds it when geometryDirty, and
 	// starts the game on it, in the viewport. A build that fails or leaks starts no game.

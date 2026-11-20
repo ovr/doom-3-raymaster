@@ -14,6 +14,7 @@ set(EDITOR_BRIDGE_SOURCES
 	bridge/EditorEngineBrush.cpp
 	bridge/EditorEngineBuild.cpp
 	bridge/EditorEngineLocal.h
+	bridge/EditorEngineView.cpp
 	bridge/EditorHistory.cpp
 	bridge/EditorHistory.h
 	bridge/EditorMain.cpp
@@ -83,6 +84,8 @@ set(EDITOR_UI_SOURCES
 	ui/MaterialEditor.h
 	ui/OutputLog.cpp
 	ui/OutputLog.h
+	ui/OrthoView.cpp
+	ui/OrthoView.h
 	ui/Outliner.cpp
 	ui/Outliner.h
 	ui/Palette.cpp
@@ -90,6 +93,8 @@ set(EDITOR_UI_SOURCES
 	ui/ThumbnailCache.cpp
 	ui/ThumbnailCache.h
 	ui/UiMain.cpp
+	ui/UiScript.cpp
+	ui/UiScript.h
 	ui/ViewportHost.cpp
 	ui/ViewportHost.h
 )

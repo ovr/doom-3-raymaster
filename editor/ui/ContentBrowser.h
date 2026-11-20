@@ -11,6 +11,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListView;
+class QPushButton;
 class ThumbnailCache;
 
 // The assets of the game data as a grid of pictures: materials, models, entity classes, sounds
@@ -24,10 +25,14 @@ public:
 	// reads the names; the engine has them only after its start
 	void				Load();
 	[[nodiscard]] ThumbnailCache *	Thumbnails() const { return thumbnails; }
+	// the material that is selected in the grid; "" when the grid shows another kind or nothing is
+	[[nodiscard]] QString	CurrentMaterial() const;
 
 signals:
 	// a double click; kind is an editorAssetKind_t
 	void				activated( int kind, const QString & name );
+	// "Apply to Selection": the material is wanted on the selected face or brushes
+	void				applyMaterialRequested( const QString & name );
 
 private:
 	void				ShowKind( int kind );
@@ -41,5 +46,6 @@ private:
 	QLineEdit *			filter;
 	QLabel *			count;
 	QListView *			view;
+	QPushButton *		applyButton;
 	bool				loaded = false;
 };

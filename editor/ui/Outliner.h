@@ -23,6 +23,8 @@ public:
 	void				Reload();
 	// shows the engine's selection in the list
 	void				SyncSelection();
+	// the brush counts, after an edit; the rows stay
+	void				UpdateBrushCounts();
 
 private:
 	void				ApplyFilter( const QString & text );

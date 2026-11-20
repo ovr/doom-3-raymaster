@@ -23,6 +23,7 @@ OutputLog::OutputLog( QWidget * parent ) : QWidget( parent ) {
 	const QFont mono = QFontDatabase::systemFont( QFontDatabase::FixedFont );
 
 	view = new QPlainTextEdit( this );
+	view->setObjectName( QStringLiteral( "outputView" ) );
 	view->setReadOnly( true );
 	view->setMaximumBlockCount( MAX_LOG_LINES );
 	view->setLineWrapMode( QPlainTextEdit::NoWrap );

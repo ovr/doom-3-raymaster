@@ -18,7 +18,7 @@
 // what the left button does in the view; x and y are pixels of the engine window
 class idEditorViewClient {
 public:
-	virtual void		ViewMouseDown( int x, int y, bool ctrl ) = 0;
+	virtual void		ViewMouseDown( int x, int y, bool ctrl, bool shift ) = 0;
 	virtual void		ViewMouseMove( int x, int y ) = 0;
 	virtual void		ViewMouseUp() = 0;
 

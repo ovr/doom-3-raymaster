@@ -601,26 +601,52 @@ CONSOLE_COMMAND_SHIP( editorWorldInfo, "prints what the editor holds of the open
 	}
 }
 
+// a pixel of the edit view; "0.5" is a part of its width or height, for scripts that do not know its size
+[[nodiscard]] static int Editor_ViewPixel( const char * text, int size ) {
+	return ( strchr( text, '.' ) != nullptr ) ? static_cast<int>( atof( text ) * size ) : atoi( text );
+}
+
 CONSOLE_COMMAND_SHIP( editorPick, "prints what is under a pixel of the edit view: editorPick <x> <y>", nullptr ) {
 	if ( args.Argc() != 3 || !Editor_NeedEngine() ) {
 		common->Printf( "usage: editorPick <x> <y>\n" );
 		return;
 	}
 	editorPickInfo_t pick;
-	if ( editorEngine->Pick( atoi( args.Argv( 1 ) ), atoi( args.Argv( 2 ) ), pick ) ) {
+	if ( editorEngine->Pick( Editor_ViewPixel( args.Argv( 1 ), renderSystem->GetWidth() ), Editor_ViewPixel( args.Argv( 2 ), renderSystem->GetHeight() ), pick ) ) {
 		common->Printf( "editorPick: entity %d, primitive %d, face %d, distance %.1f, at %.1f %.1f %.1f\n", pick.entity, pick.primitive, pick.face, pick.distance, pick.point[0], pick.point[1], pick.point[2] );
 	} else {
 		common->Printf( "editorPick: nothing\n" );
 	}
 }
 
-CONSOLE_COMMAND_SHIP( editorClick, "a click of the left button into the edit view: editorClick <x> <y> [ctrl]", nullptr ) {
+CONSOLE_COMMAND_SHIP( editorClick, "a click of the left button into the edit view: editorClick <x> <y> [ctrl|shift]", nullptr ) {
 	if ( args.Argc() < 3 || !Editor_NeedEngine() ) {
-		common->Printf( "usage: editorClick <x> <y> [ctrl]\n" );
+		common->Printf( "usage: editorClick <x> <y> [ctrl|shift]\n" );
 		return;
 	}
-	editorEngine->ViewMouseDown( atoi( args.Argv( 1 ) ), atoi( args.Argv( 2 ) ), idStr::Icmp( args.Argv( 3 ), "ctrl" ) == 0 );
+	editorEngine->ViewMouseDown( Editor_ViewPixel( args.Argv( 1 ), renderSystem->GetWidth() ), Editor_ViewPixel( args.Argv( 2 ), renderSystem->GetHeight() ),
+		idStr::Icmp( args.Argv( 3 ), "ctrl" ) == 0, idStr::Icmp( args.Argv( 3 ), "shift" ) == 0 );
 	editorEngine->ViewMouseUp();
+}
+
+CONSOLE_COMMAND_SHIP( editorDrag, "a drag of the left button in the edit view, for the gizmo and the box tool: editorDrag <x1> <y1> <x2> <y2>", nullptr ) {
+	if ( args.Argc() != 5 || !Editor_NeedEngine() ) {
+		common->Printf( "usage: editorDrag <x1> <y1> <x2> <y2>\n" );
+		return;
+	}
+	const int width = renderSystem->GetWidth();
+	const int height = renderSystem->GetHeight();
+	editorEngine->ViewMouseDown( Editor_ViewPixel( args.Argv( 1 ), width ), Editor_ViewPixel( args.Argv( 2 ), height ), false, false );
+	editorEngine->ViewMouseMove( Editor_ViewPixel( args.Argv( 3 ), width ), Editor_ViewPixel( args.Argv( 4 ), height ) );
+	editorEngine->ViewMouseUp();
+}
+
+CONSOLE_COMMAND_SHIP( editorTool, "what the left button does in the edit view: editorTool select|box", nullptr ) {
+	if ( args.Argc() != 2 || !Editor_NeedEngine() ) {
+		common->Printf( "usage: editorTool select|box\n" );
+		return;
+	}
+	editorEngine->SetTool( ( idStr::Icmp( args.Argv( 1 ), "box" ) == 0 ) ? EDITOR_TOOL_BOX : EDITOR_TOOL_SELECT );
 }
 
 CONSOLE_COMMAND_SHIP( editorView, "puts the edit view's camera: editorView <x> <y> <z> [yaw] [pitch]", nullptr ) {

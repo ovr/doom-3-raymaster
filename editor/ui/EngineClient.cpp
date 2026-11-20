@@ -75,6 +75,20 @@ void EngineClient::OnPreviewReady( int id, int width, int height, const unsigned
 	emit previewReady( id, QImage( rgb, width, height, width * 3, QImage::Format_RGB888 ).copy() );
 }
 
+void EngineClient::OnBuildFinished( const editorBuildResult_t & result ) {
+	BuildResult copy;
+	copy.status = result.status;
+	copy.error = QString::fromLocal8Bit( result.error );
+	copy.areas = result.areas;
+	copy.portals = result.portals;
+	copy.triangles = result.triangles;
+	copy.aasFiles = result.aasFiles;
+	copy.aasAreas = result.aasAreas;
+	copy.leakPoints = result.leakPoints;
+	copy.seconds = result.seconds;
+	emit buildFinished( copy );
+}
+
 void EngineClient::PumpEvents() {
 	if ( inPump || sincePump.elapsed() < PUMP_INTERVAL_MSEC ) {
 		return;

@@ -15,6 +15,7 @@
 
 	  Doom3Editor.exe [+engine commands]          the Qt interface (editor\Doom3EditorUI.dll)
 	  Doom3Editor.exe --bare [+engine commands]   the viewport alone, in a plain frame
+	  Doom3Editor.exe --ui-script <file> ...      the interface runs a test script (editor/ui/UiScript.h)
 */
 
 namespace {
@@ -29,11 +30,26 @@ namespace {
 	return true;
 }
 
+// a switch and the word after it, which the UI reads from the process's own arguments
+void DropSwitchWithValue( std::string & cmdLine, std::string_view name ) {
+	const size_t at = cmdLine.find( name );
+	if ( at == std::string::npos ) {
+		return;
+	}
+	size_t end = cmdLine.find_first_not_of( ' ', at + name.size() );
+	if ( end != std::string::npos ) {
+		end = ( cmdLine[end] == '"' ) ? cmdLine.find( '"', end + 1 ) : cmdLine.find( ' ', end );
+		end = ( end == std::string::npos ) ? end : end + 1;
+	}
+	cmdLine.erase( at, ( end == std::string::npos ) ? std::string::npos : end - at );
+}
+
 }	// namespace
 
 int WINAPI WinMain( _In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ LPSTR cmdLine, _In_ int ) {
 	std::string engineCmdLine = cmdLine;
 	const bool bare = TakeSwitch( engineCmdLine, "--bare" );
+	DropSwitchWithValue( engineCmdLine, "--ui-script" );
 
 	// One thread: nothing of a frame is pending between two frames, so the editor can change the world there.
 	// A window inside the host's, whatever the saved video mode says.

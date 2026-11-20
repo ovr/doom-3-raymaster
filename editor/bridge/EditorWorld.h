@@ -136,6 +136,9 @@ public:
 	[[nodiscard]] const idMapBrush *	Brush( int entity, int primitive ) const;
 	// Does the change (forward) or takes it back. The geometry becomes the preview.
 	void				ApplyPrimitive( const editorPrimitiveChange_t & change, bool forward );
+	// The box of every primitive of an entity, in the entity's space; cleared for a brush without
+	// a volume. Kept between calls and through edits: a 2D view asks often.
+	[[nodiscard]] const idList<idBounds> &	PrimitiveBounds( int entity ) const;
 	// the brush's faces in the world; false for a brush without a volume
 	[[nodiscard]] bool	BrushWindings( int entity, int primitive, editorBrushWindings_t & windings ) const;
 
@@ -152,6 +155,7 @@ public:
 	[[nodiscard]] bool	LoadLeak( const char * fileName );
 	void				ClearLeak() { leakPoints.Clear(); }
 	[[nodiscard]] int	NumLeakPoints() const { return leakPoints.Num(); }
+	[[nodiscard]] const idVec3 &	LeakPoint( int i ) const { return leakPoints[i]; }
 	void				ShowLeak( bool show ) { showLeak = show; }
 	[[nodiscard]] bool	LeakShown() const { return showLeak; }
 
@@ -199,4 +203,6 @@ private:
 	renderLight_t		headLight;
 	idList<idVec3>		leakPoints;
 	bool				showLeak = true;
+	// PrimitiveBounds(): by entity, nullptr = not asked for yet
+	mutable idList<idList<idBounds> *>	primitiveBounds;
 };

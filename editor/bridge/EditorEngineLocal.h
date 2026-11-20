@@ -21,6 +21,7 @@
 	  EditorEngine.cpp        the frame, maps, entities, materials, previews, Play
 	  EditorEngineBrush.cpp   the brush selection and the brush edits
 	  EditorEngineBuild.cpp   Build: save, compile, show the result or the leak
+	  EditorEngineView.cpp    the tools' state, what a 2D view draws, the camera
 
 	Needs <windows.h> first.
 */
@@ -40,6 +41,7 @@ public:
 	void				EnumMaps( editorMapVisitor_t visitor, void * context ) override;
 	void				OpenMap( const char * name ) override;
 	void				NewMap( const char * name ) override;
+	[[nodiscard]] bool	MapExists( const char * name ) const override;
 	void				CloseMap() override;
 	[[nodiscard]] const char *	CurrentMap() const override { return world.Name(); }
 	void				EnumEntities( editorEntityVisitor_t visitor, void * context ) override;
@@ -48,6 +50,14 @@ public:
 	void				EnumSelection( editorSelectionVisitor_t visitor, void * context ) override;
 	void				SetGizmo( int gizmo ) override;
 	void				SetGridSize( float size ) override;
+	void				SetTool( int tool ) override;
+	void				SetBoxHeight( float height ) override;
+	void				MoveSelection( const float delta[3] ) override;
+	void				EnumBrushEntityClasses( editorClassVisitor_t visitor, void * context ) override;
+	bool				EnumViewBrushes( const float mins[3], const float maxs[3], int maxBrushes, editorViewBrushVisitor_t visitor, void * context ) override;
+	void				EnumViewEntities( const float mins[3], const float maxs[3], editorViewEntityVisitor_t visitor, void * context ) override;
+	void				GetCamera( editorCamera_t & camera ) const override;
+	void				GoToLeak() override;
 	[[nodiscard]] bool	Pick( int x, int y, editorPickInfo_t & pick ) override;
 	void				SelectBrush( int entityIndex, int primitive, int face, bool add ) override;
 	void				EnumBrushSelection( editorBrushVisitor_t visitor, void * context ) override;
@@ -117,7 +127,7 @@ public:
 	void				ViewShot( const char * fileName ) { viewShotName = fileName; }
 
 	// idEditorViewClient
-	void				ViewMouseDown( int x, int y, bool ctrl ) override;
+	void				ViewMouseDown( int x, int y, bool ctrl, bool shift ) override;
 	void				ViewMouseMove( int x, int y ) override;
 	void				ViewMouseUp() override;
 
@@ -179,6 +189,7 @@ private:
 	bool				buildCancel = false;
 	int					lastBuildPumpMsec = 0;
 	idStr				viewShotName;
+	idStrList			brushClasses;			// EnumBrushEntityClasses(), found once
 };
 
 // for the console commands; nullptr in the bare shell

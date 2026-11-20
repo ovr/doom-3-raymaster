@@ -80,8 +80,15 @@ extern "C" __declspec( dllexport ) int EditorUiMain( idEditorEngine * engine, in
 	QApplication::setOrganizationName( QStringLiteral( "Doom3Raymaster" ) );
 	ApplyDarkTheme( app );
 
+	// a test run: see UiScript.h
+	QString scriptFile;
+	const QStringList arguments = QApplication::arguments();
+	if ( const qsizetype at = arguments.indexOf( QStringLiteral( "--ui-script" ) ); at != -1 && at + 1 < arguments.size() ) {
+		scriptFile = arguments[at + 1];
+	}
+
 	MainWindow window( engine );
-	window.Start();
+	window.Start( scriptFile );
 
 	// the engine ends the process when the window closes, so exec() returns only on a failure
 	return ( QApplication::exec() == 0 ) ? 1 : 3;

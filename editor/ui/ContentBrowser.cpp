@@ -15,6 +15,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QPainter>
+#include <QPushButton>
 #include <QStyle>
 #include <QVBoxLayout>
 
@@ -157,7 +158,17 @@ ContentBrowser::ContentBrowser( EngineClient * engineClient, QWidget * parent ) 
 
 	count = new QLabel( this );
 
+	applyButton = new QPushButton( tr( "Apply to Selection" ), this );
+	applyButton->setObjectName( QStringLiteral( "contentApplyMaterial" ) );
+	applyButton->setToolTip( tr( "Puts the selected material on the selected face, or on every face of the selected brushes" ) );
+	connect( applyButton, &QPushButton::clicked, this, [this] {
+		if ( const QString name = CurrentMaterial(); !name.isEmpty() ) {
+			emit applyMaterialRequested( name );
+		}
+	} );
+
 	view = new QListView( this );
+	view->setObjectName( QStringLiteral( "contentView" ) );
 	view->setModel( model );
 	view->setViewMode( QListView::IconMode );
 	view->setResizeMode( QListView::Adjust );
@@ -175,7 +186,10 @@ ContentBrowser::ContentBrowser( EngineClient * engineClient, QWidget * parent ) 
 	top->setContentsMargins( 0, 0, 0, 0 );
 	top->addWidget( kinds );
 	top->addWidget( filter, 1 );
+	top->addWidget( applyButton );
 	top->addWidget( count );
+	kinds->setObjectName( QStringLiteral( "contentKind" ) );
+	filter->setObjectName( QStringLiteral( "contentFilter" ) );
 
 	auto * const layout = new QVBoxLayout( this );
 	layout->setContentsMargins( 0, 0, 0, 0 );
@@ -198,7 +212,13 @@ void ContentBrowser::Load() {
 	}
 }
 
+QString ContentBrowser::CurrentMaterial() const {
+	const QModelIndex index = view->currentIndex();
+	return ( model->Kind() == EDITOR_ASSET_MATERIAL && index.isValid() ) ? index.data( FULL_NAME_ROLE ).toString() : QString();
+}
+
 void ContentBrowser::ShowKind( int kind ) {
+	applyButton->setVisible( kind == EDITOR_ASSET_MATERIAL );
 	if ( !loaded ) {
 		return;
 	}
@@ -228,6 +248,9 @@ void ContentBrowser::ShowMenu( const QPoint & position ) {
 	const QString name = index.data( FULL_NAME_ROLE ).toString();
 	QMenu menu( this );
 	connect( menu.addAction( tr( "Copy Name" ) ), &QAction::triggered, this, [name] { QApplication::clipboard()->setText( name ); } );
+	if ( model->Kind() == EDITOR_ASSET_MATERIAL ) {
+		connect( menu.addAction( tr( "Apply to Selection" ) ), &QAction::triggered, this, [this, name] { emit applyMaterialRequested( name ); } );
+	}
 	if ( PreviewKind( model->Kind() ) != NO_PREVIEW ) {
 		connect( menu.addAction( tr( "Make the Picture Again" ) ), &QAction::triggered, this, [this, name, index] {
 			thumbnails->Invalidate( PreviewKind( model->Kind() ), name );

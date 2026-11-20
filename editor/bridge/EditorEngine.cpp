@@ -183,6 +183,10 @@ void idEditorEngineLocal::NewMap( const char * name ) {
 	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "editorNewMap \"%s\"\n", name ) );
 }
 
+bool idEditorEngineLocal::MapExists( const char * name ) const {
+	return started && name != nullptr && name[0] != '\0' && fileSystem->ReadFile( va( "maps/%s.map", name ), nullptr, nullptr ) > 0;
+}
+
 void idEditorEngineLocal::CloseMap() {
 	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorCloseMap\n" );
 }
@@ -716,6 +720,8 @@ void idEditorEngineLocal::GetDocumentState( editorDocumentState_t & state ) cons
 	state.leakPoints = world.NumLeakPoints();
 	state.leakShown = world.LeakShown();
 	state.gridSize = tool.GridSize();
+	state.tool = ( tool.Tool() == idEditorTool::tool_t::BOX ) ? EDITOR_TOOL_BOX : EDITOR_TOOL_SELECT;
+	state.boxHeight = tool.BoxHeight();
 	state.dirty = history.IsDirty() || world.IsUnsaved();
 	state.playing = playing;
 	state.canUndo = history.CanUndo();
@@ -724,23 +730,32 @@ void idEditorEngineLocal::GetDocumentState( editorDocumentState_t & state ) cons
 	state.redoLabel = history.RedoLabel();
 }
 
-void idEditorEngineLocal::ViewMouseDown( int x, int y, bool ctrl ) {
-	if ( !world.IsOpen() || playing ) {
+void idEditorEngineLocal::ViewMouseDown( int x, int y, bool ctrl, bool shift ) {
+	if ( !world.IsOpen() || playing || building ) {
 		return;
 	}
 	const idVec3 dir = view.RayThroughPixel( x, y );
+	if ( tool.Tool() == idEditorTool::tool_t::BOX ) {
+		if ( !tool.BeginBox( world, view.Origin(), dir, world.Pick( view.Origin(), dir, PICK_DISTANCE ) ) ) {
+			ui->OnStatus( "The box tool needs a face or the grid plane (z = 0) under the cursor." );
+		}
+		return;
+	}
 	if ( tool.BeginDrag( world, view.Origin(), dir, view.Origin() ) ) {
 		return;
 	}
 	const editorPick_t pick = world.Pick( view.Origin(), dir, PICK_DISTANCE );
 	bool changed;
 	if ( pick.entity == 0 && world.Brush( 0, pick.primitive ) != nullptr ) {
-		// a second click on the one selected brush is for the face under the cursor
+		// a second click on the one selected brush, or Shift, is for the face under the cursor
 		const brushRef_t brush = { 0, pick.primitive };
 		const bool again = ( !ctrl && tool.NumSelectedBrushes() == 1 && tool.SelectedBrush( 0 ) == brush );
-		changed = tool.SelectBrush( brush, again ? pick.face : -1, ctrl );
+		changed = tool.SelectBrush( brush, ( again || ( shift && !ctrl ) ) ? pick.face : -1, ctrl );
 	} else {
-		// a brush entity as a whole; a patch of the worldspawn is nothing to select yet
+		if ( pick.entity == 0 && pick.primitive != -1 ) {
+			ui->OnStatus( "A patch is shown only: it cannot be selected or edited yet." );
+		}
+		// a brush entity as a whole
 		changed = tool.Select( ( pick.entity > 0 ) ? pick.entity : -1, ctrl );
 	}
 	if ( changed ) {
@@ -749,14 +764,35 @@ void idEditorEngineLocal::ViewMouseDown( int x, int y, bool ctrl ) {
 }
 
 void idEditorEngineLocal::ViewMouseMove( int x, int y ) {
-	if ( tool.Dragging() ) {
+	if ( tool.DrawingBox() ) {
+		tool.DragBox( view.Origin(), view.RayThroughPixel( x, y ) );
+	} else if ( tool.Dragging() ) {
 		tool.Drag( world, view.Origin(), view.RayThroughPixel( x, y ) );
 	}
 }
 
 void idEditorEngineLocal::ViewMouseUp() {
-	if ( tool.EndDrag( world, history ) ) {
-		ui->OnDocumentChanged();
+	if ( tool.DrawingBox() ) {
+		idBounds box;
+		if ( tool.EndBox( box ) ) {
+			// a message can arrive inside a frame's pump: the edit waits for nothing there
+			RunEdit( [&] { CreateBrush( box[0].ToFloatPtr(), box[1].ToFloatPtr(), nullptr ); } );
+		}
+		return;
+	}
+	const idEditorTool::dragResult_t result = tool.EndDrag( world, history );
+	switch ( result.kind ) {
+		case idEditorTool::dragResult_t::kind_t::ENTITIES:
+			ui->OnDocumentChanged();
+			break;
+		case idEditorTool::dragResult_t::kind_t::BRUSHES:
+			RunEdit( [&] { MoveBrushes( result.delta.ToFloatPtr() ); } );
+			break;
+		case idEditorTool::dragResult_t::kind_t::FACE:
+			RunEdit( [&] { MoveFace( result.distance ); } );
+			break;
+		default:
+			break;
 	}
 }
 
