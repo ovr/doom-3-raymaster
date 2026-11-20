@@ -15,7 +15,11 @@ void idEditorHistory::Clear() {
 }
 
 void idEditorHistory::Add( const char * label, const idList<editorChange_t> & changes ) {
-	if ( changes.Num() == 0 ) {
+	Add( label, changes, idList<editorPrimitiveChange_t>() );
+}
+
+void idEditorHistory::Add( const char * label, const idList<editorChange_t> & changes, const idList<editorPrimitiveChange_t> & primitiveChanges ) {
+	if ( changes.Num() == 0 && primitiveChanges.Num() == 0 ) {
 		return;
 	}
 	// the undone steps are gone, and with them maybe the state that is on disk
@@ -27,29 +31,42 @@ void idEditorHistory::Add( const char * label, const idList<editorChange_t> & ch
 	step_t & step = steps.Alloc();
 	step.label = label;
 	step.changes = changes;
+	if ( primitiveChanges.Num() > 0 ) {
+		step.primitiveChanges = std::make_shared<const idList<editorPrimitiveChange_t>>( primitiveChanges );
+	}
 	position = steps.Num();
 }
 
-bool idEditorHistory::Undo( idEditorWorld & world ) {
+idEditorHistory::effect_t idEditorHistory::Undo( idEditorWorld & world ) {
 	if ( !CanUndo() ) {
-		return false;
+		return {};
 	}
 	const step_t & step = steps[--position];
+	if ( step.primitiveChanges != nullptr ) {
+		for ( int i = step.primitiveChanges->Num() - 1; i >= 0; i-- ) {
+			world.ApplyPrimitive( ( *step.primitiveChanges )[i], false );
+		}
+	}
 	for ( int i = step.changes.Num() - 1; i >= 0; i-- ) {
 		world.SetMapArgs( step.changes[i].index, step.changes[i].before );
 	}
-	return ChangesList( step.changes );
+	return { ChangesList( step.changes ), step.primitiveChanges != nullptr };
 }
 
-bool idEditorHistory::Redo( idEditorWorld & world ) {
+idEditorHistory::effect_t idEditorHistory::Redo( idEditorWorld & world ) {
 	if ( !CanRedo() ) {
-		return false;
+		return {};
 	}
 	const step_t & step = steps[position++];
 	for ( int i = 0; i < step.changes.Num(); i++ ) {
 		world.SetMapArgs( step.changes[i].index, step.changes[i].after );
 	}
-	return ChangesList( step.changes );
+	if ( step.primitiveChanges != nullptr ) {
+		for ( int i = 0; i < step.primitiveChanges->Num(); i++ ) {
+			world.ApplyPrimitive( ( *step.primitiveChanges )[i], true );
+		}
+	}
+	return { ChangesList( step.changes ), step.primitiveChanges != nullptr };
 }
 
 bool idEditorHistory::ChangesList( const idList<editorChange_t> & changes ) {

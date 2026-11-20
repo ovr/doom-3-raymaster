@@ -8,7 +8,12 @@ set(EDITOR_BRIDGE_SOURCES
 	bridge/EditorBare.cpp
 	bridge/EditorCheck.cpp
 	bridge/EditorEngine.cpp
+	bridge/EditorBrush.cpp
+	bridge/EditorBrush.h
 	bridge/EditorEngine.h
+	bridge/EditorEngineBrush.cpp
+	bridge/EditorEngineBuild.cpp
+	bridge/EditorEngineLocal.h
 	bridge/EditorHistory.cpp
 	bridge/EditorHistory.h
 	bridge/EditorMain.cpp

@@ -83,13 +83,42 @@ const idVec4		SELECTION_COLOR( 1.0f, 0.75f, 0.1f, 1.0f );
 
 void idEditorTool::Reset() {
 	selection.Clear();
+	brushes.Clear();
+	face = -1;
 	dragAxis = -1;
 	dragBefore.Clear();
+}
+
+bool idEditorTool::SelectBrush( const brushRef_t & brush, int newFace, bool toggle ) {
+	const bool hadEntities = ( selection.Num() > 0 );
+	selection.SetNum( 0 );
+	if ( toggle ) {
+		if ( !brushes.Remove( brush ) ) {
+			brushes.Append( brush );
+		}
+		face = -1;
+		return true;
+	}
+	if ( !hadEntities && brushes.Num() == 1 && brushes[0] == brush && face == newFace ) {
+		return false;
+	}
+	brushes.SetNum( 0 );
+	brushes.Append( brush );
+	face = newFace;
+	return true;
 }
 
 bool idEditorTool::Select( int index, bool toggle ) {
 	if ( index <= 0 ) {
 		return toggle ? false : ClearSelection();
+	}
+	const bool hadBrushes = ( brushes.Num() > 0 );
+	brushes.SetNum( 0 );
+	face = -1;
+	if ( hadBrushes ) {
+		selection.SetNum( 0 );
+		selection.Append( index );
+		return true;
 	}
 	if ( toggle ) {
 		if ( !selection.Remove( index ) ) {
@@ -106,21 +135,32 @@ bool idEditorTool::Select( int index, bool toggle ) {
 }
 
 bool idEditorTool::ClearSelection() {
-	if ( selection.Num() == 0 ) {
+	if ( selection.Num() == 0 && brushes.Num() == 0 ) {
 		return false;
 	}
 	selection.SetNum( 0 );
+	brushes.SetNum( 0 );
+	face = -1;
 	return true;
 }
 
 bool idEditorTool::DropRemoved( const idEditorWorld & world ) {
-	const int before = selection.Num();
+	const int before = selection.Num() + brushes.Num();
 	for ( int i = selection.Num() - 1; i >= 0; i-- ) {
 		if ( selection[i] >= world.NumEntities() || world.Entity( selection[i] ).removed ) {
 			selection.RemoveIndex( i );
 		}
 	}
-	return selection.Num() != before;
+	for ( int i = brushes.Num() - 1; i >= 0; i-- ) {
+		const brushRef_t & brush = brushes[i];
+		if ( brush.entity >= world.NumEntities() || world.Entity( brush.entity ).removed || world.Brush( brush.entity, brush.primitive ) == nullptr ) {
+			brushes.RemoveIndex( i );
+		}
+	}
+	if ( brushes.Num() != 1 || face >= world.Brush( brushes[0].entity, brushes[0].primitive )->GetNumSides() ) {
+		face = -1;
+	}
+	return selection.Num() + brushes.Num() != before;
 }
 
 bool idEditorTool::Pivot( const idEditorWorld & world, idVec3 & pivot ) const {
@@ -256,6 +296,24 @@ void idEditorTool::Draw( const idEditorWorld & world, const idVec3 & viewOrigin 
 	for ( int i = 0; i < selection.Num(); i++ ) {
 		if ( selection[i] < world.NumEntities() ) {
 			renderWorld->DebugBounds( SELECTION_COLOR, world.WorldBounds( selection[i] ) );
+		}
+	}
+	// the edges of the selected brushes; the selected face over them
+	for ( int i = 0; i < brushes.Num(); i++ ) {
+		editorBrushWindings_t windings;
+		if ( !world.BrushWindings( brushes[i].entity, brushes[i].primitive, windings ) ) {
+			continue;
+		}
+		for ( int pass = 0; pass < 2; pass++ ) {
+			for ( int side = 0; side < windings.Num(); side++ ) {
+				if ( ( side == SelectedFace() ) != ( pass == 1 ) ) {
+					continue;
+				}
+				const idFixedWinding & winding = windings[side];
+				for ( int j = 0; j < winding.GetNumPoints(); j++ ) {
+					renderWorld->DebugLine( ( pass == 1 ) ? ACTIVE_COLOR : SELECTION_COLOR, winding[j].ToVec3(), winding[( j + 1 ) % winding.GetNumPoints()].ToVec3() );
+				}
+			}
 		}
 	}
 

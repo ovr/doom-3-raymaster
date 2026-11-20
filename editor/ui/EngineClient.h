@@ -45,6 +45,8 @@ public:
 	void				OnSelectionChanged() override { emit selectionChanged(); }
 	void				OnDocumentChanged() override { emit documentChanged(); }
 	void				OnPreviewReady( int id, int width, int height, const unsigned char * rgb ) override;
+	void				OnBuildProgress( const char *, float ) override {}
+	void				OnBuildFinished( const editorBuildResult_t & ) override {}
 	void				OnEditMaterial( const char * name ) override { emit editMaterialRequested( QString::fromLocal8Bit( name ) ); }
 
 signals:

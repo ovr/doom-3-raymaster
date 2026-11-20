@@ -8,20 +8,13 @@
 #include <filesystem>
 #include <string>
 
-#include "framework/EngineHost.h"
 #include "sys/sys_window.h"
 #include "sys/win32/win_entry.h"
-
-#include "../api/EditorEngineApi.h"
 #include "renderer/Image.h"
 
-#include "EditorEngine.h"
-#include "EditorHistory.h"
-#include "EditorPreview.h"
 #include "../mtr/MtrText.h"
-#include "EditorTool.h"
-#include "EditorView.h"
-#include "EditorWorld.h"
+#include "EditorEngine.h"
+#include "EditorEngineLocal.h"
 
 namespace {
 
@@ -37,124 +30,8 @@ constexpr float		CREATE_WALL_GAP = 24.0f;
 constexpr float		DUPLICATE_OFFSET = 16.0f;
 constexpr int		EDIT_FRAME_MSEC = 8;			// the edit view's frame time: 125 frames a second
 
-// the engine as the UI sees it, and the UI as the engine sees it
-class idEditorEngineLocal final : public idEditorEngine, public idEngineHost, public idEditorViewClient {
-public:
-	idEditorEngineLocal( HINSTANCE instance_, const char * cmdLine_ ) : instance( instance_ ), cmdLine( cmdLine_ ) {}
+}	// namespace
 
-	// idEditorEngine
-	[[nodiscard]] int	ApiVersion() const override { return EDITOR_API_VERSION; }
-	void				Init( idEditorHost * host ) override;
-	void				Frame() override;
-	void				Shutdown() override;
-	void				ResizeViewport( int width, int height ) override;
-	void				FocusViewport() override;
-	[[nodiscard]] bool	ViewportHasFocus() const override;
-	void				ExecuteCommand( const char * text ) override;
-	void				EnumMaps( editorMapVisitor_t visitor, void * context ) override;
-	void				OpenMap( const char * name ) override;
-	void				CloseMap() override;
-	[[nodiscard]] const char *	CurrentMap() const override { return world.Name(); }
-	void				EnumEntities( editorEntityVisitor_t visitor, void * context ) override;
-	void				LookAtEntity( int index ) override;
-	void				SelectEntity( int index, bool add ) override;
-	void				EnumSelection( editorSelectionVisitor_t visitor, void * context ) override;
-	void				SetGizmo( int gizmo ) override;
-	void				SetGridSize( float size ) override { tool.SetGridSize( size ); }
-	void				EnumEntityKeys( int index, editorKeyVisitor_t visitor, void * context ) override;
-	void				SetEntityKey( int index, const char * key, const char * value ) override;
-	void				EnumEntityClasses( editorClassVisitor_t visitor, void * context ) override;
-	void				CreateEntity( const char * classname, const char * model ) override;
-	void				EnumAssets( int kind, editorAssetVisitor_t visitor, void * context ) override;
-	[[nodiscard]] bool	GetMaterial( const char * name, editorMaterialVisitor_t visitor, void * context ) override;
-	[[nodiscard]] bool	ApplyMaterialText( const char * name, const char * text ) override;
-	[[nodiscard]] bool	SaveMaterial( const char * name ) override;
-	void				EditMaterial( const char * name ) { ui->OnEditMaterial( name ); }
-	void				PlaySound( const char * name ) override;
-	void				DuplicateSelection() override;
-	void				DeleteSelection() override;
-	void				GetDocumentState( editorDocumentState_t & state ) const override;
-	void				RequestPreview( int id, int kind, const char * name, int size ) override;
-	void				CancelPreviews() override { preview.Cancel(); }
-	void				Undo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorUndo\n" ); }
-	void				Redo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorRedo\n" ); }
-	void				SaveMap() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorSaveMap\n" ); }
-	void				Play() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorPlay\n" ); }
-	void				StopPlay() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorStop\n" ); }
-
-	// the console commands behind the queued calls
-	void				OpenMapNow( const char * name );
-	void				CloseMapNow();
-	void				UndoNow();
-	void				RedoNow();
-	void				SaveMapNow();
-	void				PlayNow();
-	void				StopNow();
-	// value nullptr removes the key
-	void				SetKeyNow( const char * entityName, const char * key, const char * value );
-	// A console command runs inside the frame, between its parts, where an edit is as safe as
-	// between two frames.
-	template<typename editFunction>
-	void				RunEdit( editFunction && edit ) {
-		const bool wasInFrame = inFrame;
-		inFrame = false;
-		edit();
-		inFrame = wasInFrame;
-	}
-	// -1 and a print when the open map has no such entity
-	[[nodiscard]] int	FindEntity( const char * entityName ) const;
-
-private:
-	[[nodiscard]] bool	IsEntity( int index ) const { return index > 0 && index < world.NumEntities() && !world.Entity( index ).removed; }
-	// no edit while the engine runs a frame or a drag holds the entities
-	[[nodiscard]] bool	CanEdit() const { return world.IsOpen() && !playing && !inFrame && !tool.Dragging(); }
-	// after a frame while playing: has the game started, has it ended
-	void				UpdatePlay();
-	void				EndPlay();
-	// applies the changes as one step of the history and tells the UI
-	void				Edit( const char * label, const idList<editorChange_t> & changes );
-	void				AfterEdit( bool listChanged );
-	void				SelectOnly( const idList<int> & indices );
-
-public:
-	// idEditorViewClient
-	void				ViewMouseDown( int x, int y, bool ctrl ) override;
-	void				ViewMouseMove( int x, int y ) override;
-	void				ViewMouseUp() override;
-
-	// idEngineHost
-	void *				ParentWindow() override { return ui->ViewportParent(); }
-	void				GetViewportSize( int & width, int & height ) override;
-	void				PumpEvents() override;
-	void				OnQuitRequested() override { ui->OnQuitRequested(); }
-	void				OnFatalError( const char * text ) override { ui->OnFatalError( text ); }
-	void				OnPrint( const char * text ) override { ui->OnPrint( text ); }
-	void				OnEscapeToHost() override;
-	bool				DrawScene() override;
-
-private:
-	[[nodiscard]] HWND	Viewport() const { return started ? static_cast<HWND>( Sys_GetNativeWindow() ) : nullptr; }
-
-	HINSTANCE			instance;
-	std::string			cmdLine;
-	idEditorHost *		ui = nullptr;
-	bool				started = false;
-	bool				inFrame = false;
-	int					lastFrameMsec = 0;
-	idEditorWorld		world;
-	idEditorView		view;
-	idEditorTool		tool;
-	idEditorHistory		history;
-	idEditorPreview		preview;
-	bool				previewFrame = false;	// the frame being drawn is a preview picture
-	int					previewPauseUntil = 0;	// no picture before this time, after one failed
-	bool				lastWasPreview = false;	// so the edit view gets every other frame
-	bool				playing = false;		// from editorPlay until the game has ended
-	bool				playSpawned = false;	// the game's map has run
-	int					playFrames = 0;
-};
-
-// for the console commands; nullptr in the bare shell
 idEditorEngineLocal *	editorEngine = nullptr;
 
 void idEditorEngineLocal::Init( idEditorHost * host ) {
@@ -166,6 +43,34 @@ void idEditorEngineLocal::Init( idEditorHost * host ) {
 	fileSystem->MountAllMapResources();
 	view.Attach( Viewport() );
 	view.SetClient( this );
+}
+
+HWND idEditorEngineLocal::Viewport() const {
+	return started ? static_cast<HWND>( Sys_GetNativeWindow() ) : nullptr;
+}
+
+// The frame just drawn, top row first, as R_WriteTGA takes it.
+void idEditorEngineLocal::WriteViewShot() {
+	const int width = renderSystem->GetWidth();
+	const int height = renderSystem->GetHeight();
+	idList<byte> rgb;
+	rgb.SetNum( width * height * 3 );
+	renderSystem->ReadLastFrame( 0, 0, width, height, rgb.Ptr(), false );
+	idList<byte> rgba;
+	rgba.SetNum( width * height * 4 );
+	for ( int y = 0; y < height; y++ ) {
+		const byte * const from = rgb.Ptr() + ( height - 1 - y ) * width * 3;
+		byte * const to = rgba.Ptr() + y * width * 4;
+		for ( int x = 0; x < width; x++ ) {
+			to[x * 4 + 0] = from[x * 3 + 0];
+			to[x * 4 + 1] = from[x * 3 + 1];
+			to[x * 4 + 2] = from[x * 3 + 2];
+			to[x * 4 + 3] = 255;
+		}
+	}
+	R_WriteTGA( viewShotName, rgba.Ptr(), width, height, false );
+	common->Printf( "wrote %s, %d x %d, %s geometry\n", viewShotName.c_str(), width, height, world.IsPreview() ? "preview" : "compiled" );
+	viewShotName.Clear();
 }
 
 void idEditorEngineLocal::Frame() {
@@ -187,6 +92,9 @@ void idEditorEngineLocal::Frame() {
 
 	if ( playing ) {
 		UpdatePlay();
+	}
+	if ( !viewShotName.IsEmpty() && !previewFrame && !playing && world.IsOpen() ) {
+		WriteViewShot();
 	}
 
 	if ( previewFrame ) {
@@ -271,19 +179,28 @@ void idEditorEngineLocal::OpenMap( const char * name ) {
 	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "editorOpenMap \"%s\"\n", name ) );
 }
 
+void idEditorEngineLocal::NewMap( const char * name ) {
+	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "editorNewMap \"%s\"\n", name ) );
+}
+
 void idEditorEngineLocal::CloseMap() {
 	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorCloseMap\n" );
 }
 
 void idEditorEngineLocal::PlayNow() {
-	if ( !world.IsOpen() || playing || tool.Dragging() ) {
+	if ( !world.IsOpen() || playing || building || tool.Dragging() ) {
 		common->Printf( playing ? "The game already plays the map.\n" : "No map is open in the editor.\n" );
 		return;
 	}
-	// the game reads the map from its file
-	if ( history.IsDirty() ) {
+	// the game reads the map from its files: the .map, and the .proc of the geometry as it is now
+	if ( world.IsPreview() ) {
+		if ( !BuildNow( false ) ) {
+			common->Printf( "Editor: the game was not started: the map has to build first (see editorBuild above).\n" );
+			return;
+		}
+	} else if ( history.IsDirty() || world.IsUnsaved() ) {
 		SaveMapNow();
-		if ( history.IsDirty() ) {
+		if ( history.IsDirty() || world.IsUnsaved() ) {
 			return;
 		}
 	}
@@ -363,6 +280,22 @@ void idEditorEngineLocal::OpenMapNow( const char * name ) {
 	ui->OnMapChanged();
 }
 
+void idEditorEngineLocal::NewMapNow( const char * name ) {
+	if ( playing || building ) {
+		common->Printf( "Stop the game first (Shift+Esc).\n" );
+		return;
+	}
+	tool.Reset();
+	history.Clear();
+	world.New( name );
+	idVec3 origin;
+	idAngles angles;
+	world.GetStartView( origin, angles );
+	view.SetView( origin, angles );
+	view.SetEditMode( true );
+	ui->OnMapChanged();
+}
+
 void idEditorEngineLocal::CloseMapNow() {
 	if ( playing ) {
 		common->Printf( "Stop the game first (Shift+Esc).\n" );
@@ -375,21 +308,35 @@ void idEditorEngineLocal::CloseMapNow() {
 	ui->OnMapChanged();
 }
 
+// A step that changed primitives may have moved their indices: the brush selection is dropped.
 void idEditorEngineLocal::UndoNow() {
-	if ( world.IsOpen() && !playing && !tool.Dragging() && history.CanUndo() ) {
-		AfterEdit( history.Undo( world ) );
+	if ( world.IsOpen() && !playing && !building && !tool.Dragging() && history.CanUndo() ) {
+		const idEditorHistory::effect_t effect = history.Undo( world );
+		if ( effect.primitivesChanged && tool.NumSelectedBrushes() > 0 ) {
+			tool.ClearSelection();
+			ui->OnSelectionChanged();
+		}
+		AfterEdit( effect.listChanged );
 	}
 }
 
 void idEditorEngineLocal::RedoNow() {
-	if ( world.IsOpen() && !playing && !tool.Dragging() && history.CanRedo() ) {
-		AfterEdit( history.Redo( world ) );
+	if ( world.IsOpen() && !playing && !building && !tool.Dragging() && history.CanRedo() ) {
+		const idEditorHistory::effect_t effect = history.Redo( world );
+		if ( effect.primitivesChanged && tool.NumSelectedBrushes() > 0 ) {
+			tool.ClearSelection();
+			ui->OnSelectionChanged();
+		}
+		AfterEdit( effect.listChanged );
 	}
 }
 
 void idEditorEngineLocal::SaveMapNow() {
 	if ( !world.IsOpen() ) {
 		common->Printf( "No map is open in the editor.\n" );
+		return;
+	}
+	if ( building ) {
 		return;
 	}
 	if ( world.Save() ) {
@@ -401,6 +348,9 @@ void idEditorEngineLocal::SaveMapNow() {
 }
 
 int idEditorEngineLocal::FindEntity( const char * entityName ) const {
+	if ( world.IsOpen() && ( idStr::Icmp( entityName, "world" ) == 0 || idStr::Cmp( entityName, "0" ) == 0 ) ) {
+		return 0;
+	}
 	const int index = world.IsOpen() ? world.FindEntity( entityName ) : -1;
 	if ( index == -1 ) {
 		common->Printf( "The open map has no entity named '%s'.\n", entityName );
@@ -410,19 +360,26 @@ int idEditorEngineLocal::FindEntity( const char * entityName ) const {
 
 void idEditorEngineLocal::SetKeyNow( const char * entityName, const char * key, const char * value ) {
 	const int index = FindEntity( entityName );
-	if ( index != -1 ) {
+	if ( index > 0 ) {
 		RunEdit( [&] { SetEntityKey( index, key, value ); } );
 	}
 }
 
 void idEditorEngineLocal::Edit( const char * label, const idList<editorChange_t> & changes ) {
-	if ( changes.Num() == 0 ) {
+	Edit( label, changes, idList<editorPrimitiveChange_t>() );
+}
+
+void idEditorEngineLocal::Edit( const char * label, const idList<editorChange_t> & changes, const idList<editorPrimitiveChange_t> & primitiveChanges ) {
+	if ( changes.Num() == 0 && primitiveChanges.Num() == 0 ) {
 		return;
 	}
 	for ( int i = 0; i < changes.Num(); i++ ) {
 		world.SetMapArgs( changes[i].index, changes[i].after );
 	}
-	history.Add( label, changes );
+	for ( int i = 0; i < primitiveChanges.Num(); i++ ) {
+		world.ApplyPrimitive( primitiveChanges[i], true );
+	}
+	history.Add( label, changes, primitiveChanges );
 	AfterEdit( idEditorHistory::ChangesList( changes ) );
 }
 
@@ -672,6 +629,10 @@ void idEditorEngineLocal::DuplicateSelection() {
 	if ( !CanEdit() ) {
 		return;
 	}
+	if ( tool.NumSelectedBrushes() > 0 ) {
+		DuplicateBrushes();
+		return;
+	}
 	const float step = ( tool.GridSize() > 0.0f ) ? tool.GridSize() * 2.0f : DUPLICATE_OFFSET;
 	idList<editorChange_t> changes;
 	idList<int> copies;
@@ -700,6 +661,10 @@ void idEditorEngineLocal::DuplicateSelection() {
 
 void idEditorEngineLocal::DeleteSelection() {
 	if ( !CanEdit() ) {
+		return;
+	}
+	if ( tool.NumSelectedBrushes() > 0 ) {
+		DeleteBrushes();
 		return;
 	}
 	idList<editorChange_t> changes;
@@ -734,8 +699,24 @@ void idEditorEngineLocal::SetGizmo( int gizmo ) {
 	}
 }
 
+void idEditorEngineLocal::SetGridSize( float size ) {
+	tool.SetGridSize( Max( 0.0f, size ) );
+	if ( started ) {
+		ui->OnDocumentChanged();
+	}
+}
+
+float idEditorEngineLocal::Snap( float value ) const {
+	return ( tool.GridSize() > 0.0f ) ? idMath::Rint( value / tool.GridSize() ) * tool.GridSize() : value;
+}
+
 void idEditorEngineLocal::GetDocumentState( editorDocumentState_t & state ) const {
-	state.dirty = history.IsDirty();
+	state.geometryDirty = world.IsOpen() && world.IsPreview();
+	state.building = building;
+	state.leakPoints = world.NumLeakPoints();
+	state.leakShown = world.LeakShown();
+	state.gridSize = tool.GridSize();
+	state.dirty = history.IsDirty() || world.IsUnsaved();
 	state.playing = playing;
 	state.canUndo = history.CanUndo();
 	state.canRedo = history.CanRedo();
@@ -751,7 +732,18 @@ void idEditorEngineLocal::ViewMouseDown( int x, int y, bool ctrl ) {
 	if ( tool.BeginDrag( world, view.Origin(), dir, view.Origin() ) ) {
 		return;
 	}
-	if ( tool.Select( world.Pick( view.Origin(), dir, PICK_DISTANCE ), ctrl ) ) {
+	const editorPick_t pick = world.Pick( view.Origin(), dir, PICK_DISTANCE );
+	bool changed;
+	if ( pick.entity == 0 && world.Brush( 0, pick.primitive ) != nullptr ) {
+		// a second click on the one selected brush is for the face under the cursor
+		const brushRef_t brush = { 0, pick.primitive };
+		const bool again = ( !ctrl && tool.NumSelectedBrushes() == 1 && tool.SelectedBrush( 0 ) == brush );
+		changed = tool.SelectBrush( brush, again ? pick.face : -1, ctrl );
+	} else {
+		// a brush entity as a whole; a patch of the worldspawn is nothing to select yet
+		changed = tool.Select( ( pick.entity > 0 ) ? pick.entity : -1, ctrl );
+	}
+	if ( changed ) {
 		ui->OnSelectionChanged();
 	}
 }
@@ -774,7 +766,7 @@ void idEditorEngineLocal::EnumEntities( editorEntityVisitor_t visitor, void * co
 		if ( entity.removed ) {
 			continue;
 		}
-		const editorEntityInfo_t info = { i, entity.args.GetString( "name" ), entity.args.GetString( "classname" ), entity.isLight, entity.modelHandle != -1 };
+		const editorEntityInfo_t info = { i, entity.args.GetString( "name" ), entity.args.GetString( "classname" ), entity.isLight, entity.modelHandle != -1, world.NumPrimitives( i ) };
 		visitor( context, info );
 	}
 }
@@ -846,13 +838,17 @@ void idEditorEngineLocal::PumpEvents() {
 	}
 }
 
+namespace {
+
 [[nodiscard]] std::filesystem::path ExeDirectory() {
 	wchar_t path[MAX_PATH] = {};
 	GetModuleFileNameW( nullptr, path, MAX_PATH );
 	return std::filesystem::path( path ).parent_path();
 }
 
-[[nodiscard]] bool NeedEditor() {
+}	// namespace
+
+bool Editor_NeedEngine() {
 	if ( editorEngine == nullptr ) {
 		common->Printf( "This command needs the editor's interface: start Doom3Editor.exe without --bare.\n" );
 		return false;
@@ -860,32 +856,40 @@ void idEditorEngineLocal::PumpEvents() {
 	return true;
 }
 
-}	// namespace
-
 CONSOLE_COMMAND_SHIP( editorOpenMap, "opens a map in the editor: editorOpenMap game/mc_underground", idCmdSystem::ArgCompletion_MapName ) {
 	if ( args.Argc() != 2 ) {
 		common->Printf( "usage: editorOpenMap <map>\n" );
 		return;
 	}
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->OpenMapNow( args.Argv( 1 ) );
 	}
 }
 
+CONSOLE_COMMAND_SHIP( editorNewMap, "starts a map of a worldspawn and nothing else: editorNewMap editor/room1", nullptr ) {
+	if ( args.Argc() != 2 ) {
+		common->Printf( "usage: editorNewMap <map>\n" );
+		return;
+	}
+	if ( Editor_NeedEngine() ) {
+		editorEngine->NewMapNow( args.Argv( 1 ) );
+	}
+}
+
 CONSOLE_COMMAND_SHIP( editorCloseMap, "closes the map open in the editor", nullptr ) {
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->CloseMapNow();
 	}
 }
 
 CONSOLE_COMMAND_SHIP( editorUndo, "undoes the last edit of the map open in the editor", nullptr ) {
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->UndoNow();
 	}
 }
 
 CONSOLE_COMMAND_SHIP( editorRedo, "redoes the edit undone last", nullptr ) {
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->RedoNow();
 	}
 }
@@ -895,7 +899,7 @@ CONSOLE_COMMAND_SHIP( editorSetKey, "sets a key of an entity of the open map, or
 		common->Printf( "usage: editorSetKey <entity name> <key> [value]\n" );
 		return;
 	}
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->SetKeyNow( args.Argv( 1 ), args.Argv( 2 ), ( args.Argc() == 4 ) ? args.Argv( 3 ) : nullptr );
 	}
 }
@@ -905,7 +909,7 @@ CONSOLE_COMMAND_SHIP( editorSelect, "selects an entity of the open map by name a
 		common->Printf( "usage: editorSelect <entity name>\n" );
 		return;
 	}
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		const int index = editorEngine->FindEntity( args.Argv( 1 ) );
 		if ( index != -1 ) {
 			editorEngine->SelectEntity( index, false );
@@ -919,19 +923,19 @@ CONSOLE_COMMAND_SHIP( editorCreate, "makes an entity of a class in front of the 
 		common->Printf( "usage: editorCreate <entityDef> [model]\n" );
 		return;
 	}
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->RunEdit( [&args] { editorEngine->CreateEntity( args.Argv( 1 ), ( args.Argc() > 2 ) ? args.Argv( 2 ) : nullptr ); } );
 	}
 }
 
 CONSOLE_COMMAND_SHIP( editorDuplicate, "duplicates the entities selected in the editor", nullptr ) {
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->RunEdit( [] { editorEngine->DuplicateSelection(); } );
 	}
 }
 
 CONSOLE_COMMAND_SHIP( editorDelete, "removes the entities selected in the editor", nullptr ) {
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->RunEdit( [] { editorEngine->DeleteSelection(); } );
 	}
 }
@@ -948,7 +952,7 @@ CONSOLE_COMMAND_SHIP( editorPreviewTest, "writes a preview picture to editor_pre
 		common->Printf( "usage: editorPreviewTest material|model|class <name> [size]\n" );
 		return;
 	}
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->RequestPreview( PREVIEW_TEST_ID, kind, args.Argv( 2 ), ( args.Argc() > 3 ) ? atoi( args.Argv( 3 ) ) : 256 );
 	}
 }
@@ -962,7 +966,7 @@ CONSOLE_COMMAND_SHIP( editorPreviewSweep, "makes the preview of every material, 
 			kind = i;
 		}
 	}
-	if ( kind == -1 || !NeedEditor() ) {
+	if ( kind == -1 || !Editor_NeedEngine() ) {
 		common->Printf( "usage: editorPreviewSweep material|model|class [first] [count]\n" );
 		return;
 	}
@@ -994,7 +998,7 @@ static void CollectLines( const mtr::block_t & block, std::vector<mtr::line_t> &
 }
 
 CONSOLE_COMMAND_SHIP( editorEditMaterial, "opens a material in the material editor", nullptr ) {
-	if ( args.Argc() != 2 || !NeedEditor() ) {
+	if ( args.Argc() != 2 || !Editor_NeedEngine() ) {
 		common->Printf( "usage: editorEditMaterial <material>\n" );
 		return;
 	}
@@ -1046,7 +1050,7 @@ CONSOLE_COMMAND_SHIP( editorCheckMaterials, "parses the text of every material a
 }
 
 CONSOLE_COMMAND_SHIP( editorSetMaterialKey, "changes a key of a material's declaration as the material editor does: editorSetMaterialKey <material> <key> <value> [save]", nullptr ) {
-	if ( args.Argc() < 4 || !NeedEditor() ) {
+	if ( args.Argc() < 4 || !Editor_NeedEngine() ) {
 		common->Printf( "usage: editorSetMaterialKey <material> <key> <value> [save]\n" );
 		return;
 	}
@@ -1083,19 +1087,19 @@ CONSOLE_COMMAND_SHIP( editorSetMaterialKey, "changes a key of a material's decla
 }
 
 CONSOLE_COMMAND_SHIP( editorPlay, "plays the map open in the editor: saves it when it has changes and starts the game on it", nullptr ) {
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->PlayNow();
 	}
 }
 
 CONSOLE_COMMAND_SHIP( editorStop, "ends the game started with editorPlay; the map is edited again", nullptr ) {
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->StopNow();
 	}
 }
 
 CONSOLE_COMMAND_SHIP( editorSaveMap, "saves the map open in the editor into fs_savepath", nullptr ) {
-	if ( NeedEditor() ) {
+	if ( Editor_NeedEngine() ) {
 		editorEngine->SaveMapNow();
 	}
 }

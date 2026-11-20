@@ -29,6 +29,19 @@ public:
 	// true when the selection changed
 	bool				Select( int index, bool toggle );
 	bool				ClearSelection();
+
+	// Brushes are selected instead of entities, never along with them. The face is a side of the
+	// one selected brush, or -1.
+	struct brushRef_t {
+		int					entity = 0;
+		int					primitive = 0;
+		[[nodiscard]] bool	operator==( const brushRef_t & other ) const { return entity == other.entity && primitive == other.primitive; }
+	};
+	[[nodiscard]] int	NumSelectedBrushes() const { return brushes.Num(); }
+	[[nodiscard]] const brushRef_t &	SelectedBrush( int i ) const { return brushes[i]; }
+	[[nodiscard]] int	SelectedFace() const { return ( brushes.Num() == 1 ) ? face : -1; }
+	// true when the selection changed
+	bool				SelectBrush( const brushRef_t & brush, int newFace, bool toggle );
 	// drops the entities an edit removed; true when the selection changed
 	bool				DropRemoved( const idEditorWorld & world );
 
@@ -52,6 +65,8 @@ private:
 	[[nodiscard]] bool	HandleValue( const idVec3 & rayStart, const idVec3 & rayDir, float & value ) const;
 
 	idList<int>			selection;
+	idList<brushRef_t>	brushes;
+	int					face = -1;
 	mode_t				mode = mode_t::MOVE;
 	float				gridSize = 8.0f;
 

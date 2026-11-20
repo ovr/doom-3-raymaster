@@ -21,7 +21,7 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 8;
+constexpr int EDITOR_API_VERSION = 9;
 
 // what the content browser lists
 enum editorAssetKind_t : int {
@@ -48,12 +48,69 @@ enum editorGizmo_t : int {
 
 // the state of the open map's history, for the Edit menu; the labels are "" when there is no step
 struct editorDocumentState_t {
-	bool				dirty;
+	bool				dirty;			// differs from the file, or a new map that was never saved
 	bool				playing;		// the game runs the map: nothing can be edited
 	bool				canUndo;
 	bool				canRedo;
 	const char *		undoLabel;
 	const char *		redoLabel;
+	// The viewport shows the brushes and patches of the document, not a compiled world: a primitive
+	// was edited since the last build, or the map has no compiled world. A build clears it.
+	bool				geometryDirty;
+	bool				building;		// inside Build(): only CancelBuild() does anything
+	int					leakPoints;		// of the last build's leak line, 0 = none
+	bool				leakShown;
+	float				gridSize;		// 0 = no snapping
+};
+
+// how a build ended
+enum editorBuildStatus_t : int {
+	EDITOR_BUILD_OK,
+	EDITOR_BUILD_LEAKED,		// an entity sees the outside: nothing was compiled, the leak line is shown
+	EDITOR_BUILD_CANCELLED,
+	EDITOR_BUILD_FAILED			// see error
+};
+
+// valid during OnBuildFinished() only
+struct editorBuildResult_t {
+	int					status;			// editorBuildStatus_t
+	const char *		error;			// "" unless the status is FAILED
+	int					areas;			// of the world
+	int					portals;		// between the areas
+	int					triangles;		// of all models
+	int					aasFiles;		// written; 0 for a map without monsters and for a fast build
+	int					aasAreas;		// of all files
+	int					leakPoints;
+	float				seconds;
+};
+
+// What is under a pixel of the viewport. entity -1: nothing. A primitive is a brush or a patch of
+// the entity (0 = the worldspawn); face is the side of a brush, -1 for a patch.
+struct editorPickInfo_t {
+	int					entity;
+	int					primitive;
+	int					face;
+	float				distance;
+	float				point[3];
+};
+
+// The texture of a brush side: shift in repeats, repeat in world units per repeat of the texture
+// along S and T (negative repeatT: mirrored), rotate in degrees.
+struct editorFaceTexture_t {
+	float				shiftS;
+	float				shiftT;
+	float				repeatS;
+	float				repeatT;
+	float				rotate;
+};
+
+struct editorFaceInfo_t {
+	int					face;
+	const char *		material;
+	float				normal[3];		// out of the brush, in the space of its entity
+	float				dist;			// normal · x = dist
+	bool				visible;		// false: the other sides cut it away
+	editorFaceTexture_t	texture;
 };
 
 // a map the game data declares (a mapDef): name is what OpenMap takes, "game/mc_underground"
@@ -69,12 +126,16 @@ struct editorEntityInfo_t {
 	const char *		classname;
 	bool				isLight;
 	bool				hasModel;
+	int					numPrimitives;	// brushes and patches
 };
 
 // the strings are valid during the call only
 using editorMapVisitor_t = void ( * )( void * context, const editorMapInfo_t & map );
 using editorEntityVisitor_t = void ( * )( void * context, const editorEntityInfo_t & entity );
 using editorSelectionVisitor_t = void ( * )( void * context, int entityIndex );
+// face -1: the whole brush
+using editorBrushVisitor_t = void ( * )( void * context, int entityIndex, int primitive, int face );
+using editorFaceVisitor_t = void ( * )( void * context, const editorFaceInfo_t & face );
 
 // how the inspector edits a key
 enum editorKeyType_t : int {
@@ -135,6 +196,12 @@ public:
 	// an edit, an undo, a redo or a save: GetDocumentState() is new
 	virtual void		OnDocumentChanged() = 0;
 
+	// Inside Build(), which blocks its frame: the stage that runs ("map: bsp", "aas48: reachability")
+	// and how far it is, 0 to 1. PumpEvents() is called along with it.
+	virtual void		OnBuildProgress( const char * stage, float fraction ) = 0;
+	// the build ended; OnDocumentChanged() follows
+	virtual void		OnBuildFinished( const editorBuildResult_t & result ) = 0;
+
 	// the console asked for a material in the material editor (editorEditMaterial)
 	virtual void		OnEditMaterial( const char * name ) = 0;
 
@@ -172,6 +239,8 @@ public:
 	// While a map is open the viewport is the edit view: hold the right button to look and fly.
 	virtual void		EnumMaps( editorMapVisitor_t visitor, void * context ) = 0;
 	virtual void		OpenMap( const char * name ) = 0;
+	// A map of a worldspawn and nothing else, "editor/room1"; no file is written before SaveMap().
+	virtual void		NewMap( const char * name ) = 0;
 	virtual void		CloseMap() = 0;
 	// "" when no map is open
 	[[nodiscard]] virtual const char *	CurrentMap() const = 0;
@@ -186,7 +255,42 @@ public:
 
 	// the gizmo at the selection (editorGizmo_t) and the step of a move, 0 = no snapping
 	virtual void		SetGizmo( int gizmo ) = 0;
+	// also what new brushes, brush moves and face moves snap to
 	virtual void		SetGridSize( float size ) = 0;
+
+	/*
+		Brushes. The selection is either entities or brushes, never both:
+
+		  click on a brush of the worldspawn    selects the brush; Ctrl+click adds or removes one
+		  click on the one selected brush       selects the face under the cursor
+		  click on a brush entity               selects the entity (SelectBrush() reaches its brushes)
+
+		The edits work on the selected brushes and are one step of the history each. They do
+		nothing while GetDocumentState() says playing or building. An edit makes geometryDirty.
+		The index of a primitive is its place in its entity: deleting one moves the ones behind
+		it, so ask EnumBrushSelection() again after OnSelectionChanged().
+	*/
+	// false: nothing there. x and y are pixels of the viewport.
+	[[nodiscard]] virtual bool	Pick( int x, int y, editorPickInfo_t & pick ) = 0;
+	// face -1 selects the whole brush; add = true adds the brush or removes it
+	virtual void		SelectBrush( int entityIndex, int primitive, int face, bool add ) = 0;
+	virtual void		EnumBrushSelection( editorBrushVisitor_t visitor, void * context ) = 0;
+	virtual void		EnumBrushFaces( int entityIndex, int primitive, editorFaceVisitor_t visitor, void * context ) = 0;
+	// An axial box in world coordinates, snapped to the grid, added to the selected brush entity or
+	// else to the worldspawn, and selected. material nullptr: the default one.
+	virtual void		CreateBrush( const float mins[3], const float maxs[3], const char * material ) = 0;
+	virtual void		MoveBrushes( const float delta[3] ) = 0;
+	// pushes the selected face out along its normal, or pulls it in (negative)
+	virtual void		MoveFace( float distance ) = 0;
+	// the selected face, or every face of the selected brushes when no face is
+	virtual void		SetFaceMaterial( const char * material ) = 0;
+	virtual void		SetFaceTexture( const editorFaceTexture_t & texture ) = 0;
+	// every selected brush becomes one wall brush for each of its faces
+	virtual void		HollowBrushes( float thickness ) = 0;
+	// the selected brushes of the worldspawn become a new entity of the class (func_static, func_door)
+	virtual void		MakeBrushEntity( const char * classname ) = 0;
+	// the primitives of the selected brush entities go to the worldspawn, the entities are removed
+	virtual void		MoveBrushesToWorld() = 0;
 
 	// The keys of an entity: the map's own first, then the ones its entityDef documents.
 	virtual void		EnumEntityKeys( int index, editorKeyVisitor_t visitor, void * context ) = 0;
@@ -197,7 +301,8 @@ public:
 	virtual void		EnumEntityClasses( editorClassVisitor_t visitor, void * context ) = 0;
 	// Makes an entity in front of the camera and selects it; model, when not nullptr, is its "model" key.
 	virtual void		CreateEntity( const char * classname, const char * model ) = 0;
-	// The selection; brush entities are not duplicated, the copies become the selection.
+	// The selection, entities or brushes; brush entities are not duplicated, the copies become
+	// the selection.
 	virtual void		DuplicateSelection() = 0;
 	virtual void		DeleteSelection() = 0;
 
@@ -228,8 +333,19 @@ public:
 	virtual void		Redo() = 0;
 	virtual void		SaveMap() = 0;
 
-	// Play in Editor: saves the open map when it has changes and starts the game on it, in the
-	// viewport. StopPlay(), Shift+Esc or the game's own exit ends it and the map is edited again.
+	// Saves the map and compiles it: the world (.proc, .cm) and, unless fast or the map has no
+	// monster, the AAS files. Happens in the next frame and blocks it; the host gets
+	// OnBuildProgress() and PumpEvents() meanwhile and OnBuildFinished() at the end. After a good
+	// build the viewport shows the compiled world again.
+	virtual void		Build( bool fast ) = 0;
+	// ends the build that runs; safe from PumpEvents()
+	virtual void		CancelBuild() = 0;
+	// the leak line of the last build that leaked
+	virtual void		ShowLeak( bool show ) = 0;
+
+	// Play in Editor: saves the open map when it has changes, builds it when geometryDirty, and
+	// starts the game on it, in the viewport. A build that fails or leaks starts no game.
+	// StopPlay(), Shift+Esc or the game's own exit ends it and the map is edited again.
 	// The host hears of both through OnDocumentChanged().
 	virtual void		Play() = 0;
 	virtual void		StopPlay() = 0;

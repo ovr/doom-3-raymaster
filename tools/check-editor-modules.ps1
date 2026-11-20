@@ -30,7 +30,7 @@ $editorRoot = Join-Path $repoRoot 'editor'
 
 $include = New-Object regex '(?m)^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\n]+)[>"]'
 $comment = New-Object regex '//[^\n]*|/\*[\s\S]*?\*/'
-$engine = '(^|/)(neo|idlib|framework|renderer|sys|d3xp|cm|aas|sound|swf|ui)/|precompiled\.h$|(^|/)bridge/|^Editor(Engine|World|View|Tool|History|Preview)\.h$'
+$engine = '(^|/)(neo|idlib|framework|renderer|sys|d3xp|cm|aas|sound|swf|ui)/|precompiled\.h$|(^|/)bridge/|^Editor(Engine|EngineLocal|World|View|Tool|History|Preview|Brush)\.h$'
 $qt = '^Q[A-Z]\w*$|^Qt\w*/|(^|/)q\w+\.h$|\.\./ui/'
 $rules = @(
 	@{ Dir = 'ui'; Forbidden = $engine; What = 'an engine or bridge header' },

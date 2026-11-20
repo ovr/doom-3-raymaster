@@ -485,6 +485,19 @@ idMapBrush *idMapBrush::ParseQ3( idLexer &src, const idVec3 &origin ) {
 	return brush;
 }
 
+idMapBrush *idMapBrush::Clone() const {
+	idMapBrush * const brush = new ( TAG_IDLIB ) idMapBrush();
+	brush->epairs = epairs;
+	for ( int i = 0; i < sides.Num(); i++ ) {
+		brush->AddSide( new ( TAG_IDLIB ) idMapBrushSide( *sides[i] ) );
+	}
+	return brush;
+}
+
+idMapPatch *idMapPatch::Clone() const {
+	return new ( TAG_IDLIB ) idMapPatch( *this );
+}
+
 /*
 ============
 idMapBrush::Write
