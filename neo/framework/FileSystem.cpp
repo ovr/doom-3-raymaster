@@ -1635,6 +1635,16 @@ int idFileSystemLocal::ReadFile( const char *relativePath, void **buffer, ID_TIM
 	} 
 
 	if ( buffer == NULL && timestamp != NULL && resourceFiles.Num() > 0 ) {
+		// With loose files first, a loose file answers with its own time: a map compiled or a
+		// declaration saved after the resource files were made must not look as old as they are (0).
+		if ( fs_resourceLoadPriority.GetInteger() == 0 ) {
+			if ( idFile * const loose = OpenFileReadFlags( relativePath, FSFLAG_SEARCH_DIRS, false ) ) {
+				*timestamp = loose->Timestamp();
+				const int length = loose->Length();
+				CloseFile( loose );
+				return length;
+			}
+		}
 		static idResourceCacheEntry rc;
 		int size = 0;
 		if ( GetResourceCacheEntry( relativePath, rc ) ) {

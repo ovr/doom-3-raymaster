@@ -164,6 +164,7 @@ public:
 
 	idStr					mapName;				// ie: maps/tim_dm2.proc, written to demoFile
 	ID_TIME_T				mapTimeStamp;			// for fast reloads of the same level
+	idStr					mapSource;				// the file the world was read from, for renderWorldInfo
 
 	areaNode_t *			areaNodes;
 	int						numAreaNodes;

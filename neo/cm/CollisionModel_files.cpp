@@ -242,7 +242,7 @@ void idCollisionModelManagerLocal::WriteCollisionModelsToFile( const char *filen
 	name.SetFileExtension( CM_FILE_EXT );
 
 	common->Printf( "writing %s\n", name.c_str() );
-	fp = fileSystem->OpenFileWrite( name, "fs_basepath" );
+	fp = fileSystem->OpenFileWrite( name, "fs_savepath" );
 	if ( !fp ) {
 		common->Warning( "idCollisionModelManagerLocal::WriteCollisionModelsToFile: Error opening file %s\n", name.c_str() );
 		return;
@@ -279,7 +279,7 @@ bool idCollisionModelManagerLocal::WriteCollisionModelForMapEntity( const idMapE
 	name.SetFileExtension( CM_FILE_EXT );
 
 	common->Printf( "writing %s\n", name.c_str() );
-	fp = fileSystem->OpenFileWrite( name, "fs_basepath" );
+	fp = fileSystem->OpenFileWrite( name, "fs_savepath" );
 	if ( !fp ) {
 		common->Printf( "idCollisionModelManagerLocal::WriteCollisionModelForMapEntity: Error opening file %s\n", name.c_str() );
 		FreeModel( model );
@@ -600,7 +600,7 @@ bool idCollisionModelManagerLocal::LoadCollisionModelFile( const char *name, uns
 		}
 
 		int numEntries = 0;
-		idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_basepath" ) );
+		idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_savepath" ) );
 		if ( outputFile != NULL ) {
 			outputFile->WriteBig( numEntries );
 			outputFile->WriteString( mapName );
