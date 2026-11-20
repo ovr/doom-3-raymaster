@@ -636,7 +636,8 @@ bool idAASFileLocal::Write( const idStr &fileName, unsigned int mapFileCRC ) {
 	name = fileName;
 	crc = mapFileCRC;
 
-	aasFile = fileSystem->OpenFileWrite( fileName, "fs_basepath" );
+	// only the AAS compiler writes one, and never into the game install
+	aasFile = fileSystem->OpenFileWrite( fileName, "fs_savepath" );
 	if ( !aasFile ) {
 		common->Error( "Error opening %s", fileName.c_str() );
 		return false;

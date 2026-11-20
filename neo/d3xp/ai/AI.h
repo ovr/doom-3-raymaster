@@ -266,6 +266,7 @@ public:
 	void					Spawn();
 	void					HeardSound( idEntity *ent, const char *action );
 	idActor					*GetEnemy() const;
+	[[nodiscard]] const idAAS *	GetAAS() const { return aas; }
 	void					TalkTo( idActor *actor );
 	talkState_t				GetTalkState() const;
 

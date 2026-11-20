@@ -27,6 +27,21 @@ set(EDITOR_BRIDGE_SOURCES
 set(MAP_COMPILERS_SOURCES
 	compilers/MapCompiler.cpp
 	compilers/MapCompiler.h
+	compilers/aas/AASBuild.cpp
+	compilers/aas/AASBuild_file.cpp
+	compilers/aas/AASBuild_gravity.cpp
+	compilers/aas/AASBuild_ledge.cpp
+	compilers/aas/AASBuild_local.h
+	compilers/aas/AASBuild_merge.cpp
+	compilers/aas/AASCheck.cpp
+	compilers/aas/AASCluster.cpp
+	compilers/aas/AASCluster.h
+	compilers/aas/AASReach.cpp
+	compilers/aas/AASReach.h
+	compilers/aas/Brush.cpp
+	compilers/aas/Brush.h
+	compilers/aas/BrushBSP.cpp
+	compilers/aas/BrushBSP.h
 	compilers/dmap/dmap.cpp
 	compilers/dmap/dmap.h
 	compilers/dmap/DmapArena.cpp
