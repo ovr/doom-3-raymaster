@@ -27,6 +27,9 @@ foreach ( $dir in 'maps', 'generated' ) {
 	if ( Test-Path $path ) { Remove-Item $path -Recurse -Force }
 }
 New-Item -ItemType Directory -Force -Path $base | Out-Null
+# the map with a patch: the game install may not have it yet, the save path is searched first
+New-Item -ItemType Directory -Force -Path ( Join-Path $base 'maps\editor' ) | Out-Null
+Copy-Item ( Join-Path $root 'base\maps\editor\patch1.map' ) ( Join-Path $base 'maps\editor\patch1.map' ) -Force
 $scriptCopy = Join-Path $save ( Split-Path $Script -Leaf )
 Copy-Item $Script $scriptCopy -Force
 $log = "$scriptCopy.log"

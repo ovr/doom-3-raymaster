@@ -48,6 +48,8 @@ namespace {
 constexpr int LAYOUT_VERSION = 8;
 constexpr int ORTHO_DOCK_WIDTH = 420;
 constexpr float GRID_SIZES[] = { 0.0f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f, 128.0f };
+constexpr float ANGLE_SNAPS[] = { 1.0f, 5.0f, 15.0f, 45.0f, 90.0f };
+constexpr int DEFAULT_ANGLE_SNAP = 2;
 constexpr int STATUS_MESSAGE_MSEC = 6000;
 constexpr int BOX_HEIGHT_MAX = 4096;
 constexpr float HOLLOW_DEFAULT = 8.0f;			// the wall's thickness when the grid is off
@@ -324,7 +326,7 @@ void MainWindow::CreateMenus() {
 	QAction * const rotateAction = tools->addAction( tr( "Rotate" ) );
 	rotateAction->setObjectName( QStringLiteral( "actionGizmoRotate" ) );
 	rotateAction->setShortcut( QKeySequence( Qt::Key_E ) );
-	rotateAction->setToolTip( tr( "Turn the selection around an axis, in steps of 15 degrees (E)" ) );
+	rotateAction->setToolTip( tr( "Turn the selection around an axis, in steps of the angle: entities, brushes and patches (E)" ) );
 	for ( QAction * const action : { moveAction, rotateAction } ) {
 		action->setCheckable( true );
 		gizmoGroup->addAction( action );
@@ -349,6 +351,16 @@ void MainWindow::CreateMenus() {
 	gridCombo->setToolTip( tr( "The step of a move and of a new brush, in map units" ) );
 	connect( gridCombo, &QComboBox::currentIndexChanged, this, [this] { engine->SetGridSize( gridCombo->currentData().toFloat() ); } );
 	tools->addWidget( gridCombo );
+	tools->addWidget( new QLabel( tr( " Angle " ), tools ) );
+	angleCombo = new QComboBox( tools );
+	angleCombo->setObjectName( QStringLiteral( "angleCombo" ) );
+	for ( const float degrees : ANGLE_SNAPS ) {
+		angleCombo->addItem( QString::number( degrees ), degrees );
+	}
+	angleCombo->setCurrentIndex( DEFAULT_ANGLE_SNAP );
+	angleCombo->setToolTip( tr( "The step of a turn with the rotate gizmo, in degrees" ) );
+	connect( angleCombo, &QComboBox::currentIndexChanged, this, [this] { engine->SetAngleSnap( angleCombo->currentData().toFloat() ); } );
+	tools->addWidget( angleCombo );
 	tools->addWidget( new QLabel( tr( " Box height " ), tools ) );
 	boxHeightSpin = new QSpinBox( tools );
 	boxHeightSpin->setObjectName( QStringLiteral( "boxHeightSpin" ) );
@@ -407,6 +419,13 @@ void MainWindow::CreateMenus() {
 	QMenu * const viewMenu = menuBar()->addMenu( tr( "&View" ) );
 	viewMenu->addAction( tools->toggleViewAction() );
 	viewMenu->addAction( orthoDock->toggleViewAction() );
+	showGridAction = viewMenu->addAction( tr( "&Grid" ) );
+	showGridAction->setObjectName( QStringLiteral( "actionShowGrid" ) );
+	showGridAction->setCheckable( true );
+	showGridAction->setChecked( true );
+	showGridAction->setShortcut( QKeySequence( Qt::Key_G ) );
+	showGridAction->setToolTip( tr( "The grid of the 3D viewport, on the plane z = 0 or the one the box tool drew on last (G)" ) );
+	connect( showGridAction, &QAction::triggered, this, [this]( bool checked ) { engine->ShowGrid( checked ); } );
 	viewMenu->addAction( showLeakAction );
 	viewMenu->addAction( outlinerDock->toggleViewAction() );
 	viewMenu->addAction( inspectorDock->toggleViewAction() );
@@ -587,6 +606,8 @@ void MainWindow::BuildFinished( const BuildResult & result ) {
 			break;
 	}
 	buildResultLabel->setText( text );
+	// for the UI script: a build that Play started shows only here
+	buildResultLabel->setProperty( "builds", buildResultLabel->property( "builds" ).toInt() + 1 );
 	outputLog->Append( text + QLatin1Char( '\n' ) );
 	if ( result.status != EDITOR_BUILD_LEAKED && result.status != EDITOR_BUILD_FAILED ) {
 		return;
@@ -698,6 +719,11 @@ void MainWindow::DocumentChanged() {
 	buildCancelAction->setEnabled( state.building );
 	showLeakAction->setEnabled( state.leakPoints > 0 );
 	showLeakAction->setChecked( state.leakPoints > 0 && state.leakShown );
+	showGridAction->setChecked( state.gridShown );
+	if ( const int angleIndex = angleCombo->findData( state.angleSnap ); angleIndex != -1 && angleIndex != angleCombo->currentIndex() ) {
+		const QSignalBlocker blocker( angleCombo );
+		angleCombo->setCurrentIndex( angleIndex );
+	}
 	goToLeakAction->setEnabled( state.leakPoints > 1 && !busy );
 	for ( QAction * const action : editActions + brushActions ) {
 		action->setEnabled( open && !busy );

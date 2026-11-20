@@ -162,7 +162,10 @@ void Inspector::RefreshBrush() {
 		double			values[NUM_FACE_VALUES];
 		QString			material;
 		bool			haveValues;
-	} context = { faceList, this, {}, {}, false };
+		bool			isPatch;
+		int				patchWidth;
+		int				patchHeight;
+	} context = { faceList, this, {}, {}, false, false, 0, 0 };
 
 	refreshing = true;
 	faceList->clear();
@@ -170,12 +173,16 @@ void Inspector::RefreshBrush() {
 		auto * const ctx = static_cast<context_t *>( opaque );
 		const double values[NUM_FACE_VALUES] = { face.texture.shiftS, face.texture.shiftT, face.texture.repeatS, face.texture.repeatT, face.texture.rotate };
 		auto * const item = new QTreeWidgetItem( ctx->list );
-		item->setText( FACE_COLUMN_FACE, QString::number( face.face ) );
+		item->setText( FACE_COLUMN_FACE, face.isPatch ? QObject::tr( "patch" ) : QString::number( face.face ) );
 		item->setText( FACE_COLUMN_MATERIAL, QString::fromLocal8Bit( face.material ) );
-		for ( int i = 0; i < NUM_FACE_VALUES; i++ ) {
+		for ( int i = 0; i < NUM_FACE_VALUES && !face.isPatch; i++ ) {
 			item->setText( FACE_COLUMN_VALUES + i, QString::number( values[i], 'g', 6 ) );
 		}
-		if ( !face.visible ) {
+		if ( face.isPatch ) {
+			ctx->isPatch = true;
+			ctx->patchWidth = face.patchWidth;
+			ctx->patchHeight = face.patchHeight;
+		} else if ( !face.visible ) {
 			item->setForeground( FACE_COLUMN_FACE, ctx->list->palette().brush( QPalette::Disabled, QPalette::Text ) );
 			item->setToolTip( FACE_COLUMN_FACE, QObject::tr( "The other sides cut this one away" ) );
 		}
@@ -202,11 +209,18 @@ void Inspector::RefreshBrush() {
 		if ( !faceValues[i]->hasFocus() ) {
 			faceValues[i]->setValue( context.values[i] );
 		}
+		// a patch has its texture coordinates in its control points
+		faceValues[i]->setEnabled( !context.isPatch );
 	}
+	brushIsPatch = context.isPatch;
+	faceList->setProperty( "isPatch", context.isPatch );
 	refreshing = false;
 
 	if ( numBrushes > 1 ) {
-		title->setText( tr( "%1 brushes; the faces of the first" ).arg( numBrushes ) );
+		title->setText( tr( "%1 brushes or patches; the faces of the first" ).arg( numBrushes ) );
+	} else if ( context.isPatch ) {
+		title->setText( tr( "Patch %1 of entity %2, %3 x %4 control points. The material can be set; the points cannot be edited yet." )
+			.arg( brushPrimitive ).arg( brushEntity ).arg( context.patchWidth ).arg( context.patchHeight ) );
 	} else if ( brushFace >= 0 ) {
 		title->setText( tr( "Brush %1 of entity %2, face %3" ).arg( brushPrimitive ).arg( brushEntity ).arg( brushFace ) );
 	} else {
@@ -216,7 +230,7 @@ void Inspector::RefreshBrush() {
 
 void Inspector::FaceRowSelected() {
 	const QTreeWidgetItem * const item = faceList->currentItem();
-	if ( refreshing || item == nullptr || numBrushes != 1 ) {
+	if ( refreshing || item == nullptr || numBrushes != 1 || brushIsPatch ) {
 		return;
 	}
 	engine->SelectBrush( brushEntity, brushPrimitive, item->text( FACE_COLUMN_FACE ).toInt(), false );
@@ -231,7 +245,7 @@ bool Inspector::ApplyMaterial( const QString & name ) {
 }
 
 void Inspector::ApplyTexture() {
-	if ( refreshing || numBrushes == 0 ) {
+	if ( refreshing || numBrushes == 0 || brushIsPatch ) {
 		return;
 	}
 	bool changed = false;

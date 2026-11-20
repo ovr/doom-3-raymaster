@@ -21,6 +21,7 @@ constexpr float		CELL_SIZE = 512.0f;					// the preview's primitives share a mod
 constexpr float		OUTLINE_DISTANCE = 1536.0f;			// portal, clip and trigger brushes are outlined this near
 constexpr int		MAX_OUTLINE_LINES = 8000;			// of the renderer's 16384 debug lines
 constexpr float		HEAD_LIGHT_RADIUS = 4096.0f;
+constexpr float		PICK_BOX_MARGIN = 0.5f;				// around a primitive's box in the pick's first test
 constexpr float		PICK_SAME_SURFACE = 1.0f;			// a brush this near behind the traced surface is that surface
 const idVec4		PORTAL_COLOR( 1.0f, 0.2f, 1.0f, 1.0f );
 const idVec4		CLIP_COLOR( 1.0f, 0.9f, 0.2f, 1.0f );
@@ -304,6 +305,24 @@ const idMapPrimitive * idEditorWorld::Primitive( int entity, int primitive ) con
 const idMapBrush * idEditorWorld::Brush( int entity, int primitive ) const {
 	const idMapPrimitive * const found = Primitive( entity, primitive );
 	return ( found != nullptr && found->GetType() == idMapPrimitive::TYPE_BRUSH ) ? static_cast<const idMapBrush *>( found ) : nullptr;
+}
+
+const idMapPatch * idEditorWorld::Patch( int entity, int primitive ) const {
+	const idMapPrimitive * const found = Primitive( entity, primitive );
+	return ( found != nullptr && found->GetType() == idMapPrimitive::TYPE_PATCH ) ? static_cast<const idMapPatch *>( found ) : nullptr;
+}
+
+idBounds idEditorWorld::PrimitiveWorldBounds( int entity, int primitive ) const {
+	idBounds bounds;
+	bounds.Clear();
+	if ( Primitive( entity, primitive ) == nullptr ) {
+		return bounds;
+	}
+	const idBounds & local = PrimitiveBounds( entity )[primitive];
+	if ( !local.IsCleared() ) {
+		bounds.FromTransformedBounds( local, entities[entity].origin, entities[entity].axis );
+	}
+	return bounds;
 }
 
 void idEditorWorld::ApplyPrimitive( const editorPrimitiveChange_t & change, bool forward ) {
@@ -803,7 +822,9 @@ editorPick_t idEditorWorld::Pick( const idVec3 & start, const idVec3 & dir, floa
 				continue;
 			}
 			float scale = 0.0f;
-			if ( view != nullptr && ( !view->bounds.RayIntersection( localStart, localDir, scale ) || scale > primitive.distance ) && !view->bounds.ContainsPoint( localStart ) ) {
+			// a little larger: the box of a flat patch has no depth for a ray to enter
+			const idBounds viewBox = ( view != nullptr ) ? view->bounds.Expand( PICK_BOX_MARGIN ) : bounds_zero;
+			if ( view != nullptr && ( !viewBox.RayIntersection( localStart, localDir, scale ) || scale > primitive.distance ) && !viewBox.ContainsPoint( localStart ) ) {
 				continue;
 			}
 			const idMapPrimitive * const mapPrimitive = mapFile.GetEntity( i )->GetPrimitive( j );
@@ -818,8 +839,19 @@ editorPick_t idEditorWorld::Pick( const idVec3 & start, const idVec3 & dir, floa
 				if ( !outlined && !declManager->FindMaterial( brush.GetSide( side )->GetMaterial() )->IsDrawn() ) {
 					continue;
 				}
-			} else if ( view == nullptr || !editorBrush::RayPatch( *static_cast<const idMapPatch *>( mapPrimitive ), localStart, localDir, distance ) || distance >= primitive.distance ) {
-				continue;
+			} else {
+				// compiled: no view says where it is, the kept boxes do
+				const idMapPatch & patch = *static_cast<const idMapPatch *>( mapPrimitive );
+				if ( view == nullptr ) {
+					const idBounds & kept = PrimitiveBounds( i )[j];
+					const idBounds box = kept.IsCleared() ? kept : kept.Expand( PICK_BOX_MARGIN );
+					if ( kept.IsCleared() || ( !box.RayIntersection( localStart, localDir, scale ) && !box.ContainsPoint( localStart ) ) || !editorBrush::PatchIsDrawn( patch ) ) {
+						continue;
+					}
+				}
+				if ( !editorBrush::RayPatch( patch, localStart, localDir, distance ) || distance >= primitive.distance ) {
+					continue;
+				}
 			}
 			primitive.entity = i;
 			primitive.primitive = j;

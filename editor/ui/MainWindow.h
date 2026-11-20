@@ -91,6 +91,8 @@ private:
 	QList<QAction *>	editActions;			// off while the game plays or a build runs
 	QList<QAction *>	brushActions;
 	QComboBox *			gridCombo = nullptr;
+	QComboBox *			angleCombo = nullptr;
+	QAction *			showGridAction = nullptr;
 	QSpinBox *			boxHeightSpin = nullptr;
 	QLabel *			docStateLabel = nullptr;
 	QLabel *			buildResultLabel = nullptr;

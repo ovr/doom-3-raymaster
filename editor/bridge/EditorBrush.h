@@ -55,6 +55,14 @@ void				TextureVectors( const idMapBrushSide & side, const idVec3 & origin, idVe
 // An area portal material goes on one of the two largest sides only, the others get nodraw.
 [[nodiscard]] idMapBrush *	MakeBox( const idBounds & bounds, const char * material, float repeat, const idVec3 & origin );
 void				Translate( idMapBrush & brush, const idVec3 & delta );
+// A turn around a world axis as rows: v * matrix is v turned. Exact for multiples of 90 degrees.
+[[nodiscard]] idMat3	AxisRotation( int axis, float degrees );
+// Turns the brush around pivot (in its entity's space, origin is the entity's). The texture turns
+// with it. A quarter turn of an axial side only swaps numbers, so four of them change nothing.
+void				Rotate( idMapBrush & brush, const idMat3 & rotation, const idVec3 & pivot, const idVec3 & origin );
+// all control points; the texture coordinates are the points' own and stay
+void				TranslatePatch( idMapPatch & patch, const idVec3 & delta );
+void				RotatePatch( idMapPatch & patch, const idMat3 & rotation, const idVec3 & pivot );
 // Pushes a side out along its normal (in for a negative distance). false and no change when the
 // brush would lose a face or all of its volume.
 [[nodiscard]] bool	MoveFace( idMapBrush & brush, int side, float distance );

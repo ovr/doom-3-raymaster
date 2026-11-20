@@ -322,6 +322,120 @@ void editorBrush::Translate( idMapBrush & brush, const idVec3 & delta ) {
 	}
 }
 
+namespace {
+
+constexpr float		EXACT_EPSILON = 1.0e-6f;		// nearer than this to 0, 1 or -1 is meant to be it
+
+[[nodiscard]] float Exact( float value ) {
+	if ( idMath::Fabs( value ) < EXACT_EPSILON ) {
+		return 0.0f;
+	}
+	if ( idMath::Fabs( idMath::Fabs( value ) - 1.0f ) < EXACT_EPSILON ) {
+		return ( value > 0.0f ) ? 1.0f : -1.0f;
+	}
+	return value;
+}
+
+[[nodiscard]] idVec3 Exact( const idVec3 & v ) {
+	return idVec3( Exact( v.x ), Exact( v.y ), Exact( v.z ) );
+}
+
+[[nodiscard]] double Dot( const idVec3 & a, const idVec3 & b ) {
+	return static_cast<double>( a.x ) * b.x + static_cast<double>( a.y ) * b.y + static_cast<double>( a.z ) * b.z;
+}
+
+// the two axes a side's texture matrix is in, as the map format defines them for a normal
+void TextureBase( const idVec3 & normal, idVec3 & texS, idVec3 & texT ) {
+	idMapBrushSide side;
+	idPlane plane;
+	plane.SetNormal( normal );
+	plane[3] = 0.0f;
+	side.SetPlane( plane );
+	const idVec3 identity[2] = { idVec3( 1.0f, 0.0f, 0.0f ), idVec3( 0.0f, 1.0f, 0.0f ) };
+	side.SetTextureMatrix( identity );
+	side.SetOrigin( vec3_origin );
+	idVec4 v[2];
+	side.GetTextureVectors( v );
+	texS = Exact( v[0].ToVec3() );
+	texT = Exact( v[1].ToVec3() );
+}
+
+}	// namespace
+
+idMat3 editorBrush::AxisRotation( int axis, float degrees ) {
+	float s, c;
+	const float quarters = degrees / 90.0f;
+	if ( quarters == idMath::Rint( quarters ) ) {
+		// no sine of a float is exactly 0
+		const float table[4][2] = { { 0.0f, 1.0f }, { 1.0f, 0.0f }, { 0.0f, -1.0f }, { -1.0f, 0.0f } };
+		const int quarter = ( ( static_cast<int>( quarters ) % 4 ) + 4 ) % 4;
+		s = table[quarter][0];
+		c = table[quarter][1];
+	} else {
+		idMath::SinCos( DEG2RAD( degrees ), s, c );
+	}
+	const int u = ( axis + 1 ) % 3;
+	const int v = ( axis + 2 ) % 3;
+	idMat3 rotation = mat3_identity;
+	// right-handed: u turns toward v
+	rotation[u][u] = c;
+	rotation[u][v] = s;
+	rotation[v][u] = -s;
+	rotation[v][v] = c;
+	return rotation;
+}
+
+void editorBrush::Rotate( idMapBrush & brush, const idMat3 & rotation, const idVec3 & pivot, const idVec3 & origin ) {
+	const idVec3 worldPivot = pivot + origin;
+	for ( int i = 0; i < brush.GetNumSides(); i++ ) {
+		idMapBrushSide & side = *brush.GetSide( i );
+		const idPlane old = side.GetPlane();
+		idVec3 normal = Exact( old.Normal() * rotation );
+		normal.Normalize();
+		normal = Exact( normal );
+
+		// the plane keeps its distance from the pivot
+		idPlane plane;
+		plane.SetNormal( normal );
+		plane[3] = static_cast<float>( static_cast<double>( old[3] ) + Dot( old.Normal(), pivot ) - Dot( normal, pivot ) ) + 0.0f;
+
+		// The texture vectors in space turn like the brush; written in the new side's two axes they
+		// are the old numbers times a 2x2 matrix, which for a quarter turn has only 0, 1 and -1.
+		idVec3 oldS, oldT, newS, newT;
+		TextureBase( old.Normal(), oldS, oldT );
+		TextureBase( normal, newS, newT );
+		const idVec3 turnedS = oldS * rotation;
+		const idVec3 turnedT = oldT * rotation;
+		const float base[2][2] = { { Exact( turnedS * newS ), Exact( turnedS * newT ) }, { Exact( turnedT * newS ), Exact( turnedT * newT ) } };
+		idVec3 texMat[2];
+		side.GetTextureMatrix( texMat[0], texMat[1] );
+		idVec3 turned[2];
+		for ( int j = 0; j < 2; j++ ) {
+			const idVec3 before = oldS * texMat[j][0] + oldT * texMat[j][1];
+			const idVec3 after = before * rotation;
+			// + 0: a product with a zero can be -0, which the map file would show
+			turned[j][0] = texMat[j][0] * base[0][0] + texMat[j][1] * base[1][0] + 0.0f;
+			turned[j][1] = texMat[j][0] * base[0][1] + texMat[j][1] * base[1][1] + 0.0f;
+			// the point at the pivot keeps its texture coordinate
+			turned[j][2] = static_cast<float>( static_cast<double>( texMat[j][2] ) + Dot( worldPivot, before ) - Dot( worldPivot, after ) ) + 0.0f;
+		}
+		side.SetPlane( plane );
+		side.SetTextureMatrix( turned );
+	}
+}
+
+void editorBrush::TranslatePatch( idMapPatch & patch, const idVec3 & delta ) {
+	for ( int i = 0; i < patch.GetNumVertices(); i++ ) {
+		patch[i].xyz += delta;
+	}
+}
+
+void editorBrush::RotatePatch( idMapPatch & patch, const idMat3 & rotation, const idVec3 & pivot ) {
+	for ( int i = 0; i < patch.GetNumVertices(); i++ ) {
+		patch[i].xyz = pivot + ( patch[i].xyz - pivot ) * rotation + vec3_origin;
+	}
+}
+
 bool editorBrush::MoveFace( idMapBrush & brush, int side, float distance ) {
 	editorBrushWindings_t before;
 	if ( side < 0 || side >= brush.GetNumSides() || !Windings( brush, before ) || before[side].GetNumPoints() < 3 ) {

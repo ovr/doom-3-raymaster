@@ -720,6 +720,8 @@ void idEditorEngineLocal::GetDocumentState( editorDocumentState_t & state ) cons
 	state.leakPoints = world.NumLeakPoints();
 	state.leakShown = world.LeakShown();
 	state.gridSize = tool.GridSize();
+	state.angleSnap = tool.AngleSnap();
+	state.gridShown = tool.GridShown();
 	state.tool = ( tool.Tool() == idEditorTool::tool_t::BOX ) ? EDITOR_TOOL_BOX : EDITOR_TOOL_SELECT;
 	state.boxHeight = tool.BoxHeight();
 	state.dirty = history.IsDirty() || world.IsUnsaved();
@@ -746,15 +748,16 @@ void idEditorEngineLocal::ViewMouseDown( int x, int y, bool ctrl, bool shift ) {
 	}
 	const editorPick_t pick = world.Pick( view.Origin(), dir, PICK_DISTANCE );
 	bool changed;
-	if ( pick.entity == 0 && world.Brush( 0, pick.primitive ) != nullptr ) {
+	if ( pick.entity == 0 && world.Primitive( 0, pick.primitive ) != nullptr ) {
 		// a second click on the one selected brush, or Shift, is for the face under the cursor
 		const brushRef_t brush = { 0, pick.primitive };
+		const bool isBrush = ( world.Brush( 0, pick.primitive ) != nullptr );
 		const bool again = ( !ctrl && tool.NumSelectedBrushes() == 1 && tool.SelectedBrush( 0 ) == brush );
-		changed = tool.SelectBrush( brush, ( again || ( shift && !ctrl ) ) ? pick.face : -1, ctrl );
-	} else {
-		if ( pick.entity == 0 && pick.primitive != -1 ) {
-			ui->OnStatus( "A patch is shown only: it cannot be selected or edited yet." );
+		changed = tool.SelectBrush( brush, ( isBrush && ( again || ( shift && !ctrl ) ) ) ? pick.face : -1, ctrl );
+		if ( !isBrush && changed ) {
+			ui->OnStatus( "A patch: it can be moved, turned, duplicated, deleted and given a material. Its control points cannot be edited yet." );
 		}
+	} else {
 		// a brush entity as a whole
 		changed = tool.Select( ( pick.entity > 0 ) ? pick.entity : -1, ctrl );
 	}
@@ -790,6 +793,9 @@ void idEditorEngineLocal::ViewMouseUp() {
 			break;
 		case idEditorTool::dragResult_t::kind_t::FACE:
 			RunEdit( [&] { MoveFace( result.distance ); } );
+			break;
+		case idEditorTool::dragResult_t::kind_t::ROTATE:
+			RunEdit( [&] { RotateBrushes( result.axis, result.distance ); } );
 			break;
 		default:
 			break;

@@ -153,6 +153,63 @@ wait 300
 expect orthoView numBrushes 6
 set orthoKind Top (XY)
 
+# Ctrl+D on a brush: a copy, selected, one step
+engine editorSelectBrush world 1
+trigger actionDuplicate
+wait 300
+expect outlinerTree worldBrushes 7
+expect actionUndo text &Undo Duplicate brush
+expect orthoView numSelected 1
+trigger actionUndo
+wait 300
+expect outlinerTree worldBrushes 6
+
+# the rotate gizmo on a brush, through the viewport's mouse path: seen from above the z ring is a
+# circle, from its right end to straight up is a quarter turn
+engine editorCreateBrush -192 -16 32 -64 16 48
+set angleCombo 45
+trigger actionGizmoRotate
+engine editorView -128 0 600 0 90
+wait 300
+engine editorDrag 0.575 0.5 0.5 0.3
+waitfor actionUndo text 5000 &Undo Rotate brush
+engine editorBrushInfo
+wait 300
+expectcontains outputView plainText bounds (-144 -64 32) (-112 64 48)
+trigger actionUndo
+wait 200
+engine editorSelectBrush world 6
+engine editorRotateBrush x 90
+wait 200
+expect actionUndo text &Undo Rotate brush
+trigger actionUndo
+wait 200
+engine editorSelectBrush world 6
+trigger actionDelete
+trigger actionGizmoMove
+set angleCombo 15
+wait 300
+expect outlinerTree worldBrushes 6
+
+# the grid of the 3D viewport
+expect actionShowGrid checked true
+trigger actionShowGrid
+expect actionShowGrid checked false
+trigger actionShowGrid
+expect actionShowGrid checked true
+
+# Play on a map whose brushes changed since the build: it builds first, then plays
+expect docState text Uncompiled
+expect buildResult builds 1
+trigger actionPlay
+waitfor docState text 120000 Playing
+expect buildResult builds 2
+expectcontains buildResult text Build OK: 1 areas, 0 portals
+wait 2000
+trigger actionStop
+waitfor docState text 60000 Compiled
+wait 500
+
 # a leak: without the ceiling the build says so and the leak can be shown
 expect actionGoToLeak enabled false
 engine editorSelectBrush world 4
@@ -215,6 +272,69 @@ expect outlinerTree worldBrushes 14
 trigger actionMoveToWorld
 wait 300
 expect outlinerTree worldBrushes 15
+
+# a patch is selected and edited as a whole: click, gizmo, 2D view, Ctrl+D, Delete, material, turn, build
+engine editorOpenMap editor/patch1
+waitfor window windowTitle 30000 editor/patch1*
+wait 500
+expect outlinerTree worldBrushes 7
+engine editorView 0 0 76 0 90
+wait 300
+engine editorClick 0.5 0.5
+wait 300
+expect faceList isPatch true
+expectitem faceList 0 0 patch
+expect faceShiftS enabled false
+# seen from above the y arrow points to the left of the screen
+engine editorDrag 0.4625 0.5 0.25 0.5
+waitfor actionUndo text 5000 &Undo Move patch
+trigger actionUndo
+wait 200
+click orthoCenter
+trigger actionDeselect
+wait 300
+expect orthoView numSelected 0
+drag orthoView 0.5-12 0.5-12 0.5-12 0.5-12
+wait 300
+expect orthoView numSelected 1
+expect faceList isPatch true
+drag orthoView 0.5-12 0.5-12 0.5+20 0.5-12
+wait 300
+expect actionUndo text &Undo Move patch
+trigger actionUndo
+wait 200
+engine editorSelectBrush world 6
+trigger actionDuplicate
+wait 300
+expect outlinerTree worldBrushes 8
+expect actionUndo text &Undo Duplicate patch
+expect faceList isPatch true
+trigger actionDelete
+wait 300
+expect outlinerTree worldBrushes 7
+engine editorSelectBrush world 6
+engine editorRotateBrush z 45
+wait 200
+expect actionUndo text &Undo Rotate patch
+trigger actionUndo
+wait 200
+engine editorSelectBrush world 6
+wait 200
+set faceMaterialEdit _default
+wait 300
+expectitem faceList 0 1 _default
+expect actionUndo text &Undo Set material of patch
+# compiled: the patch is in the world the game loads, and still picked
+trigger actionBuild
+waitfor docState text 120000 Compiled
+expectcontains buildResult text Build OK: 1 areas, 0 portals
+trigger actionDeselect
+engine editorView 0 0 76 0 90
+wait 300
+engine editorClick 0.5 0.5
+wait 300
+expect faceList isPatch true
+expect orthoView numSelected 1
 
 # Cancel: the compile of a retail map takes a minute, the Build menu stays alive in it
 engine editorOpenMap game/mc_underground

@@ -19,7 +19,7 @@ class idEditorEngine;
 	  Top    x to the right, y up        Front   x to the right, z up        Side   y to the right, z up
 
 	  middle button drag    pan                 wheel            zoom at the cursor
-	  click                 select (Ctrl adds or removes); a brush entity as a whole
+	  click                 select a brush or a patch (Ctrl adds or removes); a brush entity as a whole
 	  drag the selection    move it on the grid, one step of the history
 	  box tool: drag        a rectangle that becomes a brush; its third size is that of the brush
 	                        selected last, or the box height from 0

@@ -134,6 +134,9 @@ public:
 	// nullptr when the entity has no such primitive, or it is not a brush
 	[[nodiscard]] const idMapPrimitive *	Primitive( int entity, int primitive ) const;
 	[[nodiscard]] const idMapBrush *	Brush( int entity, int primitive ) const;
+	[[nodiscard]] const idMapPatch *	Patch( int entity, int primitive ) const;
+	// what a primitive covers in the world; cleared when there is none or it is a broken brush
+	[[nodiscard]] idBounds	PrimitiveWorldBounds( int entity, int primitive ) const;
 	// Does the change (forward) or takes it back. The geometry becomes the preview.
 	void				ApplyPrimitive( const editorPrimitiveChange_t & change, bool forward );
 	// The box of every primitive of an entity, in the entity's space; cleared for a brush without
@@ -145,7 +148,7 @@ public:
 	// what the entity covers in the world: its model, its primitives, or its marker box
 	[[nodiscard]] idBounds	WorldBounds( int index ) const;
 	// The nearest thing on the ray. Only what is seen can be hit: a model, a marker box, a drawn
-	// side of a brush, and in the preview a patch and a brush drawn as an outline.
+	// side of a brush, a drawn patch, and in the preview a brush drawn as an outline.
 	[[nodiscard]] editorPick_t	Pick( const idVec3 & start, const idVec3 & dir, float maxDistance ) const;
 
 	// where a new view starts: the player start, or the middle of the entities

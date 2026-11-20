@@ -253,7 +253,8 @@ void OrthoView::paintEvent( QPaintEvent * ) {
 			}
 			painter.setPen( QPen( brush.selected ? SELECTED : BrushColor( brush.kind, brush.entity != 0 ), brush.selected ? 2.0 : 1.0,
 				( brush.kind == EDITOR_VIEW_PATCH ) ? Qt::DashLine : Qt::SolidLine ) );
-			if ( brush.kind == EDITOR_VIEW_PATCH ) {
+			// a patch is its control net; without one, its box
+			if ( brush.kind == EDITOR_VIEW_PATCH && brush.lines.isEmpty() ) {
 				painter.drawRect( screenRect( brush.box ) );
 			}
 			for ( const QLineF & line : brush.lines ) {
@@ -346,10 +347,11 @@ void OrthoView::Click( const QPointF & world, bool ctrl ) {
 	}
 	if ( isEntity ) {
 		engine->SelectEntity( entity, ctrl );
-	} else if ( patch ) {
-		emit statusText( tr( "A patch is shown only: it cannot be selected or edited yet." ) );
 	} else {
 		engine->SelectBrush( entity, primitive, -1, ctrl );
+		if ( patch ) {
+			emit statusText( tr( "A patch: it can be moved, turned, duplicated, deleted and given a material. Its control points cannot be edited yet." ) );
+		}
 	}
 }
 

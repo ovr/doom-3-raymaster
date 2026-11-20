@@ -21,7 +21,7 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 10;
+constexpr int EDITOR_API_VERSION = 11;
 
 // what the content browser lists
 enum editorAssetKind_t : int {
@@ -67,6 +67,8 @@ struct editorDocumentState_t {
 	int					leakPoints;		// of the last build's leak line, 0 = none
 	bool				leakShown;
 	float				gridSize;		// 0 = no snapping
+	float				angleSnap;		// degrees a turn snaps to, 0 = none
+	bool				gridShown;		// the grid of the 3D viewport
 	int					tool;			// editorTool_t
 	float				boxHeight;		// how high the box tool's brush is, as it is now (never 0)
 };
@@ -78,7 +80,7 @@ enum editorViewBrushKind_t : int {
 	EDITOR_VIEW_BRUSH_PORTAL,
 	EDITOR_VIEW_BRUSH_CLIP,
 	EDITOR_VIEW_BRUSH_TRIGGER,
-	EDITOR_VIEW_PATCH			// its box only: mins and maxs, no edges
+	EDITOR_VIEW_PATCH			// the edges are its control net; selected and edited as a whole like a brush
 };
 
 // A brush or a patch for a 2D view, in world coordinates. edges holds numEdges lines, six floats
@@ -139,7 +141,8 @@ struct editorBuildResult_t {
 struct editorPickInfo_t {
 	int					entity;
 	int					primitive;
-	int					face;
+	int					face;			// -1 for a patch and for an entity without primitives
+	bool				isPatch;
 	float				distance;
 	float				point[3];
 };
@@ -154,8 +157,12 @@ struct editorFaceTexture_t {
 	float				rotate;
 };
 
+// A patch is listed as one face: its material is all of it that can be set.
 struct editorFaceInfo_t {
 	int					face;
+	bool				isPatch;
+	int					patchWidth;		// control points; 0 for a brush side
+	int					patchHeight;
 	const char *		material;
 	float				normal[3];		// out of the brush, in the space of its entity
 	float				dist;			// normal · x = dist
@@ -316,6 +323,10 @@ public:
 	virtual void		SetTool( int tool ) = 0;
 	// how high the box tool makes its brush; 0 = eight steps of the grid
 	virtual void		SetBoxHeight( float height ) = 0;
+	// the step of the rotate gizmo, for entities and brushes; 0 = none
+	virtual void		SetAngleSnap( float degrees ) = 0;
+	// the grid of the 3D viewport, on the plane z = 0 or the one the box tool drew on last
+	virtual void		ShowGrid( bool show ) = 0;
 
 	/*
 		Brushes. The selection is either entities or brushes, never both:
@@ -325,9 +336,14 @@ public:
 		  Shift+click on a brush                selects the brush and that face at once
 		  click on a brush entity               selects the entity (SelectBrush() reaches its brushes)
 
-		With brushes selected the move gizmo moves them; with a face selected it is one arrow along
-		the normal that moves the face. With EDITOR_TOOL_BOX a drag draws a rectangle on the face
-		or the grid plane (z = 0) under the cursor and letting go makes a brush of it.
+		With brushes selected the move gizmo moves them and the rotate gizmo turns them; with a face
+		selected it is one arrow along the normal that moves the face. With EDITOR_TOOL_BOX a drag
+		draws a rectangle on the face or the grid plane (z = 0) under the cursor and letting go
+		makes a brush of it.
+
+		A patch of the worldspawn is selected like a brush, with the same calls (it has no faces):
+		it is moved, turned, duplicated, deleted and given a material as a whole. Its control
+		points are not edited, and no call makes a new one.
 
 		The edits work on the selected brushes and are one step of the history each. They do
 		nothing while GetDocumentState() says playing or building. An edit makes geometryDirty.
@@ -346,6 +362,9 @@ public:
 	virtual void		MoveBrushes( const float delta[3] ) = 0;
 	// pushes the selected face out along its normal, or pulls it in (negative)
 	virtual void		MoveFace( float distance ) = 0;
+	// Turns the selected brushes and patches around the middle of the selection (on the grid), axis
+	// 0..2 = x, y, z. Multiples of 90 degrees keep the planes exact; the textures turn with the brushes.
+	virtual void		RotateBrushes( int axis, float degrees ) = 0;
 	// the selected face, or every face of the selected brushes when no face is
 	virtual void		SetFaceMaterial( const char * material ) = 0;
 	virtual void		SetFaceTexture( const editorFaceTexture_t & texture ) = 0;

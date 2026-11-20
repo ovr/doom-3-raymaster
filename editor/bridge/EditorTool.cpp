@@ -16,8 +16,14 @@ constexpr float		ARROW_PICK_START = 0.15f;		// in gizmo sizes: the part of an ar
 constexpr float		ARROW_PICK_END = 1.1f;
 constexpr float		ARROW_PICK_WIDTH = 0.08f;
 constexpr float		RING_PICK_WIDTH = 0.1f;
-constexpr float		ANGLE_SNAP = 15.0f;
 constexpr int		RING_STEPS = 48;
+// the grid: GRID_HALF_LINES each way from the point under the camera, coarser from farther away
+constexpr int		GRID_HALF_LINES = 32;
+constexpr int		GRID_MAJOR = 8;					// every this many lines is a stronger one
+constexpr float		GRID_TOWARDS_EYE = 1.0f / 512.0f;	// of the way: a floor in the grid's plane would fight it
+constexpr int		GRID_SEGMENTS = 4;				// of a line, each with its own shade
+constexpr float		GRID_NO_SNAP_STEP = 8.0f;
+constexpr int		GRID_MAX_DOUBLINGS = 12;
 
 const idVec3		AXES[3] = { idVec3( 1.0f, 0.0f, 0.0f ), idVec3( 0.0f, 1.0f, 0.0f ), idVec3( 0.0f, 0.0f, 1.0f ) };
 const idVec4		AXIS_COLORS[3] = { idVec4( 1.0f, 0.25f, 0.25f, 1.0f ), idVec4( 0.3f, 1.0f, 0.3f, 1.0f ), idVec4( 0.35f, 0.55f, 1.0f, 1.0f ) };
@@ -25,6 +31,9 @@ const idVec4		ACTIVE_COLOR( 1.0f, 1.0f, 0.2f, 1.0f );
 const idVec4		SELECTION_COLOR( 1.0f, 0.75f, 0.1f, 1.0f );
 const idVec4		GHOST_COLOR( 1.0f, 1.0f, 1.0f, 1.0f );			// where a dragged brush or face will be
 const idVec4		BOX_COLOR( 0.3f, 1.0f, 1.0f, 1.0f );
+const idVec3		GRID_COLOR( 0.26f, 0.26f, 0.28f );
+const idVec3		GRID_MAJOR_COLOR( 0.42f, 0.42f, 0.46f );
+const idVec3		GRID_FAR_COLOR( 0.11f, 0.11f, 0.11f );			// what a line fades to: the void's grey
 constexpr float		BOX_HEIGHT_STEPS = 8.0f;		// of the grid
 constexpr float		BOX_HEIGHT_NO_GRID = 64.0f;
 
@@ -102,6 +111,15 @@ float idEditorTool::BoxHeight() const {
 	return ( gridSize > 0.0f ) ? gridSize * BOX_HEIGHT_STEPS : BOX_HEIGHT_NO_GRID;
 }
 
+void idEditorTool::SetTool( tool_t newTool ) {
+	tool = newTool;
+	boxActive = false;
+	if ( tool == tool_t::SELECT ) {
+		planeAxis = 2;
+		planeDist = 0.0f;
+	}
+}
+
 bool idEditorTool::SelectBrush( const brushRef_t & brush, int newFace, bool toggle ) {
 	const bool hadEntities = ( selection.Num() > 0 );
 	selection.SetNum( 0 );
@@ -166,11 +184,12 @@ bool idEditorTool::DropRemoved( const idEditorWorld & world ) {
 	}
 	for ( int i = brushes.Num() - 1; i >= 0; i-- ) {
 		const brushRef_t & brush = brushes[i];
-		if ( brush.entity >= world.NumEntities() || world.Entity( brush.entity ).removed || world.Brush( brush.entity, brush.primitive ) == nullptr ) {
+		if ( brush.entity >= world.NumEntities() || world.Entity( brush.entity ).removed || world.Primitive( brush.entity, brush.primitive ) == nullptr ) {
 			brushes.RemoveIndex( i );
 		}
 	}
-	if ( brushes.Num() != 1 || face >= world.Brush( brushes[0].entity, brushes[0].primitive )->GetNumSides() ) {
+	const idMapBrush * const only = ( brushes.Num() == 1 ) ? world.Brush( brushes[0].entity, brushes[0].primitive ) : nullptr;
+	if ( only == nullptr || face >= only->GetNumSides() ) {
 		face = -1;
 	}
 	return selection.Num() + brushes.Num() != before;
@@ -188,25 +207,24 @@ bool idEditorTool::Gizmo( const idEditorWorld & world, gizmo_t & gizmo ) const {
 		gizmo.pivot = world.Entity( selection[0] ).origin;
 		return true;
 	}
+	if ( SelectedFace() != -1 ) {
+		// one arrow, out of the face
+		editorBrushWindings_t windings;
+		if ( !world.BrushWindings( brushes[0].entity, brushes[0].primitive, windings ) || windings[face].GetNumPoints() < 3 ) {
+			return false;
+		}
+		gizmo.pivot = windings[face].GetCenter();
+		gizmo.axes[0] = world.Brush( brushes[0].entity, brushes[0].primitive )->GetSide( face )->GetPlane().Normal() * world.Entity( brushes[0].entity ).axis;
+		gizmo.numAxes = 1;
+		return true;
+	}
+	if ( mode == mode_t::ROTATE ) {
+		return RotatePivot( world, gizmo.pivot );
+	}
 	idBounds bounds;
 	bounds.Clear();
 	for ( int i = 0; i < brushes.Num(); i++ ) {
-		editorBrushWindings_t windings;
-		if ( !world.BrushWindings( brushes[i].entity, brushes[i].primitive, windings ) ) {
-			continue;
-		}
-		if ( SelectedFace() != -1 ) {
-			// one arrow, out of the face
-			const idFixedWinding & winding = windings[face];
-			if ( winding.GetNumPoints() < 3 ) {
-				return false;
-			}
-			gizmo.pivot = winding.GetCenter();
-			gizmo.axes[0] = world.Brush( brushes[i].entity, brushes[i].primitive )->GetSide( face )->GetPlane().Normal() * world.Entity( brushes[i].entity ).axis;
-			gizmo.numAxes = 1;
-			return true;
-		}
-		bounds.AddBounds( editorBrush::Bounds( windings ) );
+		bounds.AddBounds( world.PrimitiveWorldBounds( brushes[i].entity, brushes[i].primitive ) );
 	}
 	if ( bounds.IsCleared() ) {
 		return false;
@@ -215,9 +233,27 @@ bool idEditorTool::Gizmo( const idEditorWorld & world, gizmo_t & gizmo ) const {
 	return true;
 }
 
+bool idEditorTool::RotatePivot( const idEditorWorld & world, idVec3 & pivot ) const {
+	idBounds bounds;
+	bounds.Clear();
+	for ( int i = 0; i < brushes.Num(); i++ ) {
+		bounds.AddBounds( world.PrimitiveWorldBounds( brushes[i].entity, brushes[i].primitive ) );
+	}
+	if ( bounds.IsCleared() ) {
+		return false;
+	}
+	// on the grid, or on whole units: a quarter turn then leaves every plane where a grid line is
+	const float step = ( gridSize > 0.0f ) ? gridSize : 1.0f;
+	const idVec3 center = bounds.GetCenter();
+	for ( int i = 0; i < 3; i++ ) {
+		pivot[i] = Snap( center[i], step );
+	}
+	return true;
+}
+
 bool idEditorTool::HandleValue( const idVec3 & rayStart, const idVec3 & rayDir, float & value ) const {
 	const idVec3 & axis = dragGizmo.axes[dragAxis];
-	if ( mode == mode_t::MOVE || brushes.Num() > 0 ) {
+	if ( Moves() ) {
 		float distance;
 		return RayNearLine( rayStart, rayDir, dragGizmo.pivot, axis, value, distance );
 	}
@@ -236,8 +272,7 @@ bool idEditorTool::BeginDrag( const idEditorWorld & world, const idVec3 & raySta
 		return false;
 	}
 	const float size = GizmoSize( gizmo.pivot, viewOrigin );
-	// brushes are moved only
-	const bool move = ( mode == mode_t::MOVE || brushes.Num() > 0 );
+	const bool move = Moves();
 
 	int hitAxis = -1;
 	float best = idMath::INFINITY;
@@ -288,9 +323,7 @@ void idEditorTool::Drag( idEditorWorld & world, const idVec3 & rayStart, const i
 		return;
 	}
 	const idVec3 & axis = dragGizmo.axes[dragAxis];
-	const float delta = ( mode == mode_t::MOVE || brushes.Num() > 0 )
-		? Snap( value - dragStartValue, gridSize )
-		: Snap( idMath::AngleNormalize180( value - dragStartValue ), ANGLE_SNAP );
+	const float delta = Moves() ? Snap( value - dragStartValue, gridSize ) : Snap( idMath::AngleNormalize180( value - dragStartValue ), angleSnap );
 	dragDelta = delta;
 	dragChanged = ( delta != 0.0f );
 	const idVec3 & dragPivot = dragGizmo.pivot;
@@ -326,9 +359,10 @@ idEditorTool::dragResult_t idEditorTool::EndDrag( idEditorWorld & world, idEdito
 	dragging = false;
 	if ( brushes.Num() > 0 ) {
 		if ( dragChanged ) {
-			result.kind = ( SelectedFace() != -1 ) ? dragResult_t::kind_t::FACE : dragResult_t::kind_t::BRUSHES;
+			result.kind = ( SelectedFace() != -1 ) ? dragResult_t::kind_t::FACE : ( Moves() ? dragResult_t::kind_t::BRUSHES : dragResult_t::kind_t::ROTATE );
 			result.delta = dragGizmo.axes[dragAxis] * dragDelta;
 			result.distance = dragDelta;
+			result.axis = dragAxis;
 		}
 		dragAxis = -1;
 		return result;
@@ -397,7 +431,90 @@ bool idEditorTool::BeginBox( const idEditorWorld & world, const idVec3 & rayStar
 	boxEnd = boxStart;
 	boxSide = ( rayStart[boxAxis] >= boxStart[boxAxis] ) ? 1.0f : -1.0f;
 	boxActive = true;
+	planeAxis = boxAxis;
+	planeDist = boxStart[boxAxis];
 	return true;
+}
+
+void idEditorTool::Outline( const idEditorWorld & world, const brushRef_t & primitive, int side, idList<idVec3> & points ) const {
+	points.SetNum( 0 );
+	if ( const idMapPatch * const patch = world.Patch( primitive.entity, primitive.primitive ) ) {
+		const editorMapEntity_t & owner = world.Entity( primitive.entity );
+		const int width = patch->GetWidth();
+		const int height = patch->GetHeight();
+		const auto point = [&]( int i, int j ) { return owner.origin + ( *patch )[j * width + i].xyz * owner.axis; };
+		for ( int j = 0; j < height; j++ ) {
+			for ( int i = 0; i < width; i++ ) {
+				if ( i + 1 < width ) {
+					points.Append( point( i, j ) );
+					points.Append( point( i + 1, j ) );
+				}
+				if ( j + 1 < height ) {
+					points.Append( point( i, j ) );
+					points.Append( point( i, j + 1 ) );
+				}
+			}
+		}
+		return;
+	}
+	editorBrushWindings_t windings;
+	if ( !world.BrushWindings( primitive.entity, primitive.primitive, windings ) ) {
+		return;
+	}
+	for ( int i = 0; i < windings.Num(); i++ ) {
+		if ( side != -1 && i != side ) {
+			continue;
+		}
+		const idFixedWinding & winding = windings[i];
+		for ( int j = 0; j < winding.GetNumPoints(); j++ ) {
+			points.Append( winding[j].ToVec3() );
+			points.Append( winding[( j + 1 ) % winding.GetNumPoints()].ToVec3() );
+		}
+	}
+}
+
+void idEditorTool::DrawGrid( idRenderWorld * renderWorld, const idVec3 & viewOrigin ) const {
+	const int u = ( planeAxis + 1 ) % 3;
+	const int v = ( planeAxis + 2 ) % 3;
+	const float height = idMath::Fabs( viewOrigin[planeAxis] - planeDist );
+	// far from the plane the lines of the grid would be a grey sheet: every second one, then every fourth
+	float step = ( gridSize > 0.0f ) ? gridSize : GRID_NO_SNAP_STEP;
+	for ( int i = 0; i < GRID_MAX_DOUBLINGS && step * GRID_HALF_LINES < height * 2.0f; i++ ) {
+		step *= 2.0f;
+	}
+	const float reach = step * GRID_HALF_LINES;
+	const float centerU = Snap( viewOrigin[u], step );
+	const float centerV = Snap( viewOrigin[v], step );
+	const float piece = reach * 2.0f / GRID_SEGMENTS;
+
+	for ( int pass = 0; pass < 2; pass++ ) {
+		const int along = ( pass == 0 ) ? v : u;
+		const int across = ( pass == 0 ) ? u : v;
+		const float alongCenter = ( pass == 0 ) ? centerV : centerU;
+		const float acrossCenter = ( pass == 0 ) ? centerU : centerV;
+		for ( int line = -GRID_HALF_LINES; line <= GRID_HALF_LINES; line++ ) {
+			const float at = acrossCenter + line * step;
+			const bool major = ( static_cast<long long>( idMath::Rint( at / step ) ) % GRID_MAJOR == 0 );
+			for ( int segment = 0; segment < GRID_SEGMENTS; segment++ ) {
+				const float from = alongCenter - reach + segment * piece;
+				// a shade for each piece, by how far its middle is from the point under the camera
+				const float away = idMath::Sqrt( Square( at - viewOrigin[across] ) + Square( from + piece * 0.5f - viewOrigin[along] ) ) / reach;
+				if ( away >= 1.0f ) {
+					continue;
+				}
+				const idVec3 shade = GRID_FAR_COLOR + ( ( major ? GRID_MAJOR_COLOR : GRID_COLOR ) - GRID_FAR_COLOR ) * ( 1.0f - away );
+				idVec3 start, end;
+				start[planeAxis] = end[planeAxis] = planeDist;
+				start[across] = end[across] = at;
+				start[along] = from;
+				end[along] = from + piece;
+				// A step towards the eye: the same pixels, and before a floor that lies in the plane
+				start += ( viewOrigin - start ) * GRID_TOWARDS_EYE;
+				end += ( viewOrigin - end ) * GRID_TOWARDS_EYE;
+				renderWorld->DebugLine( idVec4( shade.x, shade.y, shade.z, 1.0f ), start, end, 0, true );
+			}
+		}
+	}
 }
 
 void idEditorTool::DragBox( const idVec3 & rayStart, const idVec3 & rayDir ) {
@@ -426,46 +543,40 @@ bool idEditorTool::EndBox( idBounds & box ) {
 
 void idEditorTool::Draw( const idEditorWorld & world, const idVec3 & viewOrigin ) {
 	idRenderWorld * const renderWorld = world.RenderWorld();
+	if ( showGrid ) {
+		DrawGrid( renderWorld, viewOrigin );
+	}
 	for ( int i = 0; i < selection.Num(); i++ ) {
 		if ( selection[i] < world.NumEntities() ) {
 			renderWorld->DebugBounds( SELECTION_COLOR, world.WorldBounds( selection[i] ) );
 		}
 	}
-	// the edges of the selected brushes; the selected face over them
+	// the edges of the selected brushes and the nets of the patches; the selected face over them
+	idList<idVec3> points;
 	for ( int i = 0; i < brushes.Num(); i++ ) {
-		editorBrushWindings_t windings;
-		if ( !world.BrushWindings( brushes[i].entity, brushes[i].primitive, windings ) ) {
-			continue;
+		Outline( world, brushes[i], -1, points );
+		for ( int j = 0; j + 1 < points.Num(); j += 2 ) {
+			renderWorld->DebugLine( SELECTION_COLOR, points[j], points[j + 1] );
 		}
-		for ( int pass = 0; pass < 2; pass++ ) {
-			for ( int side = 0; side < windings.Num(); side++ ) {
-				if ( ( side == SelectedFace() ) != ( pass == 1 ) ) {
-					continue;
-				}
-				const idFixedWinding & winding = windings[side];
-				for ( int j = 0; j < winding.GetNumPoints(); j++ ) {
-					renderWorld->DebugLine( ( pass == 1 ) ? ACTIVE_COLOR : SELECTION_COLOR, winding[j].ToVec3(), winding[( j + 1 ) % winding.GetNumPoints()].ToVec3() );
-				}
+		if ( SelectedFace() != -1 ) {
+			Outline( world, brushes[i], SelectedFace(), points );
+			for ( int j = 0; j + 1 < points.Num(); j += 2 ) {
+				renderWorld->DebugLine( ACTIVE_COLOR, points[j], points[j + 1] );
 			}
 		}
 	}
 
-	// where the dragged brushes, or the dragged face, will be
+	// where the dragged or turned primitives, or the dragged face, will be
 	if ( Dragging() && brushes.Num() > 0 && dragDelta != 0.0f ) {
-		const idVec3 offset = dragGizmo.axes[dragAxis] * dragDelta;
+		const idVec3 & axis = dragGizmo.axes[dragAxis];
+		const bool moves = Moves();
 		for ( int i = 0; i < brushes.Num(); i++ ) {
-			editorBrushWindings_t windings;
-			if ( !world.BrushWindings( brushes[i].entity, brushes[i].primitive, windings ) ) {
-				continue;
+			Outline( world, brushes[i], SelectedFace(), points );
+			for ( int j = 0; j < points.Num(); j++ ) {
+				points[j] = moves ? points[j] + axis * dragDelta : dragGizmo.pivot + Turn( points[j] - dragGizmo.pivot, axis, dragDelta );
 			}
-			for ( int side = 0; side < windings.Num(); side++ ) {
-				if ( SelectedFace() != -1 && side != SelectedFace() ) {
-					continue;
-				}
-				const idFixedWinding & winding = windings[side];
-				for ( int j = 0; j < winding.GetNumPoints(); j++ ) {
-					renderWorld->DebugLine( GHOST_COLOR, winding[j].ToVec3() + offset, winding[( j + 1 ) % winding.GetNumPoints()].ToVec3() + offset );
-				}
+			for ( int j = 0; j + 1 < points.Num(); j += 2 ) {
+				renderWorld->DebugLine( GHOST_COLOR, points[j], points[j + 1] );
 			}
 		}
 	}
@@ -483,7 +594,7 @@ void idEditorTool::Draw( const idEditorWorld & world, const idVec3 & viewOrigin 
 	const float size = Dragging() ? dragSize : GizmoSize( gizmo.pivot, viewOrigin );
 	for ( int i = 0; i < gizmo.numAxes; i++ ) {
 		const idVec4 & color = ( i == dragAxis ) ? ACTIVE_COLOR : ( ( gizmo.numAxes == 1 ) ? BOX_COLOR : AXIS_COLORS[i] );
-		if ( mode == mode_t::MOVE || brushes.Num() > 0 ) {
+		if ( Moves() ) {
 			renderWorld->DebugArrow( color, gizmo.pivot, gizmo.pivot + gizmo.axes[i] * size, Max( 1, static_cast<int>( size * 0.12f ) ) );
 		} else {
 			renderWorld->DebugCircle( color, gizmo.pivot, gizmo.axes[i], size, RING_STEPS );

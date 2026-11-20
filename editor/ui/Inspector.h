@@ -48,6 +48,7 @@ private:
 
 	idEditorEngine *	engine;
 	QLabel *			title;
+	bool				brushIsPatch = false;	// the one listed "face" is a patch
 	QStackedWidget *	pages;
 	QTreeWidget *		tree;
 	QLineEdit *			newKey;

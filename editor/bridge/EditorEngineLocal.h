@@ -52,6 +52,8 @@ public:
 	void				SetGridSize( float size ) override;
 	void				SetTool( int tool ) override;
 	void				SetBoxHeight( float height ) override;
+	void				SetAngleSnap( float degrees ) override;
+	void				ShowGrid( bool show ) override;
 	void				MoveSelection( const float delta[3] ) override;
 	void				EnumBrushEntityClasses( editorClassVisitor_t visitor, void * context ) override;
 	bool				EnumViewBrushes( const float mins[3], const float maxs[3], int maxBrushes, editorViewBrushVisitor_t visitor, void * context ) override;
@@ -65,6 +67,7 @@ public:
 	void				CreateBrush( const float mins[3], const float maxs[3], const char * material ) override;
 	void				MoveBrushes( const float delta[3] ) override;
 	void				MoveFace( float distance ) override;
+	void				RotateBrushes( int axis, float degrees ) override;
 	void				SetFaceMaterial( const char * material ) override;
 	void				SetFaceTexture( const editorFaceTexture_t & texture ) override;
 	void				HollowBrushes( float thickness ) override;
@@ -122,6 +125,7 @@ public:
 	// for the console: what a script needs to see and to steer without a mouse
 	void				PrintWorldInfo() const;
 	void				PrintBrushInfo() const;
+	void				PrintPatches( int max ) const;
 	void				SetView( const idVec3 & origin, const idAngles & angles ) { view.SetView( origin, angles ); }
 	// the edit view's next frame goes into a TGA file in fs_savepath
 	void				ViewShot( const char * fileName ) { viewShotName = fileName; }
@@ -159,8 +163,11 @@ private:
 	void				DuplicateBrushes();
 	void				DeleteBrushes();
 	// The brushes an edit works on, the last primitive of an entity first, so that removing one
-	// moves none of the others. false and a print when no brush is selected.
-	[[nodiscard]] bool	BrushesToEdit( idList<brushRef_t> & brushes ) const;
+	// moves none of the others; the selected patches too for the edits a patch takes.
+	// false and a print when there is none.
+	[[nodiscard]] bool	BrushesToEdit( idList<brushRef_t> & brushes, bool patchesToo = false ) const;
+	// "brush", "3 patches", "4 primitives": what the list holds, for the history's labels
+	[[nodiscard]] idStr	PrimitivesLabel( const char * verb, const idList<brushRef_t> & primitives ) const;
 	[[nodiscard]] float	Snap( float value ) const;
 	[[nodiscard]] HWND	Viewport() const;
 	void				WriteViewShot();

@@ -40,7 +40,7 @@ using primitivePtr_t = std::shared_ptr<const idMapPrimitive>;
 	return change;
 }
 
-[[nodiscard]] editorPrimitiveChange_t Replace( const idEditorWorld & world, int entity, int primitive, idMapBrush * edited ) {
+[[nodiscard]] editorPrimitiveChange_t Replace( const idEditorWorld & world, int entity, int primitive, idMapPrimitive * edited ) {
 	editorPrimitiveChange_t change = Remove( world, entity, primitive );
 	change.after = primitivePtr_t( edited );
 	return change;
@@ -60,16 +60,26 @@ void idEditorEngineLocal::SelectBrushesOnly( const idList<brushRef_t> & brushes 
 	ui->OnSelectionChanged();
 }
 
-bool idEditorEngineLocal::BrushesToEdit( idList<brushRef_t> & brushes ) const {
+idStr idEditorEngineLocal::PrimitivesLabel( const char * verb, const idList<brushRef_t> & primitives ) const {
+	int patches = 0;
+	for ( int i = 0; i < primitives.Num(); i++ ) {
+		patches += ( world.Patch( primitives[i].entity, primitives[i].primitive ) != nullptr ) ? 1 : 0;
+	}
+	const char * const one = ( patches == 0 ) ? "brush" : "patch";
+	const char * const many = ( patches == 0 ) ? "brushes" : ( ( patches == primitives.Num() ) ? "patches" : "primitives" );
+	return ( primitives.Num() == 1 ) ? idStr( va( "%s %s", verb, one ) ) : idStr( va( "%s %d %s", verb, primitives.Num(), many ) );
+}
+
+bool idEditorEngineLocal::BrushesToEdit( idList<brushRef_t> & brushes, bool patchesToo ) const {
 	brushes.Clear();
 	for ( int i = 0; i < tool.NumSelectedBrushes(); i++ ) {
 		const brushRef_t & brush = tool.SelectedBrush( i );
-		if ( world.Brush( brush.entity, brush.primitive ) != nullptr ) {
+		if ( world.Brush( brush.entity, brush.primitive ) != nullptr || ( patchesToo && world.Patch( brush.entity, brush.primitive ) != nullptr ) ) {
 			brushes.Append( brush );
 		}
 	}
 	if ( brushes.Num() == 0 ) {
-		common->Printf( "No brush is selected.\n" );
+		common->Printf( ( tool.NumSelectedBrushes() > 0 ) ? "A patch cannot be edited this way: only brushes.\n" : "No brush is selected.\n" );
 		return false;
 	}
 	std::sort( brushes.Ptr(), brushes.Ptr() + brushes.Num(), []( const brushRef_t & a, const brushRef_t & b ) {
@@ -79,7 +89,7 @@ bool idEditorEngineLocal::BrushesToEdit( idList<brushRef_t> & brushes ) const {
 }
 
 bool idEditorEngineLocal::Pick( int x, int y, editorPickInfo_t & pick ) {
-	pick = { -1, -1, -1, 0.0f, { 0.0f, 0.0f, 0.0f } };
+	pick = { -1, -1, -1, false, 0.0f, { 0.0f, 0.0f, 0.0f } };
 	if ( !world.IsOpen() || playing || world.IsSuspended() ) {
 		return false;
 	}
@@ -89,16 +99,16 @@ bool idEditorEngineLocal::Pick( int x, int y, editorPickInfo_t & pick ) {
 		return false;
 	}
 	const idVec3 point = view.Origin() + dir * found.distance;
-	pick = { found.entity, found.primitive, found.face, found.distance, { point.x, point.y, point.z } };
+	pick = { found.entity, found.primitive, found.face, world.Patch( found.entity, found.primitive ) != nullptr, found.distance, { point.x, point.y, point.z } };
 	return true;
 }
 
 void idEditorEngineLocal::SelectBrush( int entityIndex, int primitive, int face, bool add ) {
-	const idMapBrush * const brush = world.IsOpen() ? world.Brush( entityIndex, primitive ) : nullptr;
-	if ( brush == nullptr || world.Entity( entityIndex ).removed || tool.Dragging() ) {
+	if ( !world.IsOpen() || world.Primitive( entityIndex, primitive ) == nullptr || world.Entity( entityIndex ).removed || tool.Dragging() ) {
 		return;
 	}
-	const int side = ( face >= 0 && face < brush->GetNumSides() ) ? face : -1;
+	const idMapBrush * const brush = world.Brush( entityIndex, primitive );
+	const int side = ( brush != nullptr && face >= 0 && face < brush->GetNumSides() ) ? face : -1;
 	if ( tool.SelectBrush( brushRef_t{ entityIndex, primitive }, side, add ) ) {
 		ui->OnSelectionChanged();
 	}
@@ -111,7 +121,21 @@ void idEditorEngineLocal::EnumBrushSelection( editorBrushVisitor_t visitor, void
 }
 
 void idEditorEngineLocal::EnumBrushFaces( int entityIndex, int primitive, editorFaceVisitor_t visitor, void * context ) {
-	const idMapBrush * const brush = world.IsOpen() ? world.Brush( entityIndex, primitive ) : nullptr;
+	if ( !world.IsOpen() ) {
+		return;
+	}
+	if ( const idMapPatch * const patch = world.Patch( entityIndex, primitive ) ) {
+		editorFaceInfo_t info = {};
+		info.isPatch = true;
+		info.patchWidth = patch->GetWidth();
+		info.patchHeight = patch->GetHeight();
+		info.material = patch->GetMaterial();
+		info.visible = editorBrush::PatchIsDrawn( *patch );
+		info.texture.repeatS = info.texture.repeatT = 1.0f;
+		visitor( context, info );
+		return;
+	}
+	const idMapBrush * const brush = world.Brush( entityIndex, primitive );
 	if ( brush == nullptr ) {
 		return;
 	}
@@ -174,7 +198,7 @@ void idEditorEngineLocal::CreateBrush( const float mins[3], const float maxs[3],
 
 void idEditorEngineLocal::MoveBrushes( const float delta[3] ) {
 	idList<brushRef_t> brushes;
-	if ( !CanEdit() || !BrushesToEdit( brushes ) ) {
+	if ( !CanEdit() || !BrushesToEdit( brushes, true ) ) {
 		return;
 	}
 	const idVec3 move( Snap( delta[0] ), Snap( delta[1] ), Snap( delta[2] ) );
@@ -183,11 +207,49 @@ void idEditorEngineLocal::MoveBrushes( const float delta[3] ) {
 	}
 	idList<editorPrimitiveChange_t> primitiveChanges;
 	for ( int i = 0; i < brushes.Num(); i++ ) {
+		const idVec3 local = move * world.Entity( brushes[i].entity ).axis.Transpose();
+		if ( const idMapPatch * const patch = world.Patch( brushes[i].entity, brushes[i].primitive ) ) {
+			idMapPatch * const moved = patch->Clone();
+			editorBrush::TranslatePatch( *moved, local );
+			primitiveChanges.Append( Replace( world, brushes[i].entity, brushes[i].primitive, moved ) );
+			continue;
+		}
 		idMapBrush * const moved = world.Brush( brushes[i].entity, brushes[i].primitive )->Clone();
-		editorBrush::Translate( *moved, move * world.Entity( brushes[i].entity ).axis.Transpose() );
+		editorBrush::Translate( *moved, local );
 		primitiveChanges.Append( Replace( world, brushes[i].entity, brushes[i].primitive, moved ) );
 	}
-	Edit( ( brushes.Num() == 1 ) ? "Move brush" : va( "Move %d brushes", brushes.Num() ), idList<editorChange_t>(), primitiveChanges );
+	Edit( PrimitivesLabel( "Move", brushes ), idList<editorChange_t>(), primitiveChanges );
+}
+
+void idEditorEngineLocal::RotateBrushes( int axis, float degrees ) {
+	idList<brushRef_t> brushes;
+	idVec3 pivot;
+	if ( !CanEdit() || axis < 0 || axis > 2 || !BrushesToEdit( brushes, true ) || !tool.RotatePivot( world, pivot ) ) {
+		return;
+	}
+	if ( idMath::AngleNormalize360( degrees ) == 0.0f ) {
+		return;
+	}
+	const idMat3 rotation = editorBrush::AxisRotation( axis, degrees );
+	idList<editorPrimitiveChange_t> primitiveChanges;
+	for ( int i = 0; i < brushes.Num(); i++ ) {
+		const editorMapEntity_t & owner = world.Entity( brushes[i].entity );
+		if ( IsRotated( owner ) ) {
+			common->Printf( "'%s' is rotated itself: its brushes are not turned.\n", owner.args.GetString( "name" ) );
+			return;
+		}
+		const idVec3 local = pivot - owner.origin;
+		if ( const idMapPatch * const patch = world.Patch( brushes[i].entity, brushes[i].primitive ) ) {
+			idMapPatch * const turned = patch->Clone();
+			editorBrush::RotatePatch( *turned, rotation, local );
+			primitiveChanges.Append( Replace( world, brushes[i].entity, brushes[i].primitive, turned ) );
+			continue;
+		}
+		idMapBrush * const turned = world.Brush( brushes[i].entity, brushes[i].primitive )->Clone();
+		editorBrush::Rotate( *turned, rotation, local, owner.origin );
+		primitiveChanges.Append( Replace( world, brushes[i].entity, brushes[i].primitive, turned ) );
+	}
+	Edit( PrimitivesLabel( "Rotate", brushes ), idList<editorChange_t>(), primitiveChanges );
 }
 
 void idEditorEngineLocal::MoveFace( float distance ) {
@@ -216,21 +278,22 @@ void idEditorEngineLocal::MoveFace( float distance ) {
 
 void idEditorEngineLocal::DeleteBrushes() {
 	idList<brushRef_t> brushes;
-	if ( !BrushesToEdit( brushes ) ) {
+	if ( !BrushesToEdit( brushes, true ) ) {
 		return;
 	}
 	idList<editorPrimitiveChange_t> primitiveChanges;
 	for ( int i = 0; i < brushes.Num(); i++ ) {
 		primitiveChanges.Append( Remove( world, brushes[i].entity, brushes[i].primitive ) );
 	}
+	const idStr label = PrimitivesLabel( "Delete", brushes );
 	tool.ClearSelection();
-	Edit( ( brushes.Num() == 1 ) ? "Delete brush" : va( "Delete %d brushes", brushes.Num() ), idList<editorChange_t>(), primitiveChanges );
+	Edit( label, idList<editorChange_t>(), primitiveChanges );
 	ui->OnSelectionChanged();
 }
 
 void idEditorEngineLocal::DuplicateBrushes() {
 	idList<brushRef_t> brushes;
-	if ( !BrushesToEdit( brushes ) ) {
+	if ( !BrushesToEdit( brushes, true ) ) {
 		return;
 	}
 	const float step = ( tool.GridSize() > 0.0f ) ? tool.GridSize() * 2.0f : DUPLICATE_OFFSET;
@@ -242,19 +305,28 @@ void idEditorEngineLocal::DuplicateBrushes() {
 		if ( i > 0 && entity != brushes[i - 1].entity ) {
 			added = 0;
 		}
-		idMapBrush * const copy = world.Brush( entity, brushes[i].primitive )->Clone();
-		editorBrush::Translate( *copy, idVec3( step, step, 0.0f ) * world.Entity( entity ).axis.Transpose() );
+		const idVec3 offset = idVec3( step, step, 0.0f ) * world.Entity( entity ).axis.Transpose();
+		idMapPrimitive * copy;
+		if ( const idMapPatch * const patch = world.Patch( entity, brushes[i].primitive ) ) {
+			idMapPatch * const patchCopy = patch->Clone();
+			editorBrush::TranslatePatch( *patchCopy, offset );
+			copy = patchCopy;
+		} else {
+			idMapBrush * const brushCopy = world.Brush( entity, brushes[i].primitive )->Clone();
+			editorBrush::Translate( *brushCopy, offset );
+			copy = brushCopy;
+		}
 		const int primitive = world.NumPrimitives( entity ) + added++;
 		primitiveChanges.Append( Insert( entity, primitive, copy ) );
 		copies.Append( brushRef_t{ entity, primitive } );
 	}
-	Edit( ( brushes.Num() == 1 ) ? "Duplicate brush" : va( "Duplicate %d brushes", brushes.Num() ), idList<editorChange_t>(), primitiveChanges );
+	Edit( PrimitivesLabel( "Duplicate", brushes ), idList<editorChange_t>(), primitiveChanges );
 	SelectBrushesOnly( copies );
 }
 
 void idEditorEngineLocal::SetFaceMaterial( const char * material ) {
 	idList<brushRef_t> brushes;
-	if ( !CanEdit() || material == nullptr || !BrushesToEdit( brushes ) ) {
+	if ( !CanEdit() || material == nullptr || !BrushesToEdit( brushes, true ) ) {
 		return;
 	}
 	if ( declManager->FindMaterial( material, false ) == nullptr ) {
@@ -264,6 +336,12 @@ void idEditorEngineLocal::SetFaceMaterial( const char * material ) {
 	const int face = tool.SelectedFace();
 	idList<editorPrimitiveChange_t> primitiveChanges;
 	for ( int i = 0; i < brushes.Num(); i++ ) {
+		if ( const idMapPatch * const patch = world.Patch( brushes[i].entity, brushes[i].primitive ) ) {
+			idMapPatch * const edited = patch->Clone();
+			edited->SetMaterial( material );
+			primitiveChanges.Append( Replace( world, brushes[i].entity, brushes[i].primitive, edited ) );
+			continue;
+		}
 		idMapBrush * const edited = world.Brush( brushes[i].entity, brushes[i].primitive )->Clone();
 		for ( int side = 0; side < edited->GetNumSides(); side++ ) {
 			if ( face == -1 || face == side ) {
@@ -272,7 +350,7 @@ void idEditorEngineLocal::SetFaceMaterial( const char * material ) {
 		}
 		primitiveChanges.Append( Replace( world, brushes[i].entity, brushes[i].primitive, edited ) );
 	}
-	Edit( ( face == -1 ) ? "Set brush material" : "Set face material", idList<editorChange_t>(), primitiveChanges );
+	Edit( ( face == -1 ) ? PrimitivesLabel( "Set material of", brushes ).c_str() : "Set face material", idList<editorChange_t>(), primitiveChanges );
 }
 
 void idEditorEngineLocal::SetFaceTexture( const editorFaceTexture_t & texture ) {
@@ -446,6 +524,12 @@ void idEditorEngineLocal::PrintBrushInfo() const {
 	}
 	for ( int i = 0; i < tool.NumSelectedBrushes(); i++ ) {
 		const brushRef_t & ref = tool.SelectedBrush( i );
+		if ( const idMapPatch * const patch = world.Patch( ref.entity, ref.primitive ) ) {
+			const idBounds box = editorBrush::PatchBounds( *patch );
+			common->Printf( "editorBrushInfo: entity %d primitive %d: patch %d x %d, %s, bounds (%g %g %g) (%g %g %g)\n", ref.entity, ref.primitive, patch->GetWidth(), patch->GetHeight(),
+				patch->GetMaterial(), box[0].x, box[0].y, box[0].z, box[1].x, box[1].y, box[1].z );
+			continue;
+		}
 		const idMapBrush * const brush = world.Brush( ref.entity, ref.primitive );
 		if ( brush == nullptr ) {
 			continue;
@@ -463,6 +547,20 @@ void idEditorEngineLocal::PrintBrushInfo() const {
 				mapSide.GetPlane()[0], mapSide.GetPlane()[1], mapSide.GetPlane()[2], mapSide.GetPlane()[3], mapSide.GetMaterial(), shiftS, shiftT, repeatS, repeatT, rotate );
 		}
 	}
+}
+
+void idEditorEngineLocal::PrintPatches( int max ) const {
+	int printed = 0;
+	for ( int i = 0; world.IsOpen() && i < world.NumEntities() && printed < max; i++ ) {
+		for ( int j = 0; !world.Entity( i ).removed && j < world.NumPrimitives( i ) && printed < max; j++ ) {
+			if ( const idMapPatch * const patch = world.Patch( i, j ) ) {
+				const idVec3 center = world.PrimitiveWorldBounds( i, j ).GetCenter();
+				common->Printf( "editorListPatches: entity %d primitive %d: %d x %d, %s, at %g %g %g\n", i, j, patch->GetWidth(), patch->GetHeight(), patch->GetMaterial(), center.x, center.y, center.z );
+				printed++;
+			}
+		}
+	}
+	common->Printf( "editorListPatches: %d listed\n", printed );
 }
 
 void idEditorEngineLocal::PrintWorldInfo() const {
@@ -514,6 +612,21 @@ CONSOLE_COMMAND_SHIP( editorMoveBrush, "moves the selected brushes: editorMoveBr
 	}
 	const float delta[3] = { static_cast<float>( atof( args.Argv( 1 ) ) ), static_cast<float>( atof( args.Argv( 2 ) ) ), static_cast<float>( atof( args.Argv( 3 ) ) ) };
 	editorEngine->RunEdit( [&] { editorEngine->MoveBrushes( delta ); } );
+}
+
+CONSOLE_COMMAND_SHIP( editorRotateBrush, "turns the selected brushes and patches around the middle of the selection: editorRotateBrush <x|y|z> <degrees>", nullptr ) {
+	const int axis = ( args.Argc() == 3 ) ? idStr::FindChar( "xyz", static_cast<char>( tolower( args.Argv( 1 )[0] ) ) ) : -1;
+	if ( axis < 0 || axis > 2 || !Editor_NeedEngine() ) {
+		common->Printf( "usage: editorRotateBrush <x|y|z> <degrees>\n" );
+		return;
+	}
+	editorEngine->RunEdit( [&] { editorEngine->RotateBrushes( axis, static_cast<float>( atof( args.Argv( 2 ) ) ) ); } );
+}
+
+CONSOLE_COMMAND_SHIP( editorListPatches, "prints the first patches of the open map, for editorSelectBrush: editorListPatches [max]", nullptr ) {
+	if ( Editor_NeedEngine() ) {
+		editorEngine->PrintPatches( ( args.Argc() > 1 ) ? atoi( args.Argv( 1 ) ) : 8 );
+	}
 }
 
 CONSOLE_COMMAND_SHIP( editorMoveFace, "pushes the selected face out of its brush, or pulls it in: editorMoveFace <distance>", nullptr ) {

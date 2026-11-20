@@ -44,6 +44,20 @@ void idEditorEngineLocal::SetTool( int newTool ) {
 	}
 }
 
+void idEditorEngineLocal::SetAngleSnap( float degrees ) {
+	tool.SetAngleSnap( Max( 0.0f, degrees ) );
+	if ( started ) {
+		ui->OnDocumentChanged();
+	}
+}
+
+void idEditorEngineLocal::ShowGrid( bool show ) {
+	tool.ShowGrid( show );
+	if ( started ) {
+		ui->OnDocumentChanged();
+	}
+}
+
 void idEditorEngineLocal::SetBoxHeight( float height ) {
 	tool.SetBoxHeight( Max( 0.0f, height ) );
 	if ( started ) {
@@ -150,6 +164,27 @@ bool idEditorEngineLocal::EnumViewBrushes( const float mins[3], const float maxs
 						edges.Append( b.x );
 						edges.Append( b.y );
 						edges.Append( b.z );
+					}
+				}
+			} else if ( const idMapPatch * const patch = world.Patch( i, j ) ) {
+				// the control net
+				const int width = patch->GetWidth();
+				const int height = patch->GetHeight();
+				const auto add = [&]( int from, int to ) {
+					const idVec3 a = entity.origin + ( *patch )[from].xyz * entity.axis;
+					const idVec3 b = entity.origin + ( *patch )[to].xyz * entity.axis;
+					for ( const float value : { a.x, a.y, a.z, b.x, b.y, b.z } ) {
+						edges.Append( value );
+					}
+				};
+				for ( int row = 0; row < height; row++ ) {
+					for ( int column = 0; column < width; column++ ) {
+						if ( column + 1 < width ) {
+							add( row * width + column, row * width + column + 1 );
+						}
+						if ( row + 1 < height ) {
+							add( row * width + column, ( row + 1 ) * width + column );
+						}
 					}
 				}
 			}
