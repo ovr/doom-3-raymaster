@@ -185,6 +185,35 @@ optVertex_t *FindOptVertex( dmapVert_t *v, optimizeGroup_t *opt );
 
 /*
 ================
+CrossZ, Dot2D, DotDouble
+
+The original ran on the x87 FPU in extended precision (Sys_FPU_SetPrecision in its WinMain).
+In single precision a point computed on an edge lands beside it, and the optimizer then
+emits a sliver triangle for the gap, which the t-junction fixer multiplies.
+================
+*/
+static double CrossZ( const idVec3 &from1, const idVec3 &to1, const idVec3 &from2, const idVec3 &to2 ) {
+	const double d1x = (double)to1.x - (double)from1.x;
+	const double d1y = (double)to1.y - (double)from1.y;
+	const double d2x = (double)to2.x - (double)from2.x;
+	const double d2y = (double)to2.y - (double)from2.y;
+	return d1x * d2y - d1y * d2x;
+}
+
+static double Dot2D( const idVec3 &from1, const idVec3 &to1, const idVec3 &from2, const idVec3 &to2 ) {
+	const double d1x = (double)to1.x - (double)from1.x;
+	const double d1y = (double)to1.y - (double)from1.y;
+	const double d2x = (double)to2.x - (double)from2.x;
+	const double d2y = (double)to2.y - (double)from2.y;
+	return d1x * d2x + d1y * d2y;
+}
+
+static double DotDouble( const idVec3 &a, const idVec3 &b ) {
+	return (double)a.x * (double)b.x + (double)a.y * (double)b.y + (double)a.z * (double)b.z;
+}
+
+/*
+================
 FindOptVertex
 ================
 */
@@ -194,8 +223,8 @@ static optVertex_t *FindOptVertex( dmapVert_t *v, optimizeGroup_t *opt ) {
 	optVertex_t	*vert;
 
 	// deal with everything strictly as 2D
-	x = v->xyz * opt->axis[0];
-	y = v->xyz * opt->axis[1];
+	x = (float)DotDouble( v->xyz, opt->axis[0] );
+	y = (float)DotDouble( v->xyz, opt->axis[1] );
 
 	// should we match based on the t-junction fixing hash verts?
 	for ( i = 0 ; i < numOptVerts ; i++ ) {
@@ -233,12 +262,9 @@ VertexBetween
 =================
 */
 static bool VertexBetween( const optVertex_t *p1, const optVertex_t *v1, const optVertex_t *v2 ) {
-	idVec3	d1, d2;
-	float	d;
+	double	d;
 
-	d1 = p1->pv - v1->pv;
-	d2 = p1->pv - v2->pv;
-	d = d1 * d2;
+	d = Dot2D( v1->pv, p1->pv, v2->pv, p1->pv );
 	if ( d < 0 ) {
 		return true;
 	}
@@ -258,33 +284,31 @@ Will return NULL if the lines are colinear
 */
 static	optVertex_t *EdgeIntersection( const optVertex_t *p1, const optVertex_t *p2, 
 									  const optVertex_t *l1, const optVertex_t *l2, optimizeGroup_t *opt ) {
-	float	f;
+	double	f;
 	dmapVert_t	*v;
-	idVec3	dir1, dir2, cross1, cross2;
+	double	cross1, cross2;
+	int		i;
 
-	dir1 = p1->pv - l1->pv;
-	dir2 = p1->pv - l2->pv;
-	cross1 = dir1.Cross( dir2 );
+	cross1 = CrossZ( l1->pv, p1->pv, l2->pv, p1->pv );
+	cross2 = CrossZ( l1->pv, p2->pv, l2->pv, p2->pv );
 
-	dir1 = p2->pv - l1->pv;
-	dir2 = p2->pv - l2->pv;
-	cross2 = dir1.Cross( dir2 );
-
-	if ( cross1[2] - cross2[2] == 0 ) {
+	if ( cross1 - cross2 == 0 ) {
 		return NULL;
 	}
 
-	f = cross1[2] / ( cross1[2] - cross2[2] );
+	f = cross1 / ( cross1 - cross2 );
 
 	// FIXME: how are we freeing this, since it doesn't belong to a tri?
 	v = (dmapVert_t *)Mem_Alloc( sizeof( *v ), TAG_RENDER_TOOLS );
 	memset( v, 0, sizeof( *v ) );
 
-	v->xyz = p1->v.xyz * ( 1.0 - f ) + p2->v.xyz * f;
-	v->normal = p1->v.normal * ( 1.0 - f ) + p2->v.normal * f;
-	v->normal.Normalize();
-	v->st[0] = p1->v.st[0] * ( 1.0 - f ) + p2->v.st[0] * f;
-	v->st[1] = p1->v.st[1] * ( 1.0 - f ) + p2->v.st[1] * f;
+	for ( i = 0 ; i < 3 ; i++ ) {
+		v->xyz[i] = (float)( p1->v.xyz[i] * ( 1.0 - f ) + p2->v.xyz[i] * f );
+		v->normal[i] = (float)( p1->v.normal[i] * ( 1.0 - f ) + p2->v.normal[i] * f );
+	}
+	DmapNormalize( v->normal );
+	v->st[0] = (float)( p1->v.st[0] * ( 1.0 - f ) + p2->v.st[0] * f );
+	v->st[1] = (float)( p1->v.st[1] * ( 1.0 - f ) + p2->v.st[1] * f );
 
 	return FindOptVertex( v, opt );
 }
@@ -304,13 +328,13 @@ static	bool PointsStraddleLine( optVertex_t *p1, optVertex_t *p2, optVertex_t *l
 	t2 = IsTriangleDegenerate( l1, l2, p2 );
 	if ( t1 && t2 ) {
 		// colinear case
-		float	s1, s2, s3, s4;
+		double	s1, s2, s3, s4;
 		bool	positive, negative;
 
-		s1 = ( p1->pv - l1->pv ) * ( l2->pv - l1->pv );
-		s2 = ( p2->pv - l1->pv ) * ( l2->pv - l1->pv );
-		s3 = ( p1->pv - l2->pv ) * ( l2->pv - l1->pv );
-		s4 = ( p2->pv - l2->pv ) * ( l2->pv - l1->pv );
+		s1 = Dot2D( l1->pv, p1->pv, l1->pv, l2->pv );
+		s2 = Dot2D( l1->pv, p2->pv, l1->pv, l2->pv );
+		s3 = Dot2D( l2->pv, p1->pv, l1->pv, l2->pv );
+		s4 = Dot2D( l2->pv, p2->pv, l1->pv, l2->pv );
 
 		if ( s1 > 0 || s2 > 0 || s3 > 0 || s4 > 0 ) {
 			positive = true;
@@ -568,14 +592,13 @@ static	void RemoveIfColinear( optVertex_t *ov, optIsland_t *island ) {
 	}
 
 	// they must point in opposite directions
-	dist = ( v3->pv - v2->pv ) * ( v1->pv - v2->pv );
-	if ( dist >= 0 ) {
+	if ( Dot2D( v2->pv, v3->pv, v2->pv, v1->pv ) >= 0 ) {
 		return;
 	}
 
 	// see if they are colinear
 	VectorSubtract( v3->v.xyz, v1->v.xyz, dir1 );
-	len = dir1.Normalize();
+	len = DmapNormalize( dir1 );
 	VectorSubtract( v2->v.xyz, v1->v.xyz, dir2 );
 	dist = DotProduct( dir2, dir1 );
 	VectorMA( v1->v.xyz, dist, dir1, point );
@@ -693,26 +716,15 @@ consider it invalid if any one of the possibilities is invalid.
 =================
 */
 static bool IsTriangleValid( const optVertex_t *v1, const optVertex_t *v2, const optVertex_t *v3 ) {
-	idVec3	d1, d2, normal;
-
-	d1 = v2->pv - v1->pv;
-	d2 = v3->pv - v1->pv;
-	normal = d1.Cross( d2 );
-	if ( normal[2] <= 0 ) {
+	if ( CrossZ( v1->pv, v2->pv, v1->pv, v3->pv ) <= 0 ) {
 		return false;
 	}
 
-	d1 = v3->pv - v2->pv;
-	d2 = v1->pv - v2->pv;
-	normal = d1.Cross( d2 );
-	if ( normal[2] <= 0 ) {
+	if ( CrossZ( v2->pv, v3->pv, v2->pv, v1->pv ) <= 0 ) {
 		return false;
 	}
 
-	d1 = v1->pv - v3->pv;
-	d2 = v2->pv - v3->pv;
-	normal = d1.Cross( d2 );
-	if ( normal[2] <= 0 ) {
+	if ( CrossZ( v3->pv, v1->pv, v3->pv, v2->pv ) <= 0 ) {
 		return false;
 	}
 
@@ -729,12 +741,7 @@ Returns false if it is either front or back facing
 */
 static bool IsTriangleDegenerate( const optVertex_t *v1, const optVertex_t *v2, const optVertex_t *v3 ) {
 #if 1
-	idVec3	d1, d2, normal;
-
-	d1 = v2->pv - v1->pv;
-	d2 = v3->pv - v1->pv;
-	normal = d1.Cross( d2 );
-	if ( normal[2] == 0 ) {
+	if ( CrossZ( v1->pv, v2->pv, v1->pv, v3->pv ) == 0 ) {
 		return true;
 	}
 	return false;
@@ -752,29 +759,18 @@ Tests if a 2D point is inside an original triangle
 ==================
 */
 static bool PointInTri( const idVec3 &p, const mapTri_t *tri, optIsland_t *island ) {
-	idVec3	d1, d2, normal;
-
 	// the normal[2] == 0 case is not uncommon when a square is triangulated in
 	// the opposite manner to the original
 
-	d1 = tri->optVert[0]->pv - p;
-	d2 = tri->optVert[1]->pv - p;
-	normal = d1.Cross( d2 );
-	if ( normal[2] < 0 ) {
+	if ( CrossZ( p, tri->optVert[0]->pv, p, tri->optVert[1]->pv ) < 0 ) {
 		return false;
 	}
 
-	d1 = tri->optVert[1]->pv - p;
-	d2 = tri->optVert[2]->pv - p;
-	normal = d1.Cross( d2 );
-	if ( normal[2] < 0 ) {
+	if ( CrossZ( p, tri->optVert[1]->pv, p, tri->optVert[2]->pv ) < 0 ) {
 		return false;
 	}
 
-	d1 = tri->optVert[2]->pv - p;
-	d2 = tri->optVert[0]->pv - p;
-	normal = d1.Cross( d2 );
-	if ( normal[2] < 0 ) {
+	if ( CrossZ( p, tri->optVert[2]->pv, p, tri->optVert[0]->pv ) < 0 ) {
 		return false;
 	}
 

@@ -278,7 +278,7 @@ void		TriVertsFromOriginal( mapTri_t *tri, const mapTri_t *original ) {
 			tri->v[i].normal[j] = a * original->v[0].normal[j] 
 				 + b * original->v[1].normal[j] + c * original->v[2].normal[j];
 		}
-		tri->v[i].normal.Normalize();
+		DmapNormalize( tri->v[i].normal );
 	}
 }
 
@@ -368,5 +368,5 @@ PlaneForTri
 ==================
 */
 void	PlaneForTri( const mapTri_t *tri, idPlane &plane ) {
-	plane.FromPoints( tri->v[0].xyz, tri->v[1].xyz, tri->v[2].xyz );
+	DmapPlaneFromPoints( plane, tri->v[0].xyz, tri->v[1].xyz, tri->v[2].xyz );
 }

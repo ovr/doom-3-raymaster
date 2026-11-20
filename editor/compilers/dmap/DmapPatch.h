@@ -46,6 +46,7 @@ public:
 	explicit			dmapPatch_t( const idSurface_Patch &patch );
 
 	const dmapVert_t &	operator[]( const int index ) const { return verts[index]; }
+	void				SetTexCoord( int index, const idVec2 &st ) { verts[index].st = st; }
 	int					GetNumIndexes() const { return indexes.Num(); }
 	const int *			GetIndexes() const { return indexes.Ptr(); }
 	int					GetNumVertices() const { return verts.Num(); }

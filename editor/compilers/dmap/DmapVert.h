@@ -103,4 +103,32 @@ ID_INLINE void dmapVert_t::FromDrawVert( const idDrawVert &dv ) {
 	memcpy( color, dv.color, sizeof( color ) );
 }
 
+// idVec3::Normalize of the original engine: a zero vector stays zero and gives 0. BFG's makes it
+// NaN and returns NaN, which every "== 0" and "<= 0" test of the compiler then takes for valid.
+ID_INLINE float DmapNormalize( idVec3 &v ) {
+	const double sqrLength = (double)v.x * v.x + (double)v.y * v.y + (double)v.z * v.z;
+	if ( sqrLength == 0.0 ) {
+		return 0.0f;
+	}
+	const double invLength = 1.0 / sqrt( sqrLength );
+	v.x = (float)( v.x * invLength );
+	v.y = (float)( v.y * invLength );
+	v.z = (float)( v.z * invLength );
+	return (float)( invLength * sqrLength );
+}
+
+// idPlane::FromPoints on DmapNormalize: false for collinear points, their normal is (0 0 -1) as it was
+ID_INLINE bool DmapPlaneFromPoints( idPlane &plane, const idVec3 &p1, const idVec3 &p2, const idVec3 &p3 ) {
+	idVec3 normal = ( p1 - p2 ).Cross( p3 - p2 );
+	const float length = DmapNormalize( normal );
+	normal.FixDegenerateNormal();
+	plane.SetNormal( normal );
+	if ( length == 0.0f ) {
+		plane.SetDist( 0.0f );
+		return false;
+	}
+	plane.SetDist( normal * p2 );
+	return true;
+}
+
 #endif /* !__DMAPVERT_H__ */

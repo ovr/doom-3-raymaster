@@ -326,7 +326,7 @@ static mapTri_t *FixTriangleAgainstHashVert( const mapTri_t *a, const hashVert_t
 		v2 = &a->v[(i+1)%3];
 		v3 = &a->v[(i+2)%3];
 		VectorSubtract( v2->xyz, v1->xyz, dir );
-		len = dir.Normalize();
+		len = DmapNormalize( dir );
 
 		// if it is close to one of the edge vertexes, skip it
 		VectorSubtract( *v, v1->xyz, temp );
@@ -352,7 +352,7 @@ static mapTri_t *FixTriangleAgainstHashVert( const mapTri_t *a, const hashVert_t
 		split.normal[0] = v1->normal[0] + frac * ( v2->normal[0] - v1->normal[0] );
 		split.normal[1] = v1->normal[1] + frac * ( v2->normal[1] - v1->normal[1] );
 		split.normal[2] = v1->normal[2] + frac * ( v2->normal[2] - v1->normal[2] );
-		split.normal.Normalize();
+		DmapNormalize( split.normal );
 
 		// split the tri
 		new1 = CopyMapTri( a );
@@ -365,8 +365,8 @@ static mapTri_t *FixTriangleAgainstHashVert( const mapTri_t *a, const hashVert_t
 		new2->hashVert[i] = hv;
 		new2->next = new1;
 
-		plane1.FromPoints( new1->hashVert[0]->v, new1->hashVert[1]->v, new1->hashVert[2]->v );
-		plane2.FromPoints( new2->hashVert[0]->v, new2->hashVert[1]->v, new2->hashVert[2]->v );
+		DmapPlaneFromPoints( plane1, new1->hashVert[0]->v, new1->hashVert[1]->v, new1->hashVert[2]->v );
+		DmapPlaneFromPoints( plane2, new2->hashVert[0]->v, new2->hashVert[1]->v, new2->hashVert[2]->v );
 
 		d = DotProduct( plane1, plane2 );
 

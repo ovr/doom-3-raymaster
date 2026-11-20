@@ -130,12 +130,17 @@ public:
 	void					SetVertSubdivisions( int n ) { vertSubdivisions = n; }
 	void					SetExplicitlySubdivided( bool b ) { explicitSubdivisions = b; }
 	unsigned int			GetGeometryCRC() const;
+							// A parsed patch keeps the texture coordinates of the file: idDrawVert holds
+							// 16 bit floats, too coarse for a map compiler. Empty for a patch made in code.
+	bool					HasFileTexCoords() const { return fileTexCoords.Num() == verts.Num(); }
+	const idVec2 &			GetFileTexCoord( int index ) const { return fileTexCoords[index]; }
 
 protected:
 	idStr					material;
 	int						horzSubdivisions;
 	int						vertSubdivisions;
 	bool					explicitSubdivisions;
+	idList<idVec2, TAG_IDLIB_LIST_MAP>	fileTexCoords;
 };
 
 ID_INLINE idMapPatch::idMapPatch() {

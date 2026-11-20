@@ -430,4 +430,7 @@ typedef struct {
 void ShareMapTriVerts( const mapTri_t *tris, sharedTris_t &uTri );
 void WriteOutputFile( void );
 
+// dmap.cpp: the whole compile, with the arguments of the dmap command
+void Dmap( const idCmdArgs &args );
+
 #endif /* !__DMAP_H__ */

@@ -388,6 +388,14 @@ static void ParsePatch( const idMapPatch *patch, int primitiveNum ) {
 
 	dmapPatch_t *cp = new ( TAG_RENDER_TOOLS ) dmapPatch_t( *patch );
 
+	// the packed coordinates of idDrawVert are up to 1/512 off at 2.0 and worse above:
+	// a t-junction vertex on a patch edge then gets a coordinate beside the edge's line
+	if ( patch->HasFileTexCoords() ) {
+		for ( int i = 0; i < cp->GetNumVertices(); i++ ) {
+			cp->SetTexCoord( i, patch->GetFileTexCoord( i ) );
+		}
+	}
+
 	if ( patch->GetExplicitlySubdivided() ) {
 		cp->SubdivideExplicit( patch->GetHorzSubdivisions(), patch->GetVertSubdivisions(), true );
 	} else {

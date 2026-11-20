@@ -165,6 +165,8 @@ idMapPatch *idMapPatch::Parse( idLexer &src, const idVec3 &origin, bool patchDef
 		return NULL;
 	}
 
+	patch->fileTexCoords.SetNum( patch->GetWidth() * patch->GetHeight() );
+
 
 	for ( j = 0; j < patch->GetWidth(); j++ ) {
 		if ( !src.ExpectTokenString( "(" ) ) {
@@ -186,6 +188,7 @@ idMapPatch *idMapPatch::Parse( idLexer &src, const idVec3 &origin, bool patchDef
 			vert->xyz[1] = v[1] - origin[1];
 			vert->xyz[2] = v[2] - origin[2];
 			vert->SetTexCoord( v[3], v[4] );
+			patch->fileTexCoords[i * patch->GetWidth() + j].Set( v[3], v[4] );
 		}
 		if ( !src.ExpectTokenString( ")" ) ) {
 			delete patch;

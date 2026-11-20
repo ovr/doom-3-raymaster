@@ -90,7 +90,7 @@ void dmapPatch_t::ProjectPointOntoVector( const idVec3 &point, const idVec3 &vSt
 
 	pVec = point - vStart;
 	vec = vEnd - vStart;
-	vec.Normalize();
+	DmapNormalize( vec );
 	// project onto the directional vector for this segment
 	vProj = vStart + (pVec * vec) * vec;
 }
@@ -283,7 +283,7 @@ void dmapPatch_t::GenerateNormals() {
 	}
 
 	// wrapped patched may not get a valid normal here
-	if ( norm.Normalize() != 0.0f ) {
+	if ( DmapNormalize( norm ) != 0.0f ) {
 
 		offset = verts[0].xyz * norm;
 		for ( i = 1; i < width * height; i++ ) {
@@ -355,7 +355,7 @@ void dmapPatch_t::GenerateNormals() {
 						break;					// edge of patch
 					}
 					temp = verts[y * width + x].xyz - base;
-					if ( temp.Normalize() == 0.0f ) {
+					if ( DmapNormalize( temp ) == 0.0f ) {
 						continue;				// degenerate edge, get more dist
 					} else {
 						good[k] = true;
@@ -371,7 +371,7 @@ void dmapPatch_t::GenerateNormals() {
 					continue;	// didn't get two points
 				}
 				norm = around[(k+1)&7].Cross( around[k] );
-				if ( norm.Normalize() == 0.0f ) {
+				if ( DmapNormalize( norm ) == 0.0f ) {
 					continue;
 				}
 				sum += norm;
@@ -382,7 +382,7 @@ void dmapPatch_t::GenerateNormals() {
 				count = 1;
 			}
 			verts[j * width + i].normal = sum;
-			verts[j * width + i].normal.Normalize();
+			DmapNormalize( verts[j * width + i].normal );
 		}
 	}
 }
@@ -542,7 +542,7 @@ void dmapPatch_t::SubdivideExplicit( int horzSubdivisions, int vertSubdivisions,
 	// normalize all the lerped normals
 	if ( genNormals ) {
 		for ( i = 0; i < width * height; i++ ) {
-			verts[i].normal.Normalize();
+			DmapNormalize( verts[i].normal );
 		}
 	}
 
@@ -685,7 +685,7 @@ void dmapPatch_t::Subdivide( float maxHorizontalError, float maxVerticalError, f
 	// normalize all the lerped normals
 	if ( genNormals ) {
 		for ( i = 0; i < width * height; i++ ) {
-			verts[i].normal.Normalize();
+			DmapNormalize( verts[i].normal );
 		}
 	}
 

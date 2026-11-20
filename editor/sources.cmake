@@ -27,6 +27,7 @@ set(EDITOR_BRIDGE_SOURCES
 set(MAP_COMPILERS_SOURCES
 	compilers/dmap/dmap.cpp
 	compilers/dmap/dmap.h
+	compilers/dmap/DmapCheck.cpp
 	compilers/dmap/DmapPatch.cpp
 	compilers/dmap/DmapPatch.h
 	compilers/dmap/DmapVert.h

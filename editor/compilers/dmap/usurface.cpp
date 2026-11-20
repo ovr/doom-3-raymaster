@@ -129,14 +129,14 @@ static void TexVecForTri( textureVectors_t *texVec, mapTri_t *tri ) {
     temp[0] = (d0[0] * d1[4] - d0[4] * d1[0]) * inva;
     temp[1] = (d0[1] * d1[4] - d0[4] * d1[1]) * inva;
     temp[2] = (d0[2] * d1[4] - d0[4] * d1[2]) * inva;
-	temp.Normalize();
+	DmapNormalize( temp );
 	texVec->v[0].ToVec3() = temp;
 	texVec->v[0][3] = tri->v[0].xyz * texVec->v[0].ToVec3() - tri->v[0].st[0];
 
     temp[0] = (d0[3] * d1[0] - d0[0] * d1[3]) * inva;
     temp[1] = (d0[3] * d1[1] - d0[1] * d1[3]) * inva;
     temp[2] = (d0[3] * d1[2] - d0[2] * d1[3]) * inva;
-	temp.Normalize();
+	DmapNormalize( temp );
 	texVec->v[1].ToVec3() = temp;
 	texVec->v[1][3] = tri->v[0].xyz * texVec->v[0].ToVec3() - tri->v[0].st[1];
 }
