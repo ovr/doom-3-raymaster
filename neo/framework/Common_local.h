@@ -134,6 +134,7 @@ public:
 	virtual	void				CreateMainMenu();
 	virtual void				Quit();
 	virtual bool				IsInitialized() const;
+	bool						IsMapSpawned() const override { return mapSpawned; }
 	virtual void				Frame();
 	virtual void				UpdateScreen( bool captureToImage );
 	virtual void				UpdateLevelLoadPacifier();

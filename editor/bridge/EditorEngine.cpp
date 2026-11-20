@@ -79,6 +79,8 @@ public:
 	void				Undo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorUndo\n" ); }
 	void				Redo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorRedo\n" ); }
 	void				SaveMap() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorSaveMap\n" ); }
+	void				Play() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorPlay\n" ); }
+	void				StopPlay() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorStop\n" ); }
 
 	// the console commands behind the queued calls
 	void				OpenMapNow( const char * name );
@@ -86,6 +88,8 @@ public:
 	void				UndoNow();
 	void				RedoNow();
 	void				SaveMapNow();
+	void				PlayNow();
+	void				StopNow();
 	// value nullptr removes the key
 	void				SetKeyNow( const char * entityName, const char * key, const char * value );
 	// A console command runs inside the frame, between its parts, where an edit is as safe as
@@ -103,7 +107,10 @@ public:
 private:
 	[[nodiscard]] bool	IsEntity( int index ) const { return index > 0 && index < world.NumEntities() && !world.Entity( index ).removed; }
 	// no edit while the engine runs a frame or a drag holds the entities
-	[[nodiscard]] bool	CanEdit() const { return world.IsOpen() && !inFrame && !tool.Dragging(); }
+	[[nodiscard]] bool	CanEdit() const { return world.IsOpen() && !playing && !inFrame && !tool.Dragging(); }
+	// after a frame while playing: has the game started, has it ended
+	void				UpdatePlay();
+	void				EndPlay();
 	// applies the changes as one step of the history and tells the UI
 	void				Edit( const char * label, const idList<editorChange_t> & changes );
 	void				AfterEdit( bool listChanged );
@@ -122,6 +129,7 @@ public:
 	void				OnQuitRequested() override { ui->OnQuitRequested(); }
 	void				OnFatalError( const char * text ) override { ui->OnFatalError( text ); }
 	void				OnPrint( const char * text ) override { ui->OnPrint( text ); }
+	void				OnEscapeToHost() override;
 	bool				DrawScene() override;
 
 private:
@@ -141,6 +149,9 @@ private:
 	bool				previewFrame = false;	// the frame being drawn is a preview picture
 	int					previewPauseUntil = 0;	// no picture before this time, after one failed
 	bool				lastWasPreview = false;	// so the edit view gets every other frame
+	bool				playing = false;		// from editorPlay until the game has ended
+	bool				playSpawned = false;	// the game's map has run
+	int					playFrames = 0;
 };
 
 // for the console commands; nullptr in the bare shell
@@ -164,7 +175,7 @@ void idEditorEngineLocal::Frame() {
 	}
 	// Nothing paces the editor's frames (no game tics), and it has no use for a thousand of them a second.
 	const int sinceLast = Sys_Milliseconds() - lastFrameMsec;
-	if ( sinceLast >= 0 && sinceLast < EDIT_FRAME_MSEC ) {
+	if ( !playing && sinceLast >= 0 && sinceLast < EDIT_FRAME_MSEC ) {
 		Sys_Sleep( EDIT_FRAME_MSEC - sinceLast );
 	}
 	lastFrameMsec = Sys_Milliseconds();
@@ -173,6 +184,10 @@ void idEditorEngineLocal::Frame() {
 	previewFrame = false;
 	Sys_EngineFrame();
 	inFrame = false;
+
+	if ( playing ) {
+		UpdatePlay();
+	}
 
 	if ( previewFrame ) {
 		previewFrame = false;
@@ -260,7 +275,82 @@ void idEditorEngineLocal::CloseMap() {
 	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorCloseMap\n" );
 }
 
+void idEditorEngineLocal::PlayNow() {
+	if ( !world.IsOpen() || playing || tool.Dragging() ) {
+		common->Printf( playing ? "The game already plays the map.\n" : "No map is open in the editor.\n" );
+		return;
+	}
+	// the game reads the map from its file
+	if ( history.IsDirty() ) {
+		SaveMapNow();
+		if ( history.IsDirty() ) {
+			return;
+		}
+	}
+	common->Printf( "--------- Editor: play %s ---------\n", world.Name() );
+	preview.Suspend();
+	world.Suspend();
+	view.SetEditMode( false );
+	playing = true;
+	playSpawned = false;
+	playFrames = 0;
+	// INSERT: before whatever a script queued behind editorPlay
+	cmdSystem->BufferCommandText( CMD_EXEC_INSERT, va( "devmap %s\n", world.Name() ) );
+	FocusViewport();
+	ui->OnDocumentChanged();
+}
+
+void idEditorEngineLocal::StopNow() {
+	if ( playing && common->IsMapSpawned() ) {
+		cmdSystem->BufferCommandText( CMD_EXEC_INSERT, "disconnect\n" );
+	}
+}
+
+void idEditorEngineLocal::OnEscapeToHost() {
+	if ( playing ) {
+		StopPlay();
+	}
+}
+
+void idEditorEngineLocal::UpdatePlay() {
+	// the devmap command and the load take a few frames
+	constexpr int START_FRAMES = 8;
+	playFrames++;
+	if ( common->IsMapSpawned() ) {
+		playSpawned = true;
+		return;
+	}
+	if ( !playSpawned && ( playFrames < START_FRAMES || session->GetState() == idSession::LOADING ) ) {
+		return;
+	}
+	if ( !playSpawned ) {
+		common->Printf( "Editor: the game could not start %s.\n", world.Name() );
+	}
+	EndPlay();
+}
+
+void idEditorEngineLocal::EndPlay() {
+	playing = false;
+	common->Printf( "--------- Editor: edit %s ---------\n", world.Name() );
+	// The game keeps its world after a map: with the editor's, the map's geometry would be in the
+	// static vertex cache twice, which does not fit.
+	common->RW()->InitFromMap( nullptr );
+	if ( world.Resume() ) {
+		view.SetEditMode( true );
+	} else {
+		CloseMapNow();
+	}
+	if ( ViewportHasFocus() ) {
+		SetFocus( GetParent( Viewport() ) );
+	}
+	ui->OnDocumentChanged();
+}
+
 void idEditorEngineLocal::OpenMapNow( const char * name ) {
+	if ( playing ) {
+		common->Printf( "Stop the game first (Shift+Esc).\n" );
+		return;
+	}
 	tool.Reset();
 	history.Clear();
 	if ( world.Open( name ) ) {
@@ -274,6 +364,10 @@ void idEditorEngineLocal::OpenMapNow( const char * name ) {
 }
 
 void idEditorEngineLocal::CloseMapNow() {
+	if ( playing ) {
+		common->Printf( "Stop the game first (Shift+Esc).\n" );
+		return;
+	}
 	tool.Reset();
 	history.Clear();
 	world.Close();
@@ -282,13 +376,13 @@ void idEditorEngineLocal::CloseMapNow() {
 }
 
 void idEditorEngineLocal::UndoNow() {
-	if ( world.IsOpen() && history.CanUndo() && !tool.Dragging() ) {
+	if ( world.IsOpen() && !playing && !tool.Dragging() && history.CanUndo() ) {
 		AfterEdit( history.Undo( world ) );
 	}
 }
 
 void idEditorEngineLocal::RedoNow() {
-	if ( world.IsOpen() && history.CanRedo() && !tool.Dragging() ) {
+	if ( world.IsOpen() && !playing && !tool.Dragging() && history.CanRedo() ) {
 		AfterEdit( history.Redo( world ) );
 	}
 }
@@ -642,6 +736,7 @@ void idEditorEngineLocal::SetGizmo( int gizmo ) {
 
 void idEditorEngineLocal::GetDocumentState( editorDocumentState_t & state ) const {
 	state.dirty = history.IsDirty();
+	state.playing = playing;
 	state.canUndo = history.CanUndo();
 	state.canRedo = history.CanRedo();
 	state.undoLabel = history.UndoLabel();
@@ -649,7 +744,7 @@ void idEditorEngineLocal::GetDocumentState( editorDocumentState_t & state ) cons
 }
 
 void idEditorEngineLocal::ViewMouseDown( int x, int y, bool ctrl ) {
-	if ( !world.IsOpen() ) {
+	if ( !world.IsOpen() || playing ) {
 		return;
 	}
 	const idVec3 dir = view.RayThroughPixel( x, y );
@@ -709,12 +804,16 @@ bool idEditorEngineLocal::DrawScene() {
 		previewPauseUntil = Sys_Milliseconds() + PREVIEW_ERROR_PAUSE_MSEC;
 	}
 	// a picture takes a frame of its own; with a map open, every other frame at most
-	if ( preview.HasPending() && !( world.IsOpen() && lastWasPreview ) && Sys_Milliseconds() >= previewPauseUntil && preview.Draw() ) {
+	if ( !playing && preview.HasPending() && !( world.IsOpen() && lastWasPreview ) && Sys_Milliseconds() >= previewPauseUntil && preview.Draw() ) {
 		previewFrame = true;
 		lastWasPreview = true;
 		return true;
 	}
 	lastWasPreview = false;
+	if ( playing ) {
+		// between the editor's world and the game's first frame: the engine's black screen
+		return false;
+	}
 	if ( !world.IsOpen() ) {
 		// an empty viewport; left to the engine, it would show the game selection screen
 		renderSystem->SetColor4( EMPTY_VIEW_GREY, EMPTY_VIEW_GREY, EMPTY_VIEW_GREY, 1.0f );
@@ -980,6 +1079,18 @@ CONSOLE_COMMAND_SHIP( editorSetMaterialKey, "changes a key of a material's decla
 	if ( ok && idStr::Icmp( args.Argv( 4 ), "save" ) == 0 ) {
 		editorEngine->RunEdit( [&] { ok = editorEngine->SaveMaterial( args.Argv( 1 ) ); } );
 		common->Printf( "editorSetMaterialKey: %s %s\n", args.Argv( 1 ), ok ? "saved" : "NOT saved" );
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorPlay, "plays the map open in the editor: saves it when it has changes and starts the game on it", nullptr ) {
+	if ( NeedEditor() ) {
+		editorEngine->PlayNow();
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorStop, "ends the game started with editorPlay; the map is edited again", nullptr ) {
+	if ( NeedEditor() ) {
+		editorEngine->StopNow();
 	}
 }
 

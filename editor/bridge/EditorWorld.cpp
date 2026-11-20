@@ -62,23 +62,12 @@ bool idEditorWorld::Open( const char * name ) {
 	if ( !ok ) {
 		common->Warning( "Editor: couldn't read %s", fileName.c_str() );
 	} else {
-		world = renderSystem->AllocRenderWorld();
-		ok = world->InitFromMap( fileName );
-		if ( !ok ) {
-			common->Warning( "Editor: %s has no compiled geometry (.proc)", fileName.c_str() );
-		}
-	}
-
-	if ( ok ) {
-		mapName = cleanName;
 		entities.SetGranularity( 1024 );
 		entities.SetNum( mapFile.GetNumEntities() );
 		for ( int i = 0; i < entities.Num(); i++ ) {
 			MergedSpawnArgs( mapFile.GetEntity( i )->epairs, entities[i].args );
-			ShowEntity( i );
 		}
-		// as the game does after spawning; the frontend also needs the interaction table this makes
-		world->GenerateAllInteractions();
+		ok = BuildWorld( fileName );
 	}
 
 	declManager->EndLevelLoad();
@@ -90,8 +79,51 @@ bool idEditorWorld::Open( const char * name ) {
 		fileSystem->UnloadMapResources( cleanName );
 		return false;
 	}
+	mapName = cleanName;
 	common->Printf( "%d entities, %d msec to open %s\n", entities.Num(), Sys_Milliseconds() - start, cleanName.c_str() );
 	return true;
+}
+
+bool idEditorWorld::BuildWorld( const char * fileName ) {
+	world = renderSystem->AllocRenderWorld();
+	if ( !world->InitFromMap( fileName ) ) {
+		common->Warning( "Editor: %s has no compiled geometry (.proc)", fileName );
+		return false;
+	}
+	for ( int i = 0; i < entities.Num(); i++ ) {
+		ShowEntity( i );
+	}
+	// as the game does after spawning; the frontend also needs the interaction table this makes
+	world->GenerateAllInteractions();
+	return true;
+}
+
+void idEditorWorld::Suspend() {
+	for ( int i = 0; i < entities.Num(); i++ ) {
+		FreeEntity( entities[i] );
+	}
+	if ( world != nullptr ) {
+		renderSystem->FreeRenderWorld( world );
+		world = nullptr;
+	}
+	// the game mounts the map's resource file itself
+	fileSystem->UnloadMapResources( mapName );
+}
+
+bool idEditorWorld::Resume() {
+	assert( IsSuspended() );
+	const int start = Sys_Milliseconds();
+	// the copy of the resource file the game mounted; BeginLevelLoad mounts the editor's
+	fileSystem->UnloadMapResources( mapName );
+	fileSystem->BeginLevelLoad( mapName, nullptr, 0 );
+	renderSystem->BeginLevelLoad();
+	declManager->BeginLevelLoad();
+	const bool ok = BuildWorld( idStr( "maps/" ) + mapName + ".map" );
+	declManager->EndLevelLoad();
+	renderSystem->EndLevelLoad();
+	fileSystem->EndLevelLoad();
+	common->Printf( "%d msec to show %s again\n", Sys_Milliseconds() - start, mapName.c_str() );
+	return ok;
 }
 
 void idEditorWorld::Close() {

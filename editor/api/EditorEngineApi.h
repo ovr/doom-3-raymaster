@@ -21,7 +21,7 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 7;
+constexpr int EDITOR_API_VERSION = 8;
 
 // what the content browser lists
 enum editorAssetKind_t : int {
@@ -49,6 +49,7 @@ enum editorGizmo_t : int {
 // the state of the open map's history, for the Edit menu; the labels are "" when there is no step
 struct editorDocumentState_t {
 	bool				dirty;
+	bool				playing;		// the game runs the map: nothing can be edited
 	bool				canUndo;
 	bool				canRedo;
 	const char *		undoLabel;
@@ -226,6 +227,12 @@ public:
 	virtual void		Undo() = 0;
 	virtual void		Redo() = 0;
 	virtual void		SaveMap() = 0;
+
+	// Play in Editor: saves the open map when it has changes and starts the game on it, in the
+	// viewport. StopPlay(), Shift+Esc or the game's own exit ends it and the map is edited again.
+	// The host hears of both through OnDocumentChanged().
+	virtual void		Play() = 0;
+	virtual void		StopPlay() = 0;
 
 protected:
 						~idEditorEngine() = default;

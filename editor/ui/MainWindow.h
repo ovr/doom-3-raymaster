@@ -60,6 +60,9 @@ private:
 	QDockWidget *		contentDock = nullptr;
 	MaterialEditor *	materialEditor = nullptr;
 	QDockWidget *		materialDock = nullptr;
+	QAction *			playAction = nullptr;
+	QAction *			stopAction = nullptr;
+	bool				wasPlaying = false;
 	bool				closing = false;
 	EngineClient *		client;
 };

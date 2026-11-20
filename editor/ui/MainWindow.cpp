@@ -244,9 +244,18 @@ void MainWindow::CreateMenus() {
 		outputDock->raise();
 		outputLog->FocusCommandLine();
 	} );
-	QAction * const focusAction = viewMenu->addAction( tr( "&Play in Viewport" ) );
-	focusAction->setShortcut( QKeySequence( Qt::Key_F8 ) );
-	connect( focusAction, &QAction::triggered, this, [this] { engine->FocusViewport(); } );
+
+	QMenu * const playMenu = menuBar()->addMenu( tr( "&Play" ) );
+	playAction = playMenu->addAction( tr( "&Play" ) );
+	playAction->setShortcut( QKeySequence( Qt::Key_F5 ) );
+	playAction->setToolTip( tr( "Saves the map when it has changes and starts the game on it, in the viewport (F5)" ) );
+	connect( playAction, &QAction::triggered, this, [this] { engine->Play(); } );
+	stopAction = playMenu->addAction( tr( "&Stop" ) );
+	stopAction->setToolTip( tr( "Ends the game; the map is edited again (Shift+Esc in the game)" ) );
+	connect( stopAction, &QAction::triggered, this, [this] { engine->StopPlay(); } );
+	tools->addSeparator();
+	tools->addAction( playAction );
+	tools->addAction( stopAction );
 
 	QMenu * const helpMenu = menuBar()->addMenu( tr( "&Help" ) );
 	connect( helpMenu->addAction( tr( "&About" ) ), &QAction::triggered, this, &MainWindow::ShowAbout );
@@ -325,10 +334,22 @@ void MainWindow::DocumentChanged() {
 	const QString redoLabel = QString::fromLocal8Bit( state.redoLabel );
 
 	setWindowTitle( map.isEmpty() ? tr( "Doom 3 Editor" ) : tr( "%1%2 - Doom 3 Editor" ).arg( map, state.dirty ? QStringLiteral( "*" ) : QString() ) );
-	saveAction->setEnabled( !map.isEmpty() );
-	undoAction->setEnabled( state.canUndo );
+	saveAction->setEnabled( !map.isEmpty() && !state.playing );
+	playAction->setEnabled( !map.isEmpty() && !state.playing );
+	stopAction->setEnabled( state.playing );
+	// the game has the map: nothing of it can be edited, and the engine has no frame for a picture
+	for ( QDockWidget * const dock : { outlinerDock, inspectorDock, paletteDock, contentDock, materialDock } ) {
+		dock->widget()->setEnabled( !state.playing );
+	}
+	if ( state.playing ) {
+		statusBar()->showMessage( tr( "Playing %1: Shift+Esc stops the game" ).arg( map ) );
+	} else if ( wasPlaying ) {
+		statusBar()->clearMessage();
+	}
+	wasPlaying = state.playing;
+	undoAction->setEnabled( state.canUndo && !state.playing );
 	undoAction->setText( undoLabel.isEmpty() ? tr( "&Undo" ) : tr( "&Undo %1" ).arg( undoLabel ) );
-	redoAction->setEnabled( state.canRedo );
+	redoAction->setEnabled( state.canRedo && !state.playing );
 	redoAction->setText( redoLabel.isEmpty() ? tr( "&Redo" ) : tr( "&Redo %1" ).arg( redoLabel ) );
 }
 

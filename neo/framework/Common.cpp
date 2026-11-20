@@ -251,6 +251,10 @@ void idCommonLocal::ParseCommandLine( int argc, const char * const * argv ) {
 			// Handle Steam bootable invites.
 			session->HandleBootableInvite( _atoi64( argv[ i + 1 ] ) );
 		} else if ( argv[ i ][ 0 ] == '+' ) {
+			// the commands past the limit are dropped; they used to be written behind the array
+			if ( com_numConsoleLines == MAX_CONSOLE_LINES ) {
+				break;
+			}
 			com_numConsoleLines++;
 			com_consoleLines[ com_numConsoleLines-1 ].AppendArg( argv[ i ] + 1 );
 		} else {
@@ -1478,6 +1482,11 @@ void idCommonLocal::LeaveGame() {
 
 
 	Stop( false );
+
+	// a host has no main menu to go back to: it draws its own scene again
+	if ( engineHost != nullptr ) {
+		return;
+	}
 
 	CreateMainMenu();
 

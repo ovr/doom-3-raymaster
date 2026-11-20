@@ -36,6 +36,9 @@ public:
 	// every console print, colour codes removed, on the main thread
 	virtual void		OnPrint( const char * text ) = 0;
 
+	// Shift+Esc in the engine window: the keyboard is the host's again (the editor stops its game)
+	virtual void		OnEscapeToHost() = 0;
+
 	// While no game map runs the host may draw the 3D view of the frame itself (the editor's
 	// world); false leaves the engine's black screen.
 	virtual bool		DrawScene() = 0;

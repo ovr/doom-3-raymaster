@@ -43,7 +43,12 @@ public:
 	// name as in a mapDef: "game/mc_underground"
 	[[nodiscard]] bool	Open( const char * name );
 	void				Close();
-	[[nodiscard]] bool	IsOpen() const { return world != nullptr; }
+	[[nodiscard]] bool	IsOpen() const { return !mapName.IsEmpty(); }
+	// While a game plays the map: the document stays, the render world goes, because the game's
+	// level load purges the models and images it holds. Resume() builds it again from the document.
+	void				Suspend();
+	[[nodiscard]] bool	Resume();
+	[[nodiscard]] bool	IsSuspended() const { return IsOpen() && world == nullptr; }
 	[[nodiscard]] const char *	Name() const { return mapName.c_str(); }
 	// into fs_savepath/maps
 	[[nodiscard]] bool	Save();
@@ -81,6 +86,8 @@ public:
 	void				Draw( const idVec3 & origin, const idMat3 & axis, float fovX, float fovY, int timeMsec );
 
 private:
+	// the render world of the map file, with every entity shown; inside a level load
+	[[nodiscard]] bool	BuildWorld( const char * fileName );
 	// from entities[index].args: adds, updates or frees the model and the light
 	void				ShowEntity( int index );
 	void				FreeEntity( editorMapEntity_t & entity );

@@ -295,6 +295,7 @@ LRESULT CALLBACK MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 			// the way out of a grabbed mouse, back to the host's own widgets
 			if ( engineHost != nullptr && wParam == VK_ESCAPE && ( GetKeyState( VK_SHIFT ) & 0x8000 ) != 0 ) {
 				SetFocus( GetParent( hWnd ) );
+				engineHost->OnEscapeToHost();
 				return 0;
 			}
 			key = ( ( lParam >> 16 ) & 0xFF ) | ( ( ( lParam >> 24 ) & 1 ) << 7 );

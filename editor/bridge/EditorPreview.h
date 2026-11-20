@@ -29,6 +29,12 @@ public:
 
 						~idEditorPreview() { Shutdown(); }
 	void				Shutdown();
+	// Frees the world and keeps the queue: a game's level load purges the models and images it holds.
+	void				Suspend() {
+		const auto kept = queue;
+		Shutdown();
+		queue = kept;
+	}
 
 	void				Request( const job_t & job ) { queue.Append( job ); }
 	void				Cancel() { queue.Clear(); }

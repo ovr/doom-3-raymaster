@@ -40,6 +40,7 @@ public:
 	void				CreateMainMenu() override {}
 	void				Quit() override { exit( 0 ); }
 	bool				IsInitialized() const override { return true; }
+	bool				IsMapSpawned() const override { return false; }
 	void				Frame() override {}
 	void				UpdateScreen( bool ) override {}
 	void				UpdateLevelLoadPacifier() override {}
