@@ -3338,7 +3338,6 @@ cm_model_t *idCollisionModelManagerLocal::LoadRenderModel( const char *fileName 
 	if ( model != NULL ) {
 		return model;
 	}
-	idLib::Printf( "Writing %s\n", generatedFileName.c_str() );
 
 	model = AllocModel();
 	model->name = fileName;
@@ -3421,6 +3420,7 @@ cm_model_t *idCollisionModelManagerLocal::LoadRenderModel( const char *fileName 
 
 	// the collision of a model that was not found is not kept either
 	if ( !renderModel->IsDefaultModel() ) {
+		idLib::Printf( "Writing %s\n", generatedFileName.c_str() );
 		WriteBinaryModel( model, generatedFileName, sourceTimeStamp );
 	}
 
