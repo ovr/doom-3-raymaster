@@ -45,6 +45,7 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 - `lcp_generic.cpp` recompiles `Lcp.cpp` under renamed classes (`idLCP_*_Generic`) with the SSE macros undefined, so the solvers can be compared. Right now both copies are the same code (see SIMD below).
 - `ctest` also runs `renderApiLeaks` (`tools/check-render-api-leaks.ps1`): it fails when a file outside `neo/renderer/OpenGL/`, `win_glimp.cpp` and `win_qgl.cpp` uses an OpenGL name, or a file outside `neo/renderer/D3D12/` and `neo/tests/d3d12_*` a Direct3D 12, DXGI or D3DCompiler name. `precompiled.h` includes neither API's headers, so their types don't compile there either.
 - `ctest` also runs `d3d12Tests` (see Direct3D 12 below).
+- `ctest` also runs `editorModules` (`tools/check-editor-modules.ps1`): it fails when a file of `editor/ui/` includes an engine or bridge header, one of `editor/bridge/` a Qt header, or one of `editor/api/` and `editor/mtr/` either. `renderApiLeaks` scans `editor/` as well.
 - There is no lint step and no other test suite. Game code is checked by running the game and the visual demos (below).
 
 ## Architecture

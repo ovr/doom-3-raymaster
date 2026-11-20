@@ -235,3 +235,7 @@ add_test(NAME d3d12Tests COMMAND d3d12Tests)
 # name outside neo/renderer/D3D12/
 add_test(NAME renderApiLeaks
 	COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/check-render-api-leaks.ps1")
+
+# editorModules: editor/ui/ includes no engine header, editor/bridge/ no Qt header
+add_test(NAME editorModules
+	COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/check-editor-modules.ps1")

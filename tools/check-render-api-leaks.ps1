@@ -4,7 +4,7 @@ Fails when a file uses the names of a graphics API outside the folder of that AP
 
 .DESCRIPTION
 OpenGL belongs to neo/renderer/OpenGL/ and to the WGL part of the platform layer
-(neo/sys/win32/win_glimp.cpp, win_qgl.cpp). Every other .cpp, .h and .inl file under neo/ is
+(neo/sys/win32/win_glimp.cpp, win_qgl.cpp). Every other .cpp, .h and .inl file under neo/ and editor/ is
 shared code: there the script looks, outside comments and string literals, for
 
   - qgl* and qwgl* calls and pointers, and gl*( / wgl*( calls,
@@ -89,9 +89,10 @@ function Test-Allowed( $api, [string] $relative ) {
 
 $latin1 = [System.Text.Encoding]::GetEncoding( 28591 )
 $counts = [ordered] @{}
-$files = Get-ChildItem $neoRoot -Recurse -File | Where-Object { '.cpp', '.h', '.inl' -contains $_.Extension.ToLowerInvariant() }
+# the editor is shared code too: its bridge calls renderSystem and renderBackend only
+$files = Get-ChildItem $neoRoot, ( Join-Path $repoRoot 'editor' ) -Recurse -File | Where-Object { '.cpp', '.h', '.inl' -contains $_.Extension.ToLowerInvariant() }
 foreach ( $file in ( $files | Sort-Object FullName ) ) {
-	$relative = 'neo/' + $file.FullName.Substring( $neoRoot.Length + 1 ).Replace( '\', '/' )
+	$relative = $file.FullName.Substring( $repoRoot.Length + 1 ).Replace( '\', '/' )
 	$checked = @( $apis | Where-Object { -not ( Test-Allowed $_ $relative ) } )
 	if ( $checked.Count -eq 0 ) { continue }
 
