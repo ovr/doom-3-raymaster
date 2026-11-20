@@ -31,6 +31,28 @@ If you have questions concerning this license or the applicable additional terms
 
 const static int NUM_SYSTEM_OPTIONS_OPTIONS = 8;
 
+// The render backends of r_renderApi and how the menu calls them. The game code does not see the
+// backend factory, and the list is short.
+struct renderApiChoice_t {
+	const char *	cvarValue;
+	const char *	label;
+};
+constexpr renderApiChoice_t RENDER_API_CHOICES[] = {
+	{ "d3d12", "Direct3D 12" },
+	{ "opengl", "OpenGL" },
+};
+constexpr int NUM_RENDER_API_CHOICES = sizeof( RENDER_API_CHOICES ) / sizeof( RENDER_API_CHOICES[0] );
+
+[[nodiscard]] static int CurrentRenderApiChoice() {
+	const char * const api = cvarSystem->GetCVarString( "r_renderApi" );
+	for ( int i = 0; i < NUM_RENDER_API_CHOICES; i++ ) {
+		if ( idStr::Icmp( api, RENDER_API_CHOICES[i].cvarValue ) == 0 ) {
+			return i;
+		}
+	}
+	return 0;
+}
+
 extern idCVar r_multiSamples;
 extern idCVar r_motionBlur;
 extern idCVar r_swapInterval;
@@ -185,6 +207,14 @@ void idMenuScreen_Shell_SystemOptions::Initialize( idMenuHandler * data ) {
 	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_VOLUME );
 	control->SetupEvents( 2, options->GetChildren().Num() );
 	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_VOLUME );
+	options->AddChild( control );
+
+	control = new (TAG_SWF) idMenuWidget_ControlButton();
+	control->SetOptionType( OPTION_SLIDER_TEXT );
+	control->SetLabel( "Renderer" );
+	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_RENDERAPI );
+	control->SetupEvents( DEFAULT_REPEAT_TIME, options->GetChildren().Num() );
+	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_RENDERAPI );
 	options->AddChild( control );
 
 	options->AddEventAction( WIDGET_EVENT_SCROLL_DOWN ).Set( new (TAG_SWF) idWidgetActionHandler( options, WIDGET_ACTION_EVENT_SCROLL_DOWN_START_REPEATER, WIDGET_EVENT_SCROLL_DOWN ) );
@@ -423,6 +453,7 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadData
 	originalVolume = s_volume_dB.GetFloat();
 	originalFullscreen = r_fullscreen.GetInteger();
 	originalBorderless = r_borderless.GetBool();
+	originalRenderApi = cvarSystem->GetCVarString( "r_renderApi" );
 
 	LoadModeList();
 }
@@ -448,6 +479,9 @@ idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsRestartRequ
 */
 bool idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsRestartRequired() const {
 	if ( originalAntialias != r_multiSamples.GetInteger() ) {
+		return true;
+	}
+	if ( originalRenderApi.Icmp( cvarSystem->GetCVarString( "r_renderApi" ) ) != 0 ) {
 		return true;
 	}
 	return false;
@@ -571,6 +605,12 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 			s_volume_dB.SetFloat( DB_SILENCE - ( idMath::Sqrt( clamped / 100.0f ) * DB_SILENCE ) );
 			break;
 		}
+		case SYSTEM_FIELD_RENDERAPI: {
+			// only the archived value changes: the backend of this run stays, the next start reads it
+			const int choice = ( ( CurrentRenderApiChoice() + adjustAmount ) % NUM_RENDER_API_CHOICES + NUM_RENDER_API_CHOICES ) % NUM_RENDER_API_CHOICES;
+			cvarSystem->SetCVarString( "r_renderApi", RENDER_API_CHOICES[choice].cvarValue );
+			break;
+		}
 	}
 	cvarSystem->ClearModifiedFlags( CVAR_ARCHIVE );
 }
@@ -641,6 +681,8 @@ idSWFScriptVar idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings
 		case SYSTEM_FIELD_VOLUME: {
 			return 100.0f * Square( 1.0f - ( s_volume_dB.GetFloat() / DB_SILENCE ) );
 		}
+		case SYSTEM_FIELD_RENDERAPI:
+			return RENDER_API_CHOICES[CurrentRenderApiChoice()].label;
 	}
 	return false;
 }
@@ -673,6 +715,9 @@ bool idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsDataCh
 		return true;
 	}
 	if ( originalVolume != s_volume_dB.GetFloat() ) {
+		return true;
+	}
+	if ( originalRenderApi.Icmp( cvarSystem->GetCVarString( "r_renderApi" ) ) != 0 ) {
 		return true;
 	}
 	return false;

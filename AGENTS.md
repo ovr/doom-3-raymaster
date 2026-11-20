@@ -57,7 +57,7 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 **Layout of `neo/`:**
 - `idlib/`: the base library (math, containers, strings, the `idSIMD` processor, the parallel job system).
 - `framework/`: common, cvars, the console, the file system, and the main frame loop (`common_frame.cpp`).
-- `renderer/`: the frontend, the backend interface `RenderBackend.h` (its contract is the comment at its top) and two backends: `OpenGL/` (the default; it converts `base/renderprogs/*.vertex` and `*.pixel` to GLSL, kept in `renderprogs/glsl/`) and `D3D12/` (below).
+- `renderer/`: the frontend, the backend interface `RenderBackend.h` (its contract is the comment at its top) and two backends: `OpenGL/` (it converts `base/renderprogs/*.vertex` and `*.pixel` to GLSL, kept in `renderprogs/glsl/`) and `D3D12/` (below).
 - `d3xp/`: game logic (entities, AI, physics, scripts), compiled into the same exe rather than as a game DLL.
 - `cm/`: the collision model.
 - `aas/`: bot/AI navigation.
@@ -82,7 +82,7 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 
 ## Direct3D 12
 
-- `+set r_renderApi d3d12` runs the renderer on `neo/renderer/D3D12/`; OpenGL stays the default. `r_renderApi` is read once at startup and archived, so `set r_renderApi d3d12` in the console takes effect at the next start. It needs a GPU with feature level 11_0. `d3d12.dll`, `dxgi.dll` and `d3dcompiler_47.dll` are loaded from System32 at its Init, never linked, so an OpenGL run never loads the HLSL compiler.
+- `r_renderApi d3d12` (the default) runs the renderer on `neo/renderer/D3D12/`, `+set r_renderApi opengl` on OpenGL. It is read once at startup and archived, so `set r_renderApi opengl` in the console, or Settings > System > Renderer in the game (which offers the restart), takes effect at the next start. A config written before the default changed still says `opengl`. The player profile does not restore it: it holds every archived cvar and would put an old value back at every game start. It needs a GPU with feature level 11_0. `d3d12.dll`, `dxgi.dll` and `d3dcompiler_47.dll` are loaded from System32 at its Init, never linked, so an OpenGL run never loads the HLSL compiler.
 - The backend emits HLSL from the render program sources `base/renderprogs/*.vertex` and `*.pixel` and compiles it with FXC, so copy `base/renderprogs` into the game install with the exe (`run-vdemos.ps1 -Api d3d12` does).
 - Its caches live in `fs_savepath/base/renderprogs/dxbc`: the DXBC of every shader (`r_d3d12ShaderCache 1`), the PSO keys of earlier runs (`pipelines.journal`, made again when their program is created at Init or a level load) and the driver's pipeline library (`pipelines.bin`, `r_d3d12PipelineLibrary 1`). Delete the folder for a cold start; a stale or broken file is rebuilt on its own.
 - `r_debugContext` (read at Init): 1 = the debug layer, whose messages appear in the log as `d3d12 debug: <SEVERITY> ...` (it needs the Windows optional feature Graphics Tools); 2 = plus GPU-based validation, several times slower (give the demo scripts `-TimeoutScale 6`); 3 = plus DRED, which prints where the GPU stopped when the device is lost.

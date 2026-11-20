@@ -35,7 +35,7 @@ If you have questions concerning this license or the applicable additional terms
 
 idRenderBackend *	renderBackend = nullptr;
 
-idCVar r_renderApi( "r_renderApi", "opengl", CVAR_RENDERER | CVAR_INIT | CVAR_ARCHIVE, "graphics API of the renderer, read once at startup" );
+idCVar r_renderApi( "r_renderApi", "d3d12", CVAR_RENDERER | CVAR_INIT | CVAR_ARCHIVE, "graphics API of the renderer, read once at startup" );
 
 idRenderBackendFactory * idRenderBackendFactory::staticFactories = nullptr;
 
