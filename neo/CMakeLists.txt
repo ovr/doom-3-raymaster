@@ -66,7 +66,7 @@ set_source_files_properties(
 	PROPERTIES SKIP_PRECOMPILE_HEADERS ON
 )
 # renderer/D3D12/ is new code without warnings: /WX in every config, with no build option. Its DLLs are
-# loaded at Init (idD3D12Library), so no d3d12, dxgi, d3dcompiler or dxcompiler import library is linked.
+# loaded at Init (idD3D12Library), so no d3d12, dxgi or dxcompiler import library is linked.
 set_source_files_properties(${D3D12_SOURCES} TARGET_DIRECTORY engine PROPERTIES COMPILE_OPTIONS /WX)
 set_target_properties(engine PROPERTIES FOLDER "neo")
 
@@ -226,7 +226,7 @@ add_test(NAME idlibTests COMMAND idlibTests)
 # d3d12Tests: the ring, the handle table, the format, sampler and pipeline state tables, the uploader, buffer
 # and texture stores, the PSO factory, the debug groups, the GPU timers, the screen copies and the draw recorder on a WARP
 # device (the texture border, decoding, timer, copy and draw tests also on the GPU), DXC and a bindless draw on SM 6.6,
-# and the HLSL emitter and FXC over base/renderprogs against neo/tests/d3d12_golden
+# and base/shaders against GL's reflection in neo/tests/d3d12_golden/renderProgInfo-gl.txt
 #   bin/<config>/d3d12Tests.exe [filter]
 add_executable(d3d12Tests
 	tests/d3d12_tests.cpp
@@ -240,7 +240,6 @@ add_executable(d3d12Tests
 	renderer/D3D12/d3d12_Dxc.cpp
 	renderer/D3D12/d3d12_Formats.cpp
 	renderer/D3D12/d3d12_HlslCompiler.cpp
-	renderer/D3D12/d3d12_HlslEmitter.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
 	renderer/D3D12/d3d12_Memory.cpp
 	renderer/D3D12/d3d12_Output.cpp

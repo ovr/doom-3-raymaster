@@ -6,8 +6,8 @@
 
 #include "d3d12_Local.h"
 
-// d3d12.dll, dxgi.dll and d3dcompiler_47.dll from System32 only, dxcompiler.dll and dxil.dll (which signs the DXIL)
-// from the exe's folder only; resolved by name, loaded only for r_renderApi d3d12.
+// d3d12.dll and dxgi.dll from System32 only, dxcompiler.dll and dxil.dll (which signs the DXIL) from the exe's folder
+// only; resolved by name, loaded only for r_renderApi d3d12.
 class idD3D12Library {
 public:
 	[[nodiscard]] static std::expected<idD3D12Library, idStr>	Load();
@@ -17,15 +17,12 @@ public:
 	PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE	serializeRootSignature = nullptr;
 	HRESULT ( WINAPI *				createFactory2 )( UINT flags, REFIID riid, void ** factory ) = nullptr;
 	HRESULT ( WINAPI *				getDxgiDebug )( UINT flags, REFIID riid, void ** debug ) = nullptr;
-	pD3DCompile						compile = nullptr;
-	HRESULT ( WINAPI *				reflect )( LPCVOID code, SIZE_T size, REFIID riid, void ** reflector ) = nullptr;
-	uint64							compilerVersion = 0;	// file version of d3dcompiler_47.dll, in the blob cache key
 	DxcCreateInstanceProc			dxcCreateInstance = nullptr;
 	uint64							dxcVersion = 0;			// file version of dxcompiler.dll
 
 private:
 									idD3D12Library() = default;
-	idD3D12Module					d3d12, dxgi, compiler, dxil, dxc;	// freed last: the context declares the library first
+	idD3D12Module					d3d12, dxgi, dxil, dxc;	// freed last: the context declares the library first
 };
 
 // What the adapter can do, read once in Create.

@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "d3d12_Device.h"
+#include "d3d12_Local.h"
 
 using d3d12Bytecode_t = std::vector<byte>;
 
@@ -17,7 +17,7 @@ struct d3d12SignatureElement_t {
 	D3D_NAME						systemValue = D3D_NAME_UNDEFINED;
 };
 
-// What GL's program queries report, read from one stage's DXBC or DXIL.
+// What GL's program queries report, read from one stage's DXIL.
 struct d3d12StageReflection_t {
 	uint16							samplerMask = 0;	// PS: the bound textures tN
 	uint16							cubeMask = 0;		// PS: those of them that are TextureCube
@@ -45,28 +45,4 @@ private:
 	bool							enabled;
 	const char *					directory;
 	const char *					extension;
-};
-
-// FXC (d3dcompiler_47.dll from System32): vs_5_1 / ps_5_1 with the entry points vsMain and psMain;
-// every compile goes through the cache. r_d3d12DumpHLSL 1 writes each text to renderprogs/hlsl/.
-class idD3D12ShaderCompiler {
-public:
-	// Every config and debug level: debug flags change pixels, and a GBV run must give the same frames.
-	static constexpr UINT			FLAGS = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-
-									idD3D12ShaderCompiler( const idD3D12Library & dlls, bool useCache ) : library( dlls ), cache( useCache, "renderprogs/dxbc", "dxbc" ) {}
-	// name is for the messages and the cache file. Warnings go to the developer console, errors into the result.
-	[[nodiscard]] std::expected<d3d12Bytecode_t, idStr>	Compile( std::string_view hlsl, shaderStageType_t stage, const char * name );
-	[[nodiscard]] d3d12StageReflection_t	Reflect( std::span<const byte> code, shaderStageType_t stage ) const;
-	[[nodiscard]] int				Compiled() const { return compiled; }	// FXC runs
-	[[nodiscard]] int				CacheHits() const { return hits; }
-
-private:
-	// MD5 folded to 64 bits of: the text, profile, entry, FLAGS, compilerVersion, idD3D12HlslEmitter::VERSION.
-	[[nodiscard]] uint64			Hash( std::string_view hlsl, shaderStageType_t stage ) const;
-
-	const idD3D12Library &			library;
-	idD3D12BlobCache				cache;
-	int								compiled = 0;
-	int								hits = 0;
 };

@@ -13,7 +13,7 @@ idCVar r_d3d12Adapter( "r_d3d12Adapter", "", CVAR_RENDERER | CVAR_INIT,
 idCVar r_d3d12CaptureBackBuffer( "r_d3d12CaptureBackBuffer", "0", CVAR_RENDERER | CVAR_BOOL,
 	"1 = ReadOutputPixels reads the back buffer after the present blit instead of the scene target (checks the blit)" );
 idCVar r_d3d12ShaderCache( "r_d3d12ShaderCache", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT,
-	"1 = Direct3D 12 keeps the DXBC of every shader in fs_savepath/renderprogs/dxbc and compiles only a text it has not seen" );
+	"1 = Direct3D 12 keeps the DXIL of every shader in fs_savepath/shaders/cache and compiles only a text it has not seen" );
 idCVar r_d3d12PipelineLibrary( "r_d3d12PipelineLibrary", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT,
 	"1 = Direct3D 12 keeps its PSOs in fs_savepath/renderprogs/dxbc/pipelines.bin, so the next run loads them instead of compiling" );
 idCVar r_d3d12FrameBuffers( "r_d3d12FrameBuffers", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_INIT,
@@ -121,9 +121,8 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	uploader( device, *this, staging, barriers, graveyard ),
 	buffers( device, graveyard, uploader, barriers, FramePlacement( device ) ),
 	textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ),
-	compiler( library, r_d3d12ShaderCache.GetBool() ),
 	hlslCompiler( library, D3D12_GameDataReader(), r_d3d12ShaderCache.GetBool() ),
-	shaders( compiler, hlslCompiler, graveyard ),
+	shaders( hlslCompiler, graveyard ),
 	rootSignature( device, library ),
 	journal( LoadJournal() ),
 	pipelineLibrary( OpenPipelineLibrary( device ) ),
@@ -420,9 +419,8 @@ void idD3D12Context::PrintInfo() const {
 		return idStr( va( "%u.%u.%u.%u", static_cast<unsigned>( version >> 48 ), static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ),
 			static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ), static_cast<unsigned>( version & 0xFFFF ) ) );
 	};
-	common->Printf( "D3D12 shader compilers: dxcompiler.dll %s compiled %d, %d from the cache; d3dcompiler_47.dll %s compiled %d, %d from the cache; "
-		"%d stages, %d programs\n", Version( library.dxcVersion ).c_str(), hlslCompiler.Compiled(), hlslCompiler.CacheHits(),
-		Version( library.compilerVersion ).c_str(), compiler.Compiled(), compiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
+	common->Printf( "D3D12 shader compiler: dxcompiler.dll %s compiled %d, %d from the cache; %d stages, %d programs\n",
+		Version( library.dxcVersion ).c_str(), hlslCompiler.Compiled(), hlslCompiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
 	const idD3D12PipelineFactory::stats_t & made = pipelines.TotalStats();
 	common->Printf( "D3D12 pipelines: %d PSOs, %d warmed from the journal and %d made by draws, %d from the library; %d depth biases; depth bounds %s\n",
 		pipelines.Num(), made.warmed, made.drawn, made.loaded, pipelines.Bias().Num(), device.Features().depthBounds ? "in every PSO" : "unsupported" );

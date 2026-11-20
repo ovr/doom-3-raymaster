@@ -12,7 +12,7 @@
 
 	idRenderBackendD3D12                     the facade; renderBackend points at it
 	 └── std::unique_ptr<idD3D12Context>      Init .. Shutdown; implements idD3D12Submitter
-	      ├── idD3D12Library                  d3d12.dll, dxgi.dll, d3dcompiler_47.dll from System32
+	      ├── idD3D12Library                  d3d12.dll, dxgi.dll from System32; dxcompiler.dll, dxil.dll from the exe's folder
 	      ├── idD3D12Device                   IDXGIFactory6, IDXGIAdapter1, ID3D12Device2, info queues, features
 	      ├── idD3D12LiveObjectReport         the teardown messages, Debug: what is alive once the members below are gone
 	      ├── idD3D12Queue                    ID3D12CommandQueue, ID3D12Fence; Waited() = the last explicit wait
@@ -29,9 +29,8 @@
 	      ├── idD3D12Uploader                 copies through "staging" into the open list, a submit every 16 MB
 	      ├── idD3D12BufferStore              bufferHandle_t → FRAME where r_d3d12FrameBuffers says, STATIC in DEFAULT + a CPU mirror
 	      ├── idD3D12TextureStore             textureHandle_t → a committed texture + SRV, the black fallbacks
-	      ├── idD3D12ShaderCompiler           FXC with constant flags, the DXBC cache in renderprogs/dxbc
 	      ├── idD3D12HlslCompiler             DXC over base/shaders/*.hlsl, the DXIL cache in shaders/cache
-	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → HLSL or emitted stages, their PSOs
+	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → DXIL stages, their PSOs
 	      ├── idD3D12RootSignature            the 5 parameters of every PSO
 	      ├── idD3D12PipelineJournal          every key drawn with, by program name: renderprogs/dxbc/pipelines.journal
 	      ├── optional<idD3D12PipelineLibrary>  ID3D12PipelineLibrary1 over renderprogs/dxbc/pipelines.bin
@@ -124,7 +123,6 @@ public:
 	idD3D12Uploader					uploader;
 	idD3D12BufferStore				buffers;
 	idD3D12TextureStore				textures;
-	idD3D12ShaderCompiler			compiler;
 	idD3D12HlslCompiler				hlslCompiler;
 	idD3D12ShaderLibrary			shaders;
 	idD3D12RootSignature			rootSignature;

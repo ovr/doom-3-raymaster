@@ -280,10 +280,8 @@ std::expected<idD3D12Library, idStr> idD3D12Library::Load() {
 	idD3D12Library library;
 	library.d3d12.reset( LoadLibraryExW( L"d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 ) );
 	library.dxgi.reset( LoadLibraryExW( L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 ) );
-	library.compiler.reset( LoadLibraryExW( L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 ) );
-	if ( !library.d3d12 || !library.dxgi || !library.compiler ) {
-		return std::unexpected( idStr( va( "%s is missing from System32",
-			!library.d3d12 ? "d3d12.dll" : ( !library.dxgi ? "dxgi.dll" : "d3dcompiler_47.dll" ) ) ) );
+	if ( !library.d3d12 || !library.dxgi ) {
+		return std::unexpected( idStr( va( "%s is missing from System32", !library.d3d12 ? "d3d12.dll" : "dxgi.dll" ) ) );
 	}
 
 	const char * missing = nullptr;
@@ -297,15 +295,10 @@ std::expected<idD3D12Library, idStr> idD3D12Library::Load() {
 		missing = "CreateDXGIFactory2";
 	} else if ( !Resolve( library.dxgi.get(), "DXGIGetDebugInterface1", library.getDxgiDebug ) ) {
 		missing = "DXGIGetDebugInterface1";
-	} else if ( !Resolve( library.compiler.get(), "D3DCompile", library.compile ) ) {
-		missing = "D3DCompile";
-	} else if ( !Resolve( library.compiler.get(), "D3DReflect", library.reflect ) ) {
-		missing = "D3DReflect";
 	}
 	if ( missing != nullptr ) {
 		return std::unexpected( idStr( va( "the system DLLs have no %s", missing ) ) );
 	}
-	library.compilerVersion = FileVersion( library.compiler.get() );
 
 	// dxil.dll first: dxcompiler.dll loads it by name and then gets this one, never another on the search path
 	library.dxil.reset( LoadLibraryExW( L"dxil.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR ) );

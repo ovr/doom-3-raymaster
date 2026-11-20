@@ -51,7 +51,7 @@ CONSOLE_COMMAND( d3d12_checkImages, "reads every texture upload recorded under r
 	static_cast<void>( activeContext->CheckTextures() );
 }
 
-CONSOLE_COMMAND( d3d12_compileAll, "emits and compiles every renderprogs/*.vertex and *.pixel for Direct3D 12 and prints the errors; 'd3d12_compileAll v' lists each source", nullptr ) {
+CONSOLE_COMMAND( d3d12_compileAll, "compiles every stage of shaders/*.hlsl for Direct3D 12 and prints the errors; 'd3d12_compileAll v' lists each stage", nullptr ) {
 	if ( activeContext == nullptr ) {
 		common->Printf( "d3d12_compileAll: Direct3D 12 is not running\n" );
 		return;

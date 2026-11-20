@@ -6,17 +6,13 @@
 
 #include "d3d12_HandleTable.h"
 #include "d3d12_HlslCompiler.h"
-#include "d3d12_HlslEmitter.h"
-#include "d3d12_ShaderCompiler.h"
 
 struct d3d12ShaderStage_t {
 	shaderStageType_t				type = shaderStageType_t::VERTEX;
 	idStr							name;				// as shared code names it: "gui.vfp"
 	bool							missing = false;	// the game data lacks it: CreateProgram raises GL's link Error
-	bool							hlsl = false;		// from base/shaders by DXC, else emitted from base/renderprogs for FXC
 	shaderStageInfo_t				info = {};
-	d3d12EmittedStage_t				emitted;			// FXC only
-	d3d12Bytecode_t					code;				// FXC: compiled with its own varyings
+	d3d12Bytecode_t					code;				// the DXIL of base/shaders
 	d3d12StageReflection_t			reflection;
 };
 
@@ -38,23 +34,18 @@ struct d3d12Program_t {
 };
 
 // The device-free halves of CreateStage and CreateProgram, which the tests run on the repo's sources.
-// A stage emitted and compiled with its own varyings; errors are "name: what".
-[[nodiscard]] std::expected<d3d12ShaderStage_t, idStr>	D3D12_BuildStage( idD3D12ShaderCompiler & compiler, shaderStageType_t type, const char * name,
-															const renderProgSource_t & source );
-// A stage of base/shaders.
+// A stage of base/shaders; errors are DXC's or "name: what".
 [[nodiscard]] std::expected<d3d12ShaderStage_t, idStr>	D3D12_BuildHlslStage( idD3D12HlslCompiler & compiler, shaderStageType_t type, const char * name,
 															const d3d12HlslSource_t & source );
-// fragment nullptr: a program without a PS. Emitted stages: the VS is compiled again when the PS reads other
-// varyings. HLSL stages: the PS must read what the VS writes at the same registers. Both stages are of one kind.
-[[nodiscard]] std::expected<d3d12Program_t, idStr>		D3D12_LinkProgram( idD3D12ShaderCompiler & compiler, const d3d12ShaderStage_t & vertex,
-															const d3d12ShaderStage_t * fragment );
+// fragment nullptr: a program without a PS. The PS must read what the VS writes at the same registers.
+[[nodiscard]] std::expected<d3d12Program_t, idStr>		D3D12_LinkProgram( const d3d12ShaderStage_t & vertex, const d3d12ShaderStage_t * fragment );
 
 // shaderHandle_t → d3d12ShaderStage_t, programHandle_t → d3d12Program_t.
 class idD3D12ShaderLibrary {
 public:
-									idD3D12ShaderLibrary( idD3D12ShaderCompiler & fxc, idD3D12HlslCompiler & dxc, idD3D12Graveyard & graves ) :
-										compiler( fxc ), hlslCompiler( dxc ), graveyard( graves ) {}
-	// A stage the game data lacks gets a missing record, as GL does; an emit or compile error returns NONE.
+									idD3D12ShaderLibrary( idD3D12HlslCompiler & dxc, idD3D12Graveyard & graves ) : compiler( dxc ), graveyard( graves ) {}
+	// A stage the game data lacks gets a missing record, as GL does; one without a base/shaders file or with
+	// a compile error returns NONE.
 	[[nodiscard]] shaderHandle_t	CreateStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info );
 	// A missing stage raises idLib::Error with GL's link text; a vertex stage NONE gives NONE.
 	[[nodiscard]] programHandle_t	CreateProgram( shaderHandle_t vertex, shaderHandle_t fragment, const char * name, programInfo_t & info );
@@ -64,7 +55,7 @@ public:
 	void							DestroyProgram( programHandle_t program );	// buries its PSOs
 	[[nodiscard]] d3d12Program_t &	Program( programHandle_t program ) { return programs.Get( program ); }
 	[[nodiscard]] d3d12Program_t *	FindProgram( programHandle_t program ) { return programs.Find( program ); }
-	// d3d12_compileAll: every renderprogs/*.vertex|.pixel and shaders/*.hlsl, the errors printed; returns their number.
+	// d3d12_compileAll: every stage of shaders/*.hlsl, the errors printed; returns their number.
 	int								CompileAll( bool verbose );
 	void							DestroyAll();
 	[[nodiscard]] int				NumStages() const { return stages.Num(); }
@@ -74,8 +65,7 @@ private:
 	[[nodiscard]] uint16			NewDense();
 	void							FreeDense( uint16 dense );
 
-	idD3D12ShaderCompiler &			compiler;
-	idD3D12HlslCompiler &			hlslCompiler;
+	idD3D12HlslCompiler &			compiler;
 	idD3D12Graveyard &				graveyard;
 	idD3D12HandleTable<d3d12ShaderStage_t, shaderHandle_t>	stages;
 	idD3D12HandleTable<d3d12Program_t, programHandle_t>		programs;

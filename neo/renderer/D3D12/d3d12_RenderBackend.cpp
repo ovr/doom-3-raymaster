@@ -49,7 +49,7 @@ void idRenderBackendD3D12::Shutdown() {
 	if ( context ) {
 		const idD3D12PipelineFactory::stats_t & made = context->pipelines.TotalStats();
 		common->Printf( "d3d12 shaders: compiled %d, %d from the cache; PSOs: %d warmed from the journal in %.1f ms, %d made by draws in %.1f ms, "
-			"%d of both from the library\n", context->compiler.Compiled(), context->compiler.CacheHits(), made.warmed,
+			"%d of both from the library\n", context->hlslCompiler.Compiled(), context->hlslCompiler.CacheHits(), made.warmed,
 			static_cast<double>( made.warmMicroseconds ) / 1000.0, made.drawn, static_cast<double>( made.drawnMicroseconds ) / 1000.0, made.loaded );
 		D3D12_SetActiveContext( nullptr );
 		context.reset();

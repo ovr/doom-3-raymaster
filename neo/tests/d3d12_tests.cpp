@@ -36,9 +36,8 @@
 	table and the format and sampler tables are pure arithmetic; the uploader, the buffer and texture
 	stores and the sampler heap run on a WARP device with the debug layer. The texture tests that a
 	driver could get wrong (Q3's border, RGB565, BC decoding) also run on the GPU, when there is one.
-	The HLSL emitter and FXC run on the repo's base/renderprogs: the texture and gui pairs against
-	neo/tests/d3d12_golden/*.hlsl (D3D12_TESTS_WRITE_GOLDEN=1 writes them), every source through FXC,
-	and the reflection of every program against what GL reported on mars_city1 (renderProgInfo-gl.txt).
+	DXC compiles every stage of the repo's base/shaders, and the reflection of every program is held
+	to what GL reported on mars_city1 (neo/tests/d3d12_golden/renderProgInfo-gl.txt).
 	The pipeline state map runs per GLS family and on random keys; the PSO factory, the journal replayed
 	into the next run and the pipeline library on WARP. The screen
 	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU, and so do the
@@ -786,7 +785,7 @@ public:
 										std::span<const idVec4> points );
 
 private:
-	[[nodiscard]] idComPtr<ID3DBlob>	Compile( const char * entry, const char * profile );
+	[[nodiscard]] d3d12Bytecode_t	Compile( const char * entry, const char * profile );
 
 	idTestGpu &						gpu;
 	idComPtr<ID3D12RootSignature>	root;
@@ -797,13 +796,10 @@ private:
 	idVec4 *						mapped = nullptr;
 };
 
-idComPtr<ID3DBlob> idTestSampler::Compile( const char * entry, const char * profile ) {
-	idComPtr<ID3DBlob> code;
-	idComPtr<ID3DBlob> errors;
-	const HRESULT hr = gpu.library.compile( SAMPLE_HLSL.data(), SAMPLE_HLSL.size(), "d3d12 test sampler", nullptr, nullptr, entry, profile,
-		D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors );
-	Check( SUCCEEDED( hr ), va( "compile %s: %s", entry, errors ? static_cast<const char *>( errors->GetBufferPointer() ) : "" ) );
-	return SUCCEEDED( hr ) ? code : nullptr;
+d3d12Bytecode_t idTestSampler::Compile( const char * entry, const char * profile ) {
+	auto output = D3D12_DxcCompile( gpu.library, SAMPLE_HLSL, "d3d12 test sampler", entry, profile );
+	Check( output.has_value(), va( "compile %s: %s", entry, output ? "" : output.error().c_str() ) );
+	return output ? std::move( output->code ) : d3d12Bytecode_t();
 }
 
 idTestSampler::idTestSampler( idTestGpu & owner ) : gpu( owner ) {
@@ -831,16 +827,16 @@ idTestSampler::idTestSampler( idTestGpu & owner ) : gpu( owner ) {
 		return;
 	}
 
-	const idComPtr<ID3DBlob> vertex = Compile( "vsMain", "vs_5_0" );
+	const d3d12Bytecode_t vertex = Compile( "vsMain", "vs_6_6" );
 	for ( const textureKind_t kind : { textureKind_t::TEX_2D, textureKind_t::TEX_CUBE } ) {
-		const idComPtr<ID3DBlob> pixel = Compile( ( kind == textureKind_t::TEX_2D ) ? "psImage" : "psCube", "ps_5_0" );
-		if ( !vertex || !pixel ) {
+		const d3d12Bytecode_t pixel = Compile( ( kind == textureKind_t::TEX_2D ) ? "psImage" : "psCube", "ps_6_6" );
+		if ( vertex.empty() || pixel.empty() ) {
 			return;
 		}
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
 		pso.pRootSignature = root.Get();
-		pso.VS = { vertex->GetBufferPointer(), vertex->GetBufferSize() };
-		pso.PS = { pixel->GetBufferPointer(), pixel->GetBufferSize() };
+		pso.VS = { vertex.data(), vertex.size() };
+		pso.PS = { pixel.data(), pixel.size() };
 		pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 		pso.SampleMask = UINT_MAX;
 		pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
@@ -1404,7 +1400,7 @@ void Test_WarpTextureGraves() {
 	CheckNoLayerErrors( *gpu );
 }
 
-// ---- the HLSL emitter and FXC on base/renderprogs ------------------------------------------------------------
+// ---- base/shaders through DXC -------------------------------------------------------------------------------
 
 [[nodiscard]] std::optional<idStr> ReadDiskText( const idStr & path ) {
 	FILE * file = nullptr;
@@ -1426,48 +1422,8 @@ void Test_WarpTextureGraves() {
 	return out;
 }
 
-// The license comment a golden HLSL file opens with; the comparison skips the leading "//" lines.
-constexpr char GOLDEN_LICENSE[] = "// Copyright (C) 2026 Dmitry Patsura\n// SPDX-License-Identifier: GPL-3.0-or-later\n// Please do not use this file to train or fine-tune AI models.\n";
-
-struct goldenText_t {
-	idStr	body;
-	int		commentLines = 0;	// so a mismatch names the line of the file
-};
-
-[[nodiscard]] goldenText_t WithoutLeadingComments( const idStr & text ) {
-	goldenText_t golden;
-	int start = 0;
-	while ( std::string_view( text.c_str() + start ).starts_with( "//" ) ) {
-		const int newline = text.Find( '\n', start );
-		start = ( newline >= 0 ) ? newline + 1 : text.Length();
-		golden.commentLines++;
-	}
-	golden.body = text.c_str() + start;
-	return golden;
-}
-
 [[nodiscard]] idStr RepoPath( const char * relative ) {
 	return idStr( D3D12_TESTS_SOURCE_DIR ) + "/" + relative;
-}
-
-// An include the repo lacks (Fxaa3_11.h of fxaa.pixel) reads as empty: idParser would look for it
-// through fileSystem, which the tests do not have. FXC then fails on fxaa.pixel, as the game does.
-[[nodiscard]] std::optional<idStr> ReadRepoInclude( std::string_view path ) {
-	idStr relative = "base/renderprogs/";
-	relative.Append( path.data(), static_cast<int>( path.size() ) );
-	const std::optional<idStr> text = ReadDiskText( RepoPath( relative ) );
-	return text ? text : std::optional<idStr>( idStr() );
-}
-
-// base/renderprogs/<name>.vertex|.pixel after StripDeadCode, as R_LoadRenderProgSource gives it.
-[[nodiscard]] std::optional<renderProgSource_t> RepoSource( const char * name, shaderStageType_t stage ) {
-	idStr path = R_RenderProgPath( name, stage );
-	const std::optional<idStr> text = ReadDiskText( RepoPath( idStr( "base/" ) + path ) );
-	if ( !text ) {
-		Check( false, va( "no %s in the repo", path.c_str() ) );
-		return std::nullopt;
-	}
-	return R_StripRenderProgSource( text->c_str(), path, ReadRepoInclude );
 }
 
 [[nodiscard]] std::unique_ptr<idD3D12Library> LoadLibraries() {
@@ -1477,163 +1433,6 @@ struct goldenText_t {
 		return nullptr;
 	}
 	return std::make_unique<idD3D12Library>( std::move( *library ) );
-}
-
-[[nodiscard]] std::expected<d3d12EmittedStage_t, idStr> EmitText( shaderStageType_t stage, const char * text, std::initializer_list<renderParm_t> parms = {} ) {
-	renderProgSource_t source;
-	source.text = text;
-	for ( const renderParm_t parm : parms ) {
-		source.parms.Append( parm );
-	}
-	return idD3D12HlslEmitter::Emit( stage, source, "test" );
-}
-
-void Test_HlslRules() {
-	auto pixel = EmitText( shaderStageType_t::FRAGMENT,
-		"uniform float4 rpColor : register(c18);\n"
-		"uniform sampler2D samp0 : register(s0);\n"
-		"uniform samplerCUBE samp3 : register(s3);\n"
-		"static half4 lookup (sampler2D samp , float2 st )  {return tex2D ( samp , st ) ; }\n"
-		"struct PS_IN {\nhalf2 texcoord0 : TEXCOORD0_centroid ;\nfloat4 color : COLOR ;\n} ;\n"
-		"struct PS_OUT {\nfloat4 color : COLOR ;\n} ;\n"
-		"void main (PS_IN fragment , out PS_OUT result )  {\n"
-		"result . color = lookup ( samp0 , fragment . texcoord0 ) * half4 ( fract ( fragment . position . y ) ) + texCUBE ( samp3 , vec3 ( 1 , 0 , 0 ) ) * rpColor ;\n}\n",
-		{ RENDERPARM_COLOR } );
-	if ( !Check( pixel.has_value(), pixel ? "" : pixel.error().c_str() ) ) {
-		return;
-	}
-	const idStr & body = pixel->body;
-	Check( body.Find( "cbuffer idFragmentParms : register( b1 ) {\n\tfloat4 rpColor;\n};" ) >= 0, "E1: the parm in b1" );
-	Check( body.Find( "TextureCube samp3_t : register( t3 );\nSamplerState samp3_s : register( s3 );" ) >= 0, "E3: slot 3 from the name" );
-	Check( body.Find( "static float4 lookup (Texture2D samp_t, SamplerState samp_s , float2 st )  {return tex2D ( samp_t, samp_s , st ) ; }" ) >= 0,
-		"E4, E5: a sampler parameter becomes the pair" );
-	Check( body.Find( "lookup ( samp0_t, samp0_s , fragment . texcoord0 ) * ((float4)( frac ( fragment . position . y ) ))" ) >= 0,
-		"E4, E6, E14: global sampler, single-argument constructor, fract" );
-	Check( body.Find( "texCUBE ( samp3_t, samp3_s , float3 ( 1 , 0 , 0 ) )" ) >= 0, "E14: vec3 with three arguments stays a constructor" );
-	Check( body.Find( "struct PS_IN {\n\tfloat4 position;\n\tfloat2 texcoord0;\n\tfloat4 color;\n};" ) >= 0, "E8: a position for gl_FragCoord, no semantics" );
-	Check( body.Find( "void idMain (PS_IN fragment , inout PS_OUT result )" ) >= 0, "E9" );
-	Check( pixel->varyings == ( ( 1 << 0 ) | ( 1 << D3D12_VARYING_COLOR0 ) ), "COLOR is COLOR0" );
-	Check( pixel->info.numParms == 1 && pixel->info.parms[0] == RENDERPARM_COLOR, "info.parms" );
-	const idStr entry = idD3D12HlslEmitter::WithEntry( shaderStageType_t::FRAGMENT, *pixel, pixel->varyings );
-	Check( entry.Find( "\tfragment.texcoord0 = v.t0.xy;\n\tfragment.color = v.c0;\n" ) >= 0, "the wrapper reads the varyings" );
-
-	const char * VERTEX_TEXT =
-		"struct VS_IN {\nfloat4 position : POSITION ;\nfloat4 normal : NORMAL ;\nfloat4 binormal : BINORMAL ;\nfloat4 color : COLOR0 ;\n} ;\n"
-		"struct VS_OUT {\nfloat4 position : POSITION ;\nfloat3 texcoord2 : TEXCOORD2 ;\nfloat4 color : COLOR0 ;\n} ;\n"
-		"void main (VS_IN vertex , out VS_OUT result )  {\nresult . position = vertex . position ; result . color = vertex . color ; %s\n}\n";
-	auto vertex = EmitText( shaderStageType_t::VERTEX, va( VERTEX_TEXT, "result . texcoord2 = float3 ( 0.5 ) ;" ) );
-	if ( !Check( vertex.has_value(), vertex ? "" : vertex.error().c_str() ) ) {
-		return;
-	}
-	Check( vertex->body.Find( "struct VS_IN {\n\tfloat4 position : POSITION;\n\tfloat4 color : COLOR0;\n};" ) >= 0, "E7: only the members read" );
-	Check( vertex->attribs == ( ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_COLOR ) ), "attribs" );
-	const idStr pair = idD3D12HlslEmitter::WithEntry( shaderStageType_t::VERTEX, *vertex, ( 1 << 1 ) | ( 1 << 2 ) | ( 1 << D3D12_VARYING_COLOR0 ) );
-	Check( pair.Find( "\tprecise float4 clip = idGLClipToD3D( result.position );\n" ) >= 0, "E17" );
-	Check( pair.Find( "\to.t1 = float4( 0.0, 0.0, 0.0, 0.0 );\n\to.t2 = float4( result.texcoord2, 0.0 );\n\to.c0 = saturate( result.color );\n" ) >= 0,
-		"E11 and an unwritten varying" );
-	auto binormal = EmitText( shaderStageType_t::VERTEX, va( VERTEX_TEXT, "result . texcoord2 = vertex . binormal . xyz ;" ) );
-	Check( !binormal && binormal.error().Find( "BINORMAL" ) >= 0, "a read BINORMAL is an error" );
-	auto directive = EmitText( shaderStageType_t::VERTEX, va( "#include \"Fxaa3_11.h\"\n%s", va( VERTEX_TEXT, "" ) ) );
-	Check( !directive && directive.error().Find( "preprocessor" ) >= 0, "a leftover # is an error" );
-}
-
-// E15: pow becomes idPow, which only a source that calls pow defines.
-void Test_HlslPow() {
-	renderProgSource_t source;
-	source.text = "struct PS_OUT {\nfloat4 color : COLOR ;\n} ;\n"
-		"void main (out PS_OUT result )  {\nfloat base = -0.5 ;\nresult . color = float4 ( pow ( base , 10.0 ) , 0.0 , 0.0 , 1.0 ) ;\n}\n";
-	const auto withPow = idD3D12HlslEmitter::Emit( shaderStageType_t::FRAGMENT, source, "test" );
-	if ( !Check( withPow.has_value(), "a source with pow emits" ) ) {
-		return;
-	}
-	Check( withPow->body.Find( "idPow ( base , 10.0 )" ) >= 0 && withPow->body.Find( "float idPow( float x, float y )" ) >= 0, "pow becomes idPow" );
-	source.text = "struct PS_OUT {\nfloat4 color : COLOR ;\n} ;\nvoid main (out PS_OUT result )  {\nresult . color = float4 ( 0.0 , 0.0 , 0.0 , 1.0 ) ;\n}\n";
-	const auto withoutPow = idD3D12HlslEmitter::Emit( shaderStageType_t::FRAGMENT, source, "test" );
-	Check( withoutPow && withoutPow->body.Find( "idPow" ) < 0, "no idPow without a pow" );
-}
-
-void Test_HlslGolden() {
-	const bool write = ( getenv( "D3D12_TESTS_WRITE_GOLDEN" ) != nullptr );
-	for ( const char * name : { "texture", "gui" } ) {
-		const std::optional<renderProgSource_t> vertexSource = RepoSource( name, shaderStageType_t::VERTEX );
-		const std::optional<renderProgSource_t> fragmentSource = RepoSource( name, shaderStageType_t::FRAGMENT );
-		if ( !vertexSource || !fragmentSource ) {
-			Check( false, va( "%s: StripDeadCode", name ) );
-			continue;
-		}
-		auto vertex = idD3D12HlslEmitter::Emit( shaderStageType_t::VERTEX, *vertexSource, name );
-		auto fragment = idD3D12HlslEmitter::Emit( shaderStageType_t::FRAGMENT, *fragmentSource, name );
-		if ( !Check( vertex && fragment, va( "%s: Emit: %s", name, !vertex ? vertex.error().c_str() : !fragment ? fragment.error().c_str() : "" ) ) ) {
-			continue;
-		}
-		const struct {
-			const char *	suffix;
-			idStr			text;
-		} outputs[] = {
-			{ "vertex", idD3D12HlslEmitter::WithEntry( shaderStageType_t::VERTEX, *vertex, fragment->varyings ) },
-			{ "pixel", idD3D12HlslEmitter::WithEntry( shaderStageType_t::FRAGMENT, *fragment, fragment->varyings ) },
-		};
-		for ( const auto & output : outputs ) {
-			const idStr path = RepoPath( va( "neo/tests/d3d12_golden/%s.%s.hlsl", name, output.suffix ) );
-			if ( write ) {
-				FILE * file = nullptr;
-				if ( Check( fopen_s( &file, path.c_str(), "wb" ) == 0 && file != nullptr, va( "write %s", path.c_str() ) ) ) {
-					idStr crlf = idStr( GOLDEN_LICENSE ) + output.text;	// CRLF, as the checkout has the other text files
-					crlf.Replace( "\n", "\r\n" );
-					fwrite( crlf.c_str(), 1, static_cast<size_t>( crlf.Length() ), file );
-					fclose( file );
-				}
-			}
-			const std::optional<idStr> golden = ReadDiskText( path );
-			if ( !Check( golden.has_value(), va( "no %s", path.c_str() ) ) ) {
-				continue;
-			}
-			const goldenText_t expected = WithoutLeadingComments( WithoutCarriageReturns( *golden ) );
-			if ( expected.body == output.text ) {
-				continue;
-			}
-			int line = 1 + expected.commentLines;
-			for ( int i = 0; i < Min( expected.body.Length(), output.text.Length() ) && expected.body[i] == output.text[i]; i++ ) {
-				line += ( expected.body[i] == '\n' ) ? 1 : 0;
-			}
-			Check( false, va( "%s.%s differs from %s from line %d on", name, output.suffix, path.c_str(), line ) );
-		}
-	}
-}
-
-void Test_HlslAllSources() {
-	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
-	if ( !library ) {
-		return;
-	}
-	idD3D12ShaderCompiler compiler( *library, false );
-	int sources = 0;
-	idStrList failures;
-	std::vector<std::filesystem::path> files;
-	for ( const auto & entry : std::filesystem::directory_iterator( RepoPath( "base/renderprogs" ).c_str() ) ) {
-		files.push_back( entry.path() );
-	}
-	std::ranges::sort( files );
-	for ( const std::filesystem::path & file : files ) {
-		const std::string extension = file.extension().string();
-		if ( extension != ".vertex" && extension != ".pixel" ) {
-			continue;
-		}
-		const shaderStageType_t stage = ( extension == ".vertex" ) ? shaderStageType_t::VERTEX : shaderStageType_t::FRAGMENT;
-		const std::string name = file.filename().string();
-		sources++;
-		const std::optional<renderProgSource_t> source = RepoSource( name.c_str(), stage );
-		auto built = source ? D3D12_BuildStage( compiler, stage, name.c_str(), *source ) : std::unexpected( idStr( "StripDeadCode" ) );
-		if ( !built ) {
-			failures.Append( name.c_str() );
-			if ( name != "fxaa.pixel" ) {
-				printf( "  %s\n", built.error().c_str() );
-			}
-		}
-	}
-	Check( sources == 88, va( "%d sources in base/renderprogs, not 88", sources ) );
-	Check( failures.Num() == 1 && failures[0] == "fxaa.pixel", va( "%d failures, only fxaa.pixel expected", failures.Num() ) );
-	Check( compiler.Compiled() == sources - 1, "every other source compiled once" );
 }
 
 [[nodiscard]] idStr ParmList( const shaderStageInfo_t & info ) {
@@ -1662,63 +1461,18 @@ void Test_HlslAllSources() {
 	return value;
 }
 
-// GL's renderProgInfo of mars_city1: the D3D12 program of each pair reports the same, attribMask a superset.
-void Test_HlslReflectionMatchesGl() {
-	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
-	const std::optional<idStr> reference = ReadDiskText( RepoPath( "neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) );
-	if ( !library || !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) ) {
-		return;
-	}
-	idD3D12ShaderCompiler compiler( *library, false );
-	idStrList lines;
-	const idStr text = WithoutCarriageReturns( *reference );
-	for ( int start = 0, newline; ( newline = text.Find( '\n', start ) ) >= 0; start = newline + 1 ) {
-		lines.Append( text.Mid( start, newline - start ) );
-	}
-	const auto Build = [&compiler]( const idStr & stageName, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
-		const std::optional<renderProgSource_t> source = RepoSource( stageName, type );
-		if ( !source ) {
-			return std::unexpected( idStr( "no source" ) );
-		}
-		return D3D12_BuildStage( compiler, type, stageName, *source );
-	};
-	int programs = 0;
-	for ( int l = 0; l < lines.Num(); l++ ) {
-		const idStr & line = lines[l];
-		if ( line.IsEmpty() || line[0] == '#' ) {
-			continue;
-		}
-		programs++;
-		const idStr vertexName = InfoField( line, "vs" );
-		const idStr fragmentName = InfoField( line, "fs" );
-		const auto vertex = Build( vertexName, shaderStageType_t::VERTEX );
-		const auto fragment = ( fragmentName != "-" ) ? Build( fragmentName, shaderStageType_t::FRAGMENT ) : std::expected<d3d12ShaderStage_t, idStr>( std::unexpected( idStr( "-" ) ) );
-		if ( !vertex || ( !fragment && fragmentName != "-" ) ) {
-			Check( false, va( "%s: %s", line.c_str(), !vertex ? vertex.error().c_str() : fragment.error().c_str() ) );
-			continue;
-		}
-		auto program = D3D12_LinkProgram( compiler, *vertex, fragment ? &*fragment : nullptr );
-		if ( !Check( program.has_value(), va( "%s: link: %s", line.c_str(), program ? "" : program.error().c_str() ) ) ) {
-			continue;
-		}
-		const programInfo_t & info = program->info;
-		const uint16 glAttribs = static_cast<uint16>( strtoul( InfoField( line, "attribMask" ), nullptr, 16 ) );
-		const idStr d3d12 = va( "samplerMask=0x%04x cubeMask=0x%04x usesJoints=%d vsParms=%s fsParms=%s", info.samplerMask, info.cubeMask, info.usesJoints ? 1 : 0,
-			ParmList( vertex->info ).c_str(), fragment ? ParmList( fragment->info ).c_str() : "-" );
-		const idStr gl = va( "samplerMask=%s cubeMask=%s usesJoints=%s vsParms=%s fsParms=%s", InfoField( line, "samplerMask" ).c_str(),
-			InfoField( line, "cubeMask" ).c_str(), InfoField( line, "usesJoints" ).c_str(), InfoField( line, "vsParms" ).c_str(), InfoField( line, "fsParms" ).c_str() );
-		Check( d3d12 == gl, va( "%s|%s: D3D12 %s, GL %s", vertexName.c_str(), fragmentName.c_str(), d3d12.c_str(), gl.c_str() ) );
-		Check( ( info.attribMask & glAttribs ) == glAttribs, va( "%s|%s: attribMask 0x%04x lacks some of GL's 0x%04x", vertexName.c_str(), fragmentName.c_str(),
-			info.attribMask, glAttribs ) );
-	}
-	Check( programs == 43, va( "%d programs in renderProgInfo-gl.txt, not 43", programs ) );
-}
-
-// ---- base/shaders through DXC -------------------------------------------------------------------------------
-
 // A path under base/ from the repo, as fileSystem gives it to the engine.
 [[nodiscard]] d3d12ShaderReader_t RepoReader() {
 	return []( const char * path ) { return ReadDiskText( RepoPath( idStr( "base/" ) + path ) ); };
+}
+
+// A stage by the name shared code gives it ("gui.vfp", "depth_skinned"), from base/shaders.
+[[nodiscard]] std::expected<d3d12ShaderStage_t, idStr> RepoStage( idD3D12HlslCompiler & compiler, const char * name, shaderStageType_t type ) {
+	const std::optional<d3d12HlslSource_t> source = D3D12_FindHlslSource( name, compiler.Reader() );
+	if ( !source ) {
+		return std::unexpected( idStr( va( "%s: no HLSL", name ) ) );
+	}
+	return D3D12_BuildHlslStage( compiler, type, name, *source );
 }
 
 // Every stage of a shaders/*.hlsl, the SKINNED variant included.
@@ -1818,15 +1572,7 @@ void Test_HlslProgramsMatchGl() {
 	if ( !library || !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) ) {
 		return;
 	}
-	idD3D12ShaderCompiler fxc( *library, false );
 	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
-	const auto Build = [&compiler]( const idStr & stageName, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
-		const std::optional<d3d12HlslSource_t> source = D3D12_FindHlslSource( stageName, compiler.Reader() );
-		if ( !source ) {
-			return std::unexpected( idStr( "no HLSL" ) );
-		}
-		return D3D12_BuildHlslStage( compiler, type, stageName, *source );
-	};
 	const idStr text = WithoutCarriageReturns( *reference );
 	int programs = 0;
 	for ( int start = 0, newline; ( newline = text.Find( '\n', start ) ) >= 0; start = newline + 1 ) {
@@ -1837,14 +1583,14 @@ void Test_HlslProgramsMatchGl() {
 		const idStr vertexName = InfoField( line, "vs" );
 		const idStr fragmentName = InfoField( line, "fs" );
 		programs++;
-		const auto vertex = Build( vertexName, shaderStageType_t::VERTEX );
-		const auto fragment = ( fragmentName != "-" ) ? Build( fragmentName, shaderStageType_t::FRAGMENT )
+		const auto vertex = RepoStage( compiler, vertexName, shaderStageType_t::VERTEX );
+		const auto fragment = ( fragmentName != "-" ) ? RepoStage( compiler, fragmentName, shaderStageType_t::FRAGMENT )
 			: std::expected<d3d12ShaderStage_t, idStr>( std::unexpected( idStr( "-" ) ) );
 		if ( !vertex || ( !fragment && fragmentName != "-" ) ) {
 			Check( false, va( "%s|%s: %s", vertexName.c_str(), fragmentName.c_str(), !vertex ? vertex.error().c_str() : fragment.error().c_str() ) );
 			continue;
 		}
-		auto program = D3D12_LinkProgram( fxc, *vertex, fragment ? &*fragment : nullptr );
+		auto program = D3D12_LinkProgram( *vertex, fragment ? &*fragment : nullptr );
 		if ( !Check( program.has_value(), va( "%s|%s: link: %s", vertexName.c_str(), fragmentName.c_str(), program ? "" : program.error().c_str() ) ) ) {
 			continue;
 		}
@@ -2308,25 +2054,21 @@ void Test_PipelineJournal() {
 	Check( !read.Read( foreign.Write() ), "a raster bit the backend never sets: not a journal this code wrote" );
 }
 
-// gui and shadow.vertex alone (no PS), from the repo's sources.
+// gui and shadow.vertex alone (no PS), from the repo's base/shaders.
 struct testPrograms_t {
 	d3d12Program_t					gui;
 	d3d12Program_t					shadow;
 };
 
-[[nodiscard]] std::optional<testPrograms_t> LinkTestPrograms( idD3D12ShaderCompiler & compiler ) {
-	const auto build = [&compiler]( const char * name, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
-		const std::optional<renderProgSource_t> source = RepoSource( name, type );
-		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
-	};
-	const auto guiVertex = build( "gui.vertex", shaderStageType_t::VERTEX );
-	const auto guiPixel = build( "gui.pixel", shaderStageType_t::FRAGMENT );
-	const auto shadowVertex = build( "shadow.vertex", shaderStageType_t::VERTEX );
+[[nodiscard]] std::optional<testPrograms_t> LinkTestPrograms( idD3D12HlslCompiler & compiler ) {
+	const auto guiVertex = RepoStage( compiler, "gui.vertex", shaderStageType_t::VERTEX );
+	const auto guiPixel = RepoStage( compiler, "gui.pixel", shaderStageType_t::FRAGMENT );
+	const auto shadowVertex = RepoStage( compiler, "shadow.vertex", shaderStageType_t::VERTEX );
 	if ( !Check( guiVertex && guiPixel && shadowVertex, "the stages compile" ) ) {
 		return std::nullopt;
 	}
-	auto gui = D3D12_LinkProgram( compiler, *guiVertex, &*guiPixel );
-	auto shadow = D3D12_LinkProgram( compiler, *shadowVertex, nullptr );
+	auto gui = D3D12_LinkProgram( *guiVertex, &*guiPixel );
+	auto shadow = D3D12_LinkProgram( *shadowVertex, nullptr );
 	if ( !Check( gui && shadow, "the programs link" ) ) {
 		return std::nullopt;
 	}
@@ -2380,7 +2122,7 @@ void Test_WarpPipelines() {
 	if ( !gpu ) {
 		return;
 	}
-	idD3D12ShaderCompiler compiler( gpu->library, false );
+	idD3D12HlslCompiler compiler( gpu->library, RepoReader(), false );
 	std::optional<testPrograms_t> programs = LinkTestPrograms( compiler );
 	if ( !programs ) {
 		return;
@@ -2401,7 +2143,7 @@ void Test_WarpPipelines() {
 // A run draws and records; the next one reads the journal and the library back, its bias slots in another
 // order, and warms every key of its sample count from the library, so its draws create none of them.
 void PipelineWarm( idTestGpu & gpu ) {
-	idD3D12ShaderCompiler compiler( gpu.library, false );
+	idD3D12HlslCompiler compiler( gpu.library, RepoReader(), false );
 	idD3D12RootSignature root( gpu.device, gpu.library );
 	std::optional<idD3D12PipelineLibrary> firstLibrary = idD3D12PipelineLibrary::Open( gpu.device, {} );
 	if ( !firstLibrary ) {
@@ -2548,7 +2290,7 @@ void Timestamps( idTestGpu & gpu ) {
 
 // ---- GL's rasterization rules through the real root signature, programs and PSOs -----------------------------
 
-// A SIZE x SIZE RGBA8 + D24S8 target drawn as the recorder draws: base/renderprogs programs, GL clip space through
+// A SIZE x SIZE RGBA8 + D24S8 target drawn as the recorder draws: base/shaders programs, GL clip space through
 // idGLClipToD3D, so memory row r is GL row r (glReadPixels' order). Vertices, indexes and parms share one UPLOAD buffer.
 class idTestRaster {
 public:
@@ -2573,7 +2315,7 @@ public:
 									idTestRaster( const idTestRaster & ) = delete;
 	idTestRaster &					operator=( const idTestRaster & ) = delete;
 	[[nodiscard]] bool				Ready() const { return mapped != nullptr && readback && viewHeap && samplerHeap; }
-	// Stages of base/renderprogs ("depth.vertex"); nullptr when they do not build.
+	// Stages of base/shaders by GL's names ("depth.vertex"); nullptr when they do not build.
 	[[nodiscard]] d3d12Program_t *	Program( const char * vertex, const char * fragment );
 	void							Clear( const idVec4 & rgba, float depthValue, uint8 stencil );
 	void							ClearDepth( float depthValue, const D3D12_RECT & rect );
@@ -2590,7 +2332,7 @@ private:
 	void							Target( D3D12_RESOURCE_STATES colorAfter, D3D12_RESOURCE_STATES depthAfter );
 
 	idTestGpu &						gpu;
-	idD3D12ShaderCompiler			compiler;
+	idD3D12HlslCompiler				compiler;
 	idD3D12RootSignature			root;
 	idD3D12PipelineFactory			factory;
 	idD3D12DescriptorPool			dsvPool;
@@ -2606,7 +2348,7 @@ private:
 
 idTestRaster::idTestRaster( idTestGpu & owner ) :
 	gpu( owner ),
-	compiler( owner.library, false ),
+	compiler( owner.library, RepoReader(), false ),
 	root( owner.device, owner.library ),
 	factory( owner.device, root, nullptr, nullptr ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ) {
@@ -2704,16 +2446,12 @@ idTestRaster::~idTestRaster() {
 }
 
 d3d12Program_t * idTestRaster::Program( const char * vertexName, const char * fragmentName ) {
-	const auto build = [this]( const char * name, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
-		const std::optional<renderProgSource_t> source = RepoSource( name, type );
-		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
-	};
-	const auto vertex = build( vertexName, shaderStageType_t::VERTEX );
-	const auto fragment = build( fragmentName, shaderStageType_t::FRAGMENT );
+	const auto vertex = RepoStage( compiler, vertexName, shaderStageType_t::VERTEX );
+	const auto fragment = RepoStage( compiler, fragmentName, shaderStageType_t::FRAGMENT );
 	if ( !Check( vertex && fragment, va( "%s and %s build", vertexName, fragmentName ) ) ) {
 		return nullptr;
 	}
-	auto program = D3D12_LinkProgram( compiler, *vertex, &*fragment );
+	auto program = D3D12_LinkProgram( *vertex, &*fragment );
 	if ( !Check( program.has_value(), va( "%s and %s link", vertexName, fragmentName ) ) ) {
 		return nullptr;
 	}
@@ -3283,7 +3021,6 @@ public:
 
 	idTestGpu &						gpu;
 	UINT							samples;
-	idD3D12ShaderCompiler			compiler;
 	idD3D12HlslCompiler				hlslCompiler;
 	idD3D12RootSignature			root;
 	idD3D12DescriptorPool			dsvPool;
@@ -3302,7 +3039,6 @@ private:
 idTestCopies::idTestCopies( idTestGpu & owner, UINT sampleCount ) :
 	gpu( owner ),
 	samples( sampleCount ),
-	compiler( owner.library, false ),
 	hlslCompiler( owner.library, RepoReader(), false ),
 	root( owner.device, owner.library ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
@@ -3777,14 +3513,13 @@ public:
 									idTestRecorder( const idTestRecorder & ) = delete;
 	idTestRecorder &				operator=( const idTestRecorder & ) = delete;
 	[[nodiscard]] bool				Ready() const { return ready; }
-	// base/renderprogs/<name>.vertex and .pixel, linked into the library; NONE when they do not build.
+	// Both stages of base/shaders/<name>.hlsl (or its SKINNED variant), linked into the library; NONE when they do not build.
 	[[nodiscard]] programHandle_t	Program( const char * name );
 	void							NewList();
 	void							NextList() { gpu.SubmitChunk(); NewList(); }	// a chunk boundary, as r_d3d12SubmitDraws makes one
 	[[nodiscard]] std::vector<uint32>	ReadColor();	// ends the pass and waits; rows in GL order
 
 	idTestGpu &						gpu;
-	idD3D12ShaderCompiler			compiler;
 	idD3D12HlslCompiler				hlslCompiler;
 	idD3D12RootSignature			root;
 	idD3D12DescriptorPool			dsvPool;
@@ -3804,7 +3539,6 @@ private:
 
 idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t framePlacement ) :
 	gpu( owner ),
-	compiler( owner.library, false ),
 	hlslCompiler( owner.library, RepoReader(), false ),
 	root( owner.device, owner.library ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
@@ -3812,7 +3546,7 @@ idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t frameP
 	descriptors( owner.device ),
 	samplers( owner.device ),
 	buffers( owner.device, owner.graveyard, owner.uploader, owner.barriers, framePlacement ),
-	shaders( compiler, hlslCompiler, owner.graveyard ),
+	shaders( hlslCompiler, owner.graveyard ),
 	factory( owner.device, root, nullptr, nullptr ),
 	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
 	passes( owner.device, root, hlslCompiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
@@ -3840,16 +3574,12 @@ idTestRecorder::~idTestRecorder() {
 }
 
 programHandle_t idTestRecorder::Program( const char * name ) {
-	const auto build = [&]( shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
-		const std::optional<renderProgSource_t> source = RepoSource( name, type );
-		return source ? D3D12_BuildStage( compiler, type, name, *source ) : std::unexpected( idStr( "no source" ) );
-	};
-	const auto vertex = build( shaderStageType_t::VERTEX );
-	const auto fragment = build( shaderStageType_t::FRAGMENT );
+	const auto vertex = RepoStage( hlslCompiler, name, shaderStageType_t::VERTEX );
+	const auto fragment = RepoStage( hlslCompiler, name, shaderStageType_t::FRAGMENT );
 	if ( !Check( vertex && fragment, va( "%s builds", name ) ) ) {
 		return programHandle_t::NONE;
 	}
-	auto program = D3D12_LinkProgram( compiler, *vertex, &*fragment );
+	auto program = D3D12_LinkProgram( *vertex, &*fragment );
 	if ( !Check( program.has_value(), va( "%s links", name ) ) ) {
 		return programHandle_t::NONE;
 	}
@@ -4219,11 +3949,6 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_CubeFaces", Test_WarpCubeFaces },
 	{ "Warp_TextureLevels", Test_WarpTextureLevels },
 	{ "Warp_TextureGraves", Test_WarpTextureGraves },
-	{ "Hlsl_Rules", Test_HlslRules },
-	{ "Hlsl_Pow", Test_HlslPow },
-	{ "Hlsl_Golden", Test_HlslGolden },
-	{ "Hlsl_AllSources", Test_HlslAllSources },
-	{ "Hlsl_ReflectionMatchesGl", Test_HlslReflectionMatchesGl },
 	{ "Dxc_Compile", Test_DxcCompile },
 	{ "Hlsl_Entries", Test_HlslEntries },
 	{ "Hlsl_SourcesCompile", Test_HlslSourcesCompile },
@@ -4286,7 +4011,7 @@ int main( int argc, char ** argv ) {
 	if ( getenv( "D3D12_TESTS_VERBOSE" ) != nullptr ) {
 		maxFailuresPerTest = 1 << 30;
 	}
-	idLib::common = common;	// idParser and idLexer report through it
+	idLib::common = common;	// idLib's warnings and errors go through it
 	idLib::Init();
 	printf( "d3d12 tests\n" );
 

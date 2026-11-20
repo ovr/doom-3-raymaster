@@ -7,9 +7,10 @@ Runs the visual demos (base/vdemos/*.vdemo) in a retail install and collects the
 
 .DESCRIPTION
 Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir and base/vdemos into the game dir
-(with -Api d3d12 also base/renderprogs, the sources D3D12 compiles), starts the game in a 1280x720
-window with an isolated fs_savepath (the real config in Saved Games is never read or written), runs
-"vdemo <demos> quit" and copies into -OutDir: the frames and vdemo.json of every demo, run.json,
+(with -Api d3d12 also base/shaders, the HLSL that DXC compiles, and base/renderprogs, which GL's stage
+probe reads for D3D12 too), starts the game in a 1280x720 window with an isolated fs_savepath (the
+real config in Saved Games is never read or written), runs "vdemo <demos> quit" and copies into
+-OutDir: the frames and vdemo.json of every demo, run.json,
 qconsole.log, the screenshots the demos took (screenshots/) and modules.txt, every module the game
 had loaded (polled every 5 s).
 
@@ -18,9 +19,10 @@ run.json gets two more fields: "validation", the debug layer messages of qconsol
 "exitCode", the game's own. The game writes "api", the backend that really ran.
 
 -Api opengl|d3d12 sets r_renderApi. -DebugLevel N sets r_debugContext (only when given). The save
-path is wiped every run; -KeepShaderCache keeps its renderprogs/dxbc (the D3D12 shader cache) across
-the wipe. -TimeoutScale N stretches the game's load and stall timeouts (vdemo_timeoutScale) and
--TimeoutMinutes, for slow runs such as GPU-based validation.
+path is wiped every run; -KeepShaderCache keeps its D3D12 caches (shaders/cache, the DXIL, and
+renderprogs/dxbc, the PSO journal and pipeline library) across the wipe. -TimeoutScale N stretches
+the game's load and stall timeouts (vdemo_timeoutScale) and -TimeoutMinutes, for slow runs such as
+GPU-based validation.
 
 Refuses to run while any Doom3BFG.exe runs. Exit code: 0 when every demo ended "ok" with all its
 frames on disk and no layer message, 1 when a demo failed, lost a frame or the layer reported

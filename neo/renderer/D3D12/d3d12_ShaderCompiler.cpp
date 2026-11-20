@@ -7,27 +7,11 @@
 
 #include "../tr_local.h"
 #include "../RenderProgSource.h"
-#include "d3d12_HlslEmitter.h"
 #include "d3d12_ShaderCompiler.h"
-
-idCVar r_d3d12DumpHLSL( "r_d3d12DumpHLSL", "0", CVAR_RENDERER | CVAR_BOOL,
-	"1 = Direct3D 12 writes every HLSL text it compiles (or finds in the cache) to fs_savepath/renderprogs/hlsl/<name>.<vs|ps>.hlsl" );
 
 namespace {
 
 constexpr int DXBC_HEADER = 32;		// 'DXBC', the checksum, 1, the total size, the chunk count
-
-idStr BlobText( ID3DBlob * blob ) {
-	if ( blob == nullptr || blob->GetBufferSize() == 0 ) {
-		return idStr();
-	}
-	// idStr::Append stops at a NUL but counts the length given: the terminator of the blob stays out
-	const char * chars = static_cast<const char *>( blob->GetBufferPointer() );
-	idStr text;
-	text.Append( chars, static_cast<int>( strnlen( chars, blob->GetBufferSize() ) ) );
-	text.StripTrailingWhitespace();
-	return text;
-}
 
 [[nodiscard]] const char * StageSuffix( shaderStageType_t stage ) {
 	return ( stage == shaderStageType_t::VERTEX ) ? "vs" : "ps";
@@ -45,7 +29,7 @@ idStr BlobText( ID3DBlob * blob ) {
 	return file;
 }
 
-// A file another FXC or a crash cut short is not used.
+// A file that another run or a crash cut short is not used.
 [[nodiscard]] bool IsDxbc( std::span<const byte> code ) {
 	if ( code.size() < DXBC_HEADER || memcmp( code.data(), "DXBC", 4 ) != 0 ) {
 		return false;
@@ -86,61 +70,6 @@ void idD3D12BlobCache::Store( const char * name, shaderStageType_t stage, uint64
 	if ( enabled ) {
 		fileSystem->WriteFile( Path( name, stage, hash ), code.data(), static_cast<int>( code.size() ) );
 	}
-}
-
-uint64 idD3D12ShaderCompiler::Hash( std::string_view hlsl, shaderStageType_t stage ) const {
-	const bool vertex = ( stage == shaderStageType_t::VERTEX );
-	const uint64 key[] = { static_cast<uint64>( hlsl.size() ), FLAGS, library.compilerVersion, static_cast<uint64>( idD3D12HlslEmitter::VERSION ) };
-	const char * profile = vertex ? "vs_5_1 vsMain" : "ps_5_1 psMain";
-	MD5_CTX context;
-	MD5_Init( &context );
-	MD5_Update( &context, reinterpret_cast<const unsigned char *>( hlsl.data() ), hlsl.size() );
-	MD5_Update( &context, reinterpret_cast<const unsigned char *>( profile ), strlen( profile ) );
-	MD5_Update( &context, reinterpret_cast<const unsigned char *>( key ), sizeof( key ) );
-	unsigned char digest[16];
-	MD5_Final( &context, digest );
-	uint64 halves[2];
-	memcpy( halves, digest, sizeof( halves ) );
-	return halves[0] ^ halves[1];
-}
-
-std::expected<d3d12Bytecode_t, idStr> idD3D12ShaderCompiler::Compile( std::string_view hlsl, shaderStageType_t stage, const char * name ) {
-	if ( r_d3d12DumpHLSL.GetBool() ) {
-		fileSystem->WriteFile( va( "renderprogs/hlsl/%s.%s.hlsl", FileName( name ).c_str(), StageSuffix( stage ) ), hlsl.data(), static_cast<int>( hlsl.size() ) );
-	}
-	const uint64 hash = Hash( hlsl, stage );
-	if ( std::optional<d3d12Bytecode_t> cached = cache.Find( name, stage, hash ) ) {
-		hits++;
-		return std::move( *cached );
-	}
-
-	const bool vertex = ( stage == shaderStageType_t::VERTEX );
-	idComPtr<ID3DBlob> code;
-	idComPtr<ID3DBlob> messages;
-	const HRESULT hr = library.compile( hlsl.data(), hlsl.size(), name, nullptr, nullptr, vertex ? "vsMain" : "psMain",
-		vertex ? "vs_5_1" : "ps_5_1", FLAGS, 0, &code, &messages );
-	const idStr text = BlobText( messages.Get() );
-	if ( FAILED( hr ) || !code ) {
-		return std::unexpected( idStr( va( "%s: %s", name, text.Length() > 0 ? text.c_str() : D3D12_ErrorText( hr ).c_str() ) ) );
-	}
-	if ( text.Length() > 0 ) {
-		common->DPrintf( "d3d12: %s: %s\n", name, text.c_str() );
-	}
-	compiled++;
-	const byte * bytes = static_cast<const byte *>( code->GetBufferPointer() );
-	d3d12Bytecode_t result( bytes, bytes + code->GetBufferSize() );
-	cache.Store( name, stage, hash, result );
-	return result;
-}
-
-d3d12StageReflection_t idD3D12ShaderCompiler::Reflect( std::span<const byte> code, shaderStageType_t stage ) const {
-	idComPtr<ID3D12ShaderReflection> reflection;
-	const HRESULT hr = library.reflect( code.data(), code.size(), __uuidof( ID3D12ShaderReflection ), reinterpret_cast<void **>( reflection.GetAddressOf() ) );
-	if ( FAILED( hr ) || !reflection ) {
-		common->Warning( "d3d12: D3DReflect: %s", D3D12_ErrorText( hr ).c_str() );
-		return {};
-	}
-	return D3D12_ReflectStage( *reflection.Get(), stage );
 }
 
 namespace {
