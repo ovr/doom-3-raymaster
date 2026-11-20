@@ -3419,7 +3419,10 @@ cm_model_t *idCollisionModelManagerLocal::LoadRenderModel( const char *fileName 
 	// shutdown the hash
 	ShutdownHash();
 
-	WriteBinaryModel( model, generatedFileName, sourceTimeStamp );
+	// the collision of a model that was not found is not kept either
+	if ( !renderModel->IsDefaultModel() ) {
+		WriteBinaryModel( model, generatedFileName, sourceTimeStamp );
+	}
 
 	return model;
 }
@@ -3915,6 +3918,12 @@ idCollisionModelManagerLocal::LoadModel
 */
 cmHandle_t idCollisionModelManagerLocal::LoadModel( const char *modelName ) {
 	int handle;
+
+	// The slots exist while a map is loaded. Without one (the editor parsing an entityDef, which
+	// caches its clip models) there is nothing to load into; the game loads the model with its map.
+	if ( models == nullptr ) {
+		return 0;
+	}
 
 	handle = FindModel( modelName );
 	if ( handle >= 0 ) {

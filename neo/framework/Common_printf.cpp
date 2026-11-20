@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 #include "Common_local.h"
+#include "EngineHost.h"
 #include "VisualDemo.h"
 
 idCVar com_logFile( "logFile", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "1 = write each print to the log (kept if the game crashes), 2 = also flush it to disk after each print (kept if Windows crashes, slow)", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
@@ -238,6 +239,10 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 
 	// echo to dedicated console and early console
 	Sys_Printf( "%s", msg );
+
+	if ( engineHost != nullptr ) {
+		engineHost->OnPrint( msg );
+	}
 
 	// print to script debugger server
 	// DebuggerServerPrint( msg );
@@ -489,6 +494,16 @@ void idCommonLocal::Error( const char *fmt, ... ) {
 	int			currentTime;
 
 	errorParm_t code = ERP_DROP;
+
+	// Inside a job only the message leaves: stopping the game, the clipboard and the error count
+	// belong to the thread that waits for the job list, which makes a fatal error of it.
+	if ( idParallelJobList::InJob() ) {
+		char jobErrorText[idException::MAX_ERROR_LEN];
+		va_start( argptr, fmt );
+		idStr::vsnPrintf( jobErrorText, sizeof( jobErrorText ), fmt, argptr );
+		va_end( argptr );
+		throw idException( jobErrorText );
+	}
 
 	// always turn this off after an error
 	com_refreshOnPrint = false;

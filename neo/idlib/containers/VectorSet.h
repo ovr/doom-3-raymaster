@@ -67,30 +67,30 @@ private:
 
 template< class type, int dimension >
 ID_INLINE idVectorSet<type,dimension>::idVectorSet() {
-	hash.Clear( idMath::IPow( boxHashSize, dimension ), 128 );
 	boxHashSize = 16;
+	hash.Clear( idMath::IPow( boxHashSize, dimension ), 128 );
 	memset( boxInvSize, 0, dimension * sizeof( boxInvSize[0] ) );
 	memset( boxHalfSize, 0, dimension * sizeof( boxHalfSize[0] ) );
 }
 
 template< class type, int dimension >
-ID_INLINE idVectorSet<type,dimension>::idVectorSet( const type &mins, const type &maxs, const int boxHashSize, const int initialSize ) {
-	Init( mins, maxs, boxHashSize, initialSize );
+ID_INLINE idVectorSet<type,dimension>::idVectorSet( const type &setMins, const type &setMaxs, const int setBoxHashSize, const int initialSize ) {
+	Init( setMins, setMaxs, setBoxHashSize, initialSize );
 }
 
 template< class type, int dimension >
-ID_INLINE void idVectorSet<type,dimension>::Init( const type &mins, const type &maxs, const int boxHashSize, const int initialSize ) {
+ID_INLINE void idVectorSet<type,dimension>::Init( const type &setMins, const type &setMaxs, const int setBoxHashSize, const int initialSize ) {
 	int i;
 	float boxSize;
 
 	idList<type>::AssureSize( initialSize );
-	idList<type>::SetNum( 0, false );
+	idList<type>::SetNum( 0 );
 
-	hash.Clear( idMath::IPow( boxHashSize, dimension ), initialSize );
+	hash.Clear( idMath::IPow( setBoxHashSize, dimension ), initialSize );
 
-	this->mins = mins;
-	this->maxs = maxs;
-	this->boxHashSize = boxHashSize;
+	mins = setMins;
+	maxs = setMaxs;
+	boxHashSize = setBoxHashSize;
 
 	for ( i = 0; i < dimension; i++ ) {
 		boxSize = ( maxs[i] - mins[i] ) / (float) boxHashSize;
@@ -148,7 +148,7 @@ ID_INLINE int idVectorSet<type,dimension>::FindVector( const type &v, const floa
 	}
 
 	hash.Add( hashKey, idList<type>::Num() );
-	Append( v );
+	this->Append( v );
 	return idList<type>::Num()-1;
 }
 

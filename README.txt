@@ -45,6 +45,22 @@ For Ninja, run from an "x64 Native Tools Command Prompt for VS 2022":
 Options: -DD3BFG_WARNINGS_AS_ERRORS=ON enables /WX for the engine code.
 
 
+The editor:
+-----------
+
+Doom3Editor.exe is a level and material editor built with the game: a 3D
+viewport, entities and lights, a content browser, a material editor and
+Play in Editor. Its interface needs Qt 6, which is not in the repository:
+
+	powershell -ExecutionPolicy Bypass -File tools/qt/install-qt.ps1
+	cmake --preset vs2022-x64
+
+Without Qt only "Doom3Editor.exe --bare" (the viewport alone) is built.
+Copy Doom3Editor.exe and the "editor" folder next to it into the game
+install. Maps and materials are saved into the save path, never into the
+game install; the game needs "+set fs_resourceLoadPriority 0" to load them.
+
+
 Steam:
 ------
 The Doom 3 BFG Edition GPL Source Code release does not include functionality for integrating with 
@@ -113,6 +129,21 @@ been lost, so the one from release 6b is included instead. There are a few
 'glue type' modifications to the library to make it easier to use from
 the engine, but otherwise the dependency can be easily cleaned up to a
 better release of the library.
+
+Qt (the editor only)
+---------------------------------------------------------------------------
+Not in this repository and not linked into the game.
+
+The level and material editor (editor/, Doom3Editor.exe) loads its interface
+from editor/Doom3EditorUI.dll, which uses Qt 6 (Core, Gui, Widgets) under the
+GNU Lesser General Public License version 3. Qt is linked dynamically: the Qt
+DLLs next to Doom3EditorUI.dll can be replaced by other builds of the same Qt
+version. tools/qt/install-qt.ps1 downloads the kit the build uses; the Qt
+sources and the LGPL text are at https://www.qt.io/download-open-source and
+https://www.gnu.org/licenses/lgpl-3.0.html. When you pass the editor on, pass
+this notice and the LGPLv3 text with it.
+
+Qt is Copyright (C) The Qt Company Ltd. and other contributors.
 
 zlib library
 ---------------------------------------------------------------------------

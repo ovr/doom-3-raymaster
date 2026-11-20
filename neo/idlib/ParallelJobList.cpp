@@ -207,6 +207,11 @@ public:
 
 	int						RunJobs( unsigned int threadNum, threadJobListState_t & state, bool singleJob );
 
+	// An engine error raised inside a job is kept and becomes a fatal error on the thread that waits
+	// for the list: unwinding a job thread ends the process without a word, and a frame whose job
+	// stopped half way cannot go on (going on corrupted the heap).
+	void					ReportJobError();
+
 private:
 	static const int		NUM_DONE_GUARDS = 4;	// cycle through 4 guards so we can cyclicly chain job lists
 
@@ -234,6 +239,9 @@ private:
 	idSysInterlockedInteger				fetchLock;
 	idSysInterlockedInteger				numThreadsExecuting;
 
+	idSysInterlockedInteger				numJobErrors;
+	char								jobError[idException::MAX_ERROR_LEN];
+
 	threadStats_t						deferredThreadStats;
 	threadStats_t						threadStats;
 
@@ -245,6 +253,9 @@ private:
 	static int				JOB_SYNCHRONIZE;
 	static int				JOB_LIST_DONE;
 };
+
+// how deep this thread is inside job functions: a job may wait for a list of its own
+static thread_local int jobDepth = 0;
 
 int idParallelJobList_Threads::JOB_SIGNAL;
 int idParallelJobList_Threads::JOB_SYNCHRONIZE;
@@ -381,6 +392,7 @@ void idParallelJobList_Threads::Submit( idParallelJobList_Threads * waitForJobLi
 
 	done = false;
 	currentJob.SetValue( 0 );
+	numJobErrors.SetValue( 0 );
 
 	memset( &deferredThreadStats, 0, sizeof( deferredThreadStats ) );
 	deferredThreadStats.numExecutedJobs = jobList.Num() - numSyncs * 2;
@@ -456,6 +468,18 @@ void idParallelJobList_Threads::Wait() {
 	}
 	memcpy( & threadStats, & deferredThreadStats, sizeof( threadStats ) );
 	done = true;
+}
+
+/*
+========================
+idParallelJobList_Threads::ReportJobError
+========================
+*/
+void idParallelJobList_Threads::ReportJobError() {
+	if ( done && numJobErrors.GetValue() > 0 ) {
+		numJobErrors.SetValue( 0 );
+		idLib::FatalError( "%s (in a job)", jobError );
+	}
 }
 
 /*
@@ -629,7 +653,16 @@ int idParallelJobList_Threads::RunJobsInternal( unsigned int threadNum, threadJo
 		{
 			uint64 jobStart = Sys_Microseconds();
 
-			jobList[state.nextJobIndex].function( jobList[state.nextJobIndex].data );
+			jobDepth++;
+			try {
+				jobList[state.nextJobIndex].function( jobList[state.nextJobIndex].data );
+			} catch ( idException & ex ) {
+				// the first one is kept; the list still runs to its end, the sync counts depend on it
+				if ( numJobErrors.Increment() == 1 ) {
+					idStr::Copynz( jobError, ex.GetError(), sizeof( jobError ) );
+				}
+			}
+			jobDepth--;
 			jobList[state.nextJobIndex].executed = 1;
 
 			uint64 jobEnd = Sys_Microseconds();
@@ -757,12 +790,22 @@ void idParallelJobList::InsertSyncPoint( jobSyncType_t syncType ) {
 
 /*
 ========================
+idParallelJobList::InJob
+========================
+*/
+bool idParallelJobList::InJob() {
+	return jobDepth > 0;
+}
+
+/*
+========================
 idParallelJobList::Wait
 ========================
 */
 void idParallelJobList::Wait() {
 	if ( jobListThreads != NULL ) {
 		jobListThreads->Wait();
+		jobListThreads->ReportJobError();
 	}
 }
 
@@ -775,6 +818,7 @@ bool idParallelJobList::TryWait() {
 	bool done = true;
 	if ( jobListThreads != NULL ) {
 		done &= jobListThreads->TryWait();
+		jobListThreads->ReportJobError();
 	}
 	return done;
 }

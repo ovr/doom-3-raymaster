@@ -30,7 +30,9 @@ If you have questions concerning this license or the applicable additional terms
 
 const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
 const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
-const int VERTCACHE_JOINT_MEMORY_PER_FRAME = 256 * 1024;
+// The editor draws every skinned model of a map at once: the 256 KB of the game ran out
+// at about 70 of them, and that error ends the process.
+const int VERTCACHE_JOINT_MEMORY_PER_FRAME = 8 * 1024 * 1024;
 
 const int VERTCACHE_NUM_FRAMES = 2;
 

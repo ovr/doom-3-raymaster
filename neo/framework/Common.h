@@ -185,6 +185,8 @@ public:
 
 								// Returns true if common initialization is complete.
 	virtual bool				IsInitialized() const = 0;
+	// a game map is loaded and runs (or is paused)
+	virtual bool				IsMapSpawned() const = 0;
 
 								// Called repeatedly as the foreground thread for rendering and game logic.
 	virtual void				Frame() = 0;

@@ -635,6 +635,15 @@ int idRenderSystemLocal::GetRenderPassTimings( std::span<renderPassTiming_t> pas
 	return PC_GetPassTimings( passes );
 }
 
+void idRenderSystemLocal::ReadLastFrame( int x, int y, int width, int height, byte * rgb, bool discard ) {
+	if ( !R_IsInitialized() ) {
+		memset( rgb, 0, static_cast<size_t>( width ) * height * 3 );
+		return;
+	}
+	renderBackend->ReadOutputPixels( x, y, width, height, rgb );
+	discardFrame = discardFrame || discard;
+}
+
 const char * idRenderSystemLocal::GetBackendStats() const {
 	return ( renderBackend != nullptr ) ? renderBackend->OverlayStats() : "";
 }
@@ -669,6 +678,10 @@ void idRenderSystemLocal::SwapCommandBuffers_FinishRendering(
 			presentMode = presentMode_t::ADAPTIVE;
 		} else if ( r_swapInterval.GetInteger() == 2 ) {
 			presentMode = presentMode_t::VSYNC;
+		}
+		if ( discardFrame ) {
+			discardFrame = false;
+			presentMode = presentMode_t::NONE;
 		}
 		if ( renderBackend->Present( presentMode ) == presentResult_t::DEVICE_LOST ) {
 			common->FatalError( "The graphics device was lost" );

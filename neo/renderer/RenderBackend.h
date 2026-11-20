@@ -196,6 +196,7 @@ public:
 	// Closes the frame, hands every command to the GPU without waiting, stops the GPU timer.
 	virtual void			EndFrame() = 0;
 	// Shows the finished frame and blocks: on return no unfinished draw reads a FRAME buffer mapped next.
+	// presentMode_t::NONE does all of it but the showing: the screen keeps the frame before.
 	virtual presentResult_t	Present( presentMode_t mode ) = 0;
 	// GPU time of the frame closed before the last Present; blocks until known; 0 without caps.gpuTimer.
 	virtual uint64			GetFrameGpuMicroseconds() = 0;

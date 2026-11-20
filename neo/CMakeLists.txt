@@ -2,8 +2,6 @@
 
 include(sources.cmake)
 
-set(D3BFG_PCH "${CMAKE_CURRENT_SOURCE_DIR}/idlib/precompiled.h")
-
 # ---------------------------------------------------------------------------
 # idLib
 #
@@ -48,49 +46,29 @@ target_precompile_headers(Game-d3xp PRIVATE "${D3BFG_PCH}")
 set_target_properties(idLib external Game-d3xp PROPERTIES FOLDER "neo")
 
 # ---------------------------------------------------------------------------
-# Doom3BFG executable
+# engine: everything but WinMain, an OBJECT library for the same reason as idLib. Every executable
+# that hosts the engine (the game, the editor) links these objects through d3bfg_link_engine.
 # ---------------------------------------------------------------------------
-add_executable(Doom3BFG WIN32
-	${DOOMEXE_SOURCES}
-	sys/win32/rc/doom.rc
-	sys/win32/rc/doom3bfg.manifest
-)
-d3bfg_neo_common(Doom3BFG)
-d3bfg_configure_target(Doom3BFG WARNING_LEVEL 4 WITH_INLINES WERROR)
-target_compile_definitions(Doom3BFG PRIVATE
+add_library(engine OBJECT ${ENGINE_SOURCES})
+d3bfg_neo_common(engine)
+d3bfg_configure_target(engine WARNING_LEVEL 4 WITH_INLINES WERROR)
+target_compile_definitions(engine PRIVATE
 	__DOOM__ _MBCS
 	$<$<CONFIG:Retail>:ID_RETAIL>
 )
-target_precompile_headers(Doom3BFG PRIVATE "${D3BFG_PCH}")
+target_precompile_headers(engine PRIVATE "${D3BFG_PCH}")
 set_source_files_properties(
 	renderer/jobs/ShadowShared.cpp
 	renderer/jobs/prelightshadowvolume/PreLightShadowVolume.cpp
 	renderer/jobs/staticshadowvolume/StaticShadowVolume.cpp
 	renderer/jobs/dynamicshadowvolume/DynamicShadowVolume.cpp
-	TARGET_DIRECTORY Doom3BFG
+	TARGET_DIRECTORY engine
 	PROPERTIES SKIP_PRECOMPILE_HEADERS ON
 )
 # renderer/D3D12/ is new code without warnings: /WX in every config, with no build option. Its DLLs are
 # loaded from System32 at Init (idD3D12Library), so no d3d12, dxgi or d3dcompiler import library is linked.
-set_source_files_properties(${D3D12_SOURCES} TARGET_DIRECTORY Doom3BFG PROPERTIES COMPILE_OPTIONS /WX)
-
-target_link_libraries(Doom3BFG PRIVATE
-	idLib
-	Game-d3xp
-	external
-	doomclassic
-	timidity
-	xaudio2 xinput dbghelp dinput8 dsound dxguid iphlpapi
-	odbc32 odbccp32 opengl32 winmm wsock32
-)
-target_link_options(Doom3BFG PRIVATE
-	/STACK:16777216,16777216
-	/DEBUG
-	$<$<CONFIG:Debug>:/MAP>
-	$<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
-)
-set_target_properties(Doom3BFG PROPERTIES FOLDER "neo")
-set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT Doom3BFG)
+set_source_files_properties(${D3D12_SOURCES} TARGET_DIRECTORY engine PROPERTIES COMPILE_OPTIONS /WX)
+set_target_properties(engine PROPERTIES FOLDER "neo")
 
 # FFmpeg (optional, tools/ffmpeg/build-ffmpeg-x64.cmd) plays the Bink videos, without it they
 # stay black. The DLLs are delay-loaded and copied next to the exe, which starts without them.
@@ -123,22 +101,66 @@ endif()
 
 if(D3BFG_FFMPEG_FOUND)
 	message(STATUS "FFmpeg: ${D3BFG_FFMPEG_ROOT} (Bink videos on)")
-	target_compile_definitions(Doom3BFG PRIVATE USE_FFMPEG)
-	target_include_directories(Doom3BFG SYSTEM PRIVATE "${D3BFG_FFMPEG_ROOT}/include")
-	target_link_libraries(Doom3BFG PRIVATE ${_ffmpeg_implibs} delayimp)
-	foreach(_dll IN LISTS _ffmpeg_dlls)
-		get_filename_component(_dll_name "${_dll}" NAME)
-		target_link_options(Doom3BFG PRIVATE "/DELAYLOAD:${_dll_name}")
-	endforeach()
-	add_custom_command(TARGET Doom3BFG POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_ffmpeg_dlls} "$<TARGET_FILE_DIR:Doom3BFG>"
-		COMMENT "Copying the FFmpeg DLLs next to Doom3BFG.exe"
-		VERBATIM
-	)
+	target_compile_definitions(engine PRIVATE USE_FFMPEG)
+	target_include_directories(engine SYSTEM PRIVATE "${D3BFG_FFMPEG_ROOT}/include")
 else()
 	message(STATUS "FFmpeg not found in '${D3BFG_FFMPEG_ROOT}': Bink videos off "
 		"(build it with tools/ffmpeg/build-ffmpeg-x64.cmd or set D3BFG_FFMPEG_ROOT)")
 endif()
+# global, so that d3bfg_link_engine also works from other directories (editor/)
+set_property(GLOBAL PROPERTY D3BFG_FFMPEG_IMPLIBS "${_ffmpeg_implibs}")
+set_property(GLOBAL PROPERTY D3BFG_FFMPEG_DLLS "${_ffmpeg_dlls}")
+set_property(GLOBAL PROPERTY D3BFG_FFMPEG_FOUND "${D3BFG_FFMPEG_FOUND}")
+
+# Links the engine into an executable: its objects, the map compilers (editor/compilers), the system libraries, the 16 MB stack the
+# single-threaded frame needs, and the delay-loaded FFmpeg DLLs copied next to the exe.
+function(d3bfg_link_engine tgt)
+	target_link_libraries(${tgt} PRIVATE
+		engine
+		MapCompilers
+		idLib
+		Game-d3xp
+		external
+		doomclassic
+		timidity
+		xaudio2 xinput dbghelp dinput8 dsound dxguid iphlpapi
+		odbc32 odbccp32 opengl32 winmm wsock32
+	)
+	target_link_options(${tgt} PRIVATE
+		/STACK:16777216,16777216
+		/DEBUG
+		$<$<CONFIG:Debug>:/MAP>
+		$<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
+	)
+	get_property(_found GLOBAL PROPERTY D3BFG_FFMPEG_FOUND)
+	if(_found)
+		get_property(_implibs GLOBAL PROPERTY D3BFG_FFMPEG_IMPLIBS)
+		get_property(_dlls GLOBAL PROPERTY D3BFG_FFMPEG_DLLS)
+		target_link_libraries(${tgt} PRIVATE ${_implibs} delayimp)
+		foreach(_dll IN LISTS _dlls)
+			get_filename_component(_dll_name "${_dll}" NAME)
+			target_link_options(${tgt} PRIVATE "/DELAYLOAD:${_dll_name}")
+		endforeach()
+		add_custom_command(TARGET ${tgt} POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_dlls} "$<TARGET_FILE_DIR:${tgt}>"
+			COMMENT "Copying the FFmpeg DLLs next to ${tgt}"
+			VERBATIM
+		)
+	endif()
+endfunction()
+
+# ---------------------------------------------------------------------------
+# Doom3BFG executable: WinMain, the icon and the manifest around the engine
+# ---------------------------------------------------------------------------
+add_executable(Doom3BFG WIN32
+	${DOOMEXE_SOURCES}
+	sys/win32/rc/doom.rc
+	sys/win32/rc/doom3bfg.manifest
+)
+d3bfg_configure_target(Doom3BFG WARNING_LEVEL 4 WERROR)
+d3bfg_link_engine(Doom3BFG)
+set_target_properties(Doom3BFG PROPERTIES FOLDER "neo")
+set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT Doom3BFG)
 
 # ---------------------------------------------------------------------------
 # amplitude (standalone console tool)
@@ -214,3 +236,7 @@ add_test(NAME d3d12Tests COMMAND d3d12Tests)
 # name outside neo/renderer/D3D12/
 add_test(NAME renderApiLeaks
 	COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/check-render-api-leaks.ps1")
+
+# editorModules: editor/ui/ includes no engine header, editor/bridge/ no Qt header
+add_test(NAME editorModules
+	COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/check-editor-modules.ps1")

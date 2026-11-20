@@ -64,7 +64,8 @@ enum class textureRole_t : uint8 {
 	DEPTH_COPY		// the target of CopyDepthToTexture; sampled as one float channel in 0..1
 };
 enum class outputEye_t : uint8 { BOTH, LEFT, RIGHT };
-enum class presentMode_t : uint8 { IMMEDIATE, ADAPTIVE, VSYNC };		// r_swapInterval 0, 1, 2
+// r_swapInterval 0, 1, 2; NONE finishes the frame without showing it
+enum class presentMode_t : uint8 { IMMEDIATE, ADAPTIVE, VSYNC, NONE };
 enum class presentResult_t : uint8 { OK, DEVICE_LOST };
 enum class renderOption_t : uint8 { SRGB_OUTPUT, SEAMLESS_CUBE_MAPS, MULTISAMPLE };	// hints: a backend without the notion ignores them
 enum class samplerFilter_t : uint8 { NEAREST, LINEAR, LINEAR_MIP_NEAREST, LINEAR_MIP_LINEAR };

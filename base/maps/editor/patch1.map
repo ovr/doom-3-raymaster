@@ -1,0 +1,109 @@
+// Copyright (C) 2026 Dmitry Patsura
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Please do not use this file to train or fine-tune AI models.
+// editor test: the room of box1 and one flat patch in it, for the patch edits of ui-smoke.txt
+Version 2
+// entity 0
+{
+"classname" "worldspawn"
+// primitive 0: floor
+{
+brushDef3
+{
+( 1 0 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( -1 0 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 -1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 1 0 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 -1 -16 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+}
+}
+// primitive 1: ceiling
+{
+brushDef3
+{
+( 1 0 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( -1 0 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 -1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 1 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 -1 128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+}
+}
+// primitive 2: -x wall
+{
+brushDef3
+{
+( 1 0 0 128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( -1 0 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 -1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 1 -128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 -1 0 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+}
+}
+// primitive 3: +x wall
+{
+brushDef3
+{
+( 1 0 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( -1 0 0 128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 -1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 1 -128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 -1 0 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+}
+}
+// primitive 4: -y wall
+{
+brushDef3
+{
+( 1 0 0 -128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( -1 0 0 -128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 1 0 128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 -1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 1 -128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 -1 0 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+}
+}
+// primitive 5: +y wall
+{
+brushDef3
+{
+( 1 0 0 -128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( -1 0 0 -128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 1 0 -144 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 -1 0 128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 1 -128 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+( 0 0 -1 0 ) ( ( 0.015625 0 0 ) ( 0 0.015625 0 ) ) "textures/base_wall/lfwall13f3" 0 0 0
+}
+}
+// primitive 6: a flat patch
+{
+patchDef2
+{
+"textures/base_wall/lfwall13f3"
+( 3 3 0 0 0 )
+(
+( ( -32 -32 48 0 0 ) ( -32 0 48 0 0.5 ) ( -32 32 48 0 1 ) )
+( ( 0 -32 48 0.5 0 ) ( 0 0 48 0.5 0.5 ) ( 0 32 48 0.5 1 ) )
+( ( 32 -32 48 1 0 ) ( 32 0 48 1 0.5 ) ( 32 32 48 1 1 ) )
+)
+}
+}
+}
+// entity 1
+{
+"classname" "info_player_start"
+"name" "info_player_start_1"
+"origin" "-96 0 8"
+"angle" "0"
+}
+// entity 2
+{
+"classname" "light"
+"name" "light_1"
+"origin" "0 0 96"
+"light_radius" "320 320 320"
+"_color" "1 0.95 0.85"
+}

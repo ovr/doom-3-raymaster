@@ -31,6 +31,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "qgl.h"
 
 #include "../tr_local.h"
+
+#include <string>
+#include <string_view>
 #include "../RenderProgSource.h"
 #include "gl_Backend.h"
 
@@ -194,7 +197,7 @@ struct typeConversion_t {
 };
 
 const char * vertexInsert = {
-	"#version 150\n"
+	"#version 150 compatibility\n"
 	"#define PC\n"
 	"\n"
 	"float saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n"
@@ -206,7 +209,7 @@ const char * vertexInsert = {
 };
 
 const char * fragmentInsert = {
-	"#version 150\n"
+	"#version 150 compatibility\n"
 	"#define PC\n"
 	"\n"
 	"void clip( float v ) { if ( v < 0.0 ) { discard; } }\n"
@@ -313,8 +316,10 @@ void ParseInOutStruct( idLexer & src, int attribType, idList< inOutVariable_t > 
 			}
 		}
 
+		// Built-ins are never declared: "in vec4 gl_Color" is an error, which only a driver's profile
+		// for the game's exe name let through. They exist in the compatibility profile the insert asks for.
+		var.declareInOut = ( var.nameGLSL.Cmpn( "gl_", 3 ) != 0 );
 		// check if it was defined previously
-		var.declareInOut = true;
 		for ( int i = 0; i < inOutVars.Num(); i++ ) {
 			if ( var.nameGLSL == inOutVars[i].nameGLSL ) {
 				var.declareInOut = false;
@@ -608,6 +613,48 @@ static shaderHandle_t GL_NewShaderStage( GLuint shader, const char * name, const
 }
 
 /*
+========================
+GL_StripBuiltinDeclarations
+
+The GLSL baked into the retail packs declares built-ins ("in vec4 gl_Color;") under "#version 150".
+That is an error which a driver's profile for the game's exe name lets through, and no other exe.
+The lines are blanked, so the line numbers of compile errors stay.
+========================
+*/
+static void GL_StripBuiltinDeclarations( idStr & glsl ) {
+	// the baked files end their lines with CR LF, the converter with LF
+	constexpr std::string_view coreVersion = "#version 150";
+	constexpr std::string_view compatibility = " compatibility";
+
+	const std::string_view text( glsl.c_str(), glsl.Length() );
+	std::string out;
+	out.reserve( text.size() + compatibility.size() );
+
+	size_t lineStart = 0;
+	if ( text.starts_with( coreVersion ) && text.size() > coreVersion.size() && ( text[coreVersion.size()] == '\r' || text[coreVersion.size()] == '\n' ) ) {
+		out += coreVersion;
+		out += compatibility;
+		lineStart = coreVersion.size();
+	}
+	while ( lineStart < text.size() ) {
+		size_t lineEnd = text.find( '\n', lineStart );
+		lineEnd = ( lineEnd == std::string_view::npos ) ? text.size() : lineEnd + 1;
+		const std::string_view line = text.substr( lineStart, lineEnd - lineStart );
+		lineStart = lineEnd;
+
+		// "in <type> gl_Name;" or "out <type> gl_Name;"
+		const bool inOut = line.starts_with( "in " ) || line.starts_with( "out " );
+		const size_t name = line.rfind( ' ' );
+		if ( inOut && name != std::string_view::npos && line.substr( name + 1 ).starts_with( "gl_" ) ) {
+			out += line.ends_with( "\r\n" ) ? "\r\n" : "\n";
+			continue;
+		}
+		out += line;
+	}
+	glsl = out.c_str();
+}
+
+/*
 ================================================================================================
 idRenderBackendGL::CreateShaderStage
 
@@ -686,6 +733,8 @@ shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, co
 		programUniforms = ( const char* ) fileBufferUniforms;
 		Mem_Free( fileBufferUniforms );
 	}
+
+	GL_StripBuiltinDeclarations( programGLSL );
 
 	// find the uniforms locations in either the vertex or fragment uniform array
 	idLexer src( programUniforms, programUniforms.Length(), "uniforms" );

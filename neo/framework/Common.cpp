@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 #include "Common_local.h"
+#include "EngineHost.h"
 
 #include "ConsoleHistory.h"
 
@@ -93,6 +94,9 @@ idGameEdit *	gameEdit = NULL;
 
 idCommonLocal	commonLocal;
 idCommon *		common = &commonLocal;
+
+// set by Sys_EngineInit for an executable that embeds the engine, nullptr in the game
+idEngineHost *	engineHost = nullptr;
 
 
 idCVar com_skipIntroVideos( "com_skipIntroVideos", "0", CVAR_BOOL , "skips the startup videos for this launch only (a game restart after a settings change sets it)" );
@@ -196,6 +200,12 @@ idCommonLocal::Quit
 */
 void idCommonLocal::Quit() {
 
+	// the host closes its windows first, then comes back through Sys_EngineShutdown
+	if ( engineHost != nullptr ) {
+		engineHost->OnQuitRequested();
+		return;
+	}
+
 	// don't try to shutdown if we are in a recursive error
 	if ( !com_errorEntered ) {
 		Shutdown();
@@ -241,6 +251,10 @@ void idCommonLocal::ParseCommandLine( int argc, const char * const * argv ) {
 			// Handle Steam bootable invites.
 			session->HandleBootableInvite( _atoi64( argv[ i + 1 ] ) );
 		} else if ( argv[ i ][ 0 ] == '+' ) {
+			// the commands past the limit are dropped; they used to be written behind the array
+			if ( com_numConsoleLines == MAX_CONSOLE_LINES ) {
+				break;
+			}
 			com_numConsoleLines++;
 			com_consoleLines[ com_numConsoleLines-1 ].AppendArg( argv[ i ] + 1 );
 		} else {
@@ -1066,7 +1080,7 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 
 		const int legalMinTime = 4000;
 		// the config, with com_skipStartupVideos, was executed before the renderer started
-		const bool skipVideo = com_skipIntroVideos.GetBool() || com_skipStartupVideos.GetBool();
+		const bool skipVideo = com_skipIntroVideos.GetBool() || com_skipStartupVideos.GetBool() || engineHost != nullptr;
 		const bool showVideo = !skipVideo && fileSystem->UsingResourceFiles();
 		if ( showVideo ) {
 			RenderBink( "video\\loadvideo.bik" );
@@ -1143,7 +1157,10 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 			game->Leaderboards_Init();
 		}
 
-		CreateMainMenu();
+		// a host has no main menu; made and hidden, it would still play the menu music
+		if ( engineHost == nullptr ) {
+			CreateMainMenu();
+		}
 
 		commonDialog.Init();
 
@@ -1152,9 +1169,12 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 
 		AddStartupCommands();
 
-		StartMenu( true );
+		// a host starts with an empty viewport: no main menu and no wait on the legal screen
+		if ( engineHost == nullptr ) {
+			StartMenu( true );
+		}
 
-		while ( Sys_Milliseconds() - legalStartTime < legalMinTime ) {
+		while ( engineHost == nullptr && Sys_Milliseconds() - legalStartTime < legalMinTime ) {
 			RenderSplash();
 			Sys_GenerateEvents();
 			Sys_Sleep( 10 );
@@ -1465,6 +1485,11 @@ void idCommonLocal::LeaveGame() {
 
 
 	Stop( false );
+
+	// a host has no main menu to go back to: it draws its own scene again
+	if ( engineHost != nullptr ) {
+		return;
+	}
 
 	CreateMainMenu();
 

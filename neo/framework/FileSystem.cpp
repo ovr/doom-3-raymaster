@@ -169,6 +169,8 @@ public:
 	virtual bool			InProductionMode() { return ( resourceFiles.Num() > 0 ) |  ( com_productionMode.GetInteger() != 0 ); }
 	virtual bool			UsingResourceFiles() { return resourceFiles.Num() > 0; }
 	virtual void			UnloadMapResources( const char *name );
+	virtual void			MountAllMapResources();
+	virtual void			ListResourceFiles( const char * prefix, idStrList & names );
 	virtual void			UnloadResourceContainer( const char *name );
 	idFile *				GetResourceContainer( int idx ) {
 		if ( idx >= 0 && idx < resourceFiles.Num() ) {
@@ -532,7 +534,10 @@ void idFileSystemLocal::BeginLevelLoad( const char *name, char *_blockBuffer, in
 	manifestName.StripPath();
 	
 	if ( resourceFiles.Num() > 0 ) {
-		AddResourceFile( va( "%s.resources", manifestName.c_str() ) );
+		// a map made after the resource files has none of its own: its media are in the other maps'
+		if ( AddResourceFile( va( "%s.resources", manifestName.c_str() ) ) == -1 && idStr::Icmp( manifestName, "_startup" ) != 0 ) {
+			MountAllMapResources();
+		}
 	}
 
 }
@@ -562,6 +567,33 @@ void idFileSystemLocal::UnloadMapResources( const char *name ) {
 
 	if ( resourceFiles.Num() > 0 ) {
 		RemoveMapResourceFile( va( "%s.resources", name ) );
+	}
+}
+
+// A map opened later mounts its own file once more, on top: the last one wins a lookup.
+void idFileSystemLocal::MountAllMapResources() {
+	if ( resourceFiles.Num() == 0 ) {
+		return;
+	}
+	std::unique_ptr<idFileList> files( ListFilesTree( "maps", ".resources" ) );
+	for ( int i = 0; i < files->GetNumFiles(); i++ ) {
+		if ( FindResourceFile( files->GetFile( i ) ) == -1 ) {
+			idStr name = files->GetFile( i );
+			name.StripPath();
+			AddResourceFile( name );
+		}
+	}
+}
+
+void idFileSystemLocal::ListResourceFiles( const char * prefix, idStrList & names ) {
+	const int prefixLength = idStr::Length( prefix );
+	for ( int i = 0; i < resourceFiles.Num(); i++ ) {
+		const idList<idResourceCacheEntry, TAG_RESOURCE> & table = resourceFiles[i]->cacheTable;
+		for ( int j = 0; j < table.Num(); j++ ) {
+			if ( idStr::Icmpn( table[j].filename, prefix, prefixLength ) == 0 ) {
+				names.Append( table[j].filename );
+			}
+		}
 	}
 }
 
@@ -1606,6 +1638,16 @@ int idFileSystemLocal::ReadFile( const char *relativePath, void **buffer, ID_TIM
 	} 
 
 	if ( buffer == NULL && timestamp != NULL && resourceFiles.Num() > 0 ) {
+		// With loose files first, a loose file answers with its own time: a map compiled or a
+		// declaration saved after the resource files were made must not look as old as they are (0).
+		if ( fs_resourceLoadPriority.GetInteger() == 0 ) {
+			if ( idFile * const loose = OpenFileReadFlags( relativePath, FSFLAG_SEARCH_DIRS, false ) ) {
+				*timestamp = loose->Timestamp();
+				const int length = loose->Length();
+				CloseFile( loose );
+				return length;
+			}
+		}
 		static idResourceCacheEntry rc;
 		int size = 0;
 		if ( GetResourceCacheEntry( relativePath, rc ) ) {

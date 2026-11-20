@@ -332,9 +332,13 @@ idRenderModel *idRenderModelManagerLocal::GetModel( const char *_modelName, bool
 			if ( !model->LoadBinaryModel( file, sourceTimeStamp ) ) {
 				model->InitFromFile( canonical );
 
-				idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_basepath" ) );
-				idLib::Printf( "Writing %s\n", generatedFileName.c_str() );
-				model->WriteBinaryModel( outputFile );
+				// A model that was not found is not written: its loose stub would win over the
+				// real binary of a resource file from then on (fs_resourceLoadPriority 0).
+				if ( !model->IsDefaultModel() ) {
+					idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_savepath" ) );
+					idLib::Printf( "Writing %s\n", generatedFileName.c_str() );
+					model->WriteBinaryModel( outputFile );
+				}
 			} /* else {
 				idLib::Printf( "loaded binary model %s from file %s\n", model->Name(), generatedFileName.c_str() );
 			} */

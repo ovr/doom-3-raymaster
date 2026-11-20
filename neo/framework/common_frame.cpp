@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 #include "Common_local.h"
+#include "EngineHost.h"
 #include "VisualDemo.h"
 #include "../renderer/Image.h"
 #include "../renderer/ImageOpts.h"
@@ -257,6 +258,8 @@ void idCommonLocal::Draw() {
 
 	if ( loadGUI != NULL ) {
 		loadGUI->Render( renderSystem, Sys_Milliseconds() );
+	} else if ( engineHost != nullptr && !mapSpawned && engineHost->DrawScene() ) {
+		// the host drew its own world
 	} else if ( currentGame == DOOM_CLASSIC || currentGame == DOOM2_CLASSIC ) {
 		const float sysWidth = renderSystem->GetWidth() * renderSystem->GetPixelAspect();
 		const float sysHeight = renderSystem->GetHeight();
@@ -493,7 +496,9 @@ void idCommonLocal::Frame() {
 
 		// if the console or another gui is down, we don't need to hold the mouse cursor
 		bool chatting = false;
-		if ( console->Active() || Dialog().IsDialogActive() || session->IsSystemUIShowing() || ( game && game->InhibitControls() && !IsPlayingDoomClassic() ) ) {
+		// a host without a running map has no menu either: the mouse is the host's
+		const bool hostIdle = ( engineHost != nullptr && !mapSpawned );
+		if ( hostIdle || console->Active() || Dialog().IsDialogActive() || session->IsSystemUIShowing() || ( game && game->InhibitControls() && !IsPlayingDoomClassic() ) ) {
 			Sys_GrabMouseCursor( false );
 			usercmdGen->InhibitUsercmd( INHIBIT_SESSION, true );
 			chatting = true;

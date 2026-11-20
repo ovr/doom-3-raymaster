@@ -33,6 +33,9 @@ If you have questions concerning this license or the applicable additional terms
 static const int NUM_GAME_SELECTIONS_VISIBLE = 5;
 extern idCVar g_demoMode;
 
+// the classic DOOM games stay reachable with 0
+idCVar g_skipGameSelect( "g_skipGameSelect", "1", CVAR_GAME | CVAR_BOOL | CVAR_ARCHIVE, "skip the game selection screen at start and go to the DOOM 3 main menu" );
+
 namespace {
 	/*
 	================================================
@@ -136,6 +139,16 @@ idMenuScreen_Shell_PressStart::ShowScreen
 ========================
 */
 void idMenuScreen_Shell_PressStart::ShowScreen( const mainMenuTransition_t transitionType ) {
+
+	// what choosing DOOM 3 does; the screen itself is never drawn
+	if ( g_skipGameSelect.GetBool() && !g_demoMode.GetBool() ) {
+		if ( session->GetSignInManager().GetMasterLocalUser() == nullptr ) {
+			session->GetSignInManager().RegisterLocalUser( 0 );
+		} else {
+			menuData->SetNextScreen( SHELL_AREA_ROOT, MENU_TRANSITION_SIMPLE );
+		}
+		return;
+	}
 
 	idSWFScriptObject & root = GetSWFObject()->GetRootObject();
 	if ( BindSprite( root ) ) {

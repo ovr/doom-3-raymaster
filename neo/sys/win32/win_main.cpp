@@ -46,6 +46,8 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../sys_local.h"
 #include "win_local.h"
+#include "win_entry.h"
+#include "../../framework/EngineHost.h"
 #include "../../renderer/tr_local.h"
 
 idCVar Win32Vars_t::sys_arch( "sys_arch", "", CVAR_SYSTEM | CVAR_INIT, "" );
@@ -227,6 +229,12 @@ void Sys_Error( const char *error, ... ) {
 
 	Conbuf_AppendText( text );
 	Conbuf_AppendText( "\n" );
+
+	// a host shows the error itself (and saves what it can); its message loop is not ours to run
+	if ( engineHost != nullptr ) {
+		engineHost->OnFatalError( text );
+		TerminateProcess( GetCurrentProcess(), 1 );
+	}
 
 	Win_SetErrorText( text );
 	Sys_ShowConsole( 1, true );
@@ -943,6 +951,12 @@ This allows windows to be moved during renderbump
 void Sys_PumpEvents() {
     MSG msg;
 
+	// the thread's message queue belongs to the host
+	if ( engineHost != nullptr ) {
+		engineHost->PumpEvents();
+		return;
+	}
+
 	// pump the message loop
 	while( PeekMessage( &msg, NULL, 0, 0, PM_NOREMOVE ) ) {
 		if ( !GetMessage( &msg, NULL, 0, 0 ) ) {
@@ -1048,6 +1062,10 @@ returns true if there is a copy of D3 running already
 ================
 */
 bool Sys_AlreadyRunning() {
+	// an editor runs next to the game
+	if ( engineHost != nullptr ) {
+		return false;
+	}
 #ifndef DEBUG
 	if ( !win32.win_allowMultipleInstances.GetBool() ) {
 		hProcessMutex = ::CreateMutex( NULL, FALSE, "DOOM3" );
@@ -1262,10 +1280,27 @@ void Win_Frame() {
 
 /*
 ==================
-WinMain
+Sys_GameMain
+
+The body of WinMain, which lives in win_entry.cpp
 ==================
 */
-int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow ) {
+int Sys_GameMain( HINSTANCE hInstance, const char *lpCmdLine ) {
+	Sys_EngineInit( hInstance, lpCmdLine, nullptr );
+
+	// main game loop
+	while ( 1 ) {
+		Sys_EngineFrame();
+	}
+}
+
+/*
+==================
+Sys_EngineInit
+==================
+*/
+void Sys_EngineInit( HINSTANCE hInstance, const char *lpCmdLine, idEngineHost *host ) {
+	engineHost = host;
 
 	const HCURSOR hcurSave = ::SetCursor( LoadCursor( 0, IDC_WAIT ) );
 
@@ -1319,25 +1354,37 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	::SetCursor( hcurSave );
 
 	::SetFocus( win32.hWnd );
+}
 
-    // main game loop
-	while( 1 ) {
-
-		Win_Frame();
+/*
+==================
+Sys_EngineFrame
+==================
+*/
+void Sys_EngineFrame() {
+	Win_Frame();
 
 #ifdef DEBUG
-		Sys_MemFrame();
+	Sys_MemFrame();
 #endif
 
-		// set exceptions, even if some crappy syscall changes them!
-		Sys_FPU_EnableExceptions( TEST_FPU_EXCEPTIONS );
+	// set exceptions, even if some crappy syscall changes them!
+	Sys_FPU_EnableExceptions( TEST_FPU_EXCEPTIONS );
 
-		// run the game
-		common->Frame();
-	}
+	// run the game
+	common->Frame();
+}
 
-	// never gets here
-	return 0;
+/*
+==================
+Sys_EngineShutdown
+
+The host is gone by now, so Quit takes the game's path: Shutdown, then ExitProcess.
+==================
+*/
+void Sys_EngineShutdown() {
+	engineHost = nullptr;
+	common->Quit();
 }
 
 /*

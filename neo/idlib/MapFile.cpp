@@ -165,6 +165,8 @@ idMapPatch *idMapPatch::Parse( idLexer &src, const idVec3 &origin, bool patchDef
 		return NULL;
 	}
 
+	patch->fileTexCoords.SetNum( patch->GetWidth() * patch->GetHeight() );
+
 
 	for ( j = 0; j < patch->GetWidth(); j++ ) {
 		if ( !src.ExpectTokenString( "(" ) ) {
@@ -186,6 +188,7 @@ idMapPatch *idMapPatch::Parse( idLexer &src, const idVec3 &origin, bool patchDef
 			vert->xyz[1] = v[1] - origin[1];
 			vert->xyz[2] = v[2] - origin[2];
 			vert->SetTexCoord( v[3], v[4] );
+			patch->fileTexCoords[i * patch->GetWidth() + j].Set( v[3], v[4] );
 		}
 		if ( !src.ExpectTokenString( ")" ) ) {
 			delete patch;
@@ -482,6 +485,19 @@ idMapBrush *idMapBrush::ParseQ3( idLexer &src, const idVec3 &origin ) {
 	return brush;
 }
 
+idMapBrush *idMapBrush::Clone() const {
+	idMapBrush * const brush = new ( TAG_IDLIB ) idMapBrush();
+	brush->epairs = epairs;
+	for ( int i = 0; i < sides.Num(); i++ ) {
+		brush->AddSide( new ( TAG_IDLIB ) idMapBrushSide( *sides[i] ) );
+	}
+	return brush;
+}
+
+idMapPatch *idMapPatch::Clone() const {
+	return new ( TAG_IDLIB ) idMapPatch( *this );
+}
+
 /*
 ============
 idMapBrush::Write
@@ -722,7 +738,7 @@ unsigned int idMapEntity::GetGeometryCRC() const {
 idMapFile::Parse
 ===============
 */
-bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath ) {
+bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath, bool asWritten ) {
 	// no string concatenation for epairs and allow path names for materials
 	idLexer src( LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
 	idToken token;
@@ -771,7 +787,7 @@ bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath ) {
 	SetGeometryCRC();
 
 	// if the map has a worldspawn
-	if ( entities.Num() ) {
+	if ( entities.Num() && !asWritten ) {
 
 		// "removeEntities" "classname" can be set in the worldspawn to remove all entities with the given classname
 		const idKeyValue *removeEntities = entities[0]->epairs.MatchPrefix( "removeEntities", NULL );
@@ -835,7 +851,7 @@ bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath ) {
 idMapFile::Write
 ============
 */
-bool idMapFile::Write( const char *fileName, const char *ext, bool fromBasePath ) {
+bool idMapFile::Write( const char *fileName, const char *ext, const char *basePath ) {
 	int i;
 	idStr qpath;
 	idFile *fp;
@@ -845,12 +861,7 @@ bool idMapFile::Write( const char *fileName, const char *ext, bool fromBasePath 
 
 	idLib::common->Printf( "writing %s...\n", qpath.c_str() );
 
-	if ( fromBasePath ) {
-		fp = idLib::fileSystem->OpenFileWrite( qpath, "fs_basepath" );
-	}
-	else {
-		fp = idLib::fileSystem->OpenExplicitFileWrite( qpath );
-	}
+	fp = idLib::fileSystem->OpenFileWrite( qpath, basePath );
 
 	if ( !fp ) {
 		idLib::common->Warning( "Couldn't open %s\n", qpath.c_str() );
@@ -859,8 +870,12 @@ bool idMapFile::Write( const char *fileName, const char *ext, bool fromBasePath 
 
 	fp->WriteFloatString( "Version %f\n", (float) CURRENT_MAP_VERSION );
 
+	// an entity without key/values is one an editor removed and keeps for its undo
+	int written = 0;
 	for ( i = 0; i < entities.Num(); i++ ) {
-		entities[i]->Write( fp, i );
+		if ( entities[i]->epairs.GetNumKeyVals() > 0 ) {
+			entities[i]->Write( fp, written++ );
+		}
 	}
 
 	idLib::fileSystem->CloseFile( fp );

@@ -243,6 +243,31 @@ void KillEntities( const idCmdArgs &args, const idTypeInfo &superClass ) {
 
 /*
 ==================
+Cmd_AIStatus_f
+
+Where every monster is, what it navigates with and whom it is after.
+==================
+*/
+static void Cmd_AIStatus_f( const idCmdArgs & ) {
+	const idPlayer *player = gameLocal.GetLocalPlayer();
+	for ( idEntity *ent = gameLocal.spawnedEntities.Next(); ent != nullptr; ent = ent->spawnNode.Next() ) {
+		if ( !ent->IsType( idAI::Type ) ) {
+			continue;
+		}
+		const idAI *ai = static_cast<const idAI *>( ent );
+		const idVec3 &origin = ai->GetPhysics()->GetOrigin();
+		const idAAS *aas = ai->GetAAS();
+		const idActor *enemy = ai->GetEnemy();
+		gameLocal.Printf( "aiStatus %s: time %d, origin %.1f %.1f %.1f, aas %s, enemy %s, to player %.1f\n", ai->GetName(), gameLocal.time,
+			origin.x, origin.y, origin.z,
+			( aas != nullptr && aas->GetSettings() != nullptr ) ? aas->GetSettings()->fileExtension.c_str() : "none",
+			( enemy != nullptr ) ? enemy->GetName() : "none",
+			( player != nullptr ) ? ( player->GetPhysics()->GetOrigin() - origin ).Length() : 0.0f );
+	}
+}
+
+/*
+==================
 Cmd_KillMonsters_f
 
 Kills all the monsters in a level.
@@ -2329,6 +2354,7 @@ void idGameLocal::InitConsoleCommands() {
 	cmdSystem->AddCommand( "damage",				Cmd_Damage_f,				CMD_FL_GAME|CMD_FL_CHEAT,	"apply damage to an entity", idGameLocal::ArgCompletion_EntityName );
 	cmdSystem->AddCommand( "remove",				Cmd_Remove_f,				CMD_FL_GAME|CMD_FL_CHEAT,	"removes an entity", idGameLocal::ArgCompletion_EntityName );
 	cmdSystem->AddCommand( "killMonsters",			Cmd_KillMonsters_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"removes all monsters" );
+	cmdSystem->AddCommand( "aiStatus",				Cmd_AIStatus_f,				CMD_FL_GAME,				"prints where every monster is, its AAS and its enemy" );
 	cmdSystem->AddCommand( "killMoveables",			Cmd_KillMovables_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"removes all moveables" );
 	cmdSystem->AddCommand( "killRagdolls",			Cmd_KillRagdolls_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"removes all ragdolls" );
 	cmdSystem->AddCommand( "addline",				Cmd_AddDebugLine_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"adds a debug line" );

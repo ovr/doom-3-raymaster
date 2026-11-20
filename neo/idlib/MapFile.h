@@ -78,7 +78,10 @@ public:
 	const idPlane &			GetPlane() const { return plane; }
 	void					SetPlane( const idPlane &p ) { plane = p; }
 	void					SetTextureMatrix( const idVec3 mat[2] ) { texMat[0] = mat[0]; texMat[1] = mat[1]; }
-	void					GetTextureMatrix( idVec3 &mat1, idVec3 &mat2 ) { mat1 = texMat[0]; mat2 = texMat[1]; }
+	void					GetTextureMatrix( idVec3 &mat1, idVec3 &mat2 ) const { mat1 = texMat[0]; mat2 = texMat[1]; }
+							// the origin of the brush's entity: the texture is laid out in world space
+	const idVec3 &			GetOrigin() const { return origin; }
+	void					SetOrigin( const idVec3 &o ) { origin = o; }
 	void					GetTextureVectors( idVec4 v[2] ) const;
 
 protected:
@@ -106,6 +109,8 @@ public:
 	int						GetNumSides() const { return sides.Num(); }
 	int						AddSide( idMapBrushSide *side ) { return sides.Append( side ); }
 	idMapBrushSide *		GetSide( int i ) const { return sides[i]; }
+							// a copy the caller owns
+	[[nodiscard]] idMapBrush *	Clone() const;
 	unsigned int			GetGeometryCRC() const;
 
 protected:
@@ -130,12 +135,19 @@ public:
 	void					SetVertSubdivisions( int n ) { vertSubdivisions = n; }
 	void					SetExplicitlySubdivided( bool b ) { explicitSubdivisions = b; }
 	unsigned int			GetGeometryCRC() const;
+							// A parsed patch keeps the texture coordinates of the file: idDrawVert holds
+							// 16 bit floats, too coarse for a map compiler. Empty for a patch made in code.
+	bool					HasFileTexCoords() const { return fileTexCoords.Num() == verts.Num(); }
+	const idVec2 &			GetFileTexCoord( int index ) const { return fileTexCoords[index]; }
+							// a copy the caller owns
+	[[nodiscard]] idMapPatch *	Clone() const;
 
 protected:
 	idStr					material;
 	int						horzSubdivisions;
 	int						vertSubdivisions;
 	bool					explicitSubdivisions;
+	idList<idVec2, TAG_IDLIB_LIST_MAP>	fileTexCoords;
 };
 
 ID_INLINE idMapPatch::idMapPatch() {
@@ -173,6 +185,9 @@ public:
 	int						GetNumPrimitives() const { return primitives.Num(); }
 	idMapPrimitive *		GetPrimitive( int i ) const { return primitives[i]; }
 	void					AddPrimitive( idMapPrimitive *p ) { primitives.Append( p ); }
+							// for an editor: the entity owns p; RemovePrimitive gives the primitive to the caller
+	void					InsertPrimitive( int index, idMapPrimitive *p ) { primitives.Insert( p, index ); }
+	[[nodiscard]] idMapPrimitive *	RemovePrimitive( int index ) { idMapPrimitive * const p = primitives[index]; primitives.RemoveIndex( index ); return p; }
 	unsigned int			GetGeometryCRC() const;
 	void					RemovePrimitiveData();
 
@@ -190,8 +205,11 @@ public:
 							// normally this will use a .reg file instead of a .map file if it exists,
 							// which is what the game and dmap want, but the editor will want to always
 							// load a .map file
-	bool					Parse( const char *filename, bool ignoreRegion = false, bool osPath = false );
-	bool					Write( const char *fileName, const char *ext, bool fromBasePath = true );
+							// asWritten keeps the file as it is on disk for an editor that saves it again:
+							// the worldspawn directives (removeEntities, moveFuncGroups, ...) are not applied
+	bool					Parse( const char *filename, bool ignoreRegion = false, bool osPath = false, bool asWritten = false );
+							// into the directory of the given path cvar; never the game install by default
+	bool					Write( const char *fileName, const char *ext, const char *basePath = "fs_savepath" );
 							// get the number of entities in the map
 	int						GetNumEntities() const { return entities.Num(); }
 							// get the specified entity

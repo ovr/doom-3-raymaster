@@ -65,6 +65,7 @@ option(D3BFG_WARNINGS_AS_ERRORS "Treat compiler warnings as errors (/WX) in engi
 # ---------------------------------------------------------------------------
 set(D3BFG_NEO_DIR "${CMAKE_SOURCE_DIR}/neo")
 set(D3BFG_ZLIB_DIR "${CMAKE_SOURCE_DIR}/third_party/zlib")
+set(D3BFG_PCH "${D3BFG_NEO_DIR}/idlib/precompiled.h")
 if(NOT EXISTS "${D3BFG_ZLIB_DIR}/zlib.h")
 	message(FATAL_ERROR "third_party/zlib is empty: run git submodule update --init")
 endif()
@@ -113,3 +114,4 @@ endfunction()
 add_subdirectory(doomclassic)
 enable_testing()
 add_subdirectory(neo)
+add_subdirectory(editor)

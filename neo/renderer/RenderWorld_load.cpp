@@ -747,9 +747,12 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 	// if we are reloading the same map, check the timestamp
 	// and try to skip all the work
 	ID_TIME_T currentTimeStamp = fileSystem->GetTimestamp( filename );
+	// A .proc outside the resource files is one a map compiler wrote: it decides, whatever the
+	// production mode says, and a .bproc made from another .proc is not used.
+	const bool looseProc = ( currentTimeStamp != FILE_NOT_FOUND_TIMESTAMP && currentTimeStamp != 0 );
 
 	if ( name == mapName ) {
-		if ( fileSystem->InProductionMode() || ( currentTimeStamp != FILE_NOT_FOUND_TIMESTAMP && currentTimeStamp == mapTimeStamp ) ) {
+		if ( ( !looseProc && fileSystem->InProductionMode() ) || ( currentTimeStamp != FILE_NOT_FOUND_TIMESTAMP && currentTimeStamp == mapTimeStamp ) ) {
 			common->Printf( "idRenderWorldLocal::InitFromMap: retaining existing map\n" );
 			FreeDefs();
 			TouchWorldModels();
@@ -775,8 +778,12 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 			file->ReadBig( numEntries );
 			file->ReadString( mapName );
 			file->ReadBig( mapTimeStamp );
-			loaded = true;
-			for ( int i = 0; i < numEntries; i++ ) {
+			loaded = !looseProc || mapTimeStamp == currentTimeStamp;
+			if ( !loaded ) {
+				common->Printf( "idRenderWorldLocal::InitFromMap: %s is older than %s\n", generatedFileName.c_str(), filename.c_str() );
+			}
+			mapSource = generatedFileName;
+			for ( int i = 0; loaded && i < numEntries; i++ ) {
 				idStrStatic< MAX_OSPATH > type;
 				file->ReadString( type );
 				type.ToLower();
@@ -817,8 +824,11 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 		}
 
 
+		// half of a stale .bproc may be loaded
+		FreeWorld();
 		mapName = name;
 		mapTimeStamp = currentTimeStamp;
+		mapSource = filename;
 
 		// if we are writing a demo, archive the load command
 		if ( common->WriteDemo() ) {
@@ -832,7 +842,8 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 		}
 			
 		int numEntries = 0;
-		idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_basepath" ) );
+		// the save path: the game install stays as it is, and the loose file wins the next read
+		idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_savepath" ) );
 		if ( outputFile != NULL ) {
 			int magic = BPROC_MAGIC;
 			outputFile->WriteBig( magic );
@@ -920,6 +931,36 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 
 	// done!
 	return true;
+}
+
+CONSOLE_COMMAND_SHIP( renderWorldInfo, "prints where the game's render world was read from and what it holds", nullptr ) {
+	const idRenderWorldLocal * const world = tr.primaryWorld;
+	if ( world == nullptr || world->mapName.IsEmpty() ) {
+		common->Printf( "No map is loaded.\n" );
+		return;
+	}
+	int shadowModels = 0;
+	int surfaces = 0;
+	int verts = 0;
+	int indexes = 0;
+	for ( int i = 0; i < world->localModels.Num(); i++ ) {
+		const idRenderModel * const model = world->localModels[i];
+		if ( idStr::Icmpn( model->Name(), "_prelight_", 10 ) == 0 ) {
+			shadowModels++;
+			continue;
+		}
+		for ( int j = 0; j < model->NumSurfaces(); j++ ) {
+			const srfTriangles_t * const tri = model->Surface( j )->geometry;
+			surfaces++;
+			verts += ( tri != nullptr ) ? tri->numVerts : 0;
+			indexes += ( tri != nullptr ) ? tri->numIndexes : 0;
+		}
+	}
+	common->Printf( "map        %s\n", world->mapName.c_str() );
+	common->Printf( "read from  %s (.proc timestamp %lld)\n", world->mapSource.c_str(), static_cast<long long>( world->mapTimeStamp ) );
+	common->Printf( "areas      %d, %d portals, %d nodes\n", world->numPortalAreas, world->numInterAreaPortals, world->numAreaNodes );
+	common->Printf( "models     %d with %d surfaces, %d verts, %d triangles\n", world->localModels.Num() - shadowModels, surfaces, verts, indexes / 3 );
+	common->Printf( "shadows    %d precomputed shadow volumes\n", shadowModels );
 }
 
 /*
