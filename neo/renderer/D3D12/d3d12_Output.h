@@ -49,7 +49,7 @@ private:
 	idD3D12DescriptorPool &			rtvPool;
 	idD3D12DescriptorPool &			dsvPool;
 	surface_t						color, depth, resolved;
-	d3d12Descriptor_t				rtvUnorm, rtvSrgb, dsv;	// stable: Create rewrites the views
+	d3d12Descriptor_t				rtvUnorm, rtvSrgb, dsv;	// stable: Create rewrites the views, the SRVs are new
 	int								width = 0;
 	int								height = 0;
 	UINT							samples = 1;

@@ -19,8 +19,8 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpWobbleSkyZ;
 };
 
-TextureCube skyMap : register( t0 );
-SamplerState skySampler : register( s0 );
+TEXTURECUBE( TextureCube, skyMap, 0 );
+SAMPLER( skySampler, 0 );
 
 struct VSInput {
 	float4 position : POSITION;

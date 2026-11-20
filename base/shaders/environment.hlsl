@@ -19,8 +19,8 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpMVPmatrixW;
 };
 
-TextureCube environmentMap : register( t0 );
-SamplerState environmentSampler : register( s0 );
+TEXTURECUBE( TextureCube, environmentMap, 0 );
+SAMPLER( environmentSampler, 0 );
 
 struct VSInput {
 	float4 position : POSITION;

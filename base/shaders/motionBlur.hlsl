@@ -16,10 +16,10 @@ cbuffer PixelParms : register( b1 ) {
 	float4 rpOverbright;
 };
 
-Texture2D viewColorMap : register( t0 );
-Texture2D viewDepthMap : register( t1 );
-SamplerState viewColorSampler : register( s0 );
-SamplerState viewDepthSampler : register( s1 );
+TEXTURE2D( Texture2D, viewColorMap, 0 );
+TEXTURE2D( Texture2D, viewDepthMap, 1 );
+SAMPLER( viewColorSampler, 0 );
+SAMPLER( viewDepthSampler, 1 );
 
 struct VSInput {
 	float4 position : POSITION;

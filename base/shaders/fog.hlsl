@@ -25,10 +25,10 @@ cbuffer PixelParms : register( b1 ) {
 	float4 rpColor;
 };
 
-Texture2D fogMap : register( t0 );
-Texture2D fogEnterMap : register( t1 );
-SamplerState fogSampler : register( s0 );
-SamplerState fogEnterSampler : register( s1 );
+TEXTURE2D( Texture2D, fogMap, 0 );
+TEXTURE2D( Texture2D, fogEnterMap, 1 );
+SAMPLER( fogSampler, 0 );
+SAMPLER( fogEnterSampler, 1 );
 
 struct VSInput {
 	float4 position : POSITION;

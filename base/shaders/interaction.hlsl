@@ -38,16 +38,16 @@ cbuffer PixelParms : register( b1 ) {
 	float4 rpSpecularModifier;
 };
 
-Texture2D bumpMap : register( t0 );
-Texture2D lightFalloffMap : register( t1 );
-Texture2D lightProjectionMap : register( t2 );
-Texture2D diffuseMap : register( t3 );
-Texture2D specularMap : register( t4 );
-SamplerState bumpSampler : register( s0 );
-SamplerState lightFalloffSampler : register( s1 );
-SamplerState lightProjectionSampler : register( s2 );
-SamplerState diffuseSampler : register( s3 );
-SamplerState specularSampler : register( s4 );
+TEXTURE2D( Texture2D, bumpMap, 0 );
+TEXTURE2D( Texture2D, lightFalloffMap, 1 );
+TEXTURE2D( Texture2D, lightProjectionMap, 2 );
+TEXTURE2D( Texture2D, diffuseMap, 3 );
+TEXTURE2D( Texture2D, specularMap, 4 );
+SAMPLER( bumpSampler, 0 );
+SAMPLER( lightFalloffSampler, 1 );
+SAMPLER( lightProjectionSampler, 2 );
+SAMPLER( diffuseSampler, 3 );
+SAMPLER( specularSampler, 4 );
 
 struct VSInput {
 	float4 position : POSITION;

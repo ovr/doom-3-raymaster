@@ -13,8 +13,8 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpMVPmatrixW;
 };
 
-Texture2D guiMap : register( t0 );
-SamplerState guiSampler : register( s0 );
+TEXTURE2D( Texture2D, guiMap, 0 );
+SAMPLER( guiSampler, 0 );
 
 struct VSInput {
 	float4 position : POSITION;

@@ -260,12 +260,13 @@ public:
 		graveyard( queue ),
 		commands( device, queue ),
 		barriers( *this ),
-		srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ),
+		srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SHADER_VISIBLE_SRVS ),
 		rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
+		samplers( device ),
 		staging( device, stagingSize, L"test staging ring" ),
 		uploader( device, *this, staging, barriers, graveyard ),
 		buffers( device, graveyard, uploader, barriers, framePlacement ),
-		textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ) {
+		textures( device, graveyard, srvPool, rtvPool, samplers, uploader, barriers, device.Features().unalignedBlocks ) {
 	}
 	~idTestGpu() {
 		if ( !device.IsLost() ) {
@@ -315,8 +316,10 @@ public:
 	idD3D12Graveyard				graveyard;
 	idD3D12CommandStream			commands;
 	idD3D12Barriers					barriers;
+	static constexpr uint32			SHADER_VISIBLE_SRVS = 4096;
 	idD3D12DescriptorPool			srvPool;
 	idD3D12DescriptorPool			rtvPool;
+	idD3D12SamplerHeap				samplers;
 	idD3D12UploadRing				staging;
 	idD3D12Uploader					uploader;
 	idD3D12BufferStore				buffers;
@@ -710,44 +713,29 @@ void Test_SamplerMap() {
 		"the bias" );
 }
 
-[[nodiscard]] d3d12SamplerTableKey_t TableKey( uint32 seed ) {
-	d3d12SamplerTableKey_t key;
-	for ( size_t slot = 0; slot < key.samplers.size(); slot++ ) {
-		key.samplers[slot] = D3D12_PackSampler( { static_cast<samplerFilter_t>( ( seed + slot ) & 3 ), static_cast<samplerAddress_t>( slot & 3 ), 1.0f,
-			static_cast<float>( seed ) * 0.125f } );
-	}
-	return key;
-}
-
-// Tables are kept by key and rewritten only after their last use was waited for: the oldest use first.
-void Test_WarpSamplerTables() {
+// A slot per packed sampler in the order of first use, made once and kept; the views of an SRV pool reach its
+// shader-visible heap at their slots.
+void Test_WarpDescriptorSlots() {
 	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
 	if ( !gpu ) {
 		return;
 	}
 	idD3D12SamplerHeap heap( gpu->device );
-	const auto first = heap.TryTable( TableKey( 0 ), 5, 0 );
-	const auto again = heap.TryTable( TableKey( 0 ), 6, 0 );
-	Check( first && again && first->ptr == again->ptr && heap.BuiltThisFrame() == 1, "the same key finds its table" );
-	std::vector<uint64> tables = { first ? first->ptr : 0 };
-	for ( uint32 i = 1; i < idD3D12SamplerHeap::TABLES; i++ ) {
-		const auto table = heap.TryTable( TableKey( i ), 10 + i, 0 );
-		tables.push_back( table ? table->ptr : 0 );
-	}
-	Check( heap.Used() == static_cast<int>( idD3D12SamplerHeap::TABLES ) && heap.BuiltThisFrame() == static_cast<int>( idD3D12SamplerHeap::TABLES ),
-		"256 keys, 256 tables" );
-	std::vector<uint64> sorted = tables;
-	std::ranges::sort( sorted );
-	Check( std::ranges::adjacent_find( sorted ) == sorted.end() && sorted.front() != 0, "distinct tables" );
-	Check( !heap.TryTable( TableKey( 1000 ), 300, 5 ), "every table used after fence 5: no room" );
-	Check( heap.OldestUse() == 6, "the oldest use: table 0, used by fence 6" );
-	const auto evicted = heap.TryTable( TableKey( 1000 ), 300, 11 );
-	Check( evicted && evicted->ptr == tables[0], "fence 11 waited: the oldest use (fence 6, table 0) goes first" );
-	const auto next = heap.TryTable( TableKey( 1001 ), 301, 11 );
-	Check( next && next->ptr == tables[1], "then table 1 (fence 11)" );
-	Check( heap.TryTable( TableKey( 2 ), 302, 11 ).has_value() && heap.BuiltThisFrame() == static_cast<int>( idD3D12SamplerHeap::TABLES ) + 2,
-		"a kept key is not built again" );
-	Check( !heap.TryTable( TableKey( 1 ), 303, 11 ), "the evicted key 1 needs a table, and none is free" );
+	const uint64 linear = D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 1.0f, 0.0f } );
+	const uint64 point = D3D12_PackSampler( { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } );
+	const uint32 first = heap.Slot( linear );
+	const uint32 second = heap.Slot( point );
+	Check( first == 0 && second == 1 && heap.Slot( linear ) == 0 && heap.Used() == 2 && heap.BuiltThisFrame() == 2,
+		"two samplers, two slots, each made once" );
+	heap.ResetFrameCounters();
+	Check( heap.Slot( point ) == 1 && heap.BuiltThisFrame() == 0, "a kept sampler is not made again" );
+	Check( heap.Heap() != nullptr && heap.Heap()->GetDesc().NumDescriptors == idD3D12SamplerHeap::SIZE
+		&& ( heap.Heap()->GetDesc().Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE ) != 0, "one shader-visible heap of 2048" );
+
+	idD3D12DescriptorPool pool( gpu->device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 8 );
+	const d3d12Descriptor_t slot = pool.Allocate();
+	Check( slot.index == 0 && pool.Used() == 1 && pool.ShaderVisibleHeap() != nullptr && pool.ShaderVisibleHeap()->GetDesc().NumDescriptors == 8,
+		"the pool's shader-visible heap" );
 	CheckNoLayerErrors( *gpu );
 }
 
@@ -1157,7 +1145,7 @@ void UnalignedBlocks( idTestGpu & gpu ) {
 	if ( !sampler.Ready() ) {
 		return;
 	}
-	idD3D12TextureStore decoding( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool, gpu.uploader, gpu.barriers, false );
+	idD3D12TextureStore decoding( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool, gpu.samplers, gpu.uploader, gpu.barriers, false );
 	decoding.RecordUploads( true );
 	gpu.textures.RecordUploads( true );
 	const D3D12_SAMPLER_DESC point = SamplerOf( samplerFilter_t::NEAREST, samplerAddress_t::CLAMP );
@@ -1486,6 +1474,43 @@ void Test_WarpTextureGraves() {
 		return {};
 	}
 	return std::move( *entries );
+}
+
+// The masks are the b3 members a stage reads, as GL's are its active sampler uniforms: a texture declared
+// but not sampled counts for nothing. A register binding of a texture is refused.
+void Test_HlslBindless() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
+	const auto source = []( const char * text ) {
+		d3d12HlslSource_t made;
+		made.name = "test_bindless";
+		made.path = "shaders/test_bindless.hlsl";
+		made.text = text;
+		return made;
+	};
+	const auto built = compiler.Build( source(
+		"#include \"include/bindless.hlsli\"\n"
+		"TEXTURE2D( Texture2D, bumpMap, 0 );\n"
+		"TEXTURECUBE( TextureCube, environmentMap, 2 );\n"
+		"TEXTURE2D( Texture2D, unusedMap, 3 );\n"
+		"SAMPLER( bumpSampler, 0 );\n"
+		"SAMPLER( environmentSampler, 2 );\n"
+		"float4 PSMain( float4 position : SV_Position, float3 direction : TEXCOORD0 ) : SV_Target {\n"
+		"	return bumpMap.Sample( bumpSampler, direction.xy ) + environmentMap.Sample( environmentSampler, direction );\n"
+		"}\n" ), shaderStageType_t::FRAGMENT, hlslParms_t::ANY );
+	if ( Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		Check( built->reflection.samplerMask == 0x5 && built->reflection.cubeMask == 0x4, va( "samplers 0x%x, cubes 0x%x: not 0x5 and 0x4",
+			built->reflection.samplerMask, built->reflection.cubeMask ) );
+	}
+	const auto bound = compiler.Build( source(
+		"Texture2D map : register( t0 );\n"
+		"SamplerState mapSampler : register( s0 );\n"
+		"float4 PSMain( float4 position : SV_Position ) : SV_Target { return map.Sample( mapSampler, position.xy ); }\n" ),
+		shaderStageType_t::FRAGMENT, hlslParms_t::ANY );
+	Check( !bound && bound.error().Find( "bindless.hlsli" ) >= 0, bound ? "a texture at t0 compiled" : bound.error().c_str() );
 }
 
 // Stages from the preprocessed text: names in comments, and a SKINNED that changes nothing, add none.
@@ -2397,7 +2422,7 @@ idTestRaster::idTestRaster( idTestGpu & owner ) :
 	readback = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_READBACK, readbackBytes, D3D12_RESOURCE_STATE_COPY_DEST, L"test raster readback" );
 	upload = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_UPLOAD, UPLOAD_BYTES, D3D12_RESOURCE_STATE_GENERIC_READ, L"test raster upload" );
 
-	// the table slots no program samples here: null views and point samplers
+	// what every index of b3 reads here, 0: a null view and a point sampler
 	const auto heap = [&]( D3D12_DESCRIPTOR_HEAP_TYPE type ) {
 		const D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { type, MAX_TEXTURE_SLOTS, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
 		idComPtr<ID3D12DescriptorHeap> created;
@@ -2532,8 +2557,8 @@ void idTestRaster::Draw( d3d12Program_t & program, const draw_t & draw, std::spa
 	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::VERTEX_PARMS ), vertexParms );
 	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::FRAGMENT_PARMS ), fragmentParms );
 	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), upload->GetGPUVirtualAddress() );
-	list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::TEXTURES ), viewHeap->GetGPUDescriptorHandleForHeapStart() );
-	list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::SAMPLERS ), samplerHeap->GetGPUDescriptorHandleForHeapStart() );
+	const d3d12DrawResources_t resources;
+	list.SetGraphicsRoot32BitConstants( D3D12_Root( d3d12RootSlot_t::DRAW_RESOURCES ), d3d12DrawResources_t::COUNT, resources.indices.data(), 0 );
 	list.IASetVertexBuffers( 0, 1, &vertexView );
 	list.IASetIndexBuffer( &indexView );
 	for ( int i = 0; i < draw.times; i++ ) {
@@ -3025,8 +3050,6 @@ public:
 	idD3D12RootSignature			root;
 	idD3D12DescriptorPool			dsvPool;
 	idD3D12UploadRing				constants;
-	idD3D12DescriptorRing			descriptors;
-	idD3D12SamplerHeap				samplers;
 	idD3D12SceneTarget				scene;
 	idD3D12InternalPasses			passes;
 	idD3D12ScreenCopies				copies;
@@ -3043,10 +3066,8 @@ idTestCopies::idTestCopies( idTestGpu & owner, UINT sampleCount ) :
 	root( owner.device, owner.library ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
 	constants( owner.device, 1 << 20, L"test constants ring" ),
-	descriptors( owner.device ),
-	samplers( owner.device ),
 	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
-	passes( owner.device, root, hlslCompiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
+	passes( owner.device, root, hlslCompiler, owner, owner.barriers, owner.uploader, constants, owner.samplers, owner.srvPool ),
 	copies( owner, owner.barriers, scene, owner.textures, passes, owner.rtvPool ),
 	readback( owner.device, owner, owner.barriers, owner.graveyard ) {
 	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
@@ -3057,7 +3078,7 @@ idTestCopies::idTestCopies( idTestGpu & owner, UINT sampleCount ) :
 		return;
 	}
 	scene.Create( SIZE, SIZE, samples );
-	passes.CreateDefaults( gpu.textures.Fallback( textureKind_t::TEX_2D ), gpu.textures.Fallback( textureKind_t::TEX_CUBE ) );
+	passes.CreateDefaults();
 	ready = Check( scene.Color().resource && scene.Depth().resource, va( "a %u-sample scene target", samples ) );
 }
 
@@ -3069,7 +3090,7 @@ idTestCopies::~idTestCopies() {
 
 void idTestCopies::Bind() {
 	ID3D12GraphicsCommandList1 & list = gpu.List();
-	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
+	ID3D12DescriptorHeap * heaps[] = { gpu.srvPool.ShaderVisibleHeap(), gpu.samplers.Heap() };
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( root.Get() );
 }
@@ -3524,8 +3545,6 @@ public:
 	idD3D12RootSignature			root;
 	idD3D12DescriptorPool			dsvPool;
 	idD3D12UploadRing				constants;
-	idD3D12DescriptorRing			descriptors;
-	idD3D12SamplerHeap				samplers;
 	idD3D12BufferStore				buffers;
 	idD3D12ShaderLibrary			shaders;
 	idD3D12PipelineFactory			factory;
@@ -3543,15 +3562,12 @@ idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t frameP
 	root( owner.device, owner.library ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
 	constants( owner.device, 1 << 20, L"test constants ring" ),
-	descriptors( owner.device ),
-	samplers( owner.device ),
 	buffers( owner.device, owner.graveyard, owner.uploader, owner.barriers, framePlacement ),
 	shaders( hlslCompiler, owner.graveyard ),
 	factory( owner.device, root, nullptr, nullptr ),
 	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
-	passes( owner.device, root, hlslCompiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
-	recorder( owner.device, owner, owner.barriers, scene, passes, factory, shaders, buffers, owner.textures, owner.srvPool, constants, descriptors,
-		samplers ) {
+	passes( owner.device, root, hlslCompiler, owner, owner.barriers, owner.uploader, constants, owner.samplers, owner.srvPool ),
+	recorder( owner.device, owner, owner.barriers, scene, passes, factory, shaders, buffers, owner.textures, constants, owner.samplers ) {
 	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
 		gpu.textures.CreateDefaults();
 	}
@@ -3561,7 +3577,7 @@ idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t frameP
 	}
 	buffers.CreateDefaults();
 	scene.Create( SIZE, SIZE, 1 );
-	passes.CreateDefaults( gpu.textures.Fallback( textureKind_t::TEX_2D ), gpu.textures.Fallback( textureKind_t::TEX_CUBE ) );
+	passes.CreateDefaults();
 	ready = Check( scene.Color().resource && scene.Depth().resource && buffers.ZeroJoints() != 0, "the scene target and the zero joints" );
 }
 
@@ -3588,7 +3604,7 @@ programHandle_t idTestRecorder::Program( const char * name ) {
 
 void idTestRecorder::NewList() {
 	ID3D12GraphicsCommandList1 & list = gpu.List();
-	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
+	ID3D12DescriptorHeap * heaps[] = { gpu.srvPool.ShaderVisibleHeap(), gpu.samplers.Heap() };
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( root.Get() );
 	recorder.NewList();
@@ -3706,6 +3722,107 @@ void DrawFrameBuffers( idTestGpu & gpu, d3d12BufferPlacement_t placement ) {
 	fixture.buffers.Destroy( vertexBuffer );
 	fixture.buffers.Destroy( indexBuffer );
 	fixture.buffers.Destroy( jointBuffer );
+	CheckNoLayerErrors( gpu );
+}
+
+// texture.vfp over three stripes: a red, a green and no texture (the black fallback, R11), the last in a new list.
+// The views and samplers come out of the heaps by the b3 indices of each draw.
+void DrawBindless( idTestGpu & gpu ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const programHandle_t program = fixture.Program( "texture" );
+	const d3d12Program_t * linked = fixture.shaders.FindProgram( program );
+	if ( !Check( linked != nullptr && linked->info.samplerMask == 1 && linked->info.cubeMask == 0, "texture samples slot 0, 2D" ) ) {
+		return;
+	}
+	const auto texture = [&]( byte r, byte g, const char * name ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, name );
+		const byte texel[4] = { r, g, 0, 255 };
+		gpu.textures.Upload( handle, 0, 0, 1, 1, texel, 0 );
+		return handle;
+	};
+	const textureHandle_t red = texture( 255, 0, "test red" );
+	const textureHandle_t green = texture( 0, 255, "test green" );
+
+	constexpr int STRIPES = 3;
+	std::array<idDrawVert, 4 * STRIPES> verts;
+	std::array<triIndex_t, 6 * STRIPES> indexes;
+	for ( int stripe = 0; stripe < STRIPES; stripe++ ) {
+		const float left = -1.0f + 2.0f * stripe / STRIPES;
+		const float right = left + 2.0f / STRIPES;
+		const float corners[4][2] = { { left, -1.0f }, { right, -1.0f }, { right, 1.0f }, { left, 1.0f } };
+		for ( int i = 0; i < 4; i++ ) {
+			idDrawVert & vert = verts[stripe * 4 + i];
+			vert.Clear();
+			vert.xyz.Set( corners[i][0], corners[i][1], 0.0f );
+			vert.SetTexCoord( 0.5f, 0.5f );
+		}
+		constexpr triIndex_t QUAD[6] = { 0, 1, 2, 0, 2, 3 };
+		for ( int i = 0; i < 6; i++ ) {
+			indexes[stripe * 6 + i] = static_cast<triIndex_t>( stripe * 4 + QUAD[i] );
+		}
+	}
+	fixture.NewList();
+	const bufferHandle_t vertexBuffer = fixture.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( verts ) ), verts.data() );
+	const bufferHandle_t indexBuffer = fixture.buffers.Create( bufferType_t::INDEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( indexes ) ), indexes.data() );
+	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && red != textureHandle_t::NONE
+			&& green != textureHandle_t::NONE, "the buffers and the textures" ) ) {
+		return;
+	}
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	for ( int row = 0; row < 4; row++ ) {
+		parms[RENDERPARM_MVPMATRIX_X + row][row] = 1.0f;
+	}
+	parms[RENDERPARM_TEXTUREMATRIX_S].Set( 1.0f, 0.0f, 0.0f, 0.0f );
+	parms[RENDERPARM_TEXTUREMATRIX_T].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+	parms[RENDERPARM_COLOR].Set( 1.0f, 1.0f, 1.0f, 1.0f );
+	renderLatch_t latch;
+	latch.stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK;
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	latch.program = program;
+	pipelineKey_t key = {};
+	key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+	key.layout = LAYOUT_DRAW_VERT;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.numIndexes = 6;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	const std::array<textureHandle_t, STRIPES> stripes = { red, green, textureHandle_t::NONE };
+	for ( int stripe = 0; stripe < STRIPES; stripe++ ) {
+		if ( stripe == STRIPES - 1 ) {
+			fixture.NextList();
+		}
+		latch.textures[0][static_cast<size_t>( textureKind_t::TEX_2D )] = stripes[stripe];
+		dc.indexOffset = stripe * 6 * static_cast<int>( sizeof( triIndex_t ) );
+		fixture.recorder.Draw( latch, key, dc );
+	}
+	const d3d12DrawStats_t stats = fixture.recorder.TakeStats();
+	Check( stats.draws == STRIPES && stats.resourceBinds == STRIPES && stats.unboundSlots == 1,
+		va( "%d draws, %d resource binds, %d unbound", stats.draws, stats.resourceBinds, stats.unboundSlots ) );
+
+	const std::vector<uint32> texels = fixture.ReadColor();
+	if ( Check( texels.size() == static_cast<size_t>( SIZE ) * SIZE, "the scene is read" ) ) {
+		constexpr std::array<uint32, STRIPES> EXPECTED = { 0xFF0000FFu, 0xFF00FF00u, 0xFF000000u };
+		int wrong = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				wrong += ( texels[static_cast<size_t>( row ) * SIZE + column] != EXPECTED[static_cast<size_t>( ( column + 0.5f ) * STRIPES / SIZE )] ) ? 1 : 0;
+			}
+		}
+		Check( wrong == 0, va( "%d pixels unlike red, green, black", wrong ) );
+	}
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	gpu.textures.Destroy( red );
+	gpu.textures.Destroy( green );
 	CheckNoLayerErrors( gpu );
 }
 
@@ -3939,7 +4056,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Format_Table", Test_FormatTable },
 	{ "Sampler_Packing", Test_SamplerPacking },
 	{ "Sampler_Map", Test_SamplerMap },
-	{ "Warp_SamplerTables", Test_WarpSamplerTables },
+	{ "Warp_DescriptorSlots", Test_WarpDescriptorSlots },
 	{ "Warp_TextureFormats", Test_WarpTextureFormats },
 	{ "Gpu_TextureFormats", Test_GpuTextureFormats },
 	{ "Warp_Borders", Test_WarpBorders },
@@ -3950,6 +4067,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_TextureLevels", Test_WarpTextureLevels },
 	{ "Warp_TextureGraves", Test_WarpTextureGraves },
 	{ "Dxc_Compile", Test_DxcCompile },
+	{ "Hlsl_Bindless", Test_HlslBindless },
 	{ "Hlsl_Entries", Test_HlslEntries },
 	{ "Hlsl_SourcesCompile", Test_HlslSourcesCompile },
 	{ "Hlsl_ProgramsMatchGl", Test_HlslProgramsMatchGl },
@@ -4001,6 +4119,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_PresentBlitMsaa", OnWarp<PresentBlit4> },
 	{ "Gpu_PresentBlitMsaa", OnGpu<PresentBlit4> },
 	{ "Warp_DrawFrameBuffers", OnWarp<DrawFrameBufferPlacements> },
+	{ "Warp_DrawBindless", OnWarp<DrawBindless> },
+	{ "Gpu_DrawBindless", OnGpu<DrawBindless> },
 	{ "Gpu_DrawFrameBuffers", OnGpu<DrawFrameBufferPlacements> },
 };
 

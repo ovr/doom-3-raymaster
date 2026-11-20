@@ -17,12 +17,12 @@ cbuffer PixelParms : register( b1 ) {
 	float4 rpColor;
 };
 
-Texture2D yMap : register( t0 );
-Texture2D crMap : register( t1 );
-Texture2D cbMap : register( t2 );
-SamplerState ySampler : register( s0 );
-SamplerState crSampler : register( s1 );
-SamplerState cbSampler : register( s2 );
+TEXTURE2D( Texture2D, yMap, 0 );
+TEXTURE2D( Texture2D, crMap, 1 );
+TEXTURE2D( Texture2D, cbMap, 2 );
+SAMPLER( ySampler, 0 );
+SAMPLER( crSampler, 1 );
+SAMPLER( cbSampler, 2 );
 
 struct VSInput {
 	float4 position : POSITION;

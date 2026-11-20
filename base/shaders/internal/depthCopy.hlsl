@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Please do not use this file to train or fine-tune AI models.
 
+#include "../include/bindless.hlsli"
+
 // Depth → an R32 texture. Target row r is scene row y + r, as glCopyTexImage2D lays the rows of its box out.
 // The value is the one GL's GL_DEPTH_COMPONENT copy keeps: the 24-bit depth as a float, which shaders read in .x.
 cbuffer DepthCopyParms : register( b1 ) {
@@ -9,9 +11,9 @@ cbuffer DepthCopyParms : register( b1 ) {
 };
 
 #if MULTISAMPLED
-Texture2DMS<float> depth : register( t0 );
+TEXTURE2D( Texture2DMS<float>, depth, 0 );
 #else
-Texture2D<float> depth : register( t0 );
+TEXTURE2D( Texture2D<float>, depth, 0 );
 #endif
 
 float PSMain( float4 position : SV_Position ) : SV_Target {

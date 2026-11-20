@@ -16,13 +16,6 @@ constexpr int SHOW_MARGIN = 16;
 constexpr DXGI_FORMAT GAMMA_LUT_FORMAT = DXGI_FORMAT_R16G16B16A16_UNORM;
 constexpr UINT GAMMA_LUT_ROW_BYTES = 256 * 4 * sizeof( uint16 );	// one row, already a multiple of the 256-byte pitch
 
-[[nodiscard]] d3d12SamplerTableKey_t ShowSamplers() {
-	d3d12SamplerTableKey_t key;
-	key.samplers[0] = D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::CLAMP, 1.0f, 0.0f } );
-	key.samplers[1] = D3D12_PackSampler( { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } );
-	return key;
-}
-
 // A whole magnification, or the level of a minification.
 [[nodiscard]] float ShowScale( float fit, float & level ) {
 	level = ( fit < 1.0f ) ? idMath::Log( 1.0f / fit ) / idMath::Log( 2.0f ) : 0.0f;
@@ -53,7 +46,7 @@ bool D3D12_GammaIsIdentity( const d3d12GammaRamp_t & ramp ) {
 
 idD3D12InternalPasses::idD3D12InternalPasses( const idD3D12Device & owner, const idD3D12RootSignature & signature, idD3D12HlslCompiler & dxc,
 	idD3D12Submitter & submit, idD3D12Barriers & batch, idD3D12Uploader & copies, idD3D12UploadRing & constantRing,
-	idD3D12DescriptorRing & descriptorRing, idD3D12SamplerHeap & samplerHeap, idD3D12DescriptorPool & srvs ) :
+	idD3D12SamplerHeap & samplerHeap, idD3D12DescriptorPool & srvs ) :
 	device( owner ),
 	root( signature ),
 	compiler( dxc ),
@@ -61,15 +54,14 @@ idD3D12InternalPasses::idD3D12InternalPasses( const idD3D12Device & owner, const
 	barriers( batch ),
 	uploader( copies ),
 	constants( constantRing ),
-	descriptors( descriptorRing ),
 	samplers( samplerHeap ),
 	srvPool( srvs ) {
 }
 
 // shaders/internal/*.hlsl: without them the backend cannot present, so a missing or broken file is fatal.
-void idD3D12InternalPasses::CreateDefaults( d3d12Descriptor_t black2D, d3d12Descriptor_t blackCube ) {
-	black = { black2D, blackCube };
-	showSamplers = ShowSamplers();
+void idD3D12InternalPasses::CreateDefaults() {
+	showSamplers[0] = samplers.Slot( D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::CLAMP, 1.0f, 0.0f } ) );
+	showSamplers[1] = samplers.Slot( D3D12_PackSampler( { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } ) );
 	const auto compile = [this]( const char * file, shaderStageType_t stage, const char * name, const char * define = nullptr ) {
 		std::optional<d3d12HlslSource_t> source = D3D12_LoadHlslFile( va( "shaders/internal/%s.hlsl", file ), name, compiler.Reader() );
 		if ( !source ) {
@@ -127,53 +119,22 @@ idComPtr<ID3D12PipelineState> idD3D12InternalPasses::CreatePipeline( const d3d12
 	return pso;
 }
 
-std::optional<idD3D12InternalPasses::room_t> idD3D12InternalPasses::TryRoom( std::span<const d3d12Descriptor_t> textures,
-	const d3d12SamplerTableKey_t * samplerKey ) {
-	const std::optional<d3d12UploadSpan_t> parms = constants.TryAllocate( PARM_BYTES, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT );
-	if ( !parms ) {
-		return std::nullopt;
-	}
-	room_t room = { *parms, std::nullopt, std::nullopt };
-	if ( !textures.empty() ) {
-		std::array<D3D12_CPU_DESCRIPTOR_HANDLE, MAX_TEXTURE_SLOTS> sources;
-		for ( size_t slot = 0; slot < sources.size(); slot++ ) {
-			// slot 1 is the cube of ShowImage; every other slot a pass leaves out is 2D
-			const d3d12Descriptor_t filler = black[( slot == 1 ) ? 1 : 0];
-			sources[slot] = srvPool.Cpu( ( slot < textures.size() && textures[slot].IsValid() ) ? textures[slot] : filler );
-		}
-		room.table = descriptors.TryCopyTable( sources );
-		if ( !room.table ) {
-			return std::nullopt;	// the parms taken here stay unused in the chunk SubmitChunk closes
-		}
-	}
-	if ( samplerKey != nullptr ) {
-		room.samplerTable = samplers.TryTable( *samplerKey, submitter.PendingFence(), submitter.WaitedFence() );
-		if ( !room.samplerTable ) {
-			return std::nullopt;
-		}
-	}
-	return room;
-}
-
-idD3D12InternalPasses::room_t idD3D12InternalPasses::Room( std::span<const d3d12Descriptor_t> textures, const d3d12SamplerTableKey_t * samplerKey ) {
-	std::optional<room_t> room = TryRoom( textures, samplerKey );
-	while ( !room ) {
+d3d12UploadSpan_t idD3D12InternalPasses::Parms() {
+	std::optional<d3d12UploadSpan_t> parms = constants.TryAllocate( PARM_BYTES, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT );
+	while ( !parms ) {
 		submitter.SubmitChunk();
-		uint64 oldest = Max( constants.OldestFence(), descriptors.OldestFence() );
-		if ( samplerKey != nullptr && samplers.Used() == static_cast<int>( idD3D12SamplerHeap::TABLES ) ) {
-			oldest = Max( oldest, samplers.OldestUse() );
-		}
+		const uint64 oldest = constants.OldestFence();
 		if ( oldest == 0 ) {
-			common->FatalError( "d3d12: an internal pass does not fit into empty rings" );
+			common->FatalError( "d3d12: an internal pass does not fit into an empty ring" );
 		}
 		submitter.WaitFor( oldest );
-		room = TryRoom( textures, samplerKey );
+		parms = constants.TryAllocate( PARM_BYTES, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT );
 	}
-	return *room;
+	return *parms;
 }
 
 void idD3D12InternalPasses::Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
-	const renderRect_t & viewport, const room_t & room ) {
+	const renderRect_t & viewport, const d3d12UploadSpan_t & parms, const d3d12DrawResources_t * resources ) {
 	barriers.Flush();
 	list.OMSetRenderTargets( 1, &target, FALSE, nullptr );
 	const D3D12_VIEWPORT view = { static_cast<float>( viewport.x ), static_cast<float>( viewport.y ),
@@ -183,12 +144,9 @@ void idD3D12InternalPasses::Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU
 	list.RSSetScissorRects( 1, &scissor );
 	list.SetPipelineState( &pso );
 	list.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::FRAGMENT_PARMS ), room.parms.gpu );
-	if ( room.table ) {
-		list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::TEXTURES ), *room.table );
-	}
-	if ( room.samplerTable ) {
-		list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::SAMPLERS ), *room.samplerTable );
+	list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::FRAGMENT_PARMS ), parms.gpu );
+	if ( resources != nullptr ) {
+		list.SetGraphicsRoot32BitConstants( D3D12_Root( d3d12RootSlot_t::DRAW_RESOURCES ), d3d12DrawResources_t::COUNT, resources->indices.data(), 0 );
 	}
 	list.DrawInstanced( 3, 1, 0, 0 );
 }
@@ -198,11 +156,15 @@ void idD3D12InternalPasses::PresentBlit( d3d12Descriptor_t sceneSrv, D3D12_CPU_D
 	if ( mapped ) {
 		barriers.Transition( *gammaLut.Get(), gammaLutState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 	}
-	const std::array textures = { sceneSrv, mapped ? gammaLutSrv : d3d12Descriptor_t() };
-	const room_t room = Room( textures );
+	d3d12DrawResources_t resources;
+	resources.SetTexture( 0, false, sceneSrv.index );
+	if ( mapped ) {
+		resources.SetTexture( 1, false, gammaLutSrv.index );
+	}
+	const d3d12UploadSpan_t parms = Parms();
 	const int32 sceneSize[4] = { width, height, 0, 0 };
-	memcpy( room.parms.cpu, sceneSize, sizeof( sceneSize ) );
-	Record( submitter.List(), backBuffer, mapped ? *blitGamma.Get() : *blit.Get(), { 0, 0, width, height }, room );
+	memcpy( parms.cpu, sceneSize, sizeof( sceneSize ) );
+	Record( submitter.List(), backBuffer, mapped ? *blitGamma.Get() : *blit.Get(), { 0, 0, width, height }, parms, &resources );
 }
 
 // The upload goes into the open list, behind every blit that read the old ramp.
@@ -254,7 +216,7 @@ bool idD3D12InternalPasses::CreateGammaLut() {
 	view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	view.Texture2D.MipLevels = 1;
 	gammaLutSrv = srvPool.Allocate();
-	device.Get().CreateShaderResourceView( gammaLut.Get(), &view, srvPool.Cpu( gammaLutSrv ) );
+	srvPool.CreateSrv( gammaLutSrv, *gammaLut.Get(), view );
 	blitGamma = CreatePipeline( blitGammaPs, idD3D12SwapChain::FORMAT, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ),
 		L"doom3 present blit with gamma" );
 	return blitGamma != nullptr;
@@ -267,9 +229,9 @@ void idD3D12InternalPasses::MaskedClear( D3D12_CPU_DESCRIPTOR_HANDLE target, d3d
 	if ( !pso ) {
 		pso = CreatePipeline( clearPs, id.ColorView(), id.Samples(), mask, L"doom3 masked clear" );
 	}
-	const room_t room = Room( {} );
-	memcpy( room.parms.cpu, rgba, 4 * sizeof( float ) );
-	Record( submitter.List(), target, *pso.Get(), rect, room );
+	const d3d12UploadSpan_t parms = Parms();
+	memcpy( parms.cpu, rgba, 4 * sizeof( float ) );
+	Record( submitter.List(), target, *pso.Get(), rect, parms, nullptr );
 }
 
 void idD3D12InternalPasses::ShowImage( d3d12Descriptor_t imageSrv, textureKind_t kind, int imageWidth, int imageHeight,
@@ -281,7 +243,10 @@ void idD3D12InternalPasses::ShowImage( d3d12Descriptor_t imageSrv, textureKind_t
 		pso = CreatePipeline( cube ? showCubePs : show2DPs, id.ColorView(), id.Samples(), static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ),
 			L"doom3 show image" );
 	}
-	const std::array textures = { cube ? d3d12Descriptor_t() : imageSrv, cube ? imageSrv : d3d12Descriptor_t() };
+	d3d12DrawResources_t resources;
+	resources.SetTexture( cube ? 1 : 0, cube, imageSrv.index );
+	resources.SetSampler( 0, showSamplers[0] );
+	resources.SetSampler( 1, showSamplers[1] );
 	float level = 0.0f;
 	if ( cube ) {
 		const int fit = Min( ( targetWidth - 2 * SHOW_MARGIN ) / 4, ( targetHeight - 2 * SHOW_MARGIN ) / 3 );
@@ -290,7 +255,7 @@ void idD3D12InternalPasses::ShowImage( d3d12Descriptor_t imageSrv, textureKind_t
 		}
 		const int cell = Max( 1, static_cast<int>( imageWidth * ShowScale( static_cast<float>( fit ) / imageWidth, level ) ) );
 		const renderRect_t panel = { ( targetWidth - 4 * cell ) / 2, ( targetHeight - 3 * cell ) / 2, 4 * cell, 3 * cell };
-		ShowPanel( *pso.Get(), textures, target, panel, false, level );
+		ShowPanel( *pso.Get(), resources, target, panel, false, level );
 		return;
 	}
 	const int areaWidth = ( targetWidth - 3 * SHOW_MARGIN ) / 2;
@@ -303,8 +268,8 @@ void idD3D12InternalPasses::ShowImage( d3d12Descriptor_t imageSrv, textureKind_t
 	const int width = Max( 1, static_cast<int>( imageWidth * scale ) );
 	const int height = Max( 1, static_cast<int>( imageHeight * scale ) );
 	const int y = SHOW_MARGIN + ( areaHeight - height ) / 2;
-	ShowPanel( *pso.Get(), textures, target, { SHOW_MARGIN + ( areaWidth - width ) / 2, y, width, height }, false, level );
-	ShowPanel( *pso.Get(), textures, target, { 2 * SHOW_MARGIN + areaWidth + ( areaWidth - width ) / 2, y, width, height }, true, level );
+	ShowPanel( *pso.Get(), resources, target, { SHOW_MARGIN + ( areaWidth - width ) / 2, y, width, height }, false, level );
+	ShowPanel( *pso.Get(), resources, target, { 2 * SHOW_MARGIN + areaWidth + ( areaWidth - width ) / 2, y, width, height }, true, level );
 }
 
 void idD3D12InternalPasses::CopyDepth( d3d12Descriptor_t depthSrv, UINT samples, D3D12_CPU_DESCRIPTOR_HANDLE target, int x, int y, int width,
@@ -318,18 +283,19 @@ void idD3D12InternalPasses::CopyDepth( d3d12Descriptor_t depthSrv, UINT samples,
 			return;		// a lost device
 		}
 	}
-	const std::array textures = { depthSrv };
-	const room_t room = Room( textures );
+	d3d12DrawResources_t resources;
+	resources.SetTexture( 0, false, depthSrv.index );
+	const d3d12UploadSpan_t parms = Parms();
 	const int32 origin[4] = { x, y, 0, 0 };
-	memcpy( room.parms.cpu, origin, sizeof( origin ) );
-	Record( submitter.List(), target, *pso.Get(), { 0, 0, width, height }, room );
+	memcpy( parms.cpu, origin, sizeof( origin ) );
+	Record( submitter.List(), target, *pso.Get(), { 0, 0, width, height }, parms, &resources );
 }
 
-void idD3D12InternalPasses::ShowPanel( ID3D12PipelineState & pso, std::span<const d3d12Descriptor_t> textures, D3D12_CPU_DESCRIPTOR_HANDLE target,
+void idD3D12InternalPasses::ShowPanel( ID3D12PipelineState & pso, const d3d12DrawResources_t & resources, D3D12_CPU_DESCRIPTOR_HANDLE target,
 	const renderRect_t & panel, bool alpha, float level ) {
-	const room_t room = Room( textures, &showSamplers );
-	const float parms[8] = { static_cast<float>( panel.x ), static_cast<float>( panel.y ), static_cast<float>( panel.width ),
+	const d3d12UploadSpan_t parms = Parms();
+	const float values[8] = { static_cast<float>( panel.x ), static_cast<float>( panel.y ), static_cast<float>( panel.width ),
 		static_cast<float>( panel.height ), alpha ? 1.0f : 0.0f, level, 0.0f, 0.0f };
-	memcpy( room.parms.cpu, parms, sizeof( parms ) );
-	Record( submitter.List(), target, pso, panel, room );
+	memcpy( parms.cpu, values, sizeof( values ) );
+	Record( submitter.List(), target, pso, panel, parms, &resources );
 }

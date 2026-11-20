@@ -21,14 +21,14 @@ struct d3d12GammaRamp_t {
 [[nodiscard]] bool					D3D12_GammaIsIdentity( const d3d12GammaRamp_t & ramp );
 
 // The backend's own draws, with the one root signature and a triangle over the viewport. Each takes its
-// room first (and may submit), then records; the caller invalidates the recorder afterwards.
+// parms first (and may submit), then records; the caller invalidates the recorder afterwards.
 class idD3D12InternalPasses {
 public:
 									idD3D12InternalPasses( const idD3D12Device & device, const idD3D12RootSignature & root, idD3D12HlslCompiler & compiler,
 										idD3D12Submitter & submitter, idD3D12Barriers & barriers, idD3D12Uploader & uploader, idD3D12UploadRing & constants,
-										idD3D12DescriptorRing & descriptors, idD3D12SamplerHeap & samplers, idD3D12DescriptorPool & srvPool );
-	// The shaders and the blit PSO: device work, so after construction. The black views fill the unused table slots.
-	void							CreateDefaults( d3d12Descriptor_t black2D, d3d12Descriptor_t blackCube );
+										idD3D12SamplerHeap & samplers, idD3D12DescriptorPool & srvPool );
+	// The shaders and the blit PSO: device work, so after construction.
+	void							CreateDefaults();
 	// Scene → back buffer (in RENDER_TARGET), the rows flipped. An exact Load and an identity gamma copy the bytes;
 	// any other ramp maps each channel through the LUT, as the hardware ramp GL sets maps the desktop.
 	void							PresentBlit( d3d12Descriptor_t sceneSrv, D3D12_CPU_DESCRIPTOR_HANDLE backBuffer, int width, int height );
@@ -48,19 +48,13 @@ public:
 										int width, int height );
 
 private:
-	struct room_t {
-		d3d12UploadSpan_t			parms;			// 256 bytes for root CBV b1
-		std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	table;
-		std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	samplerTable;
-	};
-	[[nodiscard]] std::optional<room_t>	TryRoom( std::span<const d3d12Descriptor_t> textures, const d3d12SamplerTableKey_t * samplerKey );
-	// Full rings: submit, wait for the oldest chunk and take again, before anything is recorded.
-	[[nodiscard]] room_t			Room( std::span<const d3d12Descriptor_t> textures, const d3d12SamplerTableKey_t * samplerKey = nullptr );
+	// The 256 bytes of root CBV b1. A full ring: submit, wait for the oldest chunk and take again, before anything is recorded.
+	[[nodiscard]] d3d12UploadSpan_t	Parms();
 	[[nodiscard]] idComPtr<ID3D12PipelineState>	CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
 										uint8 writeMask, const wchar_t * name ) const;
 	void							Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
-										const renderRect_t & viewport, const room_t & room );
-	void							ShowPanel( ID3D12PipelineState & pso, std::span<const d3d12Descriptor_t> textures, D3D12_CPU_DESCRIPTOR_HANDLE target,
+										const renderRect_t & viewport, const d3d12UploadSpan_t & parms, const d3d12DrawResources_t * resources );
+	void							ShowPanel( ID3D12PipelineState & pso, const d3d12DrawResources_t & resources, D3D12_CPU_DESCRIPTOR_HANDLE target,
 										const renderRect_t & panel, bool alpha, float level );
 	[[nodiscard]] bool				CreateGammaLut();	// the texture, its view and the gamma blit PSO; false on a lost device
 
@@ -71,11 +65,9 @@ private:
 	idD3D12Barriers &				barriers;
 	idD3D12Uploader &				uploader;
 	idD3D12UploadRing &				constants;
-	idD3D12DescriptorRing &			descriptors;
 	idD3D12SamplerHeap &			samplers;
 	idD3D12DescriptorPool &			srvPool;
-	std::array<d3d12Descriptor_t, 2>	black;		// by textureKind_t: the table slots a pass does not sample
-	d3d12SamplerTableKey_t			showSamplers;	// s0 trilinear, s1 point, both clamped
+	std::array<uint32, 2>			showSamplers = {};	// the heap slots of sampler0 trilinear and sampler1 point, both clamped
 	d3d12Bytecode_t					triangleVs, blitPs, blitGammaPs, clearPs, show2DPs, showCubePs;
 	std::array<d3d12Bytecode_t, 2>	depthCopyPs;	// a single-sample and a multisampled depth view
 	idComPtr<ID3D12PipelineState>	blit, blitGamma;

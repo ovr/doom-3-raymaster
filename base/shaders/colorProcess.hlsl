@@ -15,8 +15,8 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpUser1;		// the target hue
 };
 
-Texture2D sourceMap : register( t0 );
-SamplerState sourceSampler : register( s0 );
+TEXTURE2D( Texture2D, sourceMap, 0 );
+SAMPLER( sourceSampler, 0 );
 
 struct VSInput {
 	float4 position : POSITION;

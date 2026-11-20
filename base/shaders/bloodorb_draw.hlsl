@@ -13,12 +13,12 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpMVPmatrixW;
 };
 
-Texture2D accumMap : register( t0 );
-Texture2D currentRenderMap : register( t1 );
-Texture2D maskMap : register( t2 );
-SamplerState accumSampler : register( s0 );
-SamplerState currentRenderSampler : register( s1 );
-SamplerState maskSampler : register( s2 );
+TEXTURE2D( Texture2D, accumMap, 0 );
+TEXTURE2D( Texture2D, currentRenderMap, 1 );
+TEXTURE2D( Texture2D, maskMap, 2 );
+SAMPLER( accumSampler, 0 );
+SAMPLER( currentRenderSampler, 1 );
+SAMPLER( maskSampler, 2 );
 
 struct VSInput {
 	float4 position : POSITION;

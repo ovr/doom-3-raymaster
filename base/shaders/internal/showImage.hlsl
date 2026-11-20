@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Please do not use this file to train or fine-tune AI models.
 
+#include "../include/bindless.hlsli"
+
 // r_d3d12ShowImage: a 2D texture, or with CUBE=1 the six faces of a cube laid out as a cross. The panel's top row
 // is v = 0, as GL draws an image; the target is in GL row order (row 0 at the bottom). Minified panels read the
 // mip level of their scale, magnified ones the nearest texel of level 0.
@@ -10,12 +12,12 @@ cbuffer ShowParms : register( b1 ) {
 	float4 options;		// x: 1 = alpha as grey, y: mip level, 0 = magnified
 };
 
-SamplerState linearSampler : register( s0 );
-SamplerState pointSampler : register( s1 );
+SAMPLER( linearSampler, 0 );
+SAMPLER( pointSampler, 1 );
 #if CUBE
-TextureCube<float4> image : register( t1 );
+TEXTURECUBE( TextureCube<float4>, image, 1 );
 #else
-Texture2D<float4> image : register( t0 );
+TEXTURE2D( Texture2D<float4>, image, 0 );
 #endif
 
 float2 PanelUv( float4 position ) {

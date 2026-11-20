@@ -14,10 +14,10 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpUser1;		// the deform magnitude
 };
 
-Texture2D currentRenderMap : register( t0 );
-Texture2D bumpMap : register( t1 );
-SamplerState currentRenderSampler : register( s0 );
-SamplerState bumpSampler : register( s1 );
+TEXTURE2D( Texture2D, currentRenderMap, 0 );
+TEXTURE2D( Texture2D, bumpMap, 1 );
+SAMPLER( currentRenderSampler, 0 );
+SAMPLER( bumpSampler, 1 );
 
 struct VSInput {
 	float4 position : POSITION;

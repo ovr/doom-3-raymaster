@@ -22,10 +22,10 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpModelMatrixZ;
 };
 
-TextureCube environmentMap : register( t0 );
-Texture2D bumpMap : register( t1 );
-SamplerState environmentSampler : register( s0 );
-SamplerState bumpSampler : register( s1 );
+TEXTURECUBE( TextureCube, environmentMap, 0 );
+TEXTURE2D( Texture2D, bumpMap, 1 );
+SAMPLER( environmentSampler, 0 );
+SAMPLER( bumpSampler, 1 );
 
 struct VSInput {
 	float4 position : POSITION;

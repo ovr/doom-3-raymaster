@@ -19,14 +19,31 @@ std::wstring Widen( std::string_view text ) {
 	return std::wstring( text.begin(), text.end() );
 }
 
-// DXC asks for ".\shaders\include\common.hlsli": the path under base/ with forward slashes.
+// DXC asks for ".\shaders\include\common.hlsli" or ".\shaders\internal\..\include\bindless.hlsli": the path
+// under base/ with forward slashes and without "." or "..", which the file system refuses.
 idStr IncludePath( LPCWSTR fileName ) {
-	idStr path;
+	std::vector<std::string> parts( 1 );
 	for ( const wchar_t * c = fileName; *c != 0; c++ ) {
-		path += ( *c == L'\\' ) ? '/' : static_cast<char>( *c );
+		if ( *c == L'\\' || *c == L'/' ) {
+			parts.emplace_back();
+		} else {
+			parts.back() += static_cast<char>( *c );
+		}
 	}
-	while ( path.Cmpn( "./", 2 ) == 0 ) {
-		path = idStr( path.c_str() + 2 );
+	std::vector<std::string> kept;
+	for ( const std::string & part : parts ) {
+		if ( part == ".." && !kept.empty() ) {
+			kept.pop_back();
+		} else if ( !part.empty() && part != "." ) {
+			kept.push_back( part );
+		}
+	}
+	idStr path;
+	for ( const std::string & part : kept ) {
+		if ( !path.IsEmpty() ) {
+			path += "/";
+		}
+		path += part.c_str();
 	}
 	return path;
 }

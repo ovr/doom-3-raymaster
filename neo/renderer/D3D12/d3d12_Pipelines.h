@@ -12,13 +12,14 @@
 #include "d3d12_StateMap.h"
 
 /*
-	The one root signature of every program and every internal pass, version 1.1, 8 DWORDs:
+	The one root signature of every program and every internal pass, version 1.1, 30 DWORDs, with both heaps
+	directly indexed (SM 6.6 ResourceDescriptorHeap and SamplerDescriptorHeap):
 
 	  0  VERTEX_PARMS    root CBV b0, vertex shader     the program's vertex parms (GL's _va_[])
 	  1  FRAGMENT_PARMS  root CBV b1, pixel shader      the program's fragment parms (GL's _fa_[])
 	  2  JOINTS          root CBV b2, vertex shader     the joint block at the draw's joint offset
-	  3  TEXTURES        table t0-t7, pixel shader      one SRV per texture slot, data volatile
-	  4  SAMPLERS        table s0-s7, pixel shader      the sampler of each slot
+	  3  DRAW_RESOURCES  24 constants b3, all stages    d3d12DrawResources_t: the heap indices of the slots'
+	                                                    views and samplers (base/shaders/include/bindless.hlsli)
 */
 class idD3D12RootSignature {
 public:
@@ -101,7 +102,7 @@ struct d3d12PipelineName_t {
 // other.
 class idD3D12PipelineLibrary {
 public:
-	static constexpr uint32			VERSION = 1;	// bump when the root signature or the pipeline stream changes
+	static constexpr uint32			VERSION = 2;	// bump when the root signature or the pipeline stream changes
 
 	// nullopt: the adapter keeps no pipeline library. A file of another driver, adapter or VERSION, or a corrupt
 	// one, gives an empty library, whose Write then replaces the file.

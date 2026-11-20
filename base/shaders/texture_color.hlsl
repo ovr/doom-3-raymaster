@@ -29,8 +29,8 @@ cbuffer PixelParms : register( b1 ) {
 	float4 rpAlphaTest;
 };
 
-Texture2D textureMap : register( t0 );
-SamplerState textureSampler : register( s0 );
+TEXTURE2D( Texture2D, textureMap, 0 );
+SAMPLER( textureSampler, 0 );
 
 struct VSInput {
 	float4 position : POSITION;

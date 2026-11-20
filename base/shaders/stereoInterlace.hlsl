@@ -13,10 +13,10 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpMVPmatrixW;
 };
 
-Texture2D leftEyeMap : register( t0 );
-Texture2D rightEyeMap : register( t1 );
-SamplerState leftEyeSampler : register( s0 );
-SamplerState rightEyeSampler : register( s1 );
+TEXTURE2D( Texture2D, leftEyeMap, 0 );
+TEXTURE2D( Texture2D, rightEyeMap, 1 );
+SAMPLER( leftEyeSampler, 0 );
+SAMPLER( rightEyeSampler, 1 );
 
 struct VSInput {
 	float4 position : POSITION;

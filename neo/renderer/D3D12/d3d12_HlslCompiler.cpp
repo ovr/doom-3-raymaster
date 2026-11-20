@@ -14,7 +14,6 @@ namespace {
 constexpr UINT VERTEX_PARMS = 0;	// the root signature's CBVs
 constexpr UINT FRAGMENT_PARMS = 1;
 constexpr UINT JOINTS = 2;
-constexpr UINT TABLE_SLOTS = 8;		// t0-t7 and s0-s7
 
 [[nodiscard]] const char * Entry( shaderStageType_t stage ) {
 	return ( stage == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain";
@@ -43,6 +42,31 @@ constexpr UINT TABLE_SLOTS = 8;		// t0-t7 and s0-s7
 	return false;
 }
 
+// b3 as bindless.hlsli declares it: uints in d3d12DrawResources_t's order, so a root constant lands on its member.
+[[nodiscard]] std::optional<idStr> DrawResourcesMismatch( ID3D12ShaderReflection & reflection, const char * block ) {
+	ID3D12ShaderReflectionConstantBuffer * buffer = reflection.GetConstantBufferByName( block );
+	D3D12_SHADER_BUFFER_DESC desc = {};
+	if ( buffer == nullptr || FAILED( buffer->GetDesc( &desc ) ) || desc.Variables != d3d12DrawResources_t::COUNT ) {
+		return idStr( va( "cbuffer %s at b3 is not the one of include/bindless.hlsli", block ) );
+	}
+	for ( UINT v = 0; v < desc.Variables; v++ ) {
+		ID3D12ShaderReflectionVariable * variable = buffer->GetVariableByIndex( v );
+		D3D12_SHADER_VARIABLE_DESC variableDesc = {};
+		D3D12_SHADER_TYPE_DESC type = {};
+		if ( FAILED( variable->GetDesc( &variableDesc ) ) || FAILED( variable->GetType()->GetDesc( &type ) ) ) {
+			return idStr( va( "no reflection of member %u of cbuffer %s", v, block ) );
+		}
+		const int slot = static_cast<int>( v % MAX_TEXTURE_SLOTS );
+		const char * expected = ( v < d3d12DrawResources_t::CUBES ) ? va( "texture2D%d", slot )
+			: ( ( v < d3d12DrawResources_t::SAMPLERS ) ? va( "textureCube%d", slot ) : va( "sampler%d", slot ) );
+		if ( idStr::Cmp( variableDesc.Name, expected ) != 0 || variableDesc.StartOffset != v * sizeof( uint32 ) || type.Class != D3D_SVC_SCALAR
+				|| type.Type != D3D_SVT_UINT ) {
+			return idStr( va( "%s in cbuffer %s at b3: include/bindless.hlsli has %s there", variableDesc.Name, block, expected ) );
+		}
+	}
+	return std::nullopt;
+}
+
 // The members of the stage's cbuffer in offset order; every other binding must be one the root signature has.
 [[nodiscard]] std::expected<shaderStageInfo_t, idStr> ReadParms( ID3D12ShaderReflection & reflection, shaderStageType_t stage, const char * name,
 	hlslParms_t parms ) {
@@ -58,13 +82,19 @@ constexpr UINT TABLE_SLOTS = 8;		// t0-t7 and s0-s7
 		if ( FAILED( reflection.GetResourceBindingDesc( i, &bind ) ) ) {
 			continue;
 		}
-		const bool table = ( bind.Type == D3D_SIT_TEXTURE || bind.Type == D3D_SIT_SAMPLER );
 		const bool cbuffer = ( bind.Type == D3D_SIT_CBUFFER );
-		const bool fits = ( bind.Space == 0 ) && ( ( table && bind.BindPoint + bind.BindCount <= TABLE_SLOTS )
-			|| ( cbuffer && ( bind.BindPoint == own || ( vertex && bind.BindPoint == JOINTS ) ) ) );
+		const bool resources = cbuffer && bind.BindPoint == d3d12DrawResources_t::REGISTER;
+		const bool fits = ( bind.Space == 0 ) && cbuffer && ( bind.BindPoint == own || resources || ( vertex && bind.BindPoint == JOINTS ) );
 		if ( !fits ) {
-			return std::unexpected( idStr( va( "%s: %s binds %s at register %u space %u: the %s stage has b%u%s, t0-t7 and s0-s7", name,
-				vertex ? "VSMain" : "PSMain", bind.Name, bind.BindPoint, bind.Space, vertex ? "vertex" : "pixel", own, vertex ? ", b2" : "" ) ) );
+			return std::unexpected( idStr( va( "%s: %s binds %s at register %u space %u: the %s stage has b%u%s and b3, and takes textures and "
+				"samplers through TEXTURE2D, TEXTURECUBE and SAMPLER (include/bindless.hlsli)", name, vertex ? "VSMain" : "PSMain", bind.Name,
+				bind.BindPoint, bind.Space, vertex ? "vertex" : "pixel", own, vertex ? ", b2" : "" ) ) );
+		}
+		if ( resources ) {
+			if ( const std::optional<idStr> mismatch = DrawResourcesMismatch( reflection, bind.Name ) ) {
+				return std::unexpected( idStr( va( "%s: %s", name, mismatch->c_str() ) ) );
+			}
+			continue;
 		}
 		if ( !cbuffer || bind.BindPoint != own || parms != hlslParms_t::RENDER_PARMS ) {
 			continue;

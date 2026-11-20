@@ -85,6 +85,29 @@ namespace {
 	return element;
 }
 
+// The members of b3 the code reads: texture2D<n> and textureCube<n> are GL's active sampler uniforms.
+void ReadDrawResources( ID3D12ShaderReflection & reflection, const char * name, d3d12StageReflection_t & result ) {
+	ID3D12ShaderReflectionConstantBuffer * block = reflection.GetConstantBufferByName( name );
+	D3D12_SHADER_BUFFER_DESC desc = {};
+	if ( block == nullptr || FAILED( block->GetDesc( &desc ) ) ) {
+		return;
+	}
+	for ( UINT i = 0; i < desc.Variables; i++ ) {
+		D3D12_SHADER_VARIABLE_DESC variable = {};
+		if ( FAILED( block->GetVariableByIndex( i )->GetDesc( &variable ) ) || ( variable.uFlags & D3D_SVF_USED ) == 0 ) {
+			continue;
+		}
+		const uint32 index = static_cast<uint32>( variable.StartOffset / sizeof( uint32 ) );
+		if ( index < d3d12DrawResources_t::SAMPLERS ) {
+			const int slot = static_cast<int>( index % MAX_TEXTURE_SLOTS );
+			result.samplerMask = static_cast<uint16>( result.samplerMask | ( 1u << slot ) );
+			if ( index >= d3d12DrawResources_t::CUBES ) {
+				result.cubeMask = static_cast<uint16>( result.cubeMask | ( 1u << slot ) );
+			}
+		}
+	}
+}
+
 }	// namespace
 
 // The rows of the input signature count whether or not the code reads them: GL's attribMask is a subset.
@@ -96,16 +119,13 @@ d3d12StageReflection_t D3D12_ReflectStage( ID3D12ShaderReflection & reflection, 
 	}
 	for ( UINT i = 0; i < desc.BoundResources; i++ ) {
 		D3D12_SHADER_INPUT_BIND_DESC bind = {};
-		if ( FAILED( reflection.GetResourceBindingDesc( i, &bind ) ) || bind.Space != 0 ) {
+		if ( FAILED( reflection.GetResourceBindingDesc( i, &bind ) ) || bind.Space != 0 || bind.Type != D3D_SIT_CBUFFER ) {
 			continue;
 		}
-		if ( bind.Type == D3D_SIT_TEXTURE && bind.BindPoint < 16 ) {
-			result.samplerMask = static_cast<uint16>( result.samplerMask | ( 1u << bind.BindPoint ) );
-			if ( bind.Dimension == D3D_SRV_DIMENSION_TEXTURECUBE ) {
-				result.cubeMask = static_cast<uint16>( result.cubeMask | ( 1u << bind.BindPoint ) );
-			}
-		} else if ( bind.Type == D3D_SIT_CBUFFER && bind.BindPoint == 2 ) {
+		if ( bind.BindPoint == 2 ) {
 			result.usesJoints = true;
+		} else if ( bind.BindPoint == d3d12DrawResources_t::REGISTER ) {
+			ReadDrawResources( reflection, bind.Name, result );
 		}
 	}
 	const bool vertex = ( stage == shaderStageType_t::VERTEX );

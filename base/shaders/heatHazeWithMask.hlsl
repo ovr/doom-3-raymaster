@@ -25,12 +25,12 @@ cbuffer PixelParms : register( b1 ) {
 	float4 rpWindowCoord;
 };
 
-Texture2D currentRenderMap : register( t0 );
-Texture2D bumpMap : register( t1 );
-Texture2D maskMap : register( t2 );
-SamplerState currentRenderSampler : register( s0 );
-SamplerState bumpSampler : register( s1 );
-SamplerState maskSampler : register( s2 );
+TEXTURE2D( Texture2D, currentRenderMap, 0 );
+TEXTURE2D( Texture2D, bumpMap, 1 );
+TEXTURE2D( Texture2D, maskMap, 2 );
+SAMPLER( currentRenderSampler, 0 );
+SAMPLER( bumpSampler, 1 );
+SAMPLER( maskSampler, 2 );
 
 struct VSInput {
 	float4 position : POSITION;

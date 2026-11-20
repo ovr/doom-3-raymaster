@@ -21,9 +21,9 @@
 	      ├── idD3D12DebugGroups              r_pix 2: the group stack, ended at a submit and begun again in the next list
 	      ├── idD3D12GpuTimers                r_pix 1 and the frame's GPU time: a TIMESTAMP query heap resolved in EndFrame
 	      ├── idD3D12Barriers                 transitions batched until the next draw, clear, copy or submit
-	      ├── idD3D12DescriptorPool x 3       SRV, RTV, DSV: the permanent views, never shader visible
-	      ├── idD3D12DescriptorRing           the shader-visible CBV/SRV heap, 8-slot tables reused by fence
-	      ├── idD3D12SamplerHeap              the shader-visible sampler heap, 256 tables of 8 kept by key
+	      ├── idD3D12DescriptorPool x 3       SRV, RTV, DSV: the permanent views; the SRVs also in the one
+	      │                                   shader-visible heap, which draws index (bindless.hlsli)
+	      ├── idD3D12SamplerHeap              the shader-visible sampler heap, a slot per sampler, kept
 	      ├── idD3D12UploadRing               "constants": 16 MB UPLOAD for the root CBVs, reused by fence
 	      ├── idD3D12UploadRing               "staging": 64 MB UPLOAD, the copy sources of buffers and textures
 	      ├── idD3D12Uploader                 copies through "staging" into the open list, a submit every 16 MB
@@ -116,7 +116,6 @@ public:
 	idD3D12DescriptorPool			srvPool;
 	idD3D12DescriptorPool			rtvPool;
 	idD3D12DescriptorPool			dsvPool;
-	idD3D12DescriptorRing			descriptors;
 	idD3D12SamplerHeap				samplers;
 	idD3D12UploadRing				constants;
 	idD3D12UploadRing				staging;

@@ -6,8 +6,8 @@
 
 #include "include/common.hlsli"
 
-Texture2D viewColorMap : register( t0 );
-SamplerState viewColorSampler : register( s0 );
+TEXTURE2D( Texture2D, viewColorMap, 0 );
+SAMPLER( viewColorSampler, 0 );
 
 struct VSInput {
 	float4 position : POSITION;

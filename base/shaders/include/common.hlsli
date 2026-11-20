@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "bindless.hlsli"
+
 /*
 	What every render program shares. The shared code still feeds the conventions of id's renderprogs:
 	matrices and clip space are GL's, vertex colours are UNORM bytes, the parms are float4 named like

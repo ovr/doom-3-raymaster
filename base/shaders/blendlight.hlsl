@@ -21,10 +21,10 @@ cbuffer PixelParms : register( b1 ) {
 	float4 rpColor;
 };
 
-Texture2D lightProjectionMap : register( t0 );
-Texture2D lightFalloffMap : register( t1 );
-SamplerState lightProjectionSampler : register( s0 );
-SamplerState lightFalloffSampler : register( s1 );
+TEXTURE2D( Texture2D, lightProjectionMap, 0 );
+TEXTURE2D( Texture2D, lightFalloffMap, 1 );
+SAMPLER( lightProjectionSampler, 0 );
+SAMPLER( lightFalloffSampler, 1 );
 
 struct VSInput {
 	float4 position : POSITION;

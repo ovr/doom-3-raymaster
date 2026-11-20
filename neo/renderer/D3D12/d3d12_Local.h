@@ -45,8 +45,21 @@ struct d3d12MemFree_t { void operator()( byte * p ) const { Mem_Free( p ); } };
 using idD3D12CpuBlock = std::unique_ptr<byte[], d3d12MemFree_t>;
 
 // The root parameter indices of the one root signature.
-enum class d3d12RootSlot_t : UINT { VERTEX_PARMS, FRAGMENT_PARMS, JOINTS, TEXTURES, SAMPLERS, COUNT };
+enum class d3d12RootSlot_t : UINT { VERTEX_PARMS, FRAGMENT_PARMS, JOINTS, DRAW_RESOURCES, COUNT };
 [[nodiscard]] constexpr UINT D3D12_Root( d3d12RootSlot_t slot ) { return static_cast<UINT>( slot ); }
+
+// The root constants b3 of base/shaders/include/bindless.hlsli, in its member order: the heap index of each
+// texture slot's 2D view, then of its cube view, then of its sampler. A slot the program does not read stays 0.
+struct d3d12DrawResources_t {
+	static constexpr UINT			REGISTER = 3;
+	static constexpr uint32			CUBES = MAX_TEXTURE_SLOTS;			// textureCube0
+	static constexpr uint32			SAMPLERS = 2 * MAX_TEXTURE_SLOTS;	// sampler0
+	static constexpr uint32			COUNT = 3 * MAX_TEXTURE_SLOTS;
+	std::array<uint32, COUNT>		indices = {};
+	constexpr bool					operator==( const d3d12DrawResources_t & ) const = default;
+	void							SetTexture( int slot, bool cube, uint32 view ) { indices[( cube ? CUBES : 0 ) + slot] = view; }
+	void							SetSampler( int slot, uint32 sampler ) { indices[SAMPLERS + slot] = sampler; }
+};
 
 // "0x887A0005 DXGI_ERROR_DEVICE_REMOVED", or the bare value for a code without a name here.
 [[nodiscard]] idStr D3D12_ErrorText( HRESULT hr );

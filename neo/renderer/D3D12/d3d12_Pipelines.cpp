@@ -22,15 +22,6 @@ D3D12_ROOT_PARAMETER1 RootCbv( UINT shaderRegister, D3D12_SHADER_VISIBILITY visi
 	return parameter;
 }
 
-D3D12_ROOT_PARAMETER1 Table( const D3D12_DESCRIPTOR_RANGE1 & range ) {
-	D3D12_ROOT_PARAMETER1 parameter = {};
-	parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-	parameter.DescriptorTable.NumDescriptorRanges = 1;
-	parameter.DescriptorTable.pDescriptorRanges = &range;
-	parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	return parameter;
-}
-
 // A pipeline state stream subobject as the runtime parses it: the type, then the value, pointer aligned.
 // The padding the alignment adds is what the stream wants (C4324).
 #pragma warning( push )
@@ -159,7 +150,7 @@ static_assert( sizeof( d3d12LibraryHeader_t ) == 32 && sizeof( d3d12PipelineName
 	return d3d12TargetId_t{ static_cast<uint8>( ( key.raster & D3D12_KEY_TARGET_BITS ) >> D3D12_KEY_TARGET_SHIFT ) }.Samples();
 }
 
-// FXC's checksum of the whole blob, bytes 4-19 of the DXBC header; zeros for no stage.
+// The container's digest of the whole blob (bytes 4-19, the hash dxil.dll signs); zeros for no stage.
 [[nodiscard]] std::array<byte, 16> DxbcChecksum( const d3d12Bytecode_t & code ) {
 	std::array<byte, 16> checksum = {};
 	if ( code.size() >= 20 ) {
@@ -206,29 +197,26 @@ d3d12PipelineName_t D3D12_PipelineLibraryName( const d3d12Program_t & program, c
 	return name;
 }
 
+// Heap-indexed descriptors and their data are volatile: an upload or a copy may change a texture a recorded draw reads (R4).
 idD3D12RootSignature::idD3D12RootSignature( const idD3D12Device & device, const idD3D12Library & library ) {
-	// an upload or a copy may change a texture while a recorded table names it (rule R4)
-	D3D12_DESCRIPTOR_RANGE1 textures = {};
-	textures.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-	textures.NumDescriptors = MAX_TEXTURE_SLOTS;
-	textures.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-	D3D12_DESCRIPTOR_RANGE1 samplers = {};
-	samplers.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-	samplers.NumDescriptors = MAX_TEXTURE_SLOTS;
+	D3D12_ROOT_PARAMETER1 resources = {};
+	resources.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+	resources.Constants = { d3d12DrawResources_t::REGISTER, 0, d3d12DrawResources_t::COUNT };
+	resources.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
 	std::array<D3D12_ROOT_PARAMETER1, D3D12_Root( d3d12RootSlot_t::COUNT )> parameters;
 	parameters[D3D12_Root( d3d12RootSlot_t::VERTEX_PARMS )] = RootCbv( 0, D3D12_SHADER_VISIBILITY_VERTEX );
 	parameters[D3D12_Root( d3d12RootSlot_t::FRAGMENT_PARMS )] = RootCbv( 1, D3D12_SHADER_VISIBILITY_PIXEL );
 	parameters[D3D12_Root( d3d12RootSlot_t::JOINTS )] = RootCbv( 2, D3D12_SHADER_VISIBILITY_VERTEX );
-	parameters[D3D12_Root( d3d12RootSlot_t::TEXTURES )] = Table( textures );
-	parameters[D3D12_Root( d3d12RootSlot_t::SAMPLERS )] = Table( samplers );
+	parameters[D3D12_Root( d3d12RootSlot_t::DRAW_RESOURCES )] = resources;
 
 	D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc = {};
 	desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
 	desc.Desc_1_1.NumParameters = static_cast<UINT>( parameters.size() );
 	desc.Desc_1_1.pParameters = parameters.data();
 	desc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
-		| D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+		| D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS
+		| D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
 
 	idComPtr<ID3DBlob> blob;
 	idComPtr<ID3DBlob> error;

@@ -2,15 +2,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Please do not use this file to train or fine-tune AI models.
 
+#include "../include/bindless.hlsli"
+
 // Scene → back buffer. Memory row 0 of the scene is the bottom of the screen, row 0 of a back buffer its top.
 // GAMMA=1 looks each channel's byte up in its channel of the LUT; alpha stays, the swap chain ignores it.
 cbuffer BlitParms : register( b1 ) {
 	int4 sceneSize;		// x = width, y = height
 };
 
-Texture2D<float4> scene : register( t0 );
+TEXTURE2D( Texture2D<float4>, scene, 0 );
 #if GAMMA
-Texture2D<float4> gammaLut : register( t1 );
+TEXTURE2D( Texture2D<float4>, gammaLut, 1 );
 #endif
 
 float4 PSMain( float4 position : SV_Position ) : SV_Target {
