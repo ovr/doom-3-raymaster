@@ -21,7 +21,17 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 5;
+constexpr int EDITOR_API_VERSION = 6;
+
+// what the content browser lists
+enum editorAssetKind_t : int {
+	EDITOR_ASSET_MATERIAL,
+	EDITOR_ASSET_MODEL,			// a model file: "models/mapobjects/.../x.lwo"
+	EDITOR_ASSET_ENTITY_CLASS,
+	EDITOR_ASSET_SOUND,			// a sound shader
+	EDITOR_ASSET_MAP,
+	EDITOR_ASSET_KINDS
+};
 
 // what a preview picture shows; a material is put on a sphere
 enum editorPreviewKind_t : int {
@@ -82,6 +92,7 @@ struct editorKeyInfo_t {
 };
 using editorKeyVisitor_t = void ( * )( void * context, const editorKeyInfo_t & key );
 using editorClassVisitor_t = void ( * )( void * context, const char * classname );
+using editorAssetVisitor_t = void ( * )( void * context, const char * name );
 
 // implemented by the UI
 class idEditorHost {
@@ -114,7 +125,8 @@ public:
 	virtual void		OnDocumentChanged() = 0;
 
 	// A picture asked for with RequestPreview(): RGB8, tightly packed, top row first, valid during
-	// the call. It can be smaller than asked when the viewport is.
+	// the call. It can be smaller than asked when the viewport is. width 0 and rgb nullptr: the
+	// engine could not draw it (an error in the asset).
 	virtual void		OnPreviewReady( int id, int width, int height, const unsigned char * rgb ) = 0;
 
 protected:
@@ -169,11 +181,16 @@ public:
 
 	// every entityDef, for the palette
 	virtual void		EnumEntityClasses( editorClassVisitor_t visitor, void * context ) = 0;
-	// Makes an entity in front of the camera and selects it.
-	virtual void		CreateEntity( const char * classname ) = 0;
+	// Makes an entity in front of the camera and selects it; model, when not nullptr, is its "model" key.
+	virtual void		CreateEntity( const char * classname, const char * model ) = 0;
 	// The selection; brush entities are not duplicated, the copies become the selection.
 	virtual void		DuplicateSelection() = 0;
 	virtual void		DeleteSelection() = 0;
+
+	// The names of the game data's assets of a kind (editorAssetKind_t), in no order.
+	virtual void		EnumAssets( int kind, editorAssetVisitor_t visitor, void * context ) = 0;
+	// plays a sound shader once, as the menus do; "" stops it
+	virtual void		PlaySound( const char * name ) = 0;
 
 	// Queues a picture of size x size pixels; it arrives in OnPreviewReady() with the id, one
 	// picture a frame, in the order asked. The viewport has to be visible and at least that big.

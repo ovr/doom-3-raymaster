@@ -52,6 +52,7 @@ signals:
 	void				entitiesChanged();
 	void				selectionChanged();
 	void				documentChanged();
+	// a null image: the engine could not draw the picture
 	void				previewReady( int id, const QImage & image );
 	// the last thing before the engine and the process end
 	void				aboutToShutdown();

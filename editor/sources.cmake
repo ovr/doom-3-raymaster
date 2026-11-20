@@ -25,6 +25,8 @@ set(EDITOR_BRIDGE_SOURCES
 # the Qt half: no engine header, no precompiled header, only api/ is shared with the bridge
 set(EDITOR_UI_SOURCES
 	api/EditorEngineApi.h
+	ui/ContentBrowser.cpp
+	ui/ContentBrowser.h
 	ui/EngineClient.cpp
 	ui/EngineClient.h
 	ui/Inspector.cpp
@@ -34,9 +36,11 @@ set(EDITOR_UI_SOURCES
 	ui/OutputLog.cpp
 	ui/OutputLog.h
 	ui/Outliner.cpp
+	ui/Outliner.h
 	ui/Palette.cpp
 	ui/Palette.h
-	ui/Outliner.h
+	ui/ThumbnailCache.cpp
+	ui/ThumbnailCache.h
 	ui/UiMain.cpp
 	ui/ViewportHost.cpp
 	ui/ViewportHost.h

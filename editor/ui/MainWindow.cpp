@@ -24,6 +24,7 @@
 #include <QVBoxLayout>
 
 #include "../api/EditorEngineApi.h"
+#include "ContentBrowser.h"
 #include "EngineClient.h"
 #include "Inspector.h"
 #include "Outliner.h"
@@ -34,7 +35,7 @@
 namespace {
 
 // bump when the set of docks changes in a way an old saved layout would break
-constexpr int LAYOUT_VERSION = 4;
+constexpr int LAYOUT_VERSION = 5;
 constexpr float GRID_SIZES[] = { 0.0f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
 constexpr int DEFAULT_GRID = 4;		// index into GRID_SIZES
 constexpr int MAP_NAME_ROLE = Qt::UserRole;
@@ -121,6 +122,15 @@ MainWindow::MainWindow( idEditorEngine * engine_, QWidget * parent ) : QMainWind
 	addDockWidget( Qt::LeftDockWidgetArea, paletteDock );
 
 	client = new EngineClient( engine, viewport, this );
+
+	contentBrowser = new ContentBrowser( client, this );
+	contentDock = new QDockWidget( tr( "Content Browser" ), this );
+	contentDock->setObjectName( QStringLiteral( "ContentBrowserDock" ) );
+	contentDock->setWidget( contentBrowser );
+	addDockWidget( Qt::BottomDockWidgetArea, contentDock );
+	tabifyDockWidget( outputDock, contentDock );
+	contentDock->raise();
+	connect( contentBrowser, &ContentBrowser::activated, this, &MainWindow::AssetActivated );
 	connect( client, &EngineClient::mapChanged, this, &MainWindow::MapChanged );
 	connect( client, &EngineClient::entitiesChanged, outliner, &Outliner::Reload );
 	connect( client, &EngineClient::selectionChanged, outliner, &Outliner::SyncSelection );
@@ -213,6 +223,7 @@ void MainWindow::CreateMenus() {
 	viewMenu->addAction( outlinerDock->toggleViewAction() );
 	viewMenu->addAction( inspectorDock->toggleViewAction() );
 	viewMenu->addAction( paletteDock->toggleViewAction() );
+	viewMenu->addAction( contentDock->toggleViewAction() );
 	viewMenu->addAction( outputDock->toggleViewAction() );
 	viewMenu->addSeparator();
 	QAction * const consoleAction = viewMenu->addAction( tr( "&Console Command" ) );
@@ -235,6 +246,35 @@ void MainWindow::Start() {
 	show();
 	client->Start();
 	viewport->Attach( engine );
+	contentBrowser->Load();
+	palette->Load();
+}
+
+void MainWindow::AssetActivated( int kind, const QString & name ) {
+	const QByteArray text = name.toLocal8Bit();
+	const bool mapOpen = engine->CurrentMap()[0] != '\0';
+	switch ( kind ) {
+		case EDITOR_ASSET_ENTITY_CLASS:
+		case EDITOR_ASSET_MODEL:
+			if ( !mapOpen ) {
+				statusBar()->showMessage( tr( "Open a map to put things into it." ) );
+			} else if ( kind == EDITOR_ASSET_MODEL ) {
+				engine->CreateEntity( "func_static", text.constData() );
+			} else {
+				engine->CreateEntity( text.constData(), nullptr );
+			}
+			break;
+		case EDITOR_ASSET_MAP:
+			if ( ConfirmDiscard() ) {
+				engine->OpenMap( text.constData() );
+			}
+			break;
+		case EDITOR_ASSET_SOUND:
+			engine->PlaySound( text.constData() );
+			break;
+		default:
+			break;
+	}
 }
 
 void MainWindow::closeEvent( QCloseEvent * event ) {
@@ -303,13 +343,10 @@ void MainWindow::MapChanged() {
 	const QString map = QString::fromLocal8Bit( engine->CurrentMap() );
 	closeMapAction->setEnabled( !map.isEmpty() );
 	outliner->Reload();
-	if ( !map.isEmpty() ) {
-		palette->Load();
-	}
 	inspector->Refresh();
 	DocumentChanged();
 	statusBar()->showMessage( map.isEmpty()
-		? tr( "File > Open Map starts editing. Without a map: click the viewport to play in it, Shift+Esc gives the mouse and the keys back." )
+		? tr( "File > Open Map, or a double click on a map in the Content Browser, starts editing." )
 		: tr( "Click selects (Ctrl adds), drag the gizmo to move or turn. Hold the right mouse button to look; W A S D fly, Q / E down and up, Shift faster." ) );
 }
 

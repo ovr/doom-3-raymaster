@@ -27,7 +27,7 @@ Palette::Palette( idEditorEngine * editorEngine, QWidget * parent ) : QWidget( p
 
 	connect( filter, &QLineEdit::textChanged, this, &Palette::ApplyFilter );
 	connect( list, &QListWidget::itemDoubleClicked, this, [this]( QListWidgetItem * item ) {
-		engine->CreateEntity( item->text().toLocal8Bit().constData() );
+		engine->CreateEntity( item->text().toLocal8Bit().constData(), nullptr );
 	} );
 }
 

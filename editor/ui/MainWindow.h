@@ -5,6 +5,7 @@
 
 #include <QMainWindow>
 
+class ContentBrowser;
 class EngineClient;
 class Inspector;
 class Outliner;
@@ -37,6 +38,7 @@ private:
 	void				MapChanged();
 	void				DocumentChanged();
 	[[nodiscard]] bool	ConfirmDiscard();
+	void				AssetActivated( int kind, const QString & name );
 
 	idEditorEngine *	engine;
 	ViewportHost *		viewport;
@@ -52,6 +54,8 @@ private:
 	QDockWidget *		inspectorDock = nullptr;
 	QDockWidget *		paletteDock = nullptr;
 	Palette *			palette = nullptr;
+	ContentBrowser *	contentBrowser = nullptr;
+	QDockWidget *		contentDock = nullptr;
 	bool				closing = false;
 	EngineClient *		client;
 };

@@ -169,6 +169,7 @@ private:
 	ID_TIME_T			binaryFileTime;			// the time stamp of the binary file
 
 	int					refCount;				// overall ref count
+	int					loadMark = 0;			// idImageManager::loadMark when it was loaded
 
 	textureHandle_t		handle = textureHandle_t::NONE;		// the texture of the render backend
 	textureRole_t		role = textureRole_t::SAMPLED;
@@ -231,6 +232,12 @@ public:
 	// purges all the images before a vid_restart
 	void				PurgeAllImages();
 
+	// Images loaded from now on carry the mark, and PurgeMarked frees those again: for a tool that
+	// loads images it shows once. A purged image loads again when something binds it.
+	void				SetLoadMark( int mark ) { loadMark = mark; }
+	[[nodiscard]] int	LoadMark() const { return loadMark; }
+	void				PurgeMarked( int mark );
+
 	// reloads all apropriate images after a vid_restart
 	void				ReloadImages( bool all );
 
@@ -249,6 +256,7 @@ public:
 
 	// built-in images
 	void CreateIntrinsicImages();
+	int					loadMark = 0;
 	idImage *			defaultImage;
 	idImage *			flatNormalMap;				// 128 128 255 in all pixels
 	idImage *			alphaNotchImage;			// 2x1 texture with just 1110 and 1111 with point sampling

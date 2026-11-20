@@ -27,7 +27,10 @@ namespace {
 constexpr char		EDITOR_TITLE[] = "Doom 3 Editor";
 constexpr float		PICK_DISTANCE = 16384.0f;
 constexpr float		EMPTY_VIEW_GREY = 0.11f;
-constexpr int		PREVIEW_TEST_ID = -1;			// the picture of editorPreviewTest
+constexpr char		GENERATED_MODELS[] = "generated/rendermodels/";
+constexpr int		PREVIEW_ERROR_PAUSE_MSEC = 250;
+constexpr int		PREVIEW_TEST_ID = -1;
+constexpr int		PREVIEW_SWEEP_ID = -2;			// the pictures of editorPreviewSweep, thrown away			// the picture of editorPreviewTest
 constexpr float		CREATE_DISTANCE = 192.0f;		// a new entity appears this far in front of the camera
 constexpr float		CREATE_WALL_GAP = 24.0f;
 constexpr float		DUPLICATE_OFFSET = 16.0f;
@@ -60,7 +63,9 @@ public:
 	void				EnumEntityKeys( int index, editorKeyVisitor_t visitor, void * context ) override;
 	void				SetEntityKey( int index, const char * key, const char * value ) override;
 	void				EnumEntityClasses( editorClassVisitor_t visitor, void * context ) override;
-	void				CreateEntity( const char * classname ) override;
+	void				CreateEntity( const char * classname, const char * model ) override;
+	void				EnumAssets( int kind, editorAssetVisitor_t visitor, void * context ) override;
+	void				PlaySound( const char * name ) override;
 	void				DuplicateSelection() override;
 	void				DeleteSelection() override;
 	void				GetDocumentState( editorDocumentState_t & state ) const override;
@@ -129,6 +134,7 @@ private:
 	idEditorHistory		history;
 	idEditorPreview		preview;
 	bool				previewFrame = false;	// the frame being drawn is a preview picture
+	int					previewPauseUntil = 0;	// no picture before this time, after one failed
 	bool				lastWasPreview = false;	// so the edit view gets every other frame
 };
 
@@ -180,7 +186,7 @@ void idEditorEngineLocal::Frame() {
 				}
 				R_WriteTGA( "editor_preview.tga", rgba.Ptr(), job.size, job.size, false );
 				common->Printf( "wrote editor_preview.tga, %s\n", job.name.c_str() );
-			} else {
+			} else if ( job.id != PREVIEW_SWEEP_ID ) {
 				ui->OnPreviewReady( job.id, job.size, job.size, rgb.Ptr() );
 			}
 		}
@@ -432,7 +438,57 @@ void idEditorEngineLocal::EnumEntityClasses( editorClassVisitor_t visitor, void 
 	}
 }
 
-void idEditorEngineLocal::CreateEntity( const char * classname ) {
+void idEditorEngineLocal::EnumAssets( int kind, editorAssetVisitor_t visitor, void * context ) {
+	if ( !started ) {
+		return;
+	}
+	if ( kind == EDITOR_ASSET_MODEL ) {
+		// The models of the retail data exist only in their binary form, in the resource files:
+		// generated/rendermodels/<name>.b<extension>. Loose source files are models too.
+		idStrList names;
+		fileSystem->ListResourceFiles( GENERATED_MODELS, names );
+		for ( int i = 0; i < names.Num(); i++ ) {
+			idStr & name = names[i];
+			idStr extension;
+			name.ExtractFileExtension( extension );
+			name.StripLeading( GENERATED_MODELS );
+			name.SetFileExtension( extension.c_str() + 1 );
+		}
+		std::unique_ptr<idFileList> loose( fileSystem->ListFilesTree( "models", ".lwo|.ase|.md5mesh|.ma" ) );
+		for ( int i = 0; i < loose->GetNumFiles(); i++ ) {
+			names.Append( loose->GetFile( i ) );
+		}
+		std::sort( names.Ptr(), names.Ptr() + names.Num(), []( const idStr & a, const idStr & b ) { return a.Icmp( b ) < 0; } );
+		for ( int i = 0; i < names.Num(); i++ ) {
+			if ( i == 0 || names[i].Icmp( names[i - 1] ) != 0 ) {
+				visitor( context, names[i] );
+			}
+		}
+		return;
+	}
+	declType_t type = DECL_MATERIAL;
+	switch ( kind ) {
+		case EDITOR_ASSET_MATERIAL:		type = DECL_MATERIAL; break;
+		case EDITOR_ASSET_ENTITY_CLASS:	type = DECL_ENTITYDEF; break;
+		case EDITOR_ASSET_SOUND:		type = DECL_SOUND; break;
+		case EDITOR_ASSET_MAP:			type = DECL_MAPDEF; break;
+		default:						return;
+	}
+	const int num = declManager->GetNumDecls( type );
+	for ( int i = 0; i < num; i++ ) {
+		// not parsed: parsing an entityDef caches its media
+		visitor( context, declManager->DeclByIndex( type, i, false )->GetName() );
+	}
+}
+
+void idEditorEngineLocal::PlaySound( const char * name ) {
+	idSoundWorld * const soundWorld = started ? soundSystem->GetPlayingSoundWorld() : nullptr;
+	if ( soundWorld != nullptr ) {
+		soundWorld->PlayShaderDirectly( name );
+	}
+}
+
+void idEditorEngineLocal::CreateEntity( const char * classname, const char * model ) {
 	if ( !CanEdit() ) {
 		return;
 	}
@@ -460,6 +516,9 @@ void idEditorEngineLocal::CreateEntity( const char * classname ) {
 	change.after.Set( "classname", classname );
 	change.after.Set( "name", world.UniqueName( classname ) );
 	change.after.SetVector( "origin", origin );
+	if ( model != nullptr && model[0] != '\0' ) {
+		change.after.Set( "model", model );
+	}
 	Edit( va( "Create %s", classname ), changes );
 
 	idList<int> created;
@@ -592,8 +651,17 @@ void idEditorEngineLocal::LookAtEntity( int index ) {
 }
 
 bool idEditorEngineLocal::DrawScene() {
+	idEditorPreview::job_t failed;
+	if ( preview.TakeFailed( failed ) ) {
+		common->Printf( "No preview of '%s': the engine stopped its frame with an error.\n", failed.name.c_str() );
+		if ( failed.id >= 0 ) {
+			ui->OnPreviewReady( failed.id, 0, 0, nullptr );
+		}
+		// the engine makes a fatal error of several errors within 100 ms of each other
+		previewPauseUntil = Sys_Milliseconds() + PREVIEW_ERROR_PAUSE_MSEC;
+	}
 	// a picture takes a frame of its own; with a map open, every other frame at most
-	if ( preview.HasPending() && !( world.IsOpen() && lastWasPreview ) && preview.Draw() ) {
+	if ( preview.HasPending() && !( world.IsOpen() && lastWasPreview ) && Sys_Milliseconds() >= previewPauseUntil && preview.Draw() ) {
 		previewFrame = true;
 		lastWasPreview = true;
 		return true;
@@ -700,12 +768,12 @@ CONSOLE_COMMAND_SHIP( editorSelect, "selects an entity of the open map by name a
 }
 
 CONSOLE_COMMAND_SHIP( editorCreate, "makes an entity of a class in front of the editor's camera", nullptr ) {
-	if ( args.Argc() != 2 ) {
-		common->Printf( "usage: editorCreate <entityDef>\n" );
+	if ( args.Argc() < 2 ) {
+		common->Printf( "usage: editorCreate <entityDef> [model]\n" );
 		return;
 	}
 	if ( NeedEditor() ) {
-		editorEngine->RunEdit( [&args] { editorEngine->CreateEntity( args.Argv( 1 ) ); } );
+		editorEngine->RunEdit( [&args] { editorEngine->CreateEntity( args.Argv( 1 ), ( args.Argc() > 2 ) ? args.Argv( 2 ) : nullptr ); } );
 	}
 }
 
@@ -736,6 +804,36 @@ CONSOLE_COMMAND_SHIP( editorPreviewTest, "writes a preview picture to editor_pre
 	if ( NeedEditor() ) {
 		editorEngine->RequestPreview( PREVIEW_TEST_ID, kind, args.Argv( 2 ), ( args.Argc() > 3 ) ? atoi( args.Argv( 3 ) ) : 256 );
 	}
+}
+
+CONSOLE_COMMAND_SHIP( editorPreviewSweep, "makes the preview of every material, model or class and throws it away, a memory test: editorPreviewSweep material|model|class [first] [count]", nullptr ) {
+	const int assetKinds[] = { EDITOR_ASSET_MATERIAL, EDITOR_ASSET_MODEL, EDITOR_ASSET_ENTITY_CLASS };
+	const char * const kinds[] = { "material", "model", "class" };
+	int kind = -1;
+	for ( int i = 0; i < 3; i++ ) {
+		if ( idStr::Icmp( args.Argv( 1 ), kinds[i] ) == 0 ) {
+			kind = i;
+		}
+	}
+	if ( kind == -1 || !NeedEditor() ) {
+		common->Printf( "usage: editorPreviewSweep material|model|class [first] [count]\n" );
+		return;
+	}
+	struct sweep_t {
+		int		kind;
+		int		first;
+		int		count;
+		int		seen;
+		int		asked;
+	} sweep = { kind, atoi( args.Argv( 2 ) ), ( args.Argc() > 3 ) ? atoi( args.Argv( 3 ) ) : INT_MAX, 0, 0 };
+	editorEngine->EnumAssets( assetKinds[kind], []( void * context, const char * name ) {
+		sweep_t & s = *static_cast<sweep_t *>( context );
+		if ( s.seen++ >= s.first && s.asked < s.count ) {
+			s.asked++;
+			editorEngine->RequestPreview( PREVIEW_SWEEP_ID, s.kind, name, 128 );
+		}
+	}, &sweep );
+	common->Printf( "editorPreviewSweep: %d pictures asked for\n", sweep.asked );
 }
 
 CONSOLE_COMMAND_SHIP( editorSaveMap, "saves the map open in the editor into fs_savepath", nullptr ) {

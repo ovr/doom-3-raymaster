@@ -418,6 +418,7 @@ void idImage::ActuallyLoadImage() {
 	if ( !R_IsInitialized() ) {
 		return;
 	}
+	loadMark = globalImages->LoadMark();
 
 	// this is the ONLY place generatorFunction will ever be called
 	if ( generatorFunction ) {

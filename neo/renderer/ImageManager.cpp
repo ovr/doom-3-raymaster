@@ -482,6 +482,15 @@ idImage *idImageManager::GetImage( const char *_name ) const {
 	return NULL;
 }
 
+void idImageManager::PurgeMarked( int mark ) {
+	for ( int i = 0; i < images.Num(); i++ ) {
+		idImage * const image = images[i];
+		if ( image->loadMark == mark && image->generatorFunction == nullptr && image->IsLoaded() ) {
+			image->PurgeImage();
+		}
+	}
+}
+
 /*
 ===============
 PurgeAllImages

@@ -67,6 +67,10 @@ void EngineClient::GetViewportSize( int & width, int & height ) {
 }
 
 void EngineClient::OnPreviewReady( int id, int width, int height, const unsigned char * rgb ) {
+	if ( rgb == nullptr || width <= 0 ) {
+		emit previewReady( id, QImage() );
+		return;
+	}
 	// a deep copy: the pixels are the engine's
 	emit previewReady( id, QImage( rgb, width, height, width * 3, QImage::Format_RGB888 ).copy() );
 }

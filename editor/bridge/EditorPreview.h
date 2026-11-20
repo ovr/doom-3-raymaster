@@ -34,6 +34,9 @@ public:
 	void				Cancel() { queue.Clear(); }
 	[[nodiscard]] bool	HasPending() const { return queue.Num() > 0; }
 
+	// The first job when its frame ended in an engine error, so Finish() never came: it is taken
+	// off the queue, or it would be tried, and fail, forever.
+	[[nodiscard]] bool	TakeFailed( job_t & job );
 	// draws the first job of the queue; false when the output is too small for any picture
 	[[nodiscard]] bool	Draw();
 	// After the frame Draw() was part of: the job and its pixels, RGB8, top row first.
@@ -45,11 +48,14 @@ private:
 
 	idRenderWorld *		world = nullptr;
 	idRenderModel *		sphere = nullptr;
+	idRenderModel *		quad = nullptr;			// for the materials with a deform
 	renderEntity_t		entity;					// set by Show()
 	qhandle_t			entityHandle = -1;
 	renderLight_t		lights[2];
 	qhandle_t			lightHandles[2] = { -1, -1 };
 	idJointMat *		joints = nullptr;
 	idList<job_t>		queue;
+	int					sincePurge = 0;			// pictures since the last purge of their images
+	bool				drawing = false;		// between Draw() and Finish()
 	int					drawnSize = 0;			// of the job in the frame being drawn, 0 = none
 };

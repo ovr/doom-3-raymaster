@@ -170,6 +170,7 @@ public:
 	virtual bool			UsingResourceFiles() { return resourceFiles.Num() > 0; }
 	virtual void			UnloadMapResources( const char *name );
 	virtual void			MountAllMapResources();
+	virtual void			ListResourceFiles( const char * prefix, idStrList & names );
 	virtual void			UnloadResourceContainer( const char *name );
 	idFile *				GetResourceContainer( int idx ) {
 		if ( idx >= 0 && idx < resourceFiles.Num() ) {
@@ -577,6 +578,18 @@ void idFileSystemLocal::MountAllMapResources() {
 			idStr name = files->GetFile( i );
 			name.StripPath();
 			AddResourceFile( name );
+		}
+	}
+}
+
+void idFileSystemLocal::ListResourceFiles( const char * prefix, idStrList & names ) {
+	const int prefixLength = idStr::Length( prefix );
+	for ( int i = 0; i < resourceFiles.Num(); i++ ) {
+		const idList<idResourceCacheEntry, TAG_RESOURCE> & table = resourceFiles[i]->cacheTable;
+		for ( int j = 0; j < table.Num(); j++ ) {
+			if ( idStr::Icmpn( table[j].filename, prefix, prefixLength ) == 0 ) {
+				names.Append( table[j].filename );
+			}
 		}
 	}
 }

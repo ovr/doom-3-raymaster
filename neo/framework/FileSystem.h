@@ -186,6 +186,9 @@ public:
 	virtual void			UnloadMapResources( const char *name ) = 0;
 	// Every map's resource file at once, for an editor: media of any map can then be used in any other.
 	virtual void			MountAllMapResources() = 0;
+	// The files of every mounted resource file whose name starts with prefix; a file that is in
+	// several of them is listed several times.
+	virtual void			ListResourceFiles( const char * prefix, idStrList & names ) = 0;
 	virtual void			UnloadResourceContainer( const char *name ) = 0;
 	virtual void			StartPreload( const idStrList &_preload ) = 0;
 	virtual void			StopPreload() = 0;

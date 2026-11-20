@@ -6,6 +6,7 @@
 #include "idlib/precompiled.h"
 
 #include "d3xp/Game.h"
+#include "renderer/Image.h"
 #include "renderer/Model.h"
 
 #include "../api/EditorEngineApi.h"
@@ -21,6 +22,8 @@ constexpr float		PREVIEW_FOV = 40.0f;
 constexpr int		PREVIEW_TIME_MSEC = 1000;		// a fixed time: the same picture every time
 constexpr int		MIN_PREVIEW_SIZE = 16;
 constexpr float		BACKGROUND = 0.11f;
+constexpr int		PREVIEW_LOAD_MARK = 1;			// the images only a picture needed
+constexpr int		PURGE_EVERY = 64;				// pictures
 
 // A sphere with the texture wrapped twice around it, so a tiling material shows its seams.
 [[nodiscard]] idRenderModel * MakeSphere() {
@@ -65,6 +68,36 @@ constexpr float		BACKGROUND = 0.11f;
 	return model;
 }
 
+// One quad that faces the camera, for the materials with a deform: a tube or a sprite deform
+// takes quads only and ends the process with an error on anything else.
+[[nodiscard]] idRenderModel * MakeQuad() {
+	idRenderModel * const model = renderModelManager->AllocModel();
+	model->InitEmpty( "_editorPreviewQuad" );
+
+	srfTriangles_t * const tri = model->AllocSurfaceTriangles( 4, 6 );
+	const float corners[4][2] = { { -1.0f, -1.0f }, { 1.0f, -1.0f }, { 1.0f, 1.0f }, { -1.0f, 1.0f } };
+	for ( const auto & corner : corners ) {
+		idDrawVert & vert = tri->verts[tri->numVerts++];
+		vert.Clear();
+		// the camera looks along +X, +Y is its left
+		vert.xyz.Set( 0.0f, -corner[0] * SPHERE_RADIUS, corner[1] * SPHERE_RADIUS );
+		vert.SetNormal( idVec3( -1.0f, 0.0f, 0.0f ) );
+		vert.SetTexCoord( corner[0] * 0.5f + 0.5f, 0.5f - corner[1] * 0.5f );
+		vert.color[0] = vert.color[1] = vert.color[2] = vert.color[3] = 255;
+	}
+	const int indexes[6] = { 0, 1, 2, 0, 2, 3 };
+	for ( const int index : indexes ) {
+		tri->indexes[tri->numIndexes++] = static_cast<triIndex_t>( index );
+	}
+
+	modelSurface_t surface = {};
+	surface.shader = declManager->FindMaterial( "_default" );
+	surface.geometry = tri;
+	model->AddSurface( surface );
+	model->FinishSurfaces();
+	return model;
+}
+
 void SetShaderParms( float * parms ) {
 	parms[SHADERPARM_RED] = 1.0f;
 	parms[SHADERPARM_GREEN] = 1.0f;
@@ -79,6 +112,7 @@ void idEditorPreview::Init() {
 	// an empty world of one area; without it nothing added is ever drawn
 	world->InitFromMap( nullptr );
 	sphere = MakeSphere();
+	quad = MakeQuad();
 
 	// Show() puts them around the model
 	const float brightness[2] = { 0.85f, 0.3f };
@@ -102,6 +136,7 @@ void idEditorPreview::Init() {
 void idEditorPreview::Shutdown() {
 	queue.Clear();
 	drawnSize = 0;
+	drawing = false;
 	if ( world != nullptr ) {
 		renderSystem->FreeRenderWorld( world );
 		world = nullptr;
@@ -109,6 +144,10 @@ void idEditorPreview::Shutdown() {
 	if ( sphere != nullptr ) {
 		renderModelManager->FreeModel( sphere );
 		sphere = nullptr;
+	}
+	if ( quad != nullptr ) {
+		renderModelManager->FreeModel( quad );
+		quad = nullptr;
 	}
 	if ( joints != nullptr ) {
 		Mem_Free16( joints );
@@ -126,8 +165,8 @@ void idEditorPreview::Show( const job_t & job, renderView_t & view ) {
 	idVec3 viewDir( 1.0f, 0.0f, 0.0f );
 
 	if ( job.kind == EDITOR_PREVIEW_MATERIAL ) {
-		entity.hModel = sphere;
 		entity.customShader = declManager->FindMaterial( job.name );
+		entity.hModel = ( entity.customShader->Deform() != DFRM_NONE ) ? quad : sphere;
 	} else {
 		idDict args;
 		if ( job.kind == EDITOR_PREVIEW_ENTITY_CLASS ) {
@@ -156,7 +195,7 @@ void idEditorPreview::Show( const job_t & job, renderView_t & view ) {
 		viewDir.Normalize();
 	}
 	if ( job.kind == EDITOR_PREVIEW_MATERIAL ) {
-		entity.bounds = sphere->Bounds( &entity );
+		entity.bounds = entity.hModel->Bounds( &entity );
 	}
 	entity.origin.Zero();
 
@@ -190,6 +229,18 @@ void idEditorPreview::Show( const job_t & job, renderView_t & view ) {
 	}
 }
 
+bool idEditorPreview::TakeFailed( job_t & job ) {
+	if ( !drawing || queue.Num() == 0 ) {
+		return false;
+	}
+	drawing = false;
+	drawnSize = 0;
+	globalImages->SetLoadMark( 0 );
+	job = queue[0];
+	queue.RemoveIndex( 0 );
+	return true;
+}
+
 bool idEditorPreview::Draw() {
 	drawnSize = 0;
 	if ( queue.Num() == 0 ) {
@@ -203,6 +254,10 @@ bool idEditorPreview::Draw() {
 		return false;
 	}
 
+	// until Finish(): the images this picture loads, in Show() or when the back end binds them
+	globalImages->SetLoadMark( PREVIEW_LOAD_MARK );
+	drawing = true;
+	common->DPrintf( "preview: %s\n", queue[0].name.c_str() );
 	renderView_t view;
 	Show( queue[0], view );
 	// debug lines belong to no world: without this the edit view's markers and gizmo are in the picture
@@ -224,6 +279,14 @@ bool idEditorPreview::Finish( job_t & job, idList<byte> & rgb ) {
 	}
 	const int size = drawnSize;
 	drawnSize = 0;
+	drawing = false;
+	globalImages->SetLoadMark( 0 );
+	// Thousands of pictures in a row would keep every texture of the game loaded. What the map
+	// uses of them loads again when it is drawn.
+	if ( ++sincePurge >= PURGE_EVERY ) {
+		sincePurge = 0;
+		globalImages->PurgeMarked( PREVIEW_LOAD_MARK );
+	}
 	job = queue[0];
 	job.size = size;
 	queue.RemoveIndex( 0 );
