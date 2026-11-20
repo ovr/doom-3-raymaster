@@ -41,11 +41,12 @@ void idEditorView::SetEditMode( bool edit ) {
 		return;
 	}
 	StopLook();
-	editMode = edit;
-	// the engine may hold the focus from a game that just ended
-	if ( editMode && window != nullptr && GetFocus() == window ) {
+	// The engine may hold the focus from a game that just ended. It has to see the focus go:
+	// in edit mode the message would be dropped and the engine would stay active.
+	if ( edit && window != nullptr && GetFocus() == window ) {
 		SetFocus( GetParent( window ) );
 	}
+	editMode = edit;
 }
 
 void idEditorView::SetView( const idVec3 & newOrigin, const idAngles & newAngles ) {

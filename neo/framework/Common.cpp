@@ -1157,7 +1157,10 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 			game->Leaderboards_Init();
 		}
 
-		CreateMainMenu();
+		// a host has no main menu; made and hidden, it would still play the menu music
+		if ( engineHost == nullptr ) {
+			CreateMainMenu();
+		}
 
 		commonDialog.Init();
 

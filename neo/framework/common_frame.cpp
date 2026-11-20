@@ -496,7 +496,9 @@ void idCommonLocal::Frame() {
 
 		// if the console or another gui is down, we don't need to hold the mouse cursor
 		bool chatting = false;
-		if ( console->Active() || Dialog().IsDialogActive() || session->IsSystemUIShowing() || ( game && game->InhibitControls() && !IsPlayingDoomClassic() ) ) {
+		// a host without a running map has no menu either: the mouse is the host's
+		const bool hostIdle = ( engineHost != nullptr && !mapSpawned );
+		if ( hostIdle || console->Active() || Dialog().IsDialogActive() || session->IsSystemUIShowing() || ( game && game->InhibitControls() && !IsPlayingDoomClassic() ) ) {
 			Sys_GrabMouseCursor( false );
 			usercmdGen->InhibitUsercmd( INHIBIT_SESSION, true );
 			chatting = true;
