@@ -36,9 +36,11 @@ int		c_active_brushes;
 
 int		c_nodes;
 
+static dmapOwnerList_t	liveBrushes;
+
 // if a brush just barely pokes onto the other side,
 // let it slide by without chopping
-#define	PLANESIDE_EPSILON	0.001
+constexpr double PLANESIDE_EPSILON = 0.001;
 //0.1
 
 
@@ -60,7 +62,7 @@ int	CountBrushList (uBrush_t *brushes)
 }
 
 
-int BrushSizeForSides( int numsides ) {
+static int BrushSizeForSides( int numsides ) {
 	int		c;
 
 	// allocate a structure with a variable number of sides at the end
@@ -82,8 +84,7 @@ uBrush_t *AllocBrush (int numsides)
 
 	c = BrushSizeForSides( numsides );
 
-	bb = (uBrush_t *)Mem_Alloc( c, TAG_RENDER_TOOLS );
-	memset (bb, 0, c);
+	bb = (uBrush_t *)liveBrushes.Alloc( dmapArena, c );
 	c_active_brushes++;
 	return bb;
 }
@@ -105,8 +106,32 @@ void FreeBrush (uBrush_t *brushes)
 			delete brushes->sides[i].visibleHull;
 		}
 	}
-	Mem_Free (brushes);
+	liveBrushes.Free( dmapArena, brushes );
 	c_active_brushes--;
+}
+
+/*
+================
+CollectBrushWindings
+
+The windings of every brush that was not freed; the brushes are forgotten.
+================
+*/
+void CollectBrushWindings( idList<idWinding *> &windings ) {
+	for ( void *ptr = liveBrushes.First() ; ptr != nullptr ; ptr = dmapOwnerList_t::Next( ptr ) ) {
+		const uBrush_t *brush = static_cast<const uBrush_t *>( ptr );
+		for ( int i = 0 ; i < brush->numsides ; i++ ) {
+			if ( brush->sides[i].winding != nullptr ) {
+				windings.Append( brush->sides[i].winding );
+			}
+			if ( brush->sides[i].visibleHull != nullptr ) {
+				windings.Append( brush->sides[i].visibleHull );
+			}
+		}
+	}
+	liveBrushes.Reset();
+	c_active_brushes = 0;
+	c_nodes = 0;
 }
 
 
@@ -287,7 +312,7 @@ float BrushVolume (uBrush_t *brush) {
 
 	// grab the first valid point as the corner
 
-	w = NULL;
+	w = nullptr;
 	for ( i = 0; i < brush->numsides; i++ ) {
 		w = brush->sides[i].winding;
 		if (w)
@@ -334,7 +359,7 @@ void WriteBspBrushMap( const char *name, uBrush_t *list ) {
 	f = fileSystem->OpenFileWrite( name );
 
 	if ( !f ) {
-		common->Error( "Can't write %s\b", name);
+		DmapError( "Can't write %s\b", name);
 	}
 
 	f->Printf( "{\n\"classname\" \"worldspawn\"\n" );
@@ -370,7 +395,7 @@ FilterBrushIntoTree_r
 
 ====================
 */
-int FilterBrushIntoTree_r( uBrush_t *b, node_t *node ) {
+static int FilterBrushIntoTree_r( uBrush_t *b, node_t *node ) {
 	uBrush_t		*front, *back;
 	int				c;
 
@@ -423,6 +448,7 @@ void FilterBrushesIntoTree( uEntity_t *e ) {
 	c_unique = 0;
 	c_clusters = 0;
 	for ( prim = e->primitives ; prim ; prim = prim->next ) {
+		DmapPoll();
 		b = prim->brush;
 		if ( !b ) {
 			continue;
@@ -444,11 +470,11 @@ void FilterBrushesIntoTree( uEntity_t *e ) {
 AllocTree
 ================
 */
-tree_t *AllocTree (void)
+tree_t *AllocTree ()
 {
 	tree_t	*tree;
 
-	tree = (tree_t *)Mem_Alloc( sizeof(*tree), TAG_RENDER_TOOLS );
+	tree = (tree_t *)dmapArena.Alloc( sizeof(*tree) );
 	memset (tree, 0, sizeof(*tree));
 	tree->bounds.Clear();
 
@@ -460,11 +486,11 @@ tree_t *AllocTree (void)
 AllocNode
 ================
 */
-node_t *AllocNode (void)
+node_t *AllocNode ()
 {
 	node_t	*node;
 
-	node = (node_t *)Mem_Alloc( sizeof(*node), TAG_RENDER_TOOLS );
+	node = (node_t *)dmapArena.Alloc( sizeof(*node) );
 	memset (node, 0, sizeof(*node));
 
 	return node;
@@ -478,7 +504,7 @@ BrushMostlyOnSide
 
 ==================
 */
-int BrushMostlyOnSide (uBrush_t *brush, idPlane &plane) {
+static int BrushMostlyOnSide (uBrush_t *brush, idPlane &plane) {
 	int			i, j;
 	idWinding	*w;
 	float		d, max;
@@ -523,7 +549,7 @@ void SplitBrush (uBrush_t *brush, int planenum, uBrush_t **front, uBrush_t **bac
 	side_t		*s, *cs;
 	float		d, d_front, d_back;
 
-	*front = *back = NULL;
+	*front = *back = nullptr;
 	idPlane &plane = dmapGlobals.mapPlanes[planenum];
 
 	// check all points
@@ -585,7 +611,7 @@ void SplitBrush (uBrush_t *brush, int planenum, uBrush_t **front, uBrush_t **bac
 		b[i] = AllocBrush (brush->numsides+1);
 		memcpy( b[i], brush, sizeof( uBrush_t ) - sizeof( brush->sides ) );
 		b[i]->numsides = 0;
-		b[i]->next = NULL;
+		b[i]->next = nullptr;
 		b[i]->original = brush->original;
 	}
 
@@ -627,7 +653,7 @@ void SplitBrush (uBrush_t *brush, int planenum, uBrush_t **front, uBrush_t **bac
 		if ( b[i]->numsides < 3 )
 		{
 			FreeBrush (b[i]);
-			b[i] = NULL;
+			b[i] = nullptr;
 		}
 	}
 
@@ -657,7 +683,7 @@ void SplitBrush (uBrush_t *brush, int planenum, uBrush_t **front, uBrush_t **bac
 		b[i]->numsides++;
 
 		cs->planenum = planenum^i^1;
-		cs->material = NULL;
+		cs->material = nullptr;
 		if (i==0)
 			cs->winding = midwinding->Copy();
 		else
@@ -666,7 +692,6 @@ void SplitBrush (uBrush_t *brush, int planenum, uBrush_t **front, uBrush_t **bac
 
 {
 	float	v1;
-	int		i;
 
 	for (i=0 ; i<2 ; i++)
 	{
@@ -674,7 +699,7 @@ void SplitBrush (uBrush_t *brush, int planenum, uBrush_t **front, uBrush_t **bac
 		if (v1 < 1.0)
 		{
 			FreeBrush (b[i]);
-			b[i] = NULL;
+			b[i] = nullptr;
 //			common->Printf ("tiny volume after clip\n");
 		}
 	}

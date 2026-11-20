@@ -49,8 +49,35 @@ resolved: normals.  otherwise adjacent facet shaded surfaces get their
 #endif
 
 static	idFile	*procFile;
+static	int		c_outputTriangles;
 
-#define	AREANUM_DIFFERENT	-2
+/*
+=============
+NumOutputTriangles
+=============
+*/
+int NumOutputTriangles() {
+	return c_outputTriangles;
+}
+
+/*
+=============
+ResetOutput
+
+Closes and removes the .proc of a compile that stopped while writing it.
+=============
+*/
+void ResetOutput() {
+	if ( procFile != nullptr ) {
+		fileSystem->CloseFile( procFile );
+		procFile = nullptr;
+		const idStr qpath = idStr( dmapGlobals.mapFileBase ) + "." PROC_FILE_EXT;
+		::remove( fileSystem->RelativePathToOSPath( qpath, "fs_savepath" ) );
+	}
+	c_outputTriangles = 0;
+}
+
+constexpr int AREANUM_DIFFERENT = -2;
 /*
 =============
 PruneNodes_r
@@ -62,7 +89,7 @@ Returns the area number of all children, or
 AREANUM_DIFFERENT if not the same.
 =============
 */
-int	PruneNodes_r( node_t *node ) {
+static int	PruneNodes_r( node_t *node ) {
 	int		a1, a2;
 
 	if ( node->planenum == PLANENUM_LEAF ) {
@@ -147,9 +174,9 @@ static int CountUniqueShaders( optimizeGroup_t *groups ) {
 MatchVert
 ==============
 */
-#define	XYZ_EPSILON	0.01
-#define	ST_EPSILON	0.001
-#define	COSINE_EPSILON	0.999
+constexpr double XYZ_EPSILON = 0.01;
+constexpr double ST_EPSILON = 0.001;
+constexpr double COSINE_EPSILON = 0.999;
 
 static bool MatchVert( const dmapVert_t *a, const dmapVert_t *b ) {
 	if ( idMath::Fabs( a->xyz[0] - b->xyz[0] ) > XYZ_EPSILON ) {
@@ -370,7 +397,7 @@ static void WriteOutputSurfaces( int entityNum, int areaNum ) {
 
 		entity->epairs.GetString( "name", "", &name );
 		if ( !name[0] ) {
-			common->Error( "Entity %i has surfaces, but no name key", entityNum );
+			DmapError( "Entity %i has surfaces, but no name key", entityNum );
 		}
 		procFile->WriteFloatString( "model { /* name = */ \"%s\" /* numSurfaces = */ %i\n\n", 
 			name, numSurfaces );
@@ -387,7 +414,7 @@ static void WriteOutputSurfaces( int entityNum, int areaNum ) {
 		// surface, even though they couldn't be merged together to save
 		// vertexes because they had different planes, texture coordinates, or lights.
 		// Different mergeGroups will stay in separate surfaces.
-		ambient = NULL;
+		ambient = nullptr;
 
 		for ( groupStep = group ; groupStep ; groupStep = groupStep->nextGroup ) {
 			if ( groupStep->surfaceEmited ) {
@@ -408,7 +435,7 @@ static void WriteOutputSurfaces( int entityNum, int areaNum ) {
 		}
 
 		if ( surfaceNum >= numSurfaces ) {
-			common->Error( "WriteOutputSurfaces: surfaceNum >= numSurfaces" );
+			DmapError( "WriteOutputSurfaces: surfaceNum >= numSurfaces" );
 		}
 
 		procFile->WriteFloatString( "/* surface %i */ { ", surfaceNum );
@@ -420,6 +447,7 @@ static void WriteOutputSurfaces( int entityNum, int areaNum ) {
 
 		CleanupUTriangles( uTri );
 		WriteUTriangles( uTri );
+		c_outputTriangles += uTri.indexes.Num() / 3;
 
 		procFile->WriteFloatString( "}\n\n" );
 	}
@@ -567,7 +595,7 @@ static void WriteOutputEntity( int entityNum ) {
 WriteOutputFile
 ====================
 */
-void WriteOutputFile( void ) {
+void WriteOutputFile() {
 	int				i;
 	uEntity_t		*entity;
 	idStr			qpath;
@@ -581,9 +609,10 @@ void WriteOutputFile( void ) {
 	// never into the game install
 	procFile = fileSystem->OpenFileWrite( qpath, "fs_savepath" );
 	if ( !procFile ) {
-		common->Error( "Error opening %s", qpath.c_str() );
+		DmapError( "Error opening %s", qpath.c_str() );
 	}
 
+	c_outputTriangles = 0;
 	procFile->WriteFloatString( "%s\n\n", PROC_FILE_ID );
 
 	// write the entity models and information, writing entities first
@@ -598,4 +627,5 @@ void WriteOutputFile( void ) {
 	}
 
 	fileSystem->CloseFile( procFile );
+	procFile = nullptr;
 }

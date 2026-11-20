@@ -90,7 +90,7 @@ private:
 	void				LerpVert( const dmapVert_t &a, const dmapVert_t &b, dmapVert_t &out ) const;
 						// sample a single 3x3 patch
 	void				SampleSinglePatchPoint( const dmapVert_t ctrl[3][3], float u, float v, dmapVert_t *out ) const;
-	void				SampleSinglePatch( const dmapVert_t ctrl[3][3], int baseCol, int baseRow, int width, int horzSub, int vertSub, dmapVert_t *outVerts ) const;
+	void				SampleSinglePatch( const dmapVert_t ctrl[3][3], int baseCol, int baseRow, int outWidth, int horzSub, int vertSub, dmapVert_t *outVerts ) const;
 };
 
 /*

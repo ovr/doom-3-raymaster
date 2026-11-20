@@ -34,7 +34,7 @@ If you have questions concerning this license or the applicable additional terms
 
 /*
 
-  All triangle list functions should behave reasonably with NULL lists.
+  All triangle list functions should behave reasonably with nullptr lists.
 
 */
 
@@ -43,10 +43,10 @@ If you have questions concerning this license or the applicable additional terms
 AllocTri
 ===============
 */
-mapTri_t	*AllocTri( void ) {
+mapTri_t	*AllocTri() {
 	mapTri_t	*tri;
 
-	tri = (mapTri_t *)Mem_Alloc( sizeof( *tri ), TAG_RENDER_TOOLS );
+	tri = (mapTri_t *)dmapArena.Alloc( sizeof( *tri ) );
 	memset( tri, 0, sizeof( *tri ) );
 	return tri;
 }
@@ -57,7 +57,7 @@ FreeTri
 ===============
 */
 void		FreeTri( mapTri_t *tri ) {
-	Mem_Free( tri );
+	dmapArena.Free( tri );
 }
 
 
@@ -92,7 +92,7 @@ void FreeTriList( mapTri_t *a ) {
 
 	for ( ; a ; a = next ) {
 		next = a->next;
-		Mem_Free( a );
+		dmapArena.Free( a );
 	}
 }
 
@@ -105,7 +105,7 @@ mapTri_t	*CopyTriList( const mapTri_t *a ) {
 	mapTri_t	*testList;
 	const mapTri_t	*tri;
 
-	testList = NULL;
+	testList = nullptr;
 	for ( tri = a ; tri ; tri = tri->next ) {
 		mapTri_t	*copy;
 
@@ -144,7 +144,7 @@ CopyMapTri
 mapTri_t	*CopyMapTri( const mapTri_t *tri ) {
 	mapTri_t		*t;
 
-	t = (mapTri_t *)Mem_Alloc( sizeof( *t ), TAG_RENDER_TOOLS );
+	t = (mapTri_t *)dmapArena.Alloc( sizeof( *t ) );
 	*t = *tri;
 
 	return t;
@@ -171,7 +171,7 @@ mapTri_t	*RemoveBadTris( const mapTri_t *list ) {
 	mapTri_t	*copy;
 	const mapTri_t	*tri;
 
-	newList = NULL;
+	newList = nullptr;
 
 	for ( tri = list ; tri ; tri = tri->next ) {
 		if ( MapTriArea( tri ) > 0 ) {
@@ -210,8 +210,8 @@ void	FlipTriList( mapTri_t *tris ) {
 
 	for ( tri = tris ; tri ; tri = tri->next ) {
 		dmapVert_t	v;
-		const struct hashVert_s *hv;
-		struct optVertex_s	*ov;
+		const struct hashVert_t *hv;
+		struct optVertex_t	*ov;
 
 		v = tri->v[0];
 		tri->v[0] = tri->v[2];
@@ -289,7 +289,7 @@ WindingToTriList
 Generates a new list of triangles with proper texcoords from a winding
 created by clipping the originalTri
 
-OriginalTri can be NULL if you don't care about texCoords
+OriginalTri can be nullptr if you don't care about texCoords
 ================
 */
 mapTri_t *WindingToTriList( const idWinding *w, const mapTri_t *originalTri ) {
@@ -299,10 +299,10 @@ mapTri_t *WindingToTriList( const idWinding *w, const mapTri_t *originalTri ) {
 	const idVec3	*vec;
 
 	if ( !w ) {
-		return NULL;
+		return nullptr;
 	}
 
-	triList = NULL;
+	triList = nullptr;
 	for ( i = 2 ; i < w->GetNumPoints() ; i++ ) {
 		tri = AllocTri();
 		if ( !originalTri ) {
@@ -344,8 +344,8 @@ void	ClipTriList( const mapTri_t *list, const idPlane &plane, float epsilon,
 	mapTri_t		*newList;
 	idWinding		*w, *frontW, *backW;
 
-	*front = NULL;
-	*back = NULL;
+	*front = nullptr;
+	*back = nullptr;
 
 	for ( tri = list ; tri ; tri = tri->next ) {
 		w = WindingForTri( tri );

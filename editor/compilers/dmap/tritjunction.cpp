@@ -78,21 +78,21 @@ If you have questions concerning this license or the applicable additional terms
 
 */
 
-#define	SNAP_FRACTIONS	32
+constexpr int SNAP_FRACTIONS = 32;
 //#define	SNAP_FRACTIONS	8
 //#define	SNAP_FRACTIONS	1
 
-#define	VERTEX_EPSILON	( 1.0 / SNAP_FRACTIONS )
+constexpr double VERTEX_EPSILON = ( 1.0 / SNAP_FRACTIONS );
 
-#define	COLINEAR_EPSILON	( 1.8 * VERTEX_EPSILON )
+constexpr double COLINEAR_EPSILON = ( 1.8 * VERTEX_EPSILON );
 
-#define	HASH_BINS	16
+constexpr int HASH_BINS = 16;
 
-typedef struct hashVert_s {
-	struct hashVert_s	*next;
+struct hashVert_t {
+	struct hashVert_t	*next;
 	idVec3				v;
 	int					iv[3];
-} hashVert_t;
+};
 
 static idBounds	hashBounds;
 static idVec3	hashScale;
@@ -107,7 +107,7 @@ GetHashVert
 Also modifies the original vert to the snapped value
 ===============
 */
-struct hashVert_s	*GetHashVert( idVec3 &v ) {
+struct hashVert_t	*GetHashVert( idVec3 &v ) {
 	int		iv[3];
 	int		block[3];
 	int		i;
@@ -129,12 +129,6 @@ struct hashVert_s	*GetHashVert( idVec3 &v ) {
 	// see if a vertex near enough already exists
 	// this could still fail to find a near neighbor right at the hash block boundary
 	for ( hv = hashVerts[block[0]][block[1]][block[2]] ; hv ; hv = hv->next ) {
-#if 0
-		if ( hv->iv[0] == iv[0] && hv->iv[1] == iv[1] && hv->iv[2] == iv[2] ) {
-			VectorCopy( hv->v, v );
-			return hv;
-		}
-#else
 		for ( i = 0 ; i < 3 ; i++ ) {
 			int	d;
 			d = hv->iv[i] - iv[i];
@@ -146,11 +140,10 @@ struct hashVert_s	*GetHashVert( idVec3 &v ) {
 			VectorCopy( hv->v, v );
 			return hv;
 		}
-#endif
 	}
 
 	// create a new one 
-	hv = (hashVert_t *)Mem_Alloc( sizeof( *hv ), TAG_RENDER_TOOLS );
+	hv = (hashVert_t *)dmapArena.Alloc( sizeof( *hv ) );
 
 	hv->next = hashVerts[block[0]][block[1]][block[2]];
 	hashVerts[block[0]][block[1]][block[2]] = hv;
@@ -252,7 +245,7 @@ void HashTriangles( optimizeGroup_t *groupList ) {
 	// add all the points to the hash buckets
 	for ( group = groupList ; group ; group = group->nextGroup ) {
 		// don't create tjunctions against discrete surfaces (blood decals, etc)
-		if ( group->material != NULL && group->material->IsDiscrete() ) {
+		if ( group->material != nullptr && group->material->IsDiscrete() ) {
 			continue;
 		}
 		for ( a = group->triList ; a ; a = a->next ) {
@@ -271,7 +264,7 @@ The optimizer may add some more crossing verts
 after t junction processing
 =================
 */
-void FreeTJunctionHash( void ) {
+void FreeTJunctionHash() {
 	int			i, j, k;
 	hashVert_t	*hv, *next;
 
@@ -280,12 +273,25 @@ void FreeTJunctionHash( void ) {
 			for ( k = 0 ; k < HASH_BINS ; k++ ) {
 				for ( hv = hashVerts[i][j][k] ; hv ; hv = next ) {
 					next = hv->next;
-					Mem_Free( hv );
+					dmapArena.Free( hv );
 				}
 			}
 		}
 	}
 	memset( hashVerts, 0, sizeof( hashVerts ) );
+}
+
+/*
+=================
+ResetTJunctionHash
+
+After the arena was cleared: forgets the hash verts without freeing them.
+=================
+*/
+void ResetTJunctionHash() {
+	memset( hashVerts, 0, sizeof( hashVerts ) );
+	numHashVerts = 0;
+	numTotalVerts = 0;
 }
 
 
@@ -294,7 +300,7 @@ void FreeTJunctionHash( void ) {
 FixTriangleAgainstHashVert
 
 Returns a list of two new mapTri if the hashVert is
-on an edge of the given mapTri, otherwise returns NULL.
+on an edge of the given mapTri, otherwise returns nullptr.
 ==================
 */
 static mapTri_t *FixTriangleAgainstHashVert( const mapTri_t *a, const hashVert_t *hv ) {
@@ -315,7 +321,7 @@ static mapTri_t *FixTriangleAgainstHashVert( const mapTri_t *a, const hashVert_t
 	// if the triangle already has this hashVert as a vert,
 	// it can't be split by it
 	if ( a->hashVert[0] == hv || a->hashVert[1] == hv || a->hashVert[2] == hv ) {
-		return NULL;
+		return nullptr;
 	}
 
 	// we probably should find the edge that the vertex is closest to.
@@ -358,7 +364,7 @@ static mapTri_t *FixTriangleAgainstHashVert( const mapTri_t *a, const hashVert_t
 		new1 = CopyMapTri( a );
 		new1->v[(i+1)%3] = split;
 		new1->hashVert[(i+1)%3] = hv;
-		new1->next = NULL;
+		new1->next = nullptr;
 
 		new2 = CopyMapTri( a );
 		new2->v[i] = split;
@@ -381,7 +387,7 @@ static mapTri_t *FixTriangleAgainstHashVert( const mapTri_t *a, const hashVert_t
 	}
 
 
-	return NULL;
+	return nullptr;
 }
 
 
@@ -407,11 +413,11 @@ static mapTri_t	*FixTriangleAgainstHash( const mapTri_t *tri ) {
 	if ( tri->hashVert[0] == tri->hashVert[1]
 		|| tri->hashVert[0] == tri->hashVert[2]
 		|| tri->hashVert[1] == tri->hashVert[2] ) {
-		return NULL;
+		return nullptr;
 	}
 
 	fixed = CopyMapTri( tri );
-	fixed->next = NULL;
+	fixed->next = nullptr;
 
 	HashBlocksForTri( tri, blocks );
 	for ( i = blocks[0][0] ; i <= blocks[1][0] ; i++ ) {
@@ -420,7 +426,7 @@ static mapTri_t	*FixTriangleAgainstHash( const mapTri_t *tri ) {
 				for ( hv = hashVerts[i][j][k] ; hv ; hv = hv->next ) {
 					// fix all triangles in the list against this point
 					test = fixed;
-					fixed = NULL;
+					fixed = nullptr;
 					for ( ; test ; test = next ) {
 						next = test->next;
 						a = FixTriangleAgainstHashVert( test, hv );
@@ -490,11 +496,11 @@ void	FixAreaGroupsTjunctions( optimizeGroup_t *groupList ) {
 
 	for ( group = groupList ; group ; group = group->nextGroup ) {
 		// don't touch discrete surfaces
-		if ( group->material != NULL && group->material->IsDiscrete() ) {
+		if ( group->material != nullptr && group->material->IsDiscrete() ) {
 			continue;
 		}
 
-		newList = NULL;
+		newList = nullptr;
 		for ( tri = group->triList ; tri ; tri = tri->next ) {
 			fixed = FixTriangleAgainstHash( tri );
 			newList = MergeTriLists( newList, fixed );
@@ -571,9 +577,10 @@ void	FixGlobalTjunctions( uEntity_t *e ) {
 
 	// add all the points to the hash buckets
 	for ( areaNum = 0 ; areaNum < e->numAreas ; areaNum++ ) {
+		DmapPoll();
 		for ( group = e->areas[areaNum].groups ; group ; group = group->nextGroup ) {
 			// don't touch discrete surfaces
-			if ( group->material != NULL && group->material->IsDiscrete() ) {
+			if ( group->material != nullptr && group->material->IsDiscrete() ) {
 				continue;
 			}
 
@@ -642,13 +649,14 @@ void	FixGlobalTjunctions( uEntity_t *e ) {
 
 	// now fix each area
 	for ( areaNum = 0 ; areaNum < e->numAreas ; areaNum++ ) {
+		DmapPoll();
 		for ( group = e->areas[areaNum].groups ; group ; group = group->nextGroup ) {
 			// don't touch discrete surfaces
-			if ( group->material != NULL && group->material->IsDiscrete() ) {
+			if ( group->material != nullptr && group->material->IsDiscrete() ) {
 				continue;
 			}
 
-			mapTri_t *newList = NULL;
+			mapTri_t *newList = nullptr;
 			for ( mapTri_t *tri = group->triList ; tri ; tri = tri->next ) {
 				mapTri_t *fixed = FixTriangleAgainstHash( tri );
 				newList = MergeTriLists( newList, fixed );

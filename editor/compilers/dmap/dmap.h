@@ -32,6 +32,8 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "DmapVert.h"
 #include "DmapPatch.h"
+#include "DmapArena.h"
+#include "../MapCompiler.h"
 
 // the vector macros of the original idLib
 #define DotProduct( a, b)			((a)[0]*(b)[0]+(a)[1]*(b)[1]+(a)[2]*(b)[2])
@@ -39,35 +41,35 @@ If you have questions concerning this license or the applicable additional terms
 #define VectorCopy( a, b )			((b)[0]=(a)[0],(b)[1]=(a)[1],(b)[2]=(a)[2])
 
 
-typedef struct uPrimitive_s {
-	struct uPrimitive_s *next;
+struct uPrimitive_t {
+	struct uPrimitive_t *next;
 
-	// only one of these will be non-NULL
-	struct bspbrush_s *	brush;
-	struct mapTri_s *	tris;
-} uPrimitive_t;
+	// only one of these will be non-nullptr
+	struct uBrush_t *	brush;
+	struct mapTri_t *	tris;
+};
 
 
-typedef struct {
-	struct optimizeGroup_s	*groups;
+struct uArea_t {
+	struct optimizeGroup_t	*groups;
 	// we might want to add other fields later
-} uArea_t;
+};
 
-typedef struct {
+struct uEntity_t {
 	idMapEntity *		mapEntity;		// points into mapFile_t data
 
 	idVec3				origin;
 	uPrimitive_t *		primitives;
-	struct tree_s *		tree;
+	struct tree_t *		tree;
 
 	int					numAreas;
 	uArea_t *			areas;
-} uEntity_t;
+};
 
 
 // chains of mapTri_t are the general unit of processing
-typedef struct mapTri_s {
-	struct mapTri_s *	next;
+struct mapTri_t {
+	struct mapTri_t *	next;
 
 	const idMaterial *	material;
 	void *				mergeGroup;		// we want to avoid merging triangles
@@ -75,41 +77,41 @@ typedef struct mapTri_s {
 	int					planeNum;			// not set universally, just in some areas
 
 	dmapVert_t			v[3];
-	const struct hashVert_s *hashVert[3];
-	struct optVertex_s *optVert[3];
-} mapTri_t;
+	const struct hashVert_t *hashVert[3];
+	struct optVertex_t *optVert[3];
+};
 
 
-typedef struct {
+struct mesh_t {
 	int					width, height;
 	dmapVert_t *		verts;
-} mesh_t;
+};
 
 
-#define	MAX_PATCH_SIZE	32
+inline constexpr int MAX_PATCH_SIZE = 32;
 
-#define	PLANENUM_LEAF		-1
+inline constexpr int PLANENUM_LEAF = -1;
 
-typedef struct parseMesh_s {
-	struct parseMesh_s *next;
+struct parseMesh_t {
+	struct parseMesh_t *next;
 	mesh_t				mesh;
 	const idMaterial *	material;
-} parseMesh_t;
+};
 
-typedef struct bspface_s {
-	struct bspface_s *	next;
+struct bspface_t {
+	struct bspface_t *	next;
 	int					planenum;
 	bool				portal;			// all portals will be selected before
 										// any non-portals
 	bool				checked;		// used by SelectSplitPlaneNum()
 	idWinding *			w;
-} bspface_t;
+};
 
-typedef struct {
+struct textureVectors_t {
 	idVec4		v[2];		// the offset value will always be in the 0.0 to 1.0 range
-} textureVectors_t;
+};
 
-typedef struct side_s {
+struct side_t {
 	int					planenum;
 
 	const idMaterial *	material;
@@ -117,12 +119,12 @@ typedef struct side_s {
 
 	idWinding *			winding;		// only clipped to the other sides of the brush
 	idWinding *			visibleHull;	// also clipped to the solid parts of the world
-} side_t;
+};
 
 
-typedef struct bspbrush_s {
-	struct bspbrush_s *	next;
-	struct bspbrush_s *	original;	// chopped up brushes will reference the originals
+struct uBrush_t {
+	struct uBrush_t *	next;
+	struct uBrush_t *	original;	// chopped up brushes will reference the originals
 
 	int					entitynum;			// editor numbering for messages
 	int					brushnum;			// editor numbering for messages
@@ -136,24 +138,24 @@ typedef struct bspbrush_s {
 	idBounds			bounds;
 	int					numsides;
 	side_t				sides[6];			// variably sized
-} uBrush_t;
+};
 
 
-typedef struct drawSurfRef_s {
-	struct drawSurfRef_s *	nextRef;
+struct drawSurfRef_t {
+	struct drawSurfRef_t *	nextRef;
 	int						outputNumber;
-} drawSurfRef_t;
+};
 
 
-typedef struct node_s {
+struct node_t {
 	// both leafs and nodes
 	int					planenum;	// -1 = leaf node
-	struct node_s *		parent;
+	struct node_t *		parent;
 	idBounds			bounds;		// valid after portalization
 
 	// nodes only
 	side_t *			side;		// the side that created the node
-	struct node_s *		children[2];
+	struct node_t *		children[2];
 	int					nodeNumber;	// set after pruning
 
 	// leafs only
@@ -166,27 +168,27 @@ typedef struct node_s {
 	int					occupied;	// 1 or greater can reach entity
 	uEntity_t *			occupant;	// for leak file testing
 
-	struct uPortal_s *	portals;	// also on nodes during construction
-} node_t;
+	struct uPortal_t *	portals;	// also on nodes during construction
+};
 
 
-typedef struct uPortal_s {
+struct uPortal_t {
 	idPlane		plane;
-	node_t		*onnode;		// NULL = outside box
+	node_t		*onnode;		// nullptr = outside box
 	node_t		*nodes[2];		// [0] = front side of plane
-	struct uPortal_s	*next[2];
+	struct uPortal_t	*next[2];
 	idWinding	*winding;
-} uPortal_t;
+};
 
 // a tree_t is created by FaceBSP()
-typedef struct tree_s {
+struct tree_t {
 	node_t		*headnode;
 	node_t		outside_node;
 	idBounds	bounds;
-} tree_t;
+};
 
-typedef struct optimizeGroup_s {
-	struct optimizeGroup_s	*nextGroup;
+struct optimizeGroup_t {
+	struct optimizeGroup_t	*nextGroup;
 
 
 	// all of these must match to add a triangle to the triList
@@ -204,7 +206,7 @@ typedef struct optimizeGroup_s {
 	mapTri_t *			triList;
 	mapTri_t *			regeneratedTris;	// after each island optimization
 	idVec3				axis[2];			// orthogonal to the plane, so optimization can be 2D
-} optimizeGroup_t;
+};
 
 // all primitives from the map are added to optimzeGroups, creating new ones as needed
 // each optimizeGroup is then split into the map areas, creating groups in each area
@@ -218,7 +220,7 @@ typedef struct optimizeGroup_s {
 
 // dmap.cpp
 
-typedef struct {
+struct dmapGlobals_t {
 	// mapFileBase will contain the qpath without any extension: "maps/test_box"
 	char		mapFileBase[1024];
 
@@ -242,30 +244,47 @@ typedef struct {
 	bool	nomerge;
 	bool	noFlood;
 	bool	noClipSides;		// don't cut sides by solid leafs, use the entire thing
-} dmapGlobals_t;
+};
 
 extern dmapGlobals_t dmapGlobals;
 
-int FindFloatPlane( const idPlane &plane, bool *fixedDegeneracies = NULL );
+// everything a compile allocates for its nodes, brushes, faces, portals, triangles and groups
+extern dmapArena_t dmapArena;
+
+// common->Error, which never returns: the compiler cannot see that through the virtual call
+[[noreturn]] void DmapError( VERIFY_FORMAT_STRING const char *fmt, ... );
+
+// thrown by DmapPoll when the caller of the compile cancels it
+struct dmapCancelled_t {};
+
+// tells the caller where the compile is / asks it whether to go on / both
+void DmapReport( const char *stage, float fraction );
+void DmapPoll();
+void DmapProgress( const char *stage, float fraction );
+
+// the compile behind CompileMap: DmapCompile may leave through an exception, DmapFree always follows
+void DmapCompile( const compileOptions_t &options, compileResult_t &result );
+void DmapFree();
+
+int FindFloatPlane( const idPlane &plane, bool *fixedDegeneracies = nullptr );
 
 
 //=============================================================================
 
 // brush.cpp
 
-#ifndef CLIP_EPSILON
-#define	CLIP_EPSILON	0.1f
-#endif
+inline constexpr float CLIP_EPSILON = 0.1f;
 
-#define	PSIDE_FRONT			1
-#define	PSIDE_BACK			2
-#define	PSIDE_BOTH			(PSIDE_FRONT|PSIDE_BACK)
-#define	PSIDE_FACING		4
+inline constexpr int PSIDE_FRONT = 1;
+inline constexpr int PSIDE_BACK = 2;
+inline constexpr int PSIDE_BOTH = (PSIDE_FRONT|PSIDE_BACK);
+inline constexpr int PSIDE_FACING = 4;
 
 int	CountBrushList (uBrush_t *brushes);
 uBrush_t *AllocBrush (int numsides);
 void FreeBrush (uBrush_t *brushes);
 void FreeBrushList (uBrush_t *brushes);
+void CollectBrushWindings( idList<idWinding *> &windings );
 uBrush_t *CopyBrush (uBrush_t *brush);
 void PrintBrush (uBrush_t *brush);
 bool BoundBrush (uBrush_t *brush);
@@ -277,7 +296,7 @@ void WriteBspBrushMap( const char *name, uBrush_t *list );
 void FilterBrushesIntoTree( uEntity_t *e );
 
 void SplitBrush( uBrush_t *brush, int planenum, uBrush_t **front, uBrush_t **back);
-node_t *AllocNode( void );
+node_t *AllocNode();
 
 
 //=============================================================================
@@ -286,18 +305,19 @@ node_t *AllocNode( void );
 
 bool 		LoadDMapFile( const char *filename );
 void		FreeOptimizeGroupList( optimizeGroup_t *groups );
-void		FreeDMapFile( void );
+void		FreeDMapFile();
+void		ResetMapLoader();
 
 //=============================================================================
 
 // portals.cpp
 
-#define	MAX_INTER_AREA_PORTALS	1024
+inline constexpr int MAX_INTER_AREA_PORTALS = 1024;
 
-typedef struct {
+struct interAreaPortal_t {
 	int		area0, area1;
 	side_t	*side;
-} interAreaPortal_t;
+};
 
 extern	interAreaPortal_t interAreaPortals[MAX_INTER_AREA_PORTALS];
 extern	int					numInterAreaPortals;
@@ -307,6 +327,7 @@ void FillOutside( uEntity_t *e );
 void FloodAreas( uEntity_t *e );
 void MakeTreePortals( tree_t *tree );
 void FreePortal( uPortal_t *p );
+void CollectPortalWindings( idList<idWinding *> &windings );
 
 //=============================================================================
 
@@ -318,9 +339,10 @@ void LeakFile( tree_t *tree );
 
 // facebsp.cpp
 
-tree_t *AllocTree( void );
+tree_t *AllocTree();
 
 void FreeTree( tree_t *tree );
+void CollectFaceWindings( idList<idWinding *> &windings );
 
 void FreeTree_r( node_t *node );
 void FreeTreePortals_r( node_t *node );
@@ -334,18 +356,19 @@ tree_t		*FaceBSP( bspface_t *list );
 
 // surface.cpp
 
-mapTri_t *CullTrisInOpaqueLeafs( mapTri_t *triList, tree_t *tree );
+
 void	ClipSidesByTree( uEntity_t *e );
-void	SplitTrisToSurfaces( mapTri_t *triList, tree_t *tree );
+
 void	PutPrimitivesInAreas( uEntity_t *e );
 
 //=============================================================================
 
 // tritjunction.cpp
 
-struct hashVert_s	*GetHashVert( idVec3 &v );
+struct hashVert_t	*GetHashVert( idVec3 &v );
 void	HashTriangles( optimizeGroup_t *groupList );
-void	FreeTJunctionHash( void );
+void	FreeTJunctionHash();
+void	ResetTJunctionHash();
 int		CountGroupListTris( const optimizeGroup_t *groupList );
 void	FixEntityTjunctions( uEntity_t *e );
 void	FixAreaGroupsTjunctions( optimizeGroup_t *groupList );
@@ -359,48 +382,49 @@ void	FixGlobalTjunctions( uEntity_t *e );
 // will just be done by OptimizeEntity()
 
 
-typedef struct optVertex_s {
+struct optVertex_t {
 	dmapVert_t	v;
 	idVec3	pv;					// projected against planar axis, third value is 0
-	struct optEdge_s *edges;
-	struct optVertex_s	*islandLink;
+	struct optEdge_t *edges;
+	struct optVertex_t	*islandLink;
 	bool	addedToIsland;
 	bool	emited;			// when regenerating triangles
-} optVertex_t;
+};
 
-typedef struct optEdge_s {
+struct optEdge_t {
 	optVertex_t	*v1, *v2;
-	struct optEdge_s	*islandLink;
+	struct optEdge_t	*islandLink;
 	bool	addedToIsland;
 	bool	created;		// not one of the original edges
 	bool	combined;		// combined from two or more colinear edges
-	struct optTri_s	*frontTri, *backTri;
-	struct optEdge_s *v1link, *v2link;
-} optEdge_t;
+	struct optTri_t	*frontTri, *backTri;
+	struct optEdge_t *v1link, *v2link;
+};
 
-typedef struct optTri_s {
-	struct optTri_s	*next;
+struct optTri_t {
+	struct optTri_t	*next;
 	idVec3		midpoint;
 	optVertex_t	*v[3];
 	bool	filled;
-} optTri_t;
+};
 
-typedef struct {
+struct optIsland_t {
 	optimizeGroup_t	*group;
 	optVertex_t	*verts;
 	optEdge_t	*edges;
 	optTri_t	*tris;
-} optIsland_t;
+};
 
 
 void	OptimizeEntity( uEntity_t *e );
 void	OptimizeGroupList( optimizeGroup_t *groupList );
+void	ResetOptimizer();
 
 //=============================================================================
 
 // tritools.cpp
 
-mapTri_t	*AllocTri( void );
+mapTri_t	*AllocTri();
 void		FreeTri( mapTri_t *tri );
 int			CountTriList( const mapTri_t *list );
 mapTri_t	*MergeTriLists( mapTri_t *a, mapTri_t *b );
@@ -422,15 +446,17 @@ void		ClipTriList( const mapTri_t *list, const idPlane &plane, float epsilon, ma
 // output.cpp
 
 // a triangle list with shared vertexes, as a .proc surface holds it
-typedef struct {
+struct sharedTris_t {
 	idList<dmapVert_t>	verts;
 	idList<int>			indexes;
-} sharedTris_t;
+};
 
 void ShareMapTriVerts( const mapTri_t *tris, sharedTris_t &uTri );
-void WriteOutputFile( void );
+void WriteOutputFile();
+void ResetOutput();
+int NumOutputTriangles();
 
 // dmap.cpp: the whole compile, with the arguments of the dmap command
-void Dmap( const idCmdArgs &args );
+
 
 #endif /* !__DMAP_H__ */

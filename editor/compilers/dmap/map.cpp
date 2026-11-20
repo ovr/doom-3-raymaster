@@ -51,7 +51,7 @@ If you have questions concerning this license or the applicable additional terms
 // private declarations
 //
 
-#define MAX_BUILD_SIDES		300
+constexpr int MAX_BUILD_SIDES = 300;
 
 static	int		entityPrimitive;		// to track editor brush numbers
 static	int		c_numMapPatches;
@@ -64,8 +64,8 @@ static	uEntity_t	*uEntity;
 static	uBrush_t	*buildBrush;
 
 
-#define	NORMAL_EPSILON			0.00001f
-#define	DIST_EPSILON			0.01f
+constexpr float NORMAL_EPSILON = 0.00001f;
+constexpr float DIST_EPSILON = 0.01f;
 
 
 /*
@@ -138,7 +138,7 @@ static void SetBrushContents( uBrush_t *b ) {
 FreeBuildBrush
 ===============
 */
-static void FreeBuildBrush( void ) {
+static void FreeBuildBrush() {
 	int		i;
 
 	for ( i = 0 ; i < buildBrush->numsides ; i++ ) {
@@ -157,7 +157,7 @@ Produces a final brush based on the buildBrush->sides array
 and links it to the current entity
 ===============
 */
-static uBrush_t *FinishBrush( void ) {
+static uBrush_t *FinishBrush() {
 	uBrush_t	*b;
 	uPrimitive_t	*prim;
 
@@ -165,7 +165,7 @@ static uBrush_t *FinishBrush( void ) {
 	if ( !CreateBrushWindings( buildBrush ) ) {
 		// don't keep this brush
 		FreeBuildBrush();
-		return NULL;
+		return nullptr;
 	}
 
 	if ( buildBrush->contents & CONTENTS_AREAPORTAL ) {
@@ -173,7 +173,7 @@ static uBrush_t *FinishBrush( void ) {
 			common->Printf("Entity %i, Brush %i: areaportals only allowed in world\n"
 				,  dmapGlobals.num_entities - 1, entityPrimitive);
 			FreeBuildBrush();
-			return NULL;
+			return nullptr;
 		}
 	}
 
@@ -187,7 +187,7 @@ static uBrush_t *FinishBrush( void ) {
 
 	b->original = b;
 
-	prim = (uPrimitive_t *)Mem_Alloc( sizeof( *prim ), TAG_RENDER_TOOLS );
+	prim = (uPrimitive_t *)dmapArena.Alloc( sizeof( *prim ) );
 	memset( prim, 0, sizeof( *prim ) );
 	prim->next = uEntity->primitives;
 	uEntity->primitives = prim;
@@ -195,43 +195,6 @@ static uBrush_t *FinishBrush( void ) {
 	prim->brush = b;
 
 	return b;
-}
-
-/*
-================
-AdjustEntityForOrigin
-================
-*/
-static void AdjustEntityForOrigin( uEntity_t *ent ) {
-	uPrimitive_t	*prim;
-	uBrush_t	*b;
-	int			i;
-	side_t		*s;
-
-	for ( prim = ent->primitives ; prim ; prim = prim->next ) {
-		b = prim->brush;
-		if ( !b ) {
-			continue;
-		}
-		for ( i = 0; i < b->numsides; i++ ) {
-			idPlane plane;
-
-			s = &b->sides[i];
-
-			plane = dmapGlobals.mapPlanes[s->planenum];
-			plane[3] += plane.Normal() * ent->origin;
-				
-			s->planenum = FindFloatPlane( plane );
-
-			s->texVec.v[0][3] += DotProduct( ent->origin, s->texVec.v[0] );
-			s->texVec.v[1][3] += DotProduct( ent->origin, s->texVec.v[1] );
-
-			// remove any integral shift
-			s->texVec.v[0][3] -= floor( s->texVec.v[0][3] );
-			s->texVec.v[1][3] -= floor( s->texVec.v[1][3] );
-		}
-		CreateBrushWindings(b);
-	}
 }
 
 /*
@@ -346,7 +309,7 @@ static void ParseSurface( const idMapPatch *patch, const dmapPatch_t *surface, c
 	mapTri_t		*tri;
 	uPrimitive_t		*prim;
 
-	prim = (uPrimitive_t *)Mem_Alloc( sizeof( *prim ), TAG_RENDER_TOOLS );
+	prim = (uPrimitive_t *)dmapArena.Alloc( sizeof( *prim ) );
 	memset( prim, 0, sizeof( *prim ) );
 	prim->next = uEntity->primitives;
 	uEntity->primitives = prim;
@@ -386,25 +349,23 @@ static void ParsePatch( const idMapPatch *patch, int primitiveNum ) {
 
 	mat = declManager->FindMaterial( patch->GetMaterial() );
 
-	dmapPatch_t *cp = new ( TAG_RENDER_TOOLS ) dmapPatch_t( *patch );
+	dmapPatch_t cp( *patch );
 
 	// the packed coordinates of idDrawVert are up to 1/512 off at 2.0 and worse above:
 	// a t-junction vertex on a patch edge then gets a coordinate beside the edge's line
 	if ( patch->HasFileTexCoords() ) {
-		for ( int i = 0; i < cp->GetNumVertices(); i++ ) {
-			cp->SetTexCoord( i, patch->GetFileTexCoord( i ) );
+		for ( int i = 0; i < cp.GetNumVertices(); i++ ) {
+			cp.SetTexCoord( i, patch->GetFileTexCoord( i ) );
 		}
 	}
 
 	if ( patch->GetExplicitlySubdivided() ) {
-		cp->SubdivideExplicit( patch->GetHorzSubdivisions(), patch->GetVertSubdivisions(), true );
+		cp.SubdivideExplicit( patch->GetHorzSubdivisions(), patch->GetVertSubdivisions(), true );
 	} else {
-		cp->Subdivide( DEFAULT_CURVE_MAX_ERROR, DEFAULT_CURVE_MAX_ERROR, DEFAULT_CURVE_MAX_LENGTH, true );
+		cp.Subdivide( DEFAULT_CURVE_MAX_ERROR, DEFAULT_CURVE_MAX_ERROR, DEFAULT_CURVE_MAX_LENGTH, true );
 	}
 
-	ParseSurface( patch, cp, mat );
-
-	delete cp;
+	ParseSurface( patch, &cp, mat );
 }
 
 /*
@@ -458,7 +419,7 @@ bool LoadDMapFile( const char *filename ) {
 	dmapGlobals.dmapFile = new ( TAG_RENDER_TOOLS ) idMapFile();
 	if ( !dmapGlobals.dmapFile->Parse(filename) ) {
 		delete dmapGlobals.dmapFile;
-		dmapGlobals.dmapFile = NULL;
+		dmapGlobals.dmapFile = nullptr;
 		common->Warning( "Couldn't load map file: '%s'", filename );
 		return false;
 	}
@@ -472,7 +433,7 @@ bool LoadDMapFile( const char *filename ) {
 	c_areaportals = 0;
 
 	size = dmapGlobals.dmapFile->GetNumEntities() * sizeof( dmapGlobals.uEntities[0] );
-	dmapGlobals.uEntities = (uEntity_t *)Mem_Alloc( size, TAG_RENDER_TOOLS );
+	dmapGlobals.uEntities = (uEntity_t *)dmapArena.Alloc( size );
 	memset( dmapGlobals.uEntities, 0, size );
 
 	// allocate a very large temporary brush for building
@@ -510,6 +471,21 @@ bool LoadDMapFile( const char *filename ) {
 
 /*
 ================
+ResetMapLoader
+
+After the arena was cleared: the loader's pointers into it are gone.
+================
+*/
+void ResetMapLoader() {
+	uEntity = nullptr;
+	buildBrush = nullptr;
+	entityPrimitive = 0;
+	c_numMapPatches = 0;
+	c_areaportals = 0;
+}
+
+/*
+================
 FreeOptimizeGroupList
 ================
 */
@@ -519,7 +495,7 @@ void FreeOptimizeGroupList( optimizeGroup_t *groups ) {
 	for ( ; groups ; groups = next ) {
 		next = groups->nextGroup;
 		FreeTriList( groups->triList );
-		Mem_Free( groups );
+		dmapArena.Free( groups );
 	}
 }
 
@@ -528,11 +504,11 @@ void FreeOptimizeGroupList( optimizeGroup_t *groups ) {
 FreeDMapFile
 ================
 */
-void FreeDMapFile( void ) {
+void FreeDMapFile() {
 	int		i, j;
 
 	FreeBrush( buildBrush );
-	buildBrush = NULL;
+	buildBrush = nullptr;
 
 	// free the entities and brushes
 	for ( i = 0 ; i < dmapGlobals.num_entities ; i++ ) {
@@ -552,7 +528,7 @@ void FreeDMapFile( void ) {
 			if ( prim->tris ) {
 				FreeTriList( prim->tris );
 			}
-			Mem_Free( prim );
+			dmapArena.Free( prim );
 		}
 
 		// free area surfaces
@@ -564,11 +540,11 @@ void FreeDMapFile( void ) {
 				FreeOptimizeGroupList( area->groups );
 
 			}
-			Mem_Free( ent->areas );
+			dmapArena.Free( ent->areas );
 		}
 	}
 
-	Mem_Free( dmapGlobals.uEntities );
+	dmapArena.Free( dmapGlobals.uEntities );
 
 	dmapGlobals.num_entities = 0;
 }

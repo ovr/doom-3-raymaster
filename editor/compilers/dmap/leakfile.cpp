@@ -70,7 +70,7 @@ void LeakFile (tree_t *tree)
 	sprintf( filename, "%s.lin", dmapGlobals.mapFileBase );
 	linefile = fileSystem->OpenFileWrite( filename, "fs_savepath" );
 	if ( !linefile ) {
-		common->Error( "Couldn't open %s\n", filename.c_str() );
+		DmapError( "Couldn't open %s\n", filename.c_str() );
 	}
 
 	count = 0;
@@ -78,8 +78,8 @@ void LeakFile (tree_t *tree)
 	while (node->occupied > 1)
 	{
 		int			next;
-		uPortal_t	*p, *nextportal = NULL;
-		node_t		*nextnode = NULL;
+		uPortal_t	*p, *nextportal = nullptr;
+		node_t		*nextnode = nullptr;
 		int			s;
 
 		// find the best portal exit

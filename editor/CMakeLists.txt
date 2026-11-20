@@ -14,13 +14,16 @@ include(sources.cmake)
 # ---------------------------------------------------------------------------
 add_library(MapCompilers OBJECT ${MAP_COMPILERS_SOURCES})
 d3bfg_neo_common(MapCompilers)
-# /W3 until the ported code is modernized
-d3bfg_configure_target(MapCompilers WARNING_LEVEL 3 WITH_INLINES)
+d3bfg_configure_target(MapCompilers WARNING_LEVEL 4 WITH_INLINES WERROR)
 target_compile_definitions(MapCompilers PRIVATE
 	__DOOM__ _MBCS
 	$<$<CONFIG:Retail>:ID_RETAIL>
 )
 target_precompile_headers(MapCompilers PRIVATE "${D3BFG_PCH}")
+# without warnings at /W4: /WX in every config, per file so that the PCH of the old headers stays out
+set(MAP_COMPILERS_CPP ${MAP_COMPILERS_SOURCES})
+list(FILTER MAP_COMPILERS_CPP INCLUDE REGEX "\.cpp$")
+set_source_files_properties(${MAP_COMPILERS_CPP} PROPERTIES COMPILE_OPTIONS /WX)
 set_target_properties(MapCompilers PROPERTIES FOLDER "editor")
 
 # ---------------------------------------------------------------------------

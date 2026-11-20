@@ -40,10 +40,10 @@ dmapPatch_t::SetSize
 */
 void dmapPatch_t::SetSize( int patchWidth, int patchHeight ) {
 	if ( patchWidth < 1 || patchWidth > maxWidth ) {
-		idLib::common->FatalError("dmapPatch_t::SetSize: invalid patchWidth");
+		DmapError( "dmapPatch_t::SetSize: invalid patchWidth" );
 	}
 	if ( patchHeight < 1 || patchHeight > maxHeight ) {
-		idLib::common->FatalError("dmapPatch_t::SetSize: invalid patchHeight");
+		DmapError( "dmapPatch_t::SetSize: invalid patchHeight" );
 	}
 	width = patchWidth;
 	height = patchHeight;
@@ -186,7 +186,7 @@ void dmapPatch_t::Collapse() {
 	int i, j;
 
 	if ( !expanded ) {
-		idLib::common->FatalError("dmapPatch_t::Collapse: patch not expanded");
+		DmapError( "dmapPatch_t::Collapse: patch not expanded" );
 	}
 	expanded = false;
 	if ( width != maxWidth ) {
@@ -208,7 +208,7 @@ void dmapPatch_t::Expand() {
 	int i, j;
 
 	if ( expanded ) {
-		idLib::common->FatalError("dmapPatch_t::Expand: patch alread expanded");
+		DmapError( "dmapPatch_t::Expand: patch alread expanded" );
 	}
 	expanded = true;
 	verts.SetNum( maxWidth * maxHeight );
@@ -245,7 +245,7 @@ Handles all the complicated wrapping and degenerate cases
 Expects a Not expanded patch.
 =================
 */
-#define	COPLANAR_EPSILON	0.1f
+constexpr float COPLANAR_EPSILON = 0.1f;
 
 void dmapPatch_t::GenerateNormals() {
 	int			i, j, k, dist;
@@ -476,7 +476,7 @@ void dmapPatch_t::SampleSinglePatchPoint( const dmapVert_t ctrl[3][3], float u, 
 dmapPatch_t::SampleSinglePatch
 ===================
 */
-void dmapPatch_t::SampleSinglePatch( const dmapVert_t ctrl[3][3], int baseCol, int baseRow, int width, int horzSub, int vertSub, dmapVert_t *outVerts ) const {
+void dmapPatch_t::SampleSinglePatch( const dmapVert_t ctrl[3][3], int baseCol, int baseRow, int outWidth, int horzSub, int vertSub, dmapVert_t *outVerts ) const {
 	int		i, j;
 	float	u, v;
 
@@ -486,7 +486,7 @@ void dmapPatch_t::SampleSinglePatch( const dmapVert_t ctrl[3][3], int baseCol, i
 		for ( j = 0; j < vertSub; j++ ) {
 			u = (float) i / ( horzSub - 1 );
 			v = (float) j / ( vertSub - 1 );
-			SampleSinglePatchPoint( ctrl, u, v, &outVerts[((baseRow + j) * width) + i + baseCol] );
+			SampleSinglePatchPoint( ctrl, u, v, &outVerts[((baseRow + j) * outWidth) + i + baseCol] );
 		}
 	}
 }
@@ -501,7 +501,7 @@ void dmapPatch_t::SubdivideExplicit( int horzSubdivisions, int vertSubdivisions,
 	dmapVert_t sample[3][3];
 	int outWidth = ((width - 1) / 2 * horzSubdivisions) + 1;
 	int outHeight = ((height - 1) / 2 * vertSubdivisions) + 1;
-	dmapVert_t *dv = new dmapVert_t[ outWidth * outHeight ];
+	idTempArray<dmapVert_t> dv( outWidth * outHeight );
 
 	// generate normals for the control mesh
 	if ( genNormals ) {
@@ -517,7 +517,7 @@ void dmapPatch_t::SubdivideExplicit( int horzSubdivisions, int vertSubdivisions,
 					sample[k][l] = verts[ ((j + l) * width) + i + k ];
 				}
 			}
-			SampleSinglePatch( sample, baseCol, baseRow, outWidth, horzSubdivisions, vertSubdivisions, dv );
+			SampleSinglePatch( sample, baseCol, baseRow, outWidth, horzSubdivisions, vertSubdivisions, dv.Ptr() );
 			baseRow += vertSubdivisions;
 		}
 		baseCol += horzSubdivisions;
@@ -526,8 +526,6 @@ void dmapPatch_t::SubdivideExplicit( int horzSubdivisions, int vertSubdivisions,
 	for ( i = 0; i < outWidth * outHeight; i++ ) {
 		verts[i] = dv[i];
 	}
-
-	delete[] dv;
 
 	width = maxWidth = outWidth;
 	height = maxHeight = outHeight;

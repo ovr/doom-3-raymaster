@@ -1187,25 +1187,4 @@ CONSOLE_COMMAND_SHIP( netmap, "loads a map in multiplayer mode", idCmdSystem::Ar
 	commonLocal.StartNewGame( args.Argv(1), true, gameMode );
 }
 
-/*
-==================
-Common_TestMap_f
-==================
-*/
-CONSOLE_COMMAND_SHIP( testmap, "tests a map", idCmdSystem::ArgCompletion_MapName ) {
-	idStr map, string;
 
-	map = args.Argv(1);
-	if ( !map.Length() ) {
-		return;
-	}
-	map.StripFileExtension();
-
-	cmdSystem->BufferCommandText( CMD_EXEC_NOW, "disconnect" );
-
-	sprintf( string, "dmap maps/%s.map", map.c_str() );
-	cmdSystem->BufferCommandText( CMD_EXEC_NOW, string );
-
-	sprintf( string, "devmap %s", map.c_str() );
-	cmdSystem->BufferCommandText( CMD_EXEC_NOW, string );
-}

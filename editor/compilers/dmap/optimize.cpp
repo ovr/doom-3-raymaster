@@ -46,11 +46,11 @@ If you have questions concerning this license or the applicable additional terms
 
 idBounds	optBounds;
 
-#define	MAX_OPT_VERTEXES	0x10000
+constexpr int MAX_OPT_VERTEXES = 0x10000;
 int			numOptVerts;
 optVertex_t optVerts[MAX_OPT_VERTEXES];
 
-#define	MAX_OPT_EDGES		0x40000
+constexpr int MAX_OPT_EDGES = 0x40000;
 static	int		numOptEdges;
 static	optEdge_t	optEdges[MAX_OPT_EDGES];
 
@@ -77,7 +77,7 @@ static void ValidateEdgeCounts( optIsland_t *island ) {
 			} else if ( e->v2 == vert ) {
 				e = e->v2link;
 			} else {
-				common->Error( "ValidateEdgeCounts: mislinked" );
+				DmapError( "ValidateEdgeCounts: mislinked" );
 			}
 		}
 		if ( c != 2 && c != 0 ) {
@@ -93,11 +93,11 @@ static void ValidateEdgeCounts( optIsland_t *island ) {
 AllocEdge
 ====================
 */
-static optEdge_t	*AllocEdge( void ) {
+static optEdge_t	*AllocEdge() {
 	optEdge_t	*e;
 
 	if ( numOptEdges == MAX_OPT_EDGES ) {
-		common->Error( "MAX_OPT_EDGES" );
+		DmapError( "MAX_OPT_EDGES" );
 	}
 	e = &optEdges[ numOptEdges ];
 	numOptEdges++;
@@ -127,7 +127,7 @@ static	void RemoveEdgeFromVert( optEdge_t *e1, optVertex_t *vert ) {
 			} else if ( e1->v2 == vert ) {
 				*prev = e1->v2link;
 			} else {
-				common->Error( "RemoveEdgeFromVert: vert not found" );
+				DmapError( "RemoveEdgeFromVert: vert not found" );
 			}
 			return;
 		}
@@ -137,7 +137,7 @@ static	void RemoveEdgeFromVert( optEdge_t *e1, optVertex_t *vert ) {
 		} else if ( e->v2 == vert ) {
 			prev = &e->v2link;
 		} else {
-			common->Error( "RemoveEdgeFromVert: vert not found" );
+			DmapError( "RemoveEdgeFromVert: vert not found" );
 		}
 	}
 }
@@ -160,7 +160,7 @@ static	void UnlinkEdge( optEdge_t *e, optIsland_t *island ) {
 		}
 	}
 
-	common->Error( "RemoveEdgeFromIsland: couldn't free edge" );
+	DmapError( "RemoveEdgeFromIsland: couldn't free edge" );
 }
 
 
@@ -177,11 +177,6 @@ static	void LinkEdge( optEdge_t *e ) {
 	e->v2->edges = e;
 }
 
-#ifdef __linux__
-
-optVertex_t *FindOptVertex( dmapVert_t *v, optimizeGroup_t *opt );
-
-#else
 
 /*
 ================
@@ -234,8 +229,7 @@ static optVertex_t *FindOptVertex( dmapVert_t *v, optimizeGroup_t *opt ) {
 	}
 
 	if ( numOptVerts >= MAX_OPT_VERTEXES ) {
-		common->Error( "MAX_OPT_VERTEXES" );
-		return NULL;
+		DmapError( "MAX_OPT_VERTEXES" );
 	}
 	
 	numOptVerts++;
@@ -252,7 +246,6 @@ static optVertex_t *FindOptVertex( dmapVert_t *v, optimizeGroup_t *opt ) {
 	return vert;
 }
 
-#endif
 
 //=================================================================
 
@@ -279,13 +272,13 @@ EdgeIntersection
 Creates a new optVertex_t where the line segments cross.
 This should only be called if PointsStraddleLine returned true
 
-Will return NULL if the lines are colinear
+Will return nullptr if the lines are colinear
 ====================
 */
 static	optVertex_t *EdgeIntersection( const optVertex_t *p1, const optVertex_t *p2, 
 									  const optVertex_t *l1, const optVertex_t *l2, optimizeGroup_t *opt ) {
 	double	f;
-	dmapVert_t	*v;
+	dmapVert_t	v;
 	double	cross1, cross2;
 	int		i;
 
@@ -293,24 +286,23 @@ static	optVertex_t *EdgeIntersection( const optVertex_t *p1, const optVertex_t *
 	cross2 = CrossZ( l1->pv, p2->pv, l2->pv, p2->pv );
 
 	if ( cross1 - cross2 == 0 ) {
-		return NULL;
+		return nullptr;
 	}
 
 	f = cross1 / ( cross1 - cross2 );
 
-	// FIXME: how are we freeing this, since it doesn't belong to a tri?
-	v = (dmapVert_t *)Mem_Alloc( sizeof( *v ), TAG_RENDER_TOOLS );
-	memset( v, 0, sizeof( *v ) );
+	// FindOptVertex keeps a copy
+	memset( &v, 0, sizeof( v ) );
 
 	for ( i = 0 ; i < 3 ; i++ ) {
-		v->xyz[i] = (float)( p1->v.xyz[i] * ( 1.0 - f ) + p2->v.xyz[i] * f );
-		v->normal[i] = (float)( p1->v.normal[i] * ( 1.0 - f ) + p2->v.normal[i] * f );
+		v.xyz[i] = (float)( p1->v.xyz[i] * ( 1.0 - f ) + p2->v.xyz[i] * f );
+		v.normal[i] = (float)( p1->v.normal[i] * ( 1.0 - f ) + p2->v.normal[i] * f );
 	}
-	DmapNormalize( v->normal );
-	v->st[0] = (float)( p1->v.st[0] * ( 1.0 - f ) + p2->v.st[0] * f );
-	v->st[1] = (float)( p1->v.st[1] * ( 1.0 - f ) + p2->v.st[1] * f );
+	DmapNormalize( v.normal );
+	v.st[0] = (float)( p1->v.st[0] * ( 1.0 - f ) + p2->v.st[0] * f );
+	v.st[1] = (float)( p1->v.st[1] * ( 1.0 - f ) + p2->v.st[1] * f );
 
-	return FindOptVertex( v, opt );
+	return FindOptVertex( &v, opt );
 }
 
 
@@ -433,10 +425,10 @@ static	bool TryAddNewEdge( optVertex_t *v1, optVertex_t *v2, optIsland_t *island
 	return true;
 }
 
-typedef struct {
+struct edgeLength_t {
 	optVertex_t	*v1, *v2;
 	float		length;
-} edgeLength_t;
+};
 
 
 static	int LengthSort( const void *a, const void *b ) {
@@ -478,7 +470,7 @@ static	void AddInteriorEdges( optIsland_t *island ) {
 	}
 
 	// allocate space for all the lengths
-	lengths = (edgeLength_t *)Mem_Alloc( sizeof( *lengths ) * c_verts * c_verts / 2, TAG_RENDER_TOOLS );
+	lengths = (edgeLength_t *)dmapArena.Alloc( sizeof( *lengths ) * c_verts * c_verts / 2 );
 	numLengths = 0;
 	for ( vert = island->verts ; vert ; vert = vert->islandLink ) {
 		if ( !vert->edges ) {
@@ -515,7 +507,7 @@ static	void AddInteriorEdges( optIsland_t *island ) {
 		common->Printf( "%6i added interior edges\n", c_addedEdges );
 	}
 
-	Mem_Free( lengths );
+	dmapArena.Free( lengths );
 }
 
 
@@ -528,7 +520,7 @@ RemoveIfColinear
 
 ====================
 */
-#define	COLINEAR_EPSILON	0.1
+constexpr double COLINEAR_EPSILON = 0.1;
 static	void RemoveIfColinear( optVertex_t *ov, optIsland_t *island ) {
 	optEdge_t	*e, *e1, *e2;
 	optVertex_t *v1, *v2, *v3;
@@ -541,8 +533,8 @@ static	void RemoveIfColinear( optVertex_t *ov, optIsland_t *island ) {
 	v2 = ov;
 
 	// we must find exactly two edges before testing for colinear
-	e1 = NULL;
-	e2 = NULL;
+	e1 = nullptr;
+	e2 = nullptr;
 	for ( e = ov->edges ; e ; ) {
 		if ( !e1 ) {
 			e1 = e;
@@ -556,7 +548,7 @@ static	void RemoveIfColinear( optVertex_t *ov, optIsland_t *island ) {
 		} else if ( e->v2 == v2 ) {
 			e = e->v2link;
 		} else {
-			common->Error( "RemoveIfColinear: mislinked edge" );
+			DmapError( "RemoveIfColinear: mislinked edge" );
 		}
 	}
 
@@ -577,18 +569,18 @@ static	void RemoveIfColinear( optVertex_t *ov, optIsland_t *island ) {
 	} else if ( e1->v2 == v2 ) {
 		v1 = e1->v1;
 	} else {
-		common->Error( "RemoveIfColinear: mislinked edge" );
+		DmapError( "RemoveIfColinear: mislinked edge" );
 	}
 	if ( e2->v1 == v2 ) {
 		v3 = e2->v2;
 	} else if ( e2->v2 == v2 ) {
 		v3 = e2->v1;
 	} else {
-		common->Error( "RemoveIfColinear: mislinked edge" );
+		DmapError( "RemoveIfColinear: mislinked edge" );
 	}
 
 	if ( v1 == v3 ) {
-		common->Error( "RemoveIfColinear: mislinked edge" );
+		DmapError( "RemoveIfColinear: mislinked edge" );
 	}
 
 	// they must point in opposite directions
@@ -616,7 +608,7 @@ static	void RemoveIfColinear( optVertex_t *ov, optIsland_t *island ) {
 
 	// v2 should have no edges now
 	if ( v2->edges ) {
-		common->Error( "RemoveIfColinear: didn't remove properly" );
+		DmapError( "RemoveIfColinear: didn't remove properly" );
 	}
 
 
@@ -698,10 +690,10 @@ static void FreeOptTriangles( optIsland_t *island ) {
 
 	for ( opt = island->tris ; opt ; opt = next ) {
 		next = opt->next;
-		Mem_Free( opt );
+		dmapArena.Free( opt );
 	}
 
-	island->tris = NULL;
+	island->tris = nullptr;
 }
 
 
@@ -740,14 +732,10 @@ Returns false if it is either front or back facing
 =================
 */
 static bool IsTriangleDegenerate( const optVertex_t *v1, const optVertex_t *v2, const optVertex_t *v3 ) {
-#if 1
 	if ( CrossZ( v1->pv, v2->pv, v1->pv, v3->pv ) == 0 ) {
 		return true;
 	}
 	return false;
-#else
-	return (bool)!IsTriangleValid( v1, v2, v3 );
-#endif
 }
 
 
@@ -805,7 +793,7 @@ static void LinkTriToEdge( optTri_t *optTri, optEdge_t *edge ) {
 		edge->frontTri = optTri;
 		return;
 	}
-	common->Error( "LinkTriToEdge: edge not found on tri" );
+	DmapError( "LinkTriToEdge: edge not found on tri" );
 }
 
 /*
@@ -824,7 +812,7 @@ static void CreateOptTri( optVertex_t *first, optEdge_t *e1, optEdge_t *e2, optI
 	} else if ( e1->v2 == first ) {
 		second = e1->v1;
 	} else {
-		common->Error( "CreateOptTri: mislinked edge" );
+		DmapError( "CreateOptTri: mislinked edge" );
 	}
 
 	if ( e2->v1 == first ) {
@@ -832,11 +820,11 @@ static void CreateOptTri( optVertex_t *first, optEdge_t *e1, optEdge_t *e2, optI
 	} else if ( e2->v2 == first ) {
 		third = e2->v1;
 	} else {
-		common->Error( "CreateOptTri: mislinked edge" );
+		DmapError( "CreateOptTri: mislinked edge" );
 	}
 
 	if ( !IsTriangleValid( first, second, third ) ) {
-		common->Error( "CreateOptTri: invalid" );
+		DmapError( "CreateOptTri: invalid" );
 	}
 
 		// identify the third edge
@@ -850,7 +838,7 @@ static void CreateOptTri( optVertex_t *first, optEdge_t *e1, optEdge_t *e2, optI
 		} else if ( opposite->v2 == second ) {
 			opposite = opposite->v2link;
 		} else {
-			common->Error( "BuildOptTriangles: mislinked edge" );
+			DmapError( "BuildOptTriangles: mislinked edge" );
 		}
 	}
 
@@ -861,7 +849,7 @@ static void CreateOptTri( optVertex_t *first, optEdge_t *e1, optEdge_t *e2, optI
 
 
 	// create new triangle
-	optTri = (optTri_t *)Mem_Alloc( sizeof( *optTri ), TAG_RENDER_TOOLS );
+	optTri = (optTri_t *)dmapArena.Alloc( sizeof( *optTri ) );
 	optTri->v[0] = first;
 	optTri->v[1] = second;
 	optTri->v[2] = third;
@@ -889,27 +877,6 @@ static void CreateOptTri( optVertex_t *first, optEdge_t *e1, optEdge_t *e2, optI
 	LinkTriToEdge( optTri, opposite );
 }
 
-// debugging tool
-static void ReportNearbyVertexes( const optVertex_t *v, const optIsland_t *island ) {
-	const optVertex_t	*ov;
-	float		d;
-	idVec3		vec;
-
-	common->Printf( "verts near 0x%p (%f, %f)\n", v,  v->pv[0], v->pv[1] );
-	for ( ov = island->verts ; ov ; ov = ov->islandLink ) {
-		if ( ov == v ) {
-			continue;
-		}
-
-		vec = ov->pv - v->pv;
-
-		d = vec.Length();
-		if ( d < 1 ) {
-			common->Printf( "0x%p = (%f, %f)\n", ov, ov->pv[0], ov->pv[1] );
-		}
-	}
-}
-
 /*
 ====================
 BuildOptTriangles
@@ -931,7 +898,7 @@ static void BuildOptTriangles( optIsland_t *island ) {
 
 	// clear the edge triangle links
 	for ( check = island->edges ; check ; check = check->islandLink ) {
-		check->frontTri = check->backTri = NULL;
+		check->frontTri = check->backTri = nullptr;
 	}
 
 	// check all possible triangle made up out of the
@@ -949,7 +916,7 @@ static void BuildOptTriangles( optIsland_t *island ) {
 				second = e1->v1;
 				e1Next = e1->v2link;
 			} else {
-				common->Error( "BuildOptTriangles: mislinked edge" );
+				DmapError( "BuildOptTriangles: mislinked edge" );
 			}
 
 			// if the vertex has already been used, it can't be used again
@@ -965,7 +932,7 @@ static void BuildOptTriangles( optIsland_t *island ) {
 					third = e2->v1;
 					e2Next = e2->v2link;
 				} else {
-					common->Error( "BuildOptTriangles: mislinked edge" );
+					DmapError( "BuildOptTriangles: mislinked edge" );
 				}
 				if ( e2 == e1 ) {
 					continue;
@@ -991,7 +958,7 @@ static void BuildOptTriangles( optIsland_t *island ) {
 						middle = check->v1;
 						checkNext = check->v2link;
 					} else {
-						common->Error( "BuildOptTriangles: mislinked edge" );
+						DmapError( "BuildOptTriangles: mislinked edge" );
 					}
 
 					if ( check == e1 || check == e2 ) {
@@ -1124,16 +1091,16 @@ static	void RemoveInteriorEdges( optIsland_t *island ) {
 
 //==================================================================================
 
-typedef struct {
+struct originalEdges_t {
 	optVertex_t	*v1, *v2;
-} originalEdges_t;
+};
 
 /*
 =================
 AddEdgeIfNotAlready
 =================
 */
-void AddEdgeIfNotAlready( optVertex_t *v1, optVertex_t *v2 ) {
+static void AddEdgeIfNotAlready( optVertex_t *v1, optVertex_t *v2 ) {
 	optEdge_t	*e;
 
 	// make sure that there isn't an identical edge already added
@@ -1146,7 +1113,7 @@ void AddEdgeIfNotAlready( optVertex_t *v1, optVertex_t *v2 ) {
 		} else if ( e->v2 == v1 ) {
 			e = e->v2link;
 		} else {
-			common->Error( "SplitEdgeByList: bad edge link" );
+			DmapError( "SplitEdgeByList: bad edge link" );
 		}
 	}
 
@@ -1155,7 +1122,7 @@ void AddEdgeIfNotAlready( optVertex_t *v1, optVertex_t *v2 ) {
 	e->v1 = v1;
 	e->v2 = v2;
 
-	e->islandLink = NULL;
+	e->islandLink = nullptr;
 
 	// link the edge to its verts
 	LinkEdge( e );
@@ -1163,13 +1130,27 @@ void AddEdgeIfNotAlready( optVertex_t *v1, optVertex_t *v2 ) {
 
 
 
-typedef struct edgeCrossing_s {
-	struct edgeCrossing_s	*next;
+struct edgeCrossing_t {
+	struct edgeCrossing_t	*next;
 	optVertex_t		*ov;
-} edgeCrossing_t;
+};
 
 static	originalEdges_t	*originalEdges;
 static	int				numOriginalEdges;
+
+/*
+=================
+ResetOptimizer
+
+After the arena was cleared: the edge list of a group that was not finished is gone.
+=================
+*/
+void ResetOptimizer() {
+	numOptVerts = 0;
+	numOptEdges = 0;
+	originalEdges = nullptr;
+	numOriginalEdges = 0;
+}
 
 /*
 =================
@@ -1234,7 +1215,7 @@ static	void AddOriginalEdges( optimizeGroup_t *opt ) {
 
 	// allocate space for max possible edges
 	numTris = CountTriList( opt->triList );
-	originalEdges = (originalEdges_t *)Mem_Alloc( numTris * 3 * sizeof( *originalEdges ), TAG_RENDER_TOOLS );
+	originalEdges = (originalEdges_t *)dmapArena.Alloc( numTris * 3 * sizeof( *originalEdges ) );
 	numOriginalEdges = 0;
 
 	// add all unique triangle edges
@@ -1254,7 +1235,7 @@ static	void AddOriginalEdges( optimizeGroup_t *opt ) {
 SplitOriginalEdgesAtCrossings
 =====================
 */
-void SplitOriginalEdgesAtCrossings( optimizeGroup_t *opt ) {
+static void SplitOriginalEdgesAtCrossings( optimizeGroup_t *opt ) {
 	int				i, j, k, l;
 	int				numOriginalVerts;
 	edgeCrossing_t	**crossings;
@@ -1264,7 +1245,7 @@ void SplitOriginalEdgesAtCrossings( optimizeGroup_t *opt ) {
 	// linked to the vertexes
 
 	// generate crossing points between all the original edges
-	crossings = (edgeCrossing_t **)Mem_ClearedAlloc( numOriginalEdges * sizeof( *crossings ), TAG_RENDER_TOOLS );
+	crossings = (edgeCrossing_t **)dmapArena.ClearedAlloc( numOriginalEdges * sizeof( *crossings ) );
 
 	for ( i = 0 ; i < numOriginalEdges ; i++ ) {
 		for ( j = i+1 ; j < numOriginalEdges ; j++ ) {
@@ -1292,28 +1273,28 @@ void SplitOriginalEdgesAtCrossings( optimizeGroup_t *opt ) {
 //		   j, v3 - optVerts, v4 - optVerts );	// !@#
 				// colinear, so add both verts of each edge to opposite
 				if ( VertexBetween( v3, v1, v2 ) ) {
-					cross = (edgeCrossing_t *)Mem_ClearedAlloc( sizeof( *cross ), TAG_RENDER_TOOLS );
+					cross = (edgeCrossing_t *)dmapArena.ClearedAlloc( sizeof( *cross ) );
 					cross->ov = v3;
 					cross->next = crossings[i];
 					crossings[i] = cross;
 				}
 
 				if ( VertexBetween( v4, v1, v2 ) ) {
-					cross = (edgeCrossing_t *)Mem_ClearedAlloc( sizeof( *cross ), TAG_RENDER_TOOLS );
+					cross = (edgeCrossing_t *)dmapArena.ClearedAlloc( sizeof( *cross ) );
 					cross->ov = v4;
 					cross->next = crossings[i];
 					crossings[i] = cross;
 				}
 
 				if ( VertexBetween( v1, v3, v4 ) ) {
-					cross = (edgeCrossing_t *)Mem_ClearedAlloc( sizeof( *cross ), TAG_RENDER_TOOLS );
+					cross = (edgeCrossing_t *)dmapArena.ClearedAlloc( sizeof( *cross ) );
 					cross->ov = v1;
 					cross->next = crossings[j];
 					crossings[j] = cross;
 				}
 
 				if ( VertexBetween( v2, v3, v4 ) ) {
-					cross = (edgeCrossing_t *)Mem_ClearedAlloc( sizeof( *cross ), TAG_RENDER_TOOLS );
+					cross = (edgeCrossing_t *)dmapArena.ClearedAlloc( sizeof( *cross ) );
 					cross->ov = v2;
 					cross->next = crossings[j];
 					crossings[j] = cross;
@@ -1321,24 +1302,15 @@ void SplitOriginalEdgesAtCrossings( optimizeGroup_t *opt ) {
 
 				continue;
 			}
-#if 0
-if ( newVert && newVert != v1 && newVert != v2 && newVert != v3 && newVert != v4 ) {
-common->Printf( "lines %i (%i to %i) and %i (%i to %i) cross at new point %i\n", i, v1 - optVerts, v2 - optVerts, 
-		   j, v3 - optVerts, v4 - optVerts, newVert - optVerts );
-} else if ( newVert ) {
-common->Printf( "lines %i (%i to %i) and %i (%i to %i) intersect at old point %i\n", i, v1 - optVerts, v2 - optVerts, 
-		  j, v3 - optVerts, v4 - optVerts, newVert - optVerts );
-}
-#endif
 			if ( newVert != v1 && newVert != v2 ) {
-				cross = (edgeCrossing_t *)Mem_ClearedAlloc( sizeof( *cross ), TAG_RENDER_TOOLS );
+				cross = (edgeCrossing_t *)dmapArena.ClearedAlloc( sizeof( *cross ) );
 				cross->ov = newVert;
 				cross->next = crossings[i];
 				crossings[i] = cross;
 			}
 
 			if ( newVert != v3 && newVert != v4 ) {
-				cross = (edgeCrossing_t *)Mem_ClearedAlloc( sizeof( *cross ), TAG_RENDER_TOOLS );
+				cross = (edgeCrossing_t *)dmapArena.ClearedAlloc( sizeof( *cross ) );
 				cross->ov = newVert;
 				cross->next = crossings[j];
 				crossings[j] = cross;
@@ -1360,14 +1332,14 @@ common->Printf( "lines %i (%i to %i) and %i (%i to %i) intersect at old point %i
 			numCross++;
 		}
 		numCross += 2;	// account for originals
-		sorted = (optVertex_t **)Mem_Alloc( numCross * sizeof( *sorted ), TAG_RENDER_TOOLS );
+		sorted = (optVertex_t **)dmapArena.Alloc( numCross * sizeof( *sorted ) );
 		sorted[0] = originalEdges[i].v1;
 		sorted[1] = originalEdges[i].v2;
 		j = 2;
 		for ( cross = crossings[i] ; cross ; cross = nextCross ) {
 			nextCross = cross->next;
 			sorted[j] = cross->ov;
-			Mem_Free( cross );
+			dmapArena.Free( cross );
 			j++;
 		}
 
@@ -1393,12 +1365,12 @@ common->Printf( "lines %i (%i to %i) and %i (%i to %i) intersect at old point %i
 			}
 		}
 
-		Mem_Free( sorted );
+		dmapArena.Free( sorted );
 	}
 
 
-	Mem_Free( crossings );
-	Mem_Free( originalEdges );
+	dmapArena.Free( crossings );
+	dmapArena.Free( originalEdges );
 
 	// check for duplicated edges
 	for ( i = 0 ; i < numOptEdges ; i++ ) {
@@ -1512,81 +1484,6 @@ static void OptimizeIsland( optIsland_t *island ) {
 	RegenerateTriangles( island );
 }
 
-/*
-================
-AddVertexToIsland_r
-================
-*/
-static void AddVertexToIsland_r( optVertex_t *vert, optIsland_t *island ) {
-	optEdge_t	*e;
-
-	// we can't just check islandLink, because the
-	// last vert will have a NULL
-	if ( vert->addedToIsland ) {
-		return;
-	}
-	vert->addedToIsland = true;
-	vert->islandLink = island->verts;
-	island->verts = vert;
-
-	for ( e = vert->edges ; e ; ) {
-		if ( !e->addedToIsland ) {
-			e->addedToIsland = true;
-
-			e->islandLink = island->edges;
-			island->edges = e;
-		}
-
-		if ( e->v1 == vert ) {
-			AddVertexToIsland_r( e->v2, island );
-			e = e->v1link;
-			continue;
-		}
-		if ( e->v2 == vert ) {
-			AddVertexToIsland_r( e->v1, island );
-			e = e->v2link;
-			continue;
-		}
-		common->Error( "AddVertexToIsland_r: mislinked vert" );
-	}
-
-}
-
-/*
-====================
-SeparateIslands
-
-While the algorithm should theoretically handle any collection
-of triangles, there are speed and stability benefits to making
-it work on as small a list as possible, so separate disconnected
-collections of edges and process separately.
-
-FIXME: we need to separate the source triangles before
-doing this, because PointInSourceTris() can give a bad answer if
-the source list has triangles not used in the optimization
-====================
-*/
-static void SeparateIslands( optimizeGroup_t *opt ) {
-	int		i;
-	optIsland_t	island;
-	int		numIslands;
-
-	numIslands = 0;
-	for ( i = 0 ; i < numOptVerts ; i++ ) {
-		if ( optVerts[i].addedToIsland ) {
-			continue;
-		}
-		numIslands++;
-		memset( &island, 0, sizeof( island ) );
-		island.group = opt;
-		AddVertexToIsland_r( &optVerts[i], &island );
-		OptimizeIsland( &island );
-	}
-	if ( dmapGlobals.verbose ) {
-		common->Printf( "%6i islands\n", numIslands );
-	}
-}
-
 static void DontSeparateIslands( optimizeGroup_t *opt ) {
 	int		i;
 	optIsland_t	island;
@@ -1611,38 +1508,6 @@ static void DontSeparateIslands( optimizeGroup_t *opt ) {
 
 /*
 ====================
-PointInSourceTris
-
-This is a sloppy bounding box check
-====================
-*/
-static bool PointInSourceTris( float x, float y, float z, optimizeGroup_t *opt ) {
-	mapTri_t	*tri;
-	idBounds	b;
-	idVec3		p;
-
-	if ( !opt->material->IsDrawn() ) {
-		return false;
-	}
-
-	p[0] = x;
-	p[1] = y;
-	p[2] = z;
-	for ( tri = opt->triList ; tri ; tri = tri->next ) {
-		b.Clear();
-		b.AddPoint( tri->v[0].xyz );
-		b.AddPoint( tri->v[1].xyz );
-		b.AddPoint( tri->v[2].xyz );
-
-		if ( b.ContainsPoint( p ) ) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/*
-====================
 OptimizeOptList
 ====================
 */
@@ -1653,7 +1518,7 @@ static	void OptimizeOptList( optimizeGroup_t *opt ) {
 	// so we can match edges
 	// can we avoid doing this if colinear vertexes break edges?
 	oldNext = opt->nextGroup;
-	opt->nextGroup = NULL;
+	opt->nextGroup = nullptr;
 	FixAreaGroupsTjunctions( opt );
 	opt->nextGroup = oldNext;
 
@@ -1663,13 +1528,7 @@ static	void OptimizeOptList( optimizeGroup_t *opt ) {
 	AddOriginalEdges( opt );
 	SplitOriginalEdgesAtCrossings( opt );
 
-#if 0
-	// seperate any discontinuous areas for individual optimization
-	// to reduce the scope of the problem
-	SeparateIslands( opt );
-#else
 	DontSeparateIslands( opt );
-#endif
 
 	// now free the hash verts
 	FreeTJunctionHash();
@@ -1677,7 +1536,7 @@ static	void OptimizeOptList( optimizeGroup_t *opt ) {
 	// free the original list and use the new one
 	FreeTriList( opt->triList );
 	opt->triList = opt->regeneratedTris;
-	opt->regeneratedTris = NULL;
+	opt->regeneratedTris = nullptr;
 }
 
 
@@ -1688,7 +1547,7 @@ SetGroupTriPlaneNums
 Copies the group planeNum to every triangle in each group
 ==================
 */
-void SetGroupTriPlaneNums( optimizeGroup_t *groups ) {
+static void SetGroupTriPlaneNums( optimizeGroup_t *groups ) {
 	mapTri_t	*tri;
 	optimizeGroup_t	*group;
 
@@ -1721,6 +1580,7 @@ void	OptimizeGroupList( optimizeGroup_t *groupList ) {
 	// optimize and remove colinear edges, which will
 	// re-introduce some t junctions
 	for ( group = groupList ; group ; group = group->nextGroup ) {
+		DmapPoll();
 		OptimizeOptList( group );
 	}
 	c_edge = CountGroupListTris( groupList );
@@ -1749,6 +1609,9 @@ void	OptimizeEntity( uEntity_t *e ) {
 
 	common->Printf( "----- OptimizeEntity -----\n" );
 	for ( i = 0 ; i < e->numAreas ; i++ ) {
+		if ( dmapGlobals.entityNum == 0 ) {
+			DmapReport( "optimize", static_cast<float>( i ) / static_cast<float>( e->numAreas ) );
+		}
 		OptimizeGroupList( e->areas[i].groups );
 	}
 }

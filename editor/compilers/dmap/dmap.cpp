@@ -33,22 +33,148 @@ If you have questions concerning this license or the applicable additional terms
 #include "dmap.h"
 
 dmapGlobals_t	dmapGlobals;
+dmapArena_t		dmapArena;
+
+// the compile that runs, for its callbacks
+static const compileOptions_t *	dmapOptions;
+static bool						dmapCollisionMap;
+
+/*
+============
+DmapError
+============
+*/
+void DmapError( const char *fmt, ... ) {
+	char	text[MAX_STRING_CHARS];
+	va_list	argptr;
+
+	va_start( argptr, fmt );
+	idStr::vsnPrintf( text, sizeof( text ), fmt, argptr );
+	va_end( argptr );
+
+	common->Error( "%s", text );
+	// not reached: common->Error throws
+	throw idException( text );
+}
+
+/*
+============
+DmapPoll
+============
+*/
+void DmapPoll() {
+	if ( dmapOptions != nullptr && dmapOptions->cancelled && dmapOptions->cancelled() ) {
+		throw dmapCancelled_t();
+	}
+}
+
+/*
+============
+DmapReport
+============
+*/
+void DmapReport( const char *stage, float fraction ) {
+	if ( dmapOptions != nullptr && dmapOptions->progress ) {
+		dmapOptions->progress( stage, fraction );
+	}
+}
+
+/*
+============
+DmapProgress
+============
+*/
+void DmapProgress( const char *stage, float fraction ) {
+	DmapReport( stage, fraction );
+	DmapPoll();
+}
+
+/*
+============
+ResetDmapGlobals
+============
+*/
+static void ResetDmapGlobals() {
+	dmapGlobals.mapFileBase[0] = '\0';
+	dmapGlobals.dmapFile = nullptr;
+	dmapGlobals.mapPlanes.Clear();
+	dmapGlobals.num_entities = 0;
+	dmapGlobals.uEntities = nullptr;
+	dmapGlobals.entityNum = 0;
+	dmapGlobals.verbose = false;
+	dmapGlobals.noOptimize = false;
+	dmapGlobals.verboseentities = false;
+	dmapGlobals.noCurves = false;
+	dmapGlobals.fullCarve = false;
+	dmapGlobals.noModelBrushes = false;
+	dmapGlobals.noTJunc = false;
+	dmapGlobals.nomerge = false;
+	dmapGlobals.noFlood = false;
+	dmapGlobals.noClipSides = false;
+}
+
+/*
+============
+DmapFree
+
+Ends a compile, whichever way it went: frees what the compiler did not free itself
+(after an error that is nearly everything) and leaves the globals as before a compile.
+============
+*/
+void DmapFree() {
+	if ( dmapCollisionMap ) {
+		// the error came out of the collision model manager
+		collisionModelManager->FreeMap();
+		dmapCollisionMap = false;
+	}
+	ResetOutput();
+
+	// the windings belong to the heap; a side copied by SplitBrush shares its visible hull
+	idList<idWinding *> windings;
+	CollectBrushWindings( windings );
+	CollectFaceWindings( windings );
+	CollectPortalWindings( windings );
+	std::sort( windings.Ptr(), windings.Ptr() + windings.Num() );
+	for ( int i = 0 ; i < windings.Num() ; i++ ) {
+		if ( i == 0 || windings[i] != windings[i - 1] ) {
+			delete windings[i];
+		}
+	}
+
+	dmapArena.Clear();
+	ResetMapLoader();
+	ResetTJunctionHash();
+	ResetOptimizer();
+
+	delete dmapGlobals.dmapFile;
+	ResetDmapGlobals();
+	dmapOptions = nullptr;
+}
 
 /*
 ============
 ProcessModel
 ============
 */
-bool ProcessModel( uEntity_t *e, bool floodFill ) {
-	bspface_t	*faces;
+static bool ProcessModel( uEntity_t *e, bool floodFill ) {
+	// only the world is large enough to have stages worth showing
+	const auto stage = [floodFill]( const char *name ) {
+		if ( floodFill ) {
+			DmapProgress( name, 0.0f );
+		} else {
+			DmapPoll();
+		}
+	};
 
 	// build a bsp tree using all of the sides
 	// of all of the structural brushes
-	faces = MakeStructuralBspFaceList ( e->primitives );
+	stage( "bsp" );
+	bspface_t *faces = MakeStructuralBspFaceList ( e->primitives );
 	e->tree = FaceBSP( faces );
 
 	// create portals at every leaf intersection
 	// to allow flood filling
+	stage( "portals" );
 	MakeTreePortals( e->tree );
 
 	// classify the leafs as opaque or areaportal
@@ -56,6 +182,7 @@ bool ProcessModel( uEntity_t *e, bool floodFill ) {
 
 	// see if the bsp is completely enclosed
 	if ( floodFill && !dmapGlobals.noFlood ) {
+		stage( "flood" );
 		if ( FloodEntities( e->tree ) ) {
 			// set the outside leafs to opaque
 			FillOutside( e );
@@ -74,18 +201,22 @@ bool ProcessModel( uEntity_t *e, bool floodFill ) {
 	// get minimum convex hulls for each visible side
 	// this must be done before creating area portals,
 	// because the visible hull is used as the portal
+	stage( "clip sides" );
 	ClipSidesByTree( e );
 
 	// determine areas before clipping tris into the
 	// tree, so tris will never cross area boundaries
+	stage( "areas" );
 	FloodAreas( e );
 
 	// we now have a BSP tree with solid and non-solid leafs marked with areas
 	// all primitives will now be clipped into this, throwing away
 	// fragments in the solid areas
+	stage( "primitives" );
 	PutPrimitivesInAreas( e );
 
 	// optimizing is a superset of fixing tjunctions
+	stage( "optimize" );
 	if ( !dmapGlobals.noOptimize ) {
 		OptimizeEntity( e );
 	} else  if ( !dmapGlobals.noTJunc ) {
@@ -93,6 +224,7 @@ bool ProcessModel( uEntity_t *e, bool floodFill ) {
 	}
 
 	// now fix t junctions across areas
+	stage( "t-junctions" );
 	FixGlobalTjunctions( e );
 
 	return true;
@@ -103,23 +235,23 @@ bool ProcessModel( uEntity_t *e, bool floodFill ) {
 ProcessModels
 ============
 */
-bool ProcessModels( void ) {
-	bool	oldVerbose;
-	uEntity_t	*entity;
-
-	oldVerbose = dmapGlobals.verbose;
+static bool ProcessModels() {
+	const bool oldVerbose = dmapGlobals.verbose;
 
 	for ( dmapGlobals.entityNum = 0 ; dmapGlobals.entityNum < dmapGlobals.num_entities ; dmapGlobals.entityNum++ ) {
 
-		entity = &dmapGlobals.uEntities[dmapGlobals.entityNum];
-		if ( !entity->primitives ) {
+		uEntity_t &entity = dmapGlobals.uEntities[dmapGlobals.entityNum];
+		if ( !entity.primitives ) {
 			continue;
 		}
 
 		common->Printf( "############### entity %i ###############\n", dmapGlobals.entityNum );
+		if ( dmapGlobals.entityNum > 0 ) {
+			DmapProgress( "entities", static_cast<float>( dmapGlobals.entityNum ) / static_cast<float>( dmapGlobals.num_entities ) );
+		}
 
 		// if we leaked, stop without any more processing
-		if ( !ProcessModel( entity, (bool)(dmapGlobals.entityNum == 0 ) ) ) {
+		if ( !ProcessModel( &entity, dmapGlobals.entityNum == 0 ) ) {
 			return false;
 		}
 
@@ -137,72 +269,16 @@ bool ProcessModels( void ) {
 
 /*
 ============
-DmapHelp
-============
-*/
-void DmapHelp( void ) {
-	common->Printf(
-
-	"Usage: dmap [options] mapfile\n"
-	"Options:\n"
-	"noCurves          = don't process curves\n"
-	"noCM              = don't create collision map\n"
-
-	);
-}
-
-/*
-============
-ResetDmapGlobals
-============
-*/
-void ResetDmapGlobals( void ) {
-	dmapGlobals.mapFileBase[0] = '\0';
-	dmapGlobals.dmapFile = NULL;
-	dmapGlobals.mapPlanes.Clear();
-	dmapGlobals.num_entities = 0;
-	dmapGlobals.uEntities = NULL;
-	dmapGlobals.entityNum = 0;
-	dmapGlobals.verbose = false;
-	dmapGlobals.noOptimize = false;
-	dmapGlobals.verboseentities = false;
-	dmapGlobals.noCurves = false;
-	dmapGlobals.fullCarve = false;
-	dmapGlobals.noModelBrushes = false;
-	dmapGlobals.noTJunc = false;
-	dmapGlobals.nomerge = false;
-	dmapGlobals.noFlood = false;
-	dmapGlobals.noClipSides = false;
-}
-
-/*
-============
-Dmap
+DmapCompile
 
 No shadow volumes are precomputed: the engine builds them when a .proc has none.
 There is no AAS compiler either, so a compiled map has no navigation for monsters.
+Leaves through an exception on an error or a cancel; DmapFree has to follow in any case.
 ============
 */
-void Dmap( const idCmdArgs &args ) {
-	int			i;
-	int			start, end;
-	char		path[1024];
-	idStr		passedName;
-	bool		leaked = false;
-	bool		noCM = false;
-
+void DmapCompile( const compileOptions_t &options, compileResult_t &result ) {
 	ResetDmapGlobals();
-
-	if ( args.Argc() < 2 ) {
-		DmapHelp();
-		return;
-	}
-
-	// the compiler and the collision model manager are engine globals a running game owns
-	if ( common->IsMapSpawned() ) {
-		common->Printf( "dmap: a map is running, disconnect first\n" );
-		return;
-	}
+	dmapOptions = &options;
 
 	common->Printf("---- dmap ----\n");
 
@@ -210,138 +286,74 @@ void Dmap( const idCmdArgs &args ) {
 	// is not found now stays the default one for the game that loads the map next.
 	fileSystem->MountAllMapResources();
 
-	dmapGlobals.fullCarve = true;
+	dmapGlobals.verbose = options.verbose;
+	dmapGlobals.verboseentities = options.verboseEntities;
+	dmapGlobals.noFlood = options.noFlood;
+	dmapGlobals.noCurves = options.noCurves;
+	dmapGlobals.noModelBrushes = options.noModelBrushes;
+	dmapGlobals.noClipSides = options.noClipSides;
+	dmapGlobals.fullCarve = !options.noCarve;
+	dmapGlobals.noTJunc = options.noTJunc;
+	// triangle optimization won't work properly without tjunction fixing
+	dmapGlobals.noOptimize = options.noOptimize || options.noTJunc;
 
-	for ( i = 1 ; i < args.Argc() ; i++ ) {
-		const char *s;
-
-		s = args.Argv(i);
-		if ( s[0] == '-' ) {
-			s++;
-			if ( s[0] == '\0' ) {
-				continue;
-			}
-		}
-
-		if ( !idStr::Icmp( s, "v" ) ) {
-			common->Printf( "verbose = true\n" );
-			dmapGlobals.verbose = true;
-		} else if ( !idStr::Icmp( s, "noFlood" ) ) {
-			common->Printf( "noFlood = true\n" );
-			dmapGlobals.noFlood = true;
-		} else if ( !idStr::Icmp( s, "noOpt" ) ) {
-			common->Printf( "noOptimize = true\n" );
-			dmapGlobals.noOptimize = true;
-		} else if ( !idStr::Icmp( s, "verboseentities" ) ) {
-			common->Printf( "verboseentities = true\n");
-			dmapGlobals.verboseentities = true;
-		} else if ( !idStr::Icmp( s, "noCurves" ) ) {
-			common->Printf( "noCurves = true\n");
-			dmapGlobals.noCurves = true;
-		} else if ( !idStr::Icmp( s, "noModels" ) ) {
-			common->Printf( "noModels = true\n" );
-			dmapGlobals.noModelBrushes = true;
-		} else if ( !idStr::Icmp( s, "noClipSides" ) ) {
-			common->Printf( "noClipSides = true\n" );
-			dmapGlobals.noClipSides = true;
-		} else if ( !idStr::Icmp( s, "noCarve" ) ) {
-			common->Printf( "noCarve = true\n" );
-			dmapGlobals.fullCarve = false;
-		} else if ( !idStr::Icmp( s, "noTjunc" ) ) {
-			// triangle optimization won't work properly without tjunction fixing
-			common->Printf ("noTJunc = true\n" );
-			dmapGlobals.noTJunc = true;
-			dmapGlobals.noOptimize = true;
-			common->Printf ("forcing noOptimize = true\n" );
-		} else if ( !idStr::Icmp( s, "noCM" ) ) {
-			noCM = true;
-			common->Printf( "noCM = true\n" );
-		} else {
-			break;
-		}
-	}
-
-	if ( i >= args.Argc() ) {
-		common->Printf( "usage: dmap [options] mapfile\n" );
-		return;
-	}
-
-	passedName = args.Argv(i);		// may have an extension
+	idStr passedName = options.mapName;		// may have an extension
 	passedName.BackSlashesToSlashes();
 	if ( passedName.Icmpn( "maps/", 4 ) != 0 ) {
 		passedName = "maps/" + passedName;
 	}
-
-	idStr stripped = passedName;
-	stripped.StripFileExtension();
-	idStr::Copynz( dmapGlobals.mapFileBase, stripped, sizeof(dmapGlobals.mapFileBase) );
-
-	passedName = stripped;
+	passedName.StripFileExtension();
+	idStr::Copynz( dmapGlobals.mapFileBase, passedName, sizeof(dmapGlobals.mapFileBase) );
 
 	// delete any old line leak file; only the one dmap wrote, never in the game install
-	idStr::snPrintf( path, sizeof( path ), "%s.lin", dmapGlobals.mapFileBase );
-	::remove( fileSystem->RelativePathToOSPath( path, "fs_savepath" ) );
-
+	const idStr leakFile = passedName + ".lin";
+	::remove( fileSystem->RelativePathToOSPath( leakFile, "fs_savepath" ) );
 
 	//
 	// start from scratch
 	//
-	start = Sys_Milliseconds();
+	int start = Sys_Milliseconds();
 
+	DmapProgress( "load", 0.0f );
 	if ( !LoadDMapFile( passedName ) ) {
+		result.status = compileStatus_t::FAILED;
+		sprintf( result.error, "Couldn't load map file: '%s'", passedName.c_str() );
 		return;
 	}
 
-	if ( ProcessModels() ) {
-		WriteOutputFile();
-	} else {
-		leaked = true;
+	if ( !ProcessModels() ) {
+		result.status = compileStatus_t::LEAKED;
+		result.leakFile = leakFile;
+		return;
 	}
+
+	// no cancel from here on: a new .proc with the old collision map would be worse than waiting
+	DmapReport( "write", 0.0f );
+	WriteOutputFile();
+	result.areas = dmapGlobals.uEntities[0].numAreas;
+	result.portals = numInterAreaPortals;
+	result.triangles = NumOutputTriangles();
 
 	FreeDMapFile();
 
-	end = Sys_Milliseconds();
+	int end = Sys_Milliseconds();
 	common->Printf( "-----------------------\n" );
 	common->Printf( "%5.0f seconds for dmap\n", ( end - start ) * 0.001f );
 
-	if ( !leaked ) {
+	if ( !options.noCM ) {
+		// create the collision map
+		DmapReport( "collision map", 0.0f );
+		start = Sys_Milliseconds();
 
-		if ( !noCM ) {
+		dmapCollisionMap = true;
+		collisionModelManager->LoadMap( dmapGlobals.dmapFile );
+		collisionModelManager->FreeMap();
+		dmapCollisionMap = false;
 
-			// create the collision map
-			start = Sys_Milliseconds();
-
-			collisionModelManager->LoadMap( dmapGlobals.dmapFile );
-			collisionModelManager->FreeMap();
-
-			end = Sys_Milliseconds();
-			common->Printf( "-------------------------------------\n" );
-			common->Printf( "%5.0f seconds to create collision map\n", ( end - start ) * 0.001f );
-		}
+		end = Sys_Milliseconds();
+		common->Printf( "-------------------------------------\n" );
+		common->Printf( "%5.0f seconds to create collision map\n", ( end - start ) * 0.001f );
 	}
 
-	// free the common .map representation
-	delete dmapGlobals.dmapFile;
-	dmapGlobals.dmapFile = NULL;
-
-	// clear the map plane list
-	dmapGlobals.mapPlanes.Clear();
-}
-
-/*
-============
-Dmap_f
-============
-*/
-CONSOLE_COMMAND_SHIP( dmap, "compiles a map: maps/<map>.map into the .proc and the collision map", idCmdSystem::ArgCompletion_MapName ) {
-
-	common->ClearWarnings( "running dmap" );
-
-	// refresh the screen each time we print so it doesn't look
-	// like it is hung
-	common->SetRefreshOnPrint( true );
-	Dmap( args );
-	common->SetRefreshOnPrint( false );
-
-	common->PrintWarnings();
+	result.status = compileStatus_t::OK;
 }

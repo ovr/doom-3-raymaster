@@ -33,8 +33,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "dmap.h"
 
 
-#define	 TEXTURE_OFFSET_EQUAL_EPSILON	0.005
-#define	 TEXTURE_VECTOR_EQUAL_EPSILON	0.001
+constexpr double TEXTURE_OFFSET_EQUAL_EPSILON = 0.005;
+constexpr double TEXTURE_VECTOR_EQUAL_EPSILON = 0.001;
 
 /*
 ===============
@@ -83,7 +83,7 @@ static void AddTriListToArea( uEntity_t *e, mapTri_t *triList, int planeNum, int
 	}
 
 	if ( !group ) {
-		group = (optimizeGroup_t *)Mem_Alloc( sizeof( *group ), TAG_RENDER_TOOLS );
+		group = (optimizeGroup_t *)dmapArena.Alloc( sizeof( *group ) );
 		memset( group, 0, sizeof( *group ) );
 		group->planeNum = planeNum;
 		group->mergeGroup = triList->mergeGroup;
@@ -147,11 +147,9 @@ static void TexVecForTri( textureVectors_t *texVec, mapTri_t *tri ) {
 TriListForSide
 =================
 */
-//#define	SNAP_FLOAT_TO_INT	8
-#define	SNAP_FLOAT_TO_INT	256
-#define	SNAP_INT_TO_FLOAT	(1.0/SNAP_FLOAT_TO_INT)
 
-mapTri_t *TriListForSide( const side_t *s, const idWinding *w ) {
+
+static mapTri_t *TriListForSide( const side_t *s, const idWinding *w ) {
 	int				i, j;
 	dmapVert_t		*dv;
 	mapTri_t		*tri, *triList;
@@ -162,19 +160,19 @@ mapTri_t *TriListForSide( const side_t *s, const idWinding *w ) {
 
 	// skip any generated faces
 	if ( !si ) {
-		return NULL;
+		return nullptr;
 	}
 
 	// don't create faces for non-visible sides
 	if ( !si->SurfaceCastsShadow() && !si->IsDrawn() ) {
-		return NULL;
+		return nullptr;
 	}
 
 	if ( 1 ) {
 		// triangle fan using only the outer verts
 		// this gives the minimum triangle count,
 		// but may have some very distended triangles
-		triList = NULL;
+		triList = nullptr;
 		for ( i = 2 ; i < w->GetNumPoints() ; i++ ) {
 			tri = AllocTri();
 			tri->material = si;	
@@ -191,14 +189,7 @@ mapTri_t *TriListForSide( const side_t *s, const idWinding *w ) {
 				}
 
 				dv = tri->v + j;
-#if 0
-				// round the xyz to a given precision
-				for ( k = 0 ; k < 3 ; k++ ) {
-					dv->xyz[k] = SNAP_INT_TO_FLOAT * floor( vec[k] * SNAP_FLOAT_TO_INT + 0.5 );
-				}
-#else
 				VectorCopy( *vec, dv->xyz );
-#endif
 				
 				// calculate texture s/t from brush primitive texture matrix
 				dv->st[0] = DotProduct( dv->xyz, s->texVec.v[0] ) + s->texVec.v[0][3];
@@ -207,14 +198,14 @@ mapTri_t *TriListForSide( const side_t *s, const idWinding *w ) {
 				// copy normal
 				dv->normal = dmapGlobals.mapPlanes[s->planenum].Normal();
 				if ( dv->normal.Length() < 0.9 || dv->normal.Length() > 1.1 ) {
-					common->Error( "Bad normal in TriListForSide" );
+					DmapError( "Bad normal in TriListForSide" );
 				}
 			}
 		}
 	} else {
 		// triangle fan from central point, more verts and tris, but less distended
 		// I use this when debugging some tjunction problems
-		triList = NULL;
+		triList = nullptr;
 		for ( i = 0 ; i < w->GetNumPoints() ; i++ ) {
 			idVec3	midPoint;
 
@@ -244,7 +235,7 @@ mapTri_t *TriListForSide( const side_t *s, const idWinding *w ) {
 				// copy normal
 				dv->normal = dmapGlobals.mapPlanes[s->planenum].Normal();
 				if ( dv->normal.Length() < 0.9f || dv->normal.Length() > 1.1f ) {
-					common->Error( "Bad normal in TriListForSide" );
+					DmapError( "Bad normal in TriListForSide" );
 				}
 			}
 		}
@@ -343,7 +334,7 @@ void ClipSidesByTree( uEntity_t *e ) {
 				continue;
 			}
 			w = side->winding->Copy();
-			side->visibleHull = NULL;
+			side->visibleHull = nullptr;
 			ClipSideByTree_r( w, side, e->tree->headnode );
 			// for debugging, we can choose to use the entire original side
 			// but we skip this if the side was completely clipped away
@@ -367,7 +358,7 @@ This is used for adding curve triangles
 The winding will be freed before it returns
 ====================
 */
-void ClipTriIntoTree_r( idWinding *w, mapTri_t *originalTri, uEntity_t *e, node_t *node ) {
+static void ClipTriIntoTree_r( idWinding *w, mapTri_t *originalTri, uEntity_t *e, node_t *node ) {
 	idWinding		*front, *back;
 
 	if ( !w ) {
@@ -427,14 +418,6 @@ static int CheckWindingInAreas_r( const idWinding *w, node_t *node ) {
 
 	if ( node->planenum != PLANENUM_LEAF ) {
 		int		a1, a2;
-#if 0
-		if ( side->planenum == node->planenum ) {
-			return CheckWindingInAreas_r( w, node->children[0] );
-		}
-		if ( side->planenum == ( node->planenum ^ 1) ) {
-			return CheckWindingInAreas_r( w, node->children[1] );
-		}
-#endif
 		w->Split( dmapGlobals.mapPlanes[ node->planenum ], ON_EPSILON, &front, &back );
 
 		a1 = CheckWindingInAreas_r( front, node->children[0] );
@@ -536,7 +519,7 @@ AddMapTriToAreas
 Used for curves and inlined models
 ==================
 */
-void AddMapTriToAreas( mapTri_t *tri, uEntity_t *e ) {
+static void AddMapTriToAreas( mapTri_t *tri, uEntity_t *e ) {
 	int				area;
 	idWinding		*w;
 
@@ -566,7 +549,7 @@ void AddMapTriToAreas( mapTri_t *tri, uEntity_t *e ) {
 
 		// put in single area
 		newTri = CopyMapTri( tri );
-		newTri->next = NULL;
+		newTri->next = nullptr;
 
 		PlaneForTri( tri, plane );
 		planeNum = FindFloatPlane( plane );
@@ -597,12 +580,13 @@ void PutPrimitivesInAreas( uEntity_t *e ) {
 	common->Printf( "----- PutPrimitivesInAreas -----\n");
 
 	// allocate space for surface chains for each area
-	e->areas = (uArea_t *)Mem_Alloc( e->numAreas * sizeof( e->areas[0] ), TAG_RENDER_TOOLS );
+	e->areas = (uArea_t *)dmapArena.Alloc( e->numAreas * sizeof( e->areas[0] ) );
 	memset( e->areas, 0, e->numAreas * sizeof( e->areas[0] ) );
 
 	// for each primitive, clip it to the non-solid leafs
 	// and divide it into different areas
 	for ( prim = e->primitives ; prim ; prim = prim->next ) {
+		DmapPoll();
 		b = prim->brush;
 
 		if ( !b ) {
@@ -660,7 +644,7 @@ void PutPrimitivesInAreas( uEntity_t *e ) {
 
 			for ( i = 0 ; i < model->NumSurfaces() ; i++ ) {
 				const modelSurface_t *surface = model->Surface( i );
-				const srfTriangles_t *tri = surface->geometry;
+				const srfTriangles_t *geometry = surface->geometry;
 
 				mapTri_t	mapTri;
 				memset( &mapTri, 0, sizeof( mapTri ) );
@@ -669,14 +653,14 @@ void PutPrimitivesInAreas( uEntity_t *e ) {
 				if ( mapTri.material->IsDiscrete() ) {
 					mapTri.mergeGroup = (void *)surface;
 				}
-				for ( int j = 0 ; j < tri->numIndexes ; j += 3 ) {
+				for ( int j = 0 ; j < geometry->numIndexes ; j += 3 ) {
 					for ( int k = 0 ; k < 3 ; k++ ) {
-						idVec3 v = tri->verts[tri->indexes[j+k]].xyz;
+						idVec3 v = geometry->verts[geometry->indexes[j+k]].xyz;
 
 						mapTri.v[k].xyz = v * axis + origin;
 
-						mapTri.v[k].normal = tri->verts[tri->indexes[j+k]].GetNormal() * axis;
-						mapTri.v[k].st = tri->verts[tri->indexes[j+k]].GetTexCoord();
+						mapTri.v[k].normal = geometry->verts[geometry->indexes[j+k]].GetNormal() * axis;
+						mapTri.v[k].st = geometry->verts[geometry->indexes[j+k]].GetTexCoord();
 					}
 					AddMapTriToAreas( &mapTri, e );
 				}

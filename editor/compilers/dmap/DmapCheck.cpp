@@ -12,7 +12,7 @@
 
 	  retail generated/maps/<map>.bproc ── InitFromMap ── counts ─┐
 	                                                              ├─ areas, portals and models must be equal
-	  maps/<map>.map ── Dmap ── maps/<map>.proc ── InitFromMap ── counts ─┘
+	  maps/<map>.map ── CompileMap ── maps/<map>.proc ── InitFromMap ── counts ─┘
 
 	The BSP nodes, surfaces, vertices and triangles are printed with their difference: the optimizer of this
 	build and of the one id used need not agree to the last triangle.
@@ -287,11 +287,11 @@ CONSOLE_COMMAND_SHIP( dmapCheck, "compiles the retail maps and compares the resu
 		}
 
 		const int mapStart = Sys_Milliseconds();
-		idCmdArgs dmapArgs;
-		dmapArgs.AppendArg( "dmap" );
-		dmapArgs.AppendArg( "noCM" );
-		dmapArgs.AppendArg( name );
-		Dmap( dmapArgs );
+		compileOptions_t options;
+		options.mapName = name;
+		options.noCM = true;
+		compileResult_t result;
+		(void)CompileMap( options, result );
 		const int seconds = ( Sys_Milliseconds() - mapStart + 500 ) / 1000;
 
 		const worldCounts_t compiled = CountWorld( mapFileName, filter[0] != 0 );
@@ -323,4 +323,89 @@ CONSOLE_COMMAND_SHIP( dmapCheck, "compiles the retail maps and compares the resu
 		}
 	}
 	common->Printf( "dmapCheck: %d maps checked, %d failed, %d without a .map or a retail .bproc, %d s\n", checked, failed, skipped, ( Sys_Milliseconds() - start ) / 1000 );
+}
+
+namespace {
+
+// 0 when the compile left no .proc
+[[nodiscard]] unsigned int SavedProcChecksum( const idStr &procName ) {
+	idFile * const file = fileSystem->OpenExplicitFileRead( fileSystem->RelativePathToOSPath( procName, "fs_savepath" ) );
+	if ( file == nullptr ) {
+		return 0;
+	}
+	idTempArray<byte> data( file->Length() );
+	file->Read( data.Ptr(), file->Length() );
+	const unsigned int checksum = MD5_BlockChecksum( data.Ptr(), file->Length() );
+	fileSystem->CloseFile( file );
+	return checksum;
+}
+
+enum class abortKind_t { NONE, CANCEL, ERROR_IN_COMPILER };
+
+struct abortRun_t {
+	compileResult_t	result;
+	unsigned int	checksum = 0;
+	int				polls = 0;
+	size_t			arenaLeft = 0;
+};
+
+// one compile that is stopped at its abortAt-th poll
+[[nodiscard]] abortRun_t RunAbortable( const idStr &name, abortKind_t kind, int abortAt ) {
+	abortRun_t run;
+	const idStr procName = idStr( "maps/" ) + name + ".proc";
+	RemoveSaved( procName );
+
+	compileOptions_t options;
+	options.mapName = name;
+	options.noCM = true;
+	options.cancelled = [&run, kind, abortAt]() {
+		run.polls++;
+		if ( run.polls == abortAt && kind == abortKind_t::ERROR_IN_COMPILER ) {
+			common->Error( "dmapCheckAbort: an error at poll %d", abortAt );
+		}
+		return run.polls == abortAt && kind == abortKind_t::CANCEL;
+	};
+	(void)CompileMap( options, run.result );
+	run.checksum = SavedProcChecksum( procName );
+	run.arenaLeft = dmapArena.Committed();
+	return run;
+}
+
+}	// namespace
+
+CONSOLE_COMMAND_SHIP( dmapCheckAbort, "cancels a compile and fails one in the middle; the compiles after them must give the same .proc: dmapCheckAbort <map>", nullptr ) {
+	if ( args.Argc() < 2 || common->IsMapSpawned() ) {
+		common->Printf( "usage: dmapCheckAbort <map>, without a running map\n" );
+		return;
+	}
+	const idStr name = args.Argv( 1 );
+
+	const abortRun_t clean = RunAbortable( name, abortKind_t::NONE, 0 );
+	if ( clean.result.status != compileStatus_t::OK || clean.checksum == 0 ) {
+		common->Printf( "dmapCheckAbort %s: FAILED, the map does not compile\n", name.c_str() );
+		return;
+	}
+
+	bool ok = true;
+	// early, in the middle and near the end of the polls
+	for ( const int abortAt : { 2, clean.polls / 2, clean.polls - 1 } ) {
+		for ( const abortKind_t kind : { abortKind_t::CANCEL, abortKind_t::ERROR_IN_COMPILER } ) {
+			const compileStatus_t expected = ( kind == abortKind_t::CANCEL ) ? compileStatus_t::CANCELLED : compileStatus_t::FAILED;
+			const abortRun_t aborted = RunAbortable( name, kind, abortAt );
+			const abortRun_t after = RunAbortable( name, abortKind_t::NONE, 0 );
+			const bool same = aborted.result.status == expected && aborted.checksum == 0 && aborted.arenaLeft == 0
+				&& after.result.status == compileStatus_t::OK && after.checksum == clean.checksum && after.polls == clean.polls && after.arenaLeft == 0;
+			ok = ok && same;
+			common->Printf( "dmapCheckAbort %s: %s at poll %d of %d: %s; status %d \"%s\", arena left %d; the compile after it: status %d, checksum %08x/%08x\n",
+				name.c_str(), ( kind == abortKind_t::CANCEL ) ? "cancel" : "error", abortAt, clean.polls, same ? "ok" : "DIFFERENT",
+				static_cast<int>( aborted.result.status ), aborted.result.error.c_str(), static_cast<int>( aborted.arenaLeft ),
+				static_cast<int>( after.result.status ), after.checksum, clean.checksum );
+			// several errors within 100 ms would become a fatal one
+			Sys_Sleep( 150 );
+		}
+	}
+	RemoveSaved( idStr( "maps/" ) + name + ".proc" );
+	RemoveSaved( idStr( "generated/maps/" ) + name + ".bproc" );
+	common->Printf( "dmapCheckAbort %s: %s, areas %d, portals %d, triangles %d\n", name.c_str(), ok ? "ok" : "FAILED",
+		clean.result.areas, clean.result.portals, clean.result.triangles );
 }

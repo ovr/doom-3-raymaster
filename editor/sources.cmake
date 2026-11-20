@@ -25,8 +25,12 @@ set(EDITOR_BRIDGE_SOURCES
 
 # the map compilers (dmap), ported from the Doom 3 GPL release; the engine's precompiled header
 set(MAP_COMPILERS_SOURCES
+	compilers/MapCompiler.cpp
+	compilers/MapCompiler.h
 	compilers/dmap/dmap.cpp
 	compilers/dmap/dmap.h
+	compilers/dmap/DmapArena.cpp
+	compilers/dmap/DmapArena.h
 	compilers/dmap/DmapCheck.cpp
 	compilers/dmap/DmapPatch.cpp
 	compilers/dmap/DmapPatch.h

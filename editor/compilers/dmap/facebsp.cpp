@@ -37,25 +37,9 @@ int			c_faceLeafs;
 
 extern	int	c_nodes;
 
+static dmapOwnerList_t	liveFaces;
+
 void RemovePortalFromNode( uPortal_t *portal, node_t *l );
-
-node_t *NodeForPoint( node_t *node, idVec3 origin ) {
-	float	d;
-
-	while( node->planenum != PLANENUM_LEAF ) {
-		idPlane &plane = dmapGlobals.mapPlanes[node->planenum];
-		d = plane.Distance( origin );
-		if ( d >= 0 ) {
-			node = node->children[0];
-		} else {
-			node = node->children[1];
-		}
-	}
-
-	return node;
-}
-
-
 
 /*
 =============
@@ -83,7 +67,7 @@ void FreeTreePortals_r (node_t *node)
 		RemovePortalFromNode (p, p->nodes[!s]);
 		FreePortal (p);
 	}
-	node->portals = NULL;
+	node->portals = nullptr;
 }
 
 /*
@@ -105,7 +89,7 @@ void FreeTree_r (node_t *node)
 
 	// free the node
 	c_nodes--;
-	Mem_Free (node);
+	dmapArena.Free( node );
 }
 
 
@@ -120,36 +104,7 @@ void FreeTree( tree_t *tree ) {
 	}
 	FreeTreePortals_r (tree->headnode);
 	FreeTree_r (tree->headnode);
-	Mem_Free (tree);
-}
-
-//===============================================================
-
-void PrintTree_r (node_t *node, int depth)
-{
-	int			i;
-	uBrush_t	*bb;
-
-	for (i=0 ; i<depth ; i++)
-		common->Printf("  ");
-	if (node->planenum == PLANENUM_LEAF)
-	{
-		if (!node->brushlist)
-			common->Printf("NULL\n");
-		else
-		{
-			for (bb=node->brushlist ; bb ; bb=bb->next)
-				common->Printf("%i ", bb->original->brushnum);
-			common->Printf("\n");
-		}
-		return;
-	}
-
-	idPlane &plane = dmapGlobals.mapPlanes[node->planenum];
-	common->Printf( "#%i (%5.2f %5.2f %5.2f %5.2f)\n", node->planenum,
-					plane[0], plane[1], plane[2], plane[3] );
-	PrintTree_r( node->children[0], depth+1 );
-	PrintTree_r( node->children[1], depth+1 );
+	dmapArena.Free( tree );
 }
 
 /*
@@ -157,11 +112,10 @@ void PrintTree_r (node_t *node, int depth)
 AllocBspFace
 ================
 */
-bspface_t	*AllocBspFace( void ) {
+static bspface_t	*AllocBspFace() {
 	bspface_t	*f;
 
-	f = (bspface_t *)Mem_Alloc( sizeof(*f), TAG_RENDER_TOOLS );
-	memset( f, 0, sizeof(*f) );
+	f = (bspface_t *)liveFaces.Alloc( dmapArena, sizeof(*f) );
 
 	return f;
 }
@@ -171,11 +125,29 @@ bspface_t	*AllocBspFace( void ) {
 FreeBspFace
 ================
 */
-void	FreeBspFace( bspface_t *f ) {
+static void	FreeBspFace( bspface_t *f ) {
 	if ( f->w ) {
 		delete f->w;
 	}
-	Mem_Free( f );
+	liveFaces.Free( dmapArena, f );
+}
+
+/*
+================
+CollectFaceWindings
+
+The windings of every face that was not freed; the faces are forgotten.
+================
+*/
+void CollectFaceWindings( idList<idWinding *> &windings ) {
+	for ( void *ptr = liveFaces.First() ; ptr != nullptr ; ptr = dmapOwnerList_t::Next( ptr ) ) {
+		const bspface_t *face = static_cast<const bspface_t *>( ptr );
+		if ( face->w != nullptr ) {
+			windings.Append( face->w );
+		}
+	}
+	liveFaces.Reset();
+	c_faceLeafs = 0;
 }
 
 
@@ -184,7 +156,7 @@ void	FreeBspFace( bspface_t *f ) {
 SelectSplitPlaneNum
 ================
 */
-#define	BLOCK_SIZE	1024
+constexpr int BLOCK_SIZE = 1024;
 int SelectSplitPlaneNum( node_t *node, bspface_t *list ) {
 	bspface_t	*split;
 	bspface_t	*check;
@@ -284,7 +256,7 @@ int SelectSplitPlaneNum( node_t *node, bspface_t *list ) {
 BuildFaceTree_r
 ================
 */
-void	BuildFaceTree_r( node_t *node, bspface_t *list ) {
+static void	BuildFaceTree_r( node_t *node, bspface_t *list ) {
 	bspface_t	*split;
 	bspface_t	*next;
 	int			side;
@@ -305,8 +277,8 @@ void	BuildFaceTree_r( node_t *node, bspface_t *list ) {
 	// partition the list
 	node->planenum = splitPlaneNum;
 	idPlane &plane = dmapGlobals.mapPlanes[ splitPlaneNum ];
-	childLists[0] = NULL;
-	childLists[1] = NULL;
+	childLists[0] = nullptr;
+	childLists[1] = nullptr;
 	for ( split = list ; split ; split = next ) {
 		next = split->next;
 
@@ -425,7 +397,7 @@ bspface_t	*MakeStructuralBspFaceList( uPrimitive_t *list ) {
 	idWinding	*w;
 	bspface_t	*f, *flist;
 
-	flist = NULL;
+	flist = nullptr;
 	for ( ; list ; list = list->next ) {
 		b = list->brush;
 		if ( !b ) {
@@ -469,7 +441,7 @@ bspface_t	*MakeVisibleBspFaceList( uPrimitive_t *list ) {
 	idWinding	*w;
 	bspface_t	*f, *flist;
 
-	flist = NULL;
+	flist = nullptr;
 	for ( ; list ; list = list->next ) {
 		b = list->brush;
 		if ( !b ) {
