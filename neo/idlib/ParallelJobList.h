@@ -81,6 +81,9 @@ class idParallelJobList {
 	friend class idParallelJobManagerLocal;
 public:
 
+	// True on a thread that is inside a job function right now, a job thread or not.
+	[[nodiscard]] static bool	InJob();
+
 	void					AddJob( jobRun_t function, void * data );
 	CellSpursJob128 *		AddJobSPURS();
 	void					InsertSyncPoint( jobSyncType_t syncType );

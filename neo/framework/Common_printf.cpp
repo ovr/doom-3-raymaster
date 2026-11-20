@@ -495,6 +495,16 @@ void idCommonLocal::Error( const char *fmt, ... ) {
 
 	errorParm_t code = ERP_DROP;
 
+	// Inside a job only the message leaves: stopping the game, the clipboard and the error count
+	// belong to the thread that waits for the job list, which makes a fatal error of it.
+	if ( idParallelJobList::InJob() ) {
+		char jobErrorText[idException::MAX_ERROR_LEN];
+		va_start( argptr, fmt );
+		idStr::vsnPrintf( jobErrorText, sizeof( jobErrorText ), fmt, argptr );
+		va_end( argptr );
+		throw idException( jobErrorText );
+	}
+
 	// always turn this off after an error
 	com_refreshOnPrint = false;
 
