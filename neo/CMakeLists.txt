@@ -251,7 +251,7 @@ add_executable(d3d12Tests
 	renderer/D3D12/d3d12_Textures.cpp
 	renderer/D3D12/d3d12_Timers.cpp
 	renderer/DXT/DXTDecoder.cpp
-	renderer/RenderProgSource.cpp
+	renderer/RenderProgTable.cpp
 )
 d3bfg_neo_common(d3d12Tests)
 # /W3 like idlibTests: at /W4 the PCH of old idLib headers warns again. Doom3BFG builds the D3D12 files at /W4;

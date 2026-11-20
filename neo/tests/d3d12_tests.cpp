@@ -1634,6 +1634,82 @@ void Test_HlslProgramsMatchGl() {
 	Check( programs == 43, va( "renderProgInfo-gl.txt has %d programs, 43 expected", programs ) );
 }
 
+// The program table against base/shaders and GL: each program has its file with exactly the stages and the
+// skinned variant the table lists, each file is a program, each builtin is made once, and every stage GL
+// loaded on mars_city1 is in the table.
+void Test_HlslProgramTable() {
+	const std::optional<renderProgStage_t> skinned = R_FindRenderProg( "INTERACTION_skinned.vfp" );
+	Check( skinned && skinned->skinned && idStr::Cmp( skinned->program->name, "interaction" ) == 0, "a skinned name, case ignored" );
+	Check( !R_FindRenderProg( "heatHaze_skinned.vfp" ) && !R_FindRenderProg( "ambientLight.vfp" ), "names the table lacks" );
+	Check( R_RenderProgHasStage( "shadow.vp", shaderStageType_t::VERTEX ) && !R_RenderProgHasStage( "shadow.vp", shaderStageType_t::FRAGMENT ),
+		"shadow is vertex only" );
+
+	std::array<int, static_cast<size_t>( renderProgBuiltin_t::COUNT )> builtins = {};
+	for ( const renderProgDef_t & program : R_RenderProgs() ) {
+		for ( const renderProgBuiltin_t builtin : { program.builtin, program.skinned } ) {
+			if ( builtin != renderProgBuiltin_t::NONE ) {
+				builtins[static_cast<size_t>( builtin )]++;
+			}
+		}
+		const idStr stage = R_RenderProgStageName( program, false );
+		const std::optional<renderProgStage_t> found = R_FindRenderProg( stage.c_str() );
+		Check( found && found->program == &program && !found->skinned, va( "%s finds its row", stage.c_str() ) );
+	}
+	for ( size_t i = 0; i < builtins.size(); i++ ) {
+		Check( builtins[i] == 1, va( "builtin %zu is made %d times", i, builtins[i] ) );
+	}
+
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( library ) {
+		for ( const renderProgDef_t & program : R_RenderProgs() ) {
+			idStr have;
+			for ( const auto & [source, type] : HlslStages( *library, va( "%s.hlsl", program.name ) ) ) {
+				have += va( "%s%s:%s", have.IsEmpty() ? "" : " ", source.name.c_str(), ( type == shaderStageType_t::VERTEX ) ? "VS" : "PS" );
+			}
+			idStr want = va( "%s:VS", program.name );
+			if ( program.fragment ) {
+				want += va( " %s:PS", program.name );
+			}
+			if ( program.skinned != renderProgBuiltin_t::NONE ) {
+				want += va( " %s_skinned:VS", program.name );
+			}
+			// a fragment stage SKINNED does not change is the plain one
+			const idStr skinnedFragment = va( " %s_skinned:PS", program.name );
+			if ( program.skinned != renderProgBuiltin_t::NONE && program.fragment && have.Find( skinnedFragment ) >= 0 ) {
+				want += skinnedFragment;
+			}
+			Check( have == want, va( "shaders/%s.hlsl has %s, the table %s", program.name, have.c_str(), want.c_str() ) );
+		}
+	}
+	for ( const std::filesystem::directory_entry & entry : std::filesystem::directory_iterator( RepoPath( "base/shaders" ).c_str() ) ) {
+		if ( entry.is_regular_file() && entry.path().extension() == ".hlsl" ) {
+			const std::string stem = entry.path().stem().string();
+			const std::optional<renderProgStage_t> found = R_FindRenderProg( stem );
+			Check( found && !found->skinned, va( "shaders/%s.hlsl is no program of the table", stem.c_str() ) );
+		}
+	}
+
+	const std::optional<idStr> reference = ReadDiskText( RepoPath( "neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) );
+	if ( !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) ) {
+		return;
+	}
+	const idStr text = WithoutCarriageReturns( *reference );
+	int glPrograms = 0;
+	for ( int start = 0, newline; ( newline = text.Find( '\n', start ) ) >= 0; start = newline + 1 ) {
+		const idStr line = text.Mid( start, newline - start );
+		if ( line.IsEmpty() || line[0] == '#' ) {
+			continue;
+		}
+		glPrograms++;
+		const idStr vertex = InfoField( line, "vs" );
+		const idStr fragment = InfoField( line, "fs" );
+		Check( R_RenderProgHasStage( vertex.c_str(), shaderStageType_t::VERTEX ), va( "GL's %s is no vertex stage of the table", vertex.c_str() ) );
+		Check( fragment == "-" || R_RenderProgHasStage( fragment.c_str(), shaderStageType_t::FRAGMENT ),
+			va( "GL's %s is no fragment stage of the table", fragment.c_str() ) );
+	}
+	printf( "  %d programs in the table, the stages of GL's %d in it\n", static_cast<int>( R_RenderProgs().size() ), glPrograms );
+}
+
 // ---- pipeline state: pipelineKey_t → the PSO description ---------------------------------------------------
 
 constexpr uint16 GUI_ATTRIBS = ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_ST ) | ( 1 << PC_ATTRIB_INDEX_COLOR );
@@ -4071,6 +4147,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Hlsl_Entries", Test_HlslEntries },
 	{ "Hlsl_SourcesCompile", Test_HlslSourcesCompile },
 	{ "Hlsl_ProgramsMatchGl", Test_HlslProgramsMatchGl },
+	{ "Hlsl_ProgramTable", Test_HlslProgramTable },
 	{ "Warp_DxcBindless", OnWarp<DxcBindless> },
 	{ "Gpu_DxcBindless", OnGpu<DxcBindless> },
 	{ "Pipeline_Blend", Test_PipelineBlend },

@@ -122,84 +122,54 @@ idRenderProgManager::Init()
 void idRenderProgManager::Init() {
 	common->Printf( "----- Initializing Render Shaders -----\n" );
 
-
-	for ( int i = 0; i < MAX_BUILTINS; i++ ) {
-		builtinShaders[i] = -1;
+	builtinShaders.fill( -1 );
+	// the vertex-only programs after every other builtin, as the stage and program indexes always were
+	for ( const bool fragment : { true, false } ) {
+		for ( const renderProgDef_t & program : R_RenderProgs() ) {
+			if ( program.builtin == renderProgBuiltin_t::NONE || program.fragment != fragment ) {
+				continue;
+			}
+			LoadBuiltin( program, false );
+			if ( program.skinned != renderProgBuiltin_t::NONE ) {
+				LoadBuiltin( program, true );
+			}
+		}
 	}
-	struct builtinShaders_t {
-		int index;
-		const char * name;
-	} builtins[] = {
-		{ BUILTIN_GUI, "gui.vfp" },
-		{ BUILTIN_COLOR, "color.vfp" },
-		{ BUILTIN_SIMPLESHADE, "simpleshade.vfp" },
-		{ BUILTIN_TEXTURED, "texture.vfp" },
-		{ BUILTIN_TEXTURE_VERTEXCOLOR, "texture_color.vfp" },
-		{ BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED, "texture_color_skinned.vfp" },
-		{ BUILTIN_TEXTURE_TEXGEN_VERTEXCOLOR, "texture_color_texgen.vfp" },
-		{ BUILTIN_INTERACTION, "interaction.vfp" },
-		{ BUILTIN_INTERACTION_SKINNED, "interaction_skinned.vfp" },
-		{ BUILTIN_INTERACTION_AMBIENT, "interactionAmbient.vfp" },
-		{ BUILTIN_INTERACTION_AMBIENT_SKINNED, "interactionAmbient_skinned.vfp" },
-		{ BUILTIN_ENVIRONMENT, "environment.vfp" },
-		{ BUILTIN_ENVIRONMENT_SKINNED, "environment_skinned.vfp" },
-		{ BUILTIN_BUMPY_ENVIRONMENT, "bumpyEnvironment.vfp" },
-		{ BUILTIN_BUMPY_ENVIRONMENT_SKINNED, "bumpyEnvironment_skinned.vfp" },
-
-		{ BUILTIN_DEPTH, "depth.vfp" },
-		{ BUILTIN_DEPTH_SKINNED, "depth_skinned.vfp" },
-		{ BUILTIN_SHADOW_DEBUG, "shadowDebug.vfp" },
-		{ BUILTIN_SHADOW_DEBUG_SKINNED, "shadowDebug_skinned.vfp" },
-
-		{ BUILTIN_BLENDLIGHT, "blendlight.vfp" },
-		{ BUILTIN_FOG, "fog.vfp" },
-		{ BUILTIN_FOG_SKINNED, "fog_skinned.vfp" },
-		{ BUILTIN_SKYBOX, "skybox.vfp" },
-		{ BUILTIN_WOBBLESKY, "wobblesky.vfp" },
-		{ BUILTIN_POSTPROCESS, "postprocess.vfp" },
-		{ BUILTIN_STEREO_DEGHOST, "stereoDeGhost.vfp" },
-		{ BUILTIN_STEREO_WARP, "stereoWarp.vfp" },
-		{ BUILTIN_ZCULL_RECONSTRUCT, "zcullReconstruct.vfp" },
-		{ BUILTIN_BINK, "bink.vfp" },
-		{ BUILTIN_BINK_GUI, "bink_gui.vfp" },
-		{ BUILTIN_STEREO_INTERLACE, "stereoInterlace.vfp" },
-		{ BUILTIN_MOTION_BLUR, "motionBlur.vfp" },
-	};
-	int numBuiltins = sizeof( builtins ) / sizeof( builtins[0] );
-	vertexShaders.SetNum( numBuiltins );
-	fragmentShaders.SetNum( numBuiltins );
-	renderProgs.SetNum( numBuiltins );
-
-	for ( int i = 0; i < numBuiltins; i++ ) {
-		vertexShaders[i].name = builtins[i].name;
-		fragmentShaders[i].name = builtins[i].name;
-		builtinShaders[builtins[i].index] = i;
-		LoadVertexShader( i );
-		LoadFragmentShader( i );
-		LoadGLSLProgram( i, i, i );
-	}
-
-	// Special case handling for fastZ shaders
-	builtinShaders[BUILTIN_SHADOW] = FindVertexShader( "shadow.vp" );
-	builtinShaders[BUILTIN_SHADOW_SKINNED] = FindVertexShader( "shadow_skinned.vp" );
-
-	FindGLSLProgram( "shadow.vp", builtinShaders[BUILTIN_SHADOW], -1 );
-	FindGLSLProgram( "shadow_skinned.vp", builtinShaders[BUILTIN_SHADOW_SKINNED], -1 );
 
 	renderParms.SetNum( RENDERPARM_USER + MAX_GLSL_USER_PARMS, vec4_zero );
 
-	vertexShaders[builtinShaders[BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED]].usesJoints = true;
-	vertexShaders[builtinShaders[BUILTIN_INTERACTION_SKINNED]].usesJoints = true;
-	vertexShaders[builtinShaders[BUILTIN_INTERACTION_AMBIENT_SKINNED]].usesJoints = true;
-	vertexShaders[builtinShaders[BUILTIN_ENVIRONMENT_SKINNED]].usesJoints = true;
-	vertexShaders[builtinShaders[BUILTIN_BUMPY_ENVIRONMENT_SKINNED]].usesJoints = true;
-	vertexShaders[builtinShaders[BUILTIN_DEPTH_SKINNED]].usesJoints = true;
-	vertexShaders[builtinShaders[BUILTIN_SHADOW_SKINNED]].usesJoints = true;
-	vertexShaders[builtinShaders[BUILTIN_SHADOW_DEBUG_SKINNED]].usesJoints = true;
-	vertexShaders[builtinShaders[BUILTIN_FOG_SKINNED]].usesJoints = true;
-
 	cmdSystem->AddCommand( "reloadShaders", R_ReloadShaders, CMD_FL_RENDERER, "reloads shaders" );
 	cmdSystem->AddCommand( "renderProgInfo", R_RenderProgInfo_f, CMD_FL_RENDERER, "lists what the render backend reported for every loaded program; renderProgInfo <file> writes it to fs_savepath" );
+}
+
+// A builtin with both stages has the same index in the stage lists and the program list.
+void idRenderProgManager::LoadBuiltin( const renderProgDef_t & program, bool skinned ) {
+	const idStr name = R_RenderProgStageName( program, skinned );
+	int & index = builtinShaders[static_cast<size_t>( skinned ? program.skinned : program.builtin )];
+	if ( !program.fragment ) {
+		index = FindVertexShader( name );
+		FindGLSLProgram( name, index, -1 );
+		return;
+	}
+	index = vertexShaders.Append( NewVertexShader( name ) );
+	fragmentShader_t fragment;
+	fragment.name = name;
+	fragmentShaders.Append( fragment );
+	renderProgs.Append( renderProg_t() );
+	LoadVertexShader( index );
+	LoadFragmentShader( index );
+	LoadGLSLProgram( index, index, index );
+}
+
+// Its joint use from the program table: shared code binds the joints and rpEnableSkinning by it.
+idRenderProgManager::vertexShader_t idRenderProgManager::NewVertexShader( const char * name ) {
+	vertexShader_t shader;
+	shader.name = name;
+	if ( const std::optional<renderProgStage_t> found = R_FindRenderProg( name ) ) {
+		shader.optionalSkinning = found->program->optionalSkinning;
+		shader.usesJoints = found->skinned || shader.optionalSkinning;
+	}
+	return shader;
 }
 
 /*
@@ -276,21 +246,9 @@ int idRenderProgManager::FindVertexShader( const char * name ) {
 			return i;
 		}
 	}
-	vertexShader_t shader;
-	shader.name = name;
-	int index = vertexShaders.Append( shader );
+	const int index = vertexShaders.Append( NewVertexShader( name ) );
 	LoadVertexShader( index );
 	currentVertexShader = index;
-
-	// FIXME: we should really scan the program source code for using rpEnableSkinning but at this
-	// point we directly load a binary and the program source code is not available on the consoles
-	if (	idStr::Icmp( name, "heatHaze.vfp" ) == 0 ||
-			idStr::Icmp( name, "heatHazeWithMask.vfp" ) == 0 ||
-			idStr::Icmp( name, "heatHazeWithMaskAndVertex.vfp" ) == 0 ) {
-		vertexShaders[index].usesJoints = true;
-		vertexShaders[index].optionalSkinning = true;
-	}
-
 	return index;
 }
 

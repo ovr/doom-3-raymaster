@@ -6,7 +6,7 @@
 #include "../../idlib/precompiled.h"
 
 #include "../tr_local.h"
-#include "../RenderProgSource.h"
+#include "../RenderProgTable.h"
 #include "d3d12_Programs.h"
 
 #include <algorithm>
@@ -71,10 +71,10 @@ std::expected<d3d12Program_t, idStr> D3D12_LinkProgram( const d3d12ShaderStage_t
 	return program;
 }
 
-// GL's probe decides which stages exist; a stage it finds is compiled from its file in base/shaders.
+// The program table decides which stages exist; a stage it lists is compiled from its file in base/shaders.
 shaderHandle_t idD3D12ShaderLibrary::CreateStage( shaderStageType_t type, const char * name, shaderStageInfo_t & info ) {
 	info.numParms = 0;
-	if ( !R_RenderProgStageExists( name, type ) ) {
+	if ( !R_RenderProgHasStage( name, type ) ) {
 		d3d12ShaderStage_t missing;
 		missing.type = type;
 		missing.name = name;

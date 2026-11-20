@@ -7,8 +7,7 @@ Runs the visual demos (base/vdemos/*.vdemo) in a retail install and collects the
 
 .DESCRIPTION
 Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir and base/vdemos into the game dir
-(with -Api d3d12 also base/shaders, the HLSL that DXC compiles, and base/renderprogs, which GL's stage
-probe reads for D3D12 too), starts the game in a 1280x720 window with an isolated fs_savepath (the
+(with -Api d3d12 also base/shaders, the HLSL that DXC compiles), starts the game in a 1280x720 window with an isolated fs_savepath (the
 real config in Saved Games is never read or written), runs "vdemo <demos> quit" and copies into
 -OutDir: the frames and vdemo.json of every demo, run.json,
 qconsole.log, the screenshots the demos took (screenshots/) and modules.txt, every module the game
@@ -116,11 +115,8 @@ if ( -not $NoDeploy ) {
 	New-Item -ItemType Directory -Force $vdemoTarget | Out-Null
 	Get-ChildItem $vdemoTarget -Filter '*.vdemo' | Remove-Item -Force
 	Copy-Item ( Join-Path $repoRoot 'base\vdemos\*.vdemo' ) $vdemoTarget -Force
-	# GL compiles the GLSL baked into the packs and never reads the sources
+	# GL compiles the GLSL baked into the packs and reads no loose file
 	if ( $Api -eq 'd3d12' ) {
-		$progTarget = Join-Path $GameDir 'base\renderprogs'
-		New-Item -ItemType Directory -Force $progTarget | Out-Null
-		Get-ChildItem ( Join-Path $repoRoot 'base\renderprogs' ) -File | Copy-Item -Destination $progTarget -Force
 		# the HLSL DXC compiles, with its include folder; a file an older deploy left is removed
 		$shaderTarget = Join-Path $GameDir 'base\shaders'
 		if ( Test-Path $shaderTarget ) { Remove-Item -Recurse -Force $shaderTarget }

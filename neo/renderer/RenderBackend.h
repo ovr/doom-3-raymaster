@@ -268,8 +268,8 @@ public:
 	virtual void			UnmapBuffer( bufferHandle_t buffer, int dirtyOffset, int dirtyBytes ) = 0;
 
 	// ---- programs ---------------------------------------------------------------------------------------
-	// Loads one stage <name> in the backend's own form (GL: base/renderprogs, D3D12: base/shaders). A stage
-	// the game data lacks gets a handle all the same (R12); NONE when it fails to compile.
+	// Loads one stage <name> in the backend's own form (GL: the GLSL baked into the resource files, D3D12:
+	// base/shaders; RenderProgTable.h). A stage it lacks gets a handle all the same (R12); NONE when it fails to compile.
 	virtual shaderHandle_t	CreateShaderStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info ) = 0;
 	// Pairs two stages; fragment NONE = a program without a fragment stage. A stage the game data lacks
 	// raises idLib::Error (R12), any other failure returns NONE.

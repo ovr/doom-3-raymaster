@@ -34,16 +34,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #include <string>
 #include <string_view>
-#include "../RenderProgSource.h"
+#include "../RenderProgTable.h"
 #include "gl_Backend.h"
 
 #define VERTEX_UNIFORM_ARRAY_NAME				"_va_"
 #define FRAGMENT_UNIFORM_ARRAY_NAME				"_fa_"
-
-static const int AT_VS_IN  = BIT( 1 );
-static const int AT_VS_OUT = BIT( 2 );
-static const int AT_PS_IN  = BIT( 3 );
-static const int AT_PS_OUT = BIT( 4 );
 
 // the GLSL input of a PC vertex attribute (R_VertexInputs has the semantics)
 static const char * GL_VertexInputName( int attribIndex ) {
@@ -56,547 +51,6 @@ static const char * GL_VertexInputName( int attribIndex ) {
 		case PC_ATTRIB_INDEX_COLOR2:	return "in_Color2";
 		default:						return nullptr;
 	}
-}
-
-// the GLSL names of the semantics of the other in and out structs
-struct attribInfo_t {
-	const char *	type;
-	const char *	name;
-	const char *	semantic;
-	const char *	glsl;
-	int				flags;
-};
-
-static constexpr attribInfo_t attribsPC[] = {
-	// pre-defined vertex program output
-	{ "float4",		"position",		"POSITION",		"gl_Position",			AT_VS_OUT },
-	{ "float",		"clip0",		"CLP0",			"gl_ClipDistance[0]",	AT_VS_OUT },
-	{ "float",		"clip1",		"CLP1",			"gl_ClipDistance[1]",	AT_VS_OUT },
-	{ "float",		"clip2",		"CLP2",			"gl_ClipDistance[2]",	AT_VS_OUT },
-	{ "float",		"clip3",		"CLP3",			"gl_ClipDistance[3]",	AT_VS_OUT },
-	{ "float",		"clip4",		"CLP4",			"gl_ClipDistance[4]",	AT_VS_OUT },
-	{ "float",		"clip5",		"CLP5",			"gl_ClipDistance[5]",	AT_VS_OUT },
-
-	// pre-defined fragment program input
-	{ "float4",		"position",		"WPOS",			"gl_FragCoord",			AT_PS_IN },
-	{ "half4",		"hposition",	"WPOS",			"gl_FragCoord",			AT_PS_IN },
-	{ "float",		"facing",		"FACE",			"gl_FrontFacing",		AT_PS_IN },
-
-	// fragment program output
-	{ "float4",		"color",		"COLOR",		"gl_FragColor",		AT_PS_OUT }, // GLSL version 1.2 doesn't allow for custom color name mappings
-	{ "half4",		"hcolor",		"COLOR",		"gl_FragColor",		AT_PS_OUT },
-	{ "float4",		"color0",		"COLOR0",		"gl_FragColor",		AT_PS_OUT },
-	{ "float4",		"color1",		"COLOR1",		"gl_FragColor",		AT_PS_OUT },
-	{ "float4",		"color2",		"COLOR2",		"gl_FragColor",		AT_PS_OUT },
-	{ "float4",		"color3",		"COLOR3",		"gl_FragColor",		AT_PS_OUT },
-	{ "float",		"depth",		"DEPTH",		"gl_FragDepth",		AT_PS_OUT },
-
-	// vertex to fragment program pass through
-	{ "float4",		"color",		"COLOR",		"gl_FrontColor",			AT_VS_OUT },
-	{ "float4",		"color0",		"COLOR0",		"gl_FrontColor",			AT_VS_OUT },
-	{ "float4",		"color1",		"COLOR1",		"gl_FrontSecondaryColor",	AT_VS_OUT },
-
-
-	{ "float4",		"color",		"COLOR",		"gl_Color",				AT_PS_IN },
-	{ "float4",		"color0",		"COLOR0",		"gl_Color",				AT_PS_IN },
-	{ "float4",		"color1",		"COLOR1",		"gl_SecondaryColor",	AT_PS_IN },
-
-	{ "half4",		"hcolor",		"COLOR",		"gl_Color",				AT_PS_IN },
-	{ "half4",		"hcolor0",		"COLOR0",		"gl_Color",				AT_PS_IN },
-	{ "half4",		"hcolor1",		"COLOR1",		"gl_SecondaryColor",	AT_PS_IN },
-
-	{ "float4",		"texcoord0",	"TEXCOORD0_centroid",	"vofi_TexCoord0",	AT_PS_IN },
-	{ "float4",		"texcoord1",	"TEXCOORD1_centroid",	"vofi_TexCoord1",	AT_PS_IN },
-	{ "float4",		"texcoord2",	"TEXCOORD2_centroid",	"vofi_TexCoord2",	AT_PS_IN },
-	{ "float4",		"texcoord3",	"TEXCOORD3_centroid",	"vofi_TexCoord3",	AT_PS_IN },
-	{ "float4",		"texcoord4",	"TEXCOORD4_centroid",	"vofi_TexCoord4",	AT_PS_IN },
-	{ "float4",		"texcoord5",	"TEXCOORD5_centroid",	"vofi_TexCoord5",	AT_PS_IN },
-	{ "float4",		"texcoord6",	"TEXCOORD6_centroid",	"vofi_TexCoord6",	AT_PS_IN },
-	{ "float4",		"texcoord7",	"TEXCOORD7_centroid",	"vofi_TexCoord7",	AT_PS_IN },
-	{ "float4",		"texcoord8",	"TEXCOORD8_centroid",	"vofi_TexCoord8",	AT_PS_IN },
-	{ "float4",		"texcoord9",	"TEXCOORD9_centroid",	"vofi_TexCoord9",	AT_PS_IN },
-
-	{ "float4",		"texcoord0",	"TEXCOORD0",	"vofi_TexCoord0",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord1",	"TEXCOORD1",	"vofi_TexCoord1",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord2",	"TEXCOORD2",	"vofi_TexCoord2",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord3",	"TEXCOORD3",	"vofi_TexCoord3",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord4",	"TEXCOORD4",	"vofi_TexCoord4",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord5",	"TEXCOORD5",	"vofi_TexCoord5",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord6",	"TEXCOORD6",	"vofi_TexCoord6",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord7",	"TEXCOORD7",	"vofi_TexCoord7",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord8",	"TEXCOORD8",	"vofi_TexCoord8",		AT_VS_OUT | AT_PS_IN },
-	{ "float4",		"texcoord9",	"TEXCOORD9",	"vofi_TexCoord9",		AT_VS_OUT | AT_PS_IN },
-
-	{ "half4",		"htexcoord0",	"TEXCOORD0",	"vofi_TexCoord0",		AT_PS_IN },
-	{ "half4",		"htexcoord1",	"TEXCOORD1",	"vofi_TexCoord1",		AT_PS_IN },
-	{ "half4",		"htexcoord2",	"TEXCOORD2",	"vofi_TexCoord2",		AT_PS_IN },
-	{ "half4",		"htexcoord3",	"TEXCOORD3",	"vofi_TexCoord3",		AT_PS_IN },
-	{ "half4",		"htexcoord4",	"TEXCOORD4",	"vofi_TexCoord4",		AT_PS_IN },
-	{ "half4",		"htexcoord5",	"TEXCOORD5",	"vofi_TexCoord5",		AT_PS_IN },
-	{ "half4",		"htexcoord6",	"TEXCOORD6",	"vofi_TexCoord6",		AT_PS_IN },
-	{ "half4",		"htexcoord7",	"TEXCOORD7",	"vofi_TexCoord7",		AT_PS_IN },
-	{ "half4",		"htexcoord8",	"TEXCOORD8",	"vofi_TexCoord8",		AT_PS_IN },
-	{ "half4",		"htexcoord9",	"TEXCOORD9",	"vofi_TexCoord9",		AT_PS_IN },
-	{ "float",		"fog",			"FOG",			"gl_FogFragCoord",		AT_VS_OUT },
-	{ "float4",		"fog",			"FOG",			"gl_FogFragCoord",		AT_PS_IN },
-};
-
-struct typeConversion_t {
-	const char * typeCG;
-	const char * typeGLSL;
-} typeConversion[] = {
-	{ "void",				"void" },
-
-	{ "fixed",				"float" },
-
-	{ "float",				"float" },
-	{ "float2",				"vec2" },
-	{ "float3",				"vec3" },
-	{ "float4",				"vec4" },
-
-	{ "half",				"float" },
-	{ "half2",				"vec2" },
-	{ "half3",				"vec3" },
-	{ "half4",				"vec4" },
-
-	{ "int",				"int" },
-	{ "int2",				"ivec2" },
-	{ "int3",				"ivec3" },
-	{ "int4",				"ivec4" },
-
-	{ "bool",				"bool" },
-	{ "bool2",				"bvec2" },
-	{ "bool3",				"bvec3" },
-	{ "bool4",				"bvec4" },
-
-	{ "float2x2",			"mat2x2" },
-	{ "float2x3",			"mat2x3" },
-	{ "float2x4",			"mat2x4" },
-
-	{ "float3x2",			"mat3x2" },
-	{ "float3x3",			"mat3x3" },
-	{ "float3x4",			"mat3x4" },
-
-	{ "float4x2",			"mat4x2" },
-	{ "float4x3",			"mat4x3" },
-	{ "float4x4",			"mat4x4" },
-
-	{ "sampler1D",			"sampler1D" },
-	{ "sampler2D",			"sampler2D" },
-	{ "sampler3D",			"sampler3D" },
-	{ "samplerCUBE",		"samplerCube" },
-
-	{ "sampler1DShadow",	"sampler1DShadow" },
-	{ "sampler2DShadow",	"sampler2DShadow" },
-	{ "sampler3DShadow",	"sampler3DShadow" },
-	{ "samplerCubeShadow",	"samplerCubeShadow" },
-
-	{ "sampler2DMS",		"sampler2DMS" },
-
-	{ NULL, NULL }
-};
-
-const char * vertexInsert = {
-	"#version 150 compatibility\n"
-	"#define PC\n"
-	"\n"
-	"float saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n"
-	"vec2 saturate( vec2 v ) { return clamp( v, 0.0, 1.0 ); }\n"
-	"vec3 saturate( vec3 v ) { return clamp( v, 0.0, 1.0 ); }\n"
-	"vec4 saturate( vec4 v ) { return clamp( v, 0.0, 1.0 ); }\n"
-	"vec4 tex2Dlod( sampler2D sampler, vec4 texcoord ) { return textureLod( sampler, texcoord.xy, texcoord.w ); }\n"
-	"\n"
-};
-
-const char * fragmentInsert = {
-	"#version 150 compatibility\n"
-	"#define PC\n"
-	"\n"
-	"void clip( float v ) { if ( v < 0.0 ) { discard; } }\n"
-	"void clip( vec2 v ) { if ( any( lessThan( v, vec2( 0.0 ) ) ) ) { discard; } }\n"
-	"void clip( vec3 v ) { if ( any( lessThan( v, vec3( 0.0 ) ) ) ) { discard; } }\n"
-	"void clip( vec4 v ) { if ( any( lessThan( v, vec4( 0.0 ) ) ) ) { discard; } }\n"
-	"\n"
-	"float saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n"
-	"vec2 saturate( vec2 v ) { return clamp( v, 0.0, 1.0 ); }\n"
-	"vec3 saturate( vec3 v ) { return clamp( v, 0.0, 1.0 ); }\n"
-	"vec4 saturate( vec4 v ) { return clamp( v, 0.0, 1.0 ); }\n"
-	"\n"
-	"vec4 tex2D( sampler2D sampler, vec2 texcoord ) { return texture( sampler, texcoord.xy ); }\n"
-	"vec4 tex2D( sampler2DShadow sampler, vec3 texcoord ) { return vec4( texture( sampler, texcoord.xyz ) ); }\n"
-	"\n"
-	"vec4 tex2D( sampler2D sampler, vec2 texcoord, vec2 dx, vec2 dy ) { return textureGrad( sampler, texcoord.xy, dx, dy ); }\n"
-	"vec4 tex2D( sampler2DShadow sampler, vec3 texcoord, vec2 dx, vec2 dy ) { return vec4( textureGrad( sampler, texcoord.xyz, dx, dy ) ); }\n"
-	"\n"
-	"vec4 texCUBE( samplerCube sampler, vec3 texcoord ) { return texture( sampler, texcoord.xyz ); }\n"
-	"vec4 texCUBE( samplerCubeShadow sampler, vec4 texcoord ) { return vec4( texture( sampler, texcoord.xyzw ) ); }\n"
-	"\n"
-	"vec4 tex1Dproj( sampler1D sampler, vec2 texcoord ) { return textureProj( sampler, texcoord ); }\n"
-	"vec4 tex2Dproj( sampler2D sampler, vec3 texcoord ) { return textureProj( sampler, texcoord ); }\n"
-	"vec4 tex3Dproj( sampler3D sampler, vec4 texcoord ) { return textureProj( sampler, texcoord ); }\n"
-	"\n"
-	"vec4 tex1Dbias( sampler1D sampler, vec4 texcoord ) { return texture( sampler, texcoord.x, texcoord.w ); }\n"
-	"vec4 tex2Dbias( sampler2D sampler, vec4 texcoord ) { return texture( sampler, texcoord.xy, texcoord.w ); }\n"
-	"vec4 tex3Dbias( sampler3D sampler, vec4 texcoord ) { return texture( sampler, texcoord.xyz, texcoord.w ); }\n"
-	"vec4 texCUBEbias( samplerCube sampler, vec4 texcoord ) { return texture( sampler, texcoord.xyz, texcoord.w ); }\n"
-	"\n"
-	"vec4 tex1Dlod( sampler1D sampler, vec4 texcoord ) { return textureLod( sampler, texcoord.x, texcoord.w ); }\n"
-	"vec4 tex2Dlod( sampler2D sampler, vec4 texcoord ) { return textureLod( sampler, texcoord.xy, texcoord.w ); }\n"
-	"vec4 tex3Dlod( sampler3D sampler, vec4 texcoord ) { return textureLod( sampler, texcoord.xyz, texcoord.w ); }\n"
-	"vec4 texCUBElod( samplerCube sampler, vec4 texcoord ) { return textureLod( sampler, texcoord.xyz, texcoord.w ); }\n"
-	"\n"
-};
-
-struct builtinConversion_t {
-	const char * nameCG;
-	const char * nameGLSL;
-} builtinConversion[] = {
-	{ "frac",		"fract" },
-	{ "lerp",		"mix" },
-	{ "rsqrt",		"inversesqrt" },
-	{ "ddx",		"dFdx" },
-	{ "ddy",		"dFdy" },
-
-	{ NULL, NULL }
-};
-
-struct inOutVariable_t {
-	idStr	type;
-	idStr	nameCg;
-	idStr	nameGLSL;
-	bool	declareInOut;
-};
-
-/*
-========================
-ParseInOutStruct
-========================
-*/
-void ParseInOutStruct( idLexer & src, int attribType, idList< inOutVariable_t > & inOutVars ) {
-	src.ExpectTokenString( "{" );
-
-	while( !src.CheckTokenString( "}" ) ) {
-		inOutVariable_t var;
-
-		idToken token;
-		src.ReadToken( &token );
-		var.type = token;
-		src.ReadToken( &token );
-		var.nameCg = token;
-
-		if ( !src.CheckTokenString( ":" ) ) {
-			src.SkipUntilString( ";" );
-			continue;
-		}
-
-		src.ReadToken( &token );
-		var.nameGLSL = token;
-		src.ExpectTokenString( ";" );
-
-		// convert the type
-		for ( int i = 0; typeConversion[i].typeCG != NULL; i++ ) {
-			if ( var.type.Cmp( typeConversion[i].typeCG ) == 0 ) {
-				var.type = typeConversion[i].typeGLSL;
-				break;
-			}
-		}
-
-		// convert the semantic to a GLSL name
-		if ( attribType == AT_VS_IN ) {
-			const char * glsl = GL_VertexInputName( R_VertexAttribIndex( var.nameGLSL.c_str() ) );
-			if ( glsl != nullptr ) {
-				var.nameGLSL = glsl;
-			}
-		} else {
-			for ( const attribInfo_t & attrib : attribsPC ) {
-				if ( ( attrib.flags & attribType ) != 0 && var.nameGLSL.Cmp( attrib.semantic ) == 0 ) {
-					var.nameGLSL = attrib.glsl;
-					break;
-				}
-			}
-		}
-
-		// Built-ins are never declared: "in vec4 gl_Color" is an error, which only a driver's profile
-		// for the game's exe name let through. They exist in the compatibility profile the insert asks for.
-		var.declareInOut = ( var.nameGLSL.Cmpn( "gl_", 3 ) != 0 );
-		// check if it was defined previously
-		for ( int i = 0; i < inOutVars.Num(); i++ ) {
-			if ( var.nameGLSL == inOutVars[i].nameGLSL ) {
-				var.declareInOut = false;
-				break;
-			}
-		}
-
-		inOutVars.Append( var );
-	}
-
-	src.ExpectTokenString( ";" );
-}
-
-/*
-========================
-ConvertCG2GLSL
-========================
-*/
-idStr ConvertCG2GLSL( const idStr & in, const char * name, bool isVertexProgram, idStr & uniforms ) {
-	idStr program;
-	program.ReAllocate( in.Length() * 2, false );
-
-	idList< inOutVariable_t, TAG_RENDERPROG > varsIn;
-	idList< inOutVariable_t, TAG_RENDERPROG > varsOut;
-	idList< idStr > uniformList;
-
-	idLexer src( LEXFL_NOFATALERRORS );
-	src.LoadMemory( in.c_str(), in.Length(), name );
-
-	bool inMain = false;
-	const char * uniformArrayName = isVertexProgram ? VERTEX_UNIFORM_ARRAY_NAME : FRAGMENT_UNIFORM_ARRAY_NAME;
-	char newline[128] = { "\n" };
-
-	idToken token;
-	while ( src.ReadToken( &token ) ) {
-
-		// check for uniforms
-		while ( token == "uniform" && src.CheckTokenString( "float4" ) ) {
-			src.ReadToken( &token );
-			uniformList.Append( token );
-
-			// strip ': register()' from uniforms
-			if ( src.CheckTokenString( ":" ) ) {
-				if ( src.CheckTokenString( "register" ) ) {
-					src.SkipUntilString( ";" );
-				}
-			}
-
-			src.ReadToken( & token );
-		}
-
-		// convert the in/out structs
-		if ( token == "struct" ) {
-			if ( src.CheckTokenString( "VS_IN" ) ) {
-				ParseInOutStruct( src, AT_VS_IN, varsIn );
-				program += "\n\n";
-				for ( int i = 0; i < varsIn.Num(); i++ ) {
-					if ( varsIn[i].declareInOut ) {
-						program += "in " + varsIn[i].type + " " + varsIn[i].nameGLSL + ";\n";
-					}
-				}
-				continue;
-			} else if ( src.CheckTokenString( "VS_OUT" ) ) {
-				ParseInOutStruct( src, AT_VS_OUT, varsOut );
-				program += "\n";
-				for ( int i = 0; i < varsOut.Num(); i++ ) {
-					if ( varsOut[i].declareInOut ) {
-						program += "out " + varsOut[i].type + " " + varsOut[i].nameGLSL + ";\n";
-					}
-				}
-				continue;
-			} else if ( src.CheckTokenString( "PS_IN" ) ) {
-				ParseInOutStruct( src, AT_PS_IN, varsIn );
-				program += "\n\n";
-				for ( int i = 0; i < varsIn.Num(); i++ ) {
-					if ( varsIn[i].declareInOut ) {
-						program += "in " + varsIn[i].type + " " + varsIn[i].nameGLSL + ";\n";
-					}
-				}
-				inOutVariable_t var;
-				var.type = "vec4";
-				var.nameCg = "position";
-				var.nameGLSL = "gl_FragCoord";
-				varsIn.Append( var );
-				continue;
-			} else if ( src.CheckTokenString( "PS_OUT" ) ) {
-				ParseInOutStruct( src, AT_PS_OUT, varsOut );
-				program += "\n";
-				for ( int i = 0; i < varsOut.Num(); i++ ) {
-					if ( varsOut[i].declareInOut ) {
-						program += "out " + varsOut[i].type + " " + varsOut[i].nameGLSL + ";\n";
-					}
-				}
-				continue;
-			}
-		}
-
-		// strip 'static'
-		if ( token == "static" ) {
-			program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-			src.SkipWhiteSpace( true ); // remove white space between 'static' and the next token
-			continue;
-		}
-
-		// strip ': register()' from uniforms
-		if ( token == ":" ) {
-			if ( src.CheckTokenString( "register" ) ) {
-				src.SkipUntilString( ";" );
-				program += ";";
-				continue;
-			}
-		}
-
-		// strip in/program parameters from main
-		if ( token == "void" && src.CheckTokenString( "main" ) ) {
-			src.ExpectTokenString( "(" );
-			while( src.ReadToken( &token ) ) {
-				if ( token == ")" ) {
-					break;
-				}
-			}
-
-			program += "\nvoid main()";
-			inMain = true;
-			continue;
-		}
-
-		// strip 'const' from local variables in main()
-		if ( token == "const" && inMain ) {
-			program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-			src.SkipWhiteSpace( true ); // remove white space between 'const' and the next token
-			continue;
-		}
-
-		// maintain indentation
-		if ( token == "{" ) {
-			program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-			program += "{";
-
-			int len = Min( idStr::Length( newline ) + 1, (int)sizeof( newline ) - 1 );
-			newline[len - 1] = '\t';
-			newline[len - 0] = '\0';
-			continue;
-		}
-		if ( token == "}" ) {
-			int len = Max( idStr::Length( newline ) - 1, 0 );
-			newline[len] = '\0';
-
-			program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-			program += "}";
-			continue;
-		}
-
-		// check for a type conversion
-		bool foundType = false;
-		for ( int i = 0; typeConversion[i].typeCG != NULL; i++ ) {
-			if ( token.Cmp( typeConversion[i].typeCG ) == 0 ) {
-				program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-				program += typeConversion[i].typeGLSL;
-				foundType = true;
-				break;
-			}
-		}
-		if ( foundType ) {
-			continue;
-		}
-
-		// check for uniforms that need to be converted to the array
-		bool isUniform = false;
-		for ( int i = 0; i < uniformList.Num(); i++ ) {
-			if ( token == uniformList[i] ) {
-				program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-				program += va( "%s[%d /* %s */]", uniformArrayName, i, uniformList[i].c_str() );
-				isUniform = true;
-				break;
-			}
-		}
-		if ( isUniform ) {
-			continue;
-		}
-
-		// check for input/output parameters
-		if ( src.CheckTokenString( "." ) ) {
-
-			if ( token == "vertex" || token == "fragment" ) {
-				idToken member;
-				src.ReadToken( &member );
-
-				bool foundInOut = false;
-				for ( int i = 0; i < varsIn.Num(); i++ ) {
-					if ( member.Cmp( varsIn[i].nameCg ) == 0 ) {
-						program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-						program += varsIn[i].nameGLSL;
-						foundInOut = true;
-						break;
-					}
-				}
-				if ( !foundInOut ) {
-					src.Error( "invalid input parameter %s.%s", token.c_str(), member.c_str() );
-					program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-					program += token;
-					program += ".";
-					program += member;
-				}
-				continue;
-			}
-
-			if ( token == "result" ) {
-				idToken member;
-				src.ReadToken( &member );
-
-				bool foundInOut = false;
-				for ( int i = 0; i < varsOut.Num(); i++ ) {
-					if ( member.Cmp( varsOut[i].nameCg ) == 0 ) {
-						program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-						program += varsOut[i].nameGLSL;
-						foundInOut = true;
-						break;
-					}
-				}
-				if ( !foundInOut ) {
-					src.Error( "invalid output parameter %s.%s", token.c_str(), member.c_str() );
-					program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-					program += token;
-					program += ".";
-					program += member;
-				}
-				continue;
-			}
-
-			program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-			program += token;
-			program += ".";
-			continue;
-		}
-
-		// check for a function conversion
-		bool foundFunction = false;
-		for ( int i = 0; builtinConversion[i].nameCG != NULL; i++ ) {
-			if ( token.Cmp( builtinConversion[i].nameCG ) == 0 ) {
-				program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-				program += builtinConversion[i].nameGLSL;
-				foundFunction = true;
-				break;
-			}
-		}
-		if ( foundFunction ) {
-			continue;
-		}
-
-		program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
-		program += token;
-	}
-
-	idStr out;
-
-	if ( isVertexProgram ) {
-		out.ReAllocate( idStr::Length( vertexInsert ) + in.Length() * 2, false );
-		out += vertexInsert;
-	} else {
-		out.ReAllocate( idStr::Length( fragmentInsert ) + in.Length() * 2, false );
-		out += fragmentInsert;
-	}
-
-	if ( uniformList.Num() > 0 ) {
-		out += va( "\nuniform vec4 %s[%d];\n", uniformArrayName, uniformList.Num() );
-	}
-
-	out += program;
-
-	for ( int i = 0; i < uniformList.Num(); i++ ) {
-		uniforms += uniformList[i];
-		uniforms += "\n";
-	}
-	uniforms += "\n";
-
-	return out;
 }
 
 /*
@@ -622,7 +76,7 @@ The lines are blanked, so the line numbers of compile errors stay.
 ========================
 */
 static void GL_StripBuiltinDeclarations( idStr & glsl ) {
-	// the baked files end their lines with CR LF, the converter with LF
+	// the baked files end their lines with CR LF
 	constexpr std::string_view coreVersion = "#version 150";
 	constexpr std::string_view compatibility = " compatibility";
 
@@ -658,81 +112,32 @@ static void GL_StripBuiltinDeclarations( idStr & glsl ) {
 ================================================================================================
 idRenderBackendGL::CreateShaderStage
 
-Loads renderprogs/glsl/<name>_vertex.glsl or _fragment.glsl with its .uniforms list, converted from
-renderprogs/<name>.vertex or .pixel when those are newer. A stage without a source file is a record
-without a shader, not NONE: shared code never looks for it again and its program fails to link.
+Loads renderprogs/glsl/<name>_vertex.glsl or _fragment.glsl with its .uniforms list as id baked them
+into the resource files; a loose file is never read. A stage the packs lack is a record without a
+shader, not NONE: shared code never looks for it again and its program fails to link.
 ================================================================================================
 */
 shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info ) {
 	const GLenum target = ( stage == shaderStageType_t::FRAGMENT ) ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER;
 	info.numParms = 0;
 
-	const idStr inFile = R_RenderProgPath( name, stage );
-	idStr outFileHLSL;
-	idStr outFileGLSL;
-	idStr outFileUniforms;
-	outFileHLSL.Format( "renderprogs\\glsl\\%s", name );
-	outFileHLSL.StripFileExtension();
-	outFileGLSL.Format( "renderprogs\\glsl\\%s", name );
-	outFileGLSL.StripFileExtension();
-	outFileUniforms.Format( "renderprogs\\glsl\\%s", name );
-	outFileUniforms.StripFileExtension();
-	if ( target == GL_FRAGMENT_SHADER ) {
-		outFileHLSL += "_fragment.hlsl";
-		outFileGLSL += "_fragment.glsl";
-		outFileUniforms += "_fragment.uniforms";
-	} else {
-		outFileHLSL += "_vertex.hlsl";
-		outFileGLSL += "_vertex.glsl";
-		outFileUniforms += "_vertex.uniforms";
+	idStr file;
+	file.Format( "renderprogs\\glsl\\%s", name );
+	file.StripFileExtension();
+	file += ( target == GL_FRAGMENT_SHADER ) ? "_fragment" : "_vertex";
+	const idStr glslFile = file + ".glsl";
+	const idStr uniformsFile = file + ".uniforms";
+
+	std::optional<idStr> baked = fileSystem->ReadResourceText( glslFile );
+	if ( !baked || baked->IsEmpty() ) {
+		return GL_NewShaderStage( 0, name, info );
 	}
-
-	// first check whether we already have a valid GLSL file and compare it to the hlsl timestamp;
-	ID_TIME_T hlslTimeStamp;
-	int hlslFileLength = fileSystem->ReadFile( inFile.c_str(), NULL, &hlslTimeStamp );
-
-	ID_TIME_T glslTimeStamp;
-	int glslFileLength = fileSystem->ReadFile( outFileGLSL.c_str(), NULL, &glslTimeStamp );
-
-	// if the glsl file doesn't exist or we have a newer HLSL file we need to recreate the glsl file.
-	idStr programGLSL;
-	idStr programUniforms;
-	if ( ( glslFileLength <= 0 ) || ( hlslTimeStamp > glslTimeStamp ) ) {
-		if ( hlslFileLength <= 0 ) {
-			// hlsl file doesn't even exist bail out
-			return GL_NewShaderStage( 0, name, info );
-		}
-
-		// nullopt after the file was found: unreadable, or a uniform no parm names (warned)
-		const std::optional<renderProgSource_t> source = R_LoadRenderProgSource( name, stage );
-		if ( !source ) {
-			return GL_NewShaderStage( 0, name, info );
-		}
-		const idStr & programHLSL = source->text;
-		programGLSL = ConvertCG2GLSL( programHLSL, inFile, target == GL_VERTEX_SHADER, programUniforms );
-
-		fileSystem->WriteFile( outFileHLSL, programHLSL.c_str(), programHLSL.Length(), "fs_basepath" );
-		fileSystem->WriteFile( outFileGLSL, programGLSL.c_str(), programGLSL.Length(), "fs_basepath" );
-		fileSystem->WriteFile( outFileUniforms, programUniforms.c_str(), programUniforms.Length(), "fs_basepath" );
-	} else {
-		// read in the glsl file
-		void * fileBufferGLSL = NULL;
-		int lengthGLSL = fileSystem->ReadFile( outFileGLSL.c_str(), &fileBufferGLSL );
-		if ( lengthGLSL <= 0 ) {
-			idLib::Error( "GLSL file %s could not be loaded and may be corrupt", outFileGLSL.c_str() );
-		}
-		programGLSL = ( const char * ) fileBufferGLSL;
-		Mem_Free( fileBufferGLSL );
-
-		// read in the uniform file
-		void * fileBufferUniforms = NULL;
-		int lengthUniforms = fileSystem->ReadFile( outFileUniforms.c_str(), &fileBufferUniforms );
-		if ( lengthUniforms <= 0 ) {
-			idLib::Error( "uniform file %s could not be loaded and may be corrupt", outFileUniforms.c_str() );
-		}
-		programUniforms = ( const char* ) fileBufferUniforms;
-		Mem_Free( fileBufferUniforms );
+	idStr programGLSL = std::move( *baked );
+	const std::optional<idStr> uniforms = fileSystem->ReadResourceText( uniformsFile );
+	if ( !uniforms || uniforms->IsEmpty() ) {
+		idLib::Error( "uniform file %s could not be loaded and may be corrupt", uniformsFile.c_str() );
 	}
+	const idStr & programUniforms = *uniforms;
 
 	GL_StripBuiltinDeclarations( programGLSL );
 
@@ -742,10 +147,10 @@ shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, co
 	while ( src.ReadToken( &token ) ) {
 		const std::optional<renderParm_t> parm = R_FindRenderParm( token.c_str() );
 		if ( !parm ) {
-			idLib::Error( "couldn't find uniform %s for %s", token.c_str(), outFileGLSL.c_str() );
+			idLib::Error( "couldn't find uniform %s for %s", token.c_str(), glslFile.c_str() );
 		}
 		if ( info.numParms == MAX_RENDER_PARMS ) {
-			idLib::Error( "more than %d uniforms for %s", MAX_RENDER_PARMS, outFileGLSL.c_str() );
+			idLib::Error( "more than %d uniforms for %s", MAX_RENDER_PARMS, glslFile.c_str() );
 		}
 		info.parms[info.numParms++] = static_cast<uint8>( *parm );
 	}
@@ -770,7 +175,7 @@ shaderHandle_t idRenderBackendGL::CreateShaderStage( shaderStageType_t stage, co
 					strstr( infoLog.Ptr(), "No errors." ) != NULL ) {
 				//idLib::Printf( "%s program %s from %s compiled to run on hardware\n", typeName, GetName(), GetFileName() );
 			} else {
-				idLib::Printf( "While compiling %s program %s\n", ( target == GL_FRAGMENT_SHADER ) ? "fragment" : "vertex" , inFile.c_str() );
+				idLib::Printf( "While compiling %s program %s\n", ( target == GL_FRAGMENT_SHADER ) ? "fragment" : "vertex" , glslFile.c_str() );
 
 				const char separator = '\n';
 				idList<idStr> lines;

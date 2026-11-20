@@ -6,7 +6,7 @@
 #include "../../idlib/precompiled.h"
 
 #include "../tr_local.h"
-#include "../RenderProgSource.h"
+#include "../RenderProgTable.h"
 #include "d3d12_HlslCompiler.h"
 
 namespace {

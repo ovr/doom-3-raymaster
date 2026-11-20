@@ -682,7 +682,7 @@ void idCinematicFFmpeg::ExportToTGA( bool skipExisting ) {
 			const uint8 * crRow = f.planes[ 2 ] + ( y / 2 ) * f.pitches[ 2 ];
 			byte * out = &rgba[ static_cast<size_t>( y ) * f.width * 4 ];
 			for ( int x = 0; x < f.width; x++, out += 4 ) {
-				// same constants as base/renderprogs/bink.pixel
+				// same constants as base/shaders/bink.hlsl
 				const float luma = 1.164123535f * ( lumaRow[ x ] / 255.0f );
 				const float cr = crRow[ x / 2 ] / 255.0f;
 				const float cb = cbRow[ x / 2 ] / 255.0f;
