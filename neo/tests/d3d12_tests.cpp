@@ -9,6 +9,7 @@
 #include "../renderer/D3D12/d3d12_Buffers.h"
 #include "../renderer/D3D12/d3d12_Copies.h"
 #include "../renderer/D3D12/d3d12_Draw.h"
+#include "../renderer/D3D12/d3d12_Dxc.h"
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
@@ -368,7 +369,7 @@ void idTestGpu::FinishUnwaited() {
 		return nullptr;
 	}
 	if ( device->DebugLevel() == 0 ) {
-		printf( "  no debug layer (Graphics Tools): the API usage is not validated\n" );
+		printf( "  no debug layer (D3D12\\d3d12SDKLayers.dll): the API usage is not validated\n" );
 	}
 	return std::make_unique<idTestGpu>( std::move( *library ), std::move( *device ), stagingSize, framePlacement );
 }
@@ -3835,6 +3836,186 @@ void DrawFrameBufferPlacements( idTestGpu & gpu ) {
 	}
 }
 
+// ---- DXC and shader model 6.6 ------------------------------------------------------------------------------
+
+// One pixel per value; the pixel shader finds the values through the heap index alone (bindless, SM 6.6).
+constexpr std::string_view BINDLESS_HLSL = R"(
+cbuffer drawIndices : register( b0 ) {
+	uint valuesIndex;
+};
+float4 VSMain( uint vertexId : SV_VertexID ) : SV_Position {
+	float2 corner = float2( ( vertexId << 1 ) & 2, vertexId & 2 );
+	return float4( corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0 );
+}
+float4 PSMain( float4 position : SV_Position ) : SV_Target {
+	StructuredBuffer<float4> values = ResourceDescriptorHeap[valuesIndex];
+	return values[uint( position.x )];
+}
+)";
+
+// Without a device: DXC loads from the exe's folder, signs, passes defines and names the source in an error.
+void Test_DxcCompile() {
+	auto library = idD3D12Library::Load();
+	if ( !Check( library.has_value(), library ? "" : va( "idD3D12Library::Load: %s", library.error().c_str() ) ) ) {
+		return;
+	}
+	Check( library->dxcVersion >= ( ( uint64( 1 ) << 48 ) | ( uint64( 9 ) << 32 ) ), "dxcompiler.dll is DXC 1.9 or newer" );
+	const auto good = D3D12_DxcCompile( *library, BINDLESS_HLSL, "bindless test", "PSMain", "ps_6_6" );
+	if ( Check( good.has_value(), good ? "" : va( "compile: %s", good.error().c_str() ) ) ) {
+		Check( D3D12_DxilSigned( good->code ), "dxil.dll signed the DXIL" );
+		Check( good->warnings.IsEmpty(), va( "no warnings: %s", good->warnings.c_str() ) );
+	}
+	constexpr std::string_view DEFINED = "#ifndef ANSWER\n#error ANSWER is not defined\n#endif\nfloat4 PSMain() : SV_Target { return ANSWER; }\n";
+	const char * const defines[] = { "ANSWER=42" };
+	const auto defined = D3D12_DxcCompile( *library, DEFINED, "define test", "PSMain", "ps_6_6", defines );
+	Check( defined.has_value(), defined ? "" : va( "a define reaches the source: %s", defined.error().c_str() ) );
+	const auto broken = D3D12_DxcCompile( *library, "float4 PSMain() : SV_Target { return undefinedName; }", "broken test", "PSMain", "ps_6_6" );
+	Check( !broken && broken.error().Find( "undefinedName" ) >= 0 && broken.error().Find( "broken test" ) >= 0,
+		va( "the error names the source and the identifier: %s", broken ? "(compiled)" : broken.error().c_str() ) );
+}
+
+// Feature level 12_2 and SM 6.6: a root signature with the heap directly indexed, values read through ResourceDescriptorHeap.
+void DxcBindless( idTestGpu & gpu ) {
+	constexpr UINT POINTS = 16;			// a row of 16 float4 is the 256-byte pitch a texture copy needs
+	constexpr UINT VALUES_SLOT = 5;		// not 0: the index must reach the shader
+	ID3D12Device2 & device = gpu.device.Get();
+	Check( gpu.device.Features().shaderModel >= D3D_SHADER_MODEL_6_6, "the device runs shader model 6.6" );
+	printf( "  %s\n", gpu.device.Features().versionString.c_str() );
+
+	const auto vertex = D3D12_DxcCompile( gpu.library, BINDLESS_HLSL, "bindless test", "VSMain", "vs_6_6" );
+	const auto pixel = D3D12_DxcCompile( gpu.library, BINDLESS_HLSL, "bindless test", "PSMain", "ps_6_6" );
+	if ( !Check( vertex && pixel, va( "compile the bindless test shaders: %s", !vertex ? vertex.error().c_str() : ( !pixel ? pixel.error().c_str() : "" ) ) ) ) {
+		return;
+	}
+
+	D3D12_ROOT_PARAMETER1 parameter = {};
+	parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+	parameter.Constants = { 0, 0, 1 };
+	parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc = {};
+	desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+	desc.Desc_1_1.NumParameters = 1;
+	desc.Desc_1_1.pParameters = &parameter;
+	desc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+	idComPtr<ID3DBlob> blob;
+	idComPtr<ID3DBlob> error;
+	idComPtr<ID3D12RootSignature> root;
+	if ( !Check( SUCCEEDED( gpu.library.serializeRootSignature( &desc, &blob, &error ) ), "serialize the bindless root signature" )
+		|| !gpu.device.Check( device.CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &root ) ),
+			"CreateRootSignature (bindless test)" ) ) {
+		return;
+	}
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+	pso.pRootSignature = root.Get();
+	pso.VS = { vertex->code.data(), vertex->code.size() };
+	pso.PS = { pixel->code.data(), pixel->code.size() };
+	pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+	pso.SampleMask = UINT_MAX;
+	pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+	pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+	pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	pso.NumRenderTargets = 1;
+	pso.RTVFormats[0] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	pso.SampleDesc.Count = 1;
+	idComPtr<ID3D12PipelineState> pipeline;
+	if ( !gpu.device.Check( device.CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( &pipeline ) ), "CreateGraphicsPipelineState (bindless test)" ) ) {
+		return;
+	}
+
+	const D3D12_DESCRIPTOR_HEAP_DESC viewHeapDesc = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 8, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+	const D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = { D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
+	idComPtr<ID3D12DescriptorHeap> viewHeap;
+	idComPtr<ID3D12DescriptorHeap> rtvHeap;
+	if ( !gpu.device.Check( device.CreateDescriptorHeap( &viewHeapDesc, IID_PPV_ARGS( &viewHeap ) ), "CreateDescriptorHeap (bindless views)" )
+		|| !gpu.device.Check( device.CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( &rtvHeap ) ), "CreateDescriptorHeap (bindless target)" ) ) {
+		return;
+	}
+
+	std::array<idVec4, POINTS> expected;
+	for ( UINT i = 0; i < POINTS; i++ ) {
+		expected[i] = idVec4( static_cast<float>( i ), 0.5f * static_cast<float>( i ), -static_cast<float>( i ), 1.0f );
+	}
+	const idComPtr<ID3D12Resource> values = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_UPLOAD, sizeof( expected ),
+		D3D12_RESOURCE_STATE_GENERIC_READ, L"bindless test values" );
+	const idComPtr<ID3D12Resource> readback = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_READBACK, sizeof( expected ),
+		D3D12_RESOURCE_STATE_COPY_DEST, L"bindless test readback" );
+	void * mapped = nullptr;
+	const D3D12_RANGE nothingRead = { 0, 0 };
+	if ( !values || !readback || !gpu.device.Check( values->Map( 0, &nothingRead, &mapped ), "Map (bindless test values)" ) ) {
+		return;
+	}
+	memcpy( mapped, expected.data(), sizeof( expected ) );
+	values->Unmap( 0, nullptr );
+	D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+	view.Format = DXGI_FORMAT_UNKNOWN;
+	view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	view.Buffer.NumElements = POINTS;
+	view.Buffer.StructureByteStride = sizeof( idVec4 );
+	D3D12_CPU_DESCRIPTOR_HANDLE slot = viewHeap->GetCPUDescriptorHandleForHeapStart();
+	slot.ptr += static_cast<SIZE_T>( VALUES_SLOT ) * device.GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+	device.CreateShaderResourceView( values.Get(), &view, slot );
+
+	D3D12_HEAP_PROPERTIES defaultHeap = {};
+	defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC targetDesc = {};
+	targetDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	targetDesc.Width = POINTS;
+	targetDesc.Height = 1;
+	targetDesc.DepthOrArraySize = 1;
+	targetDesc.MipLevels = 1;
+	targetDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	targetDesc.SampleDesc.Count = 1;
+	targetDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	idComPtr<ID3D12Resource> target;
+	if ( !gpu.device.Check( device.CreateCommittedResource( &defaultHeap, D3D12_HEAP_FLAG_NONE, &targetDesc, D3D12_RESOURCE_STATE_RENDER_TARGET,
+			nullptr, IID_PPV_ARGS( &target ) ), "CreateCommittedResource (bindless test target)" ) ) {
+		return;
+	}
+	d3d12ResourceState_t targetState;
+	targetState.current = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	device.CreateRenderTargetView( target.Get(), nullptr, rtv );
+
+	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12DescriptorHeap * heaps[] = { viewHeap.Get() };
+	list.SetDescriptorHeaps( 1, heaps );	// before the root signature: it indexes the heap set at that moment
+	list.SetGraphicsRootSignature( root.Get() );
+	list.SetPipelineState( pipeline.Get() );
+	list.SetGraphicsRoot32BitConstant( 0, VALUES_SLOT, 0 );
+	list.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+	const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>( POINTS ), 1.0f, 0.0f, 1.0f };
+	const D3D12_RECT scissor = { 0, 0, static_cast<LONG>( POINTS ), 1 };
+	list.RSSetViewports( 1, &viewport );
+	list.RSSetScissorRects( 1, &scissor );
+	list.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	list.DrawInstanced( 3, 1, 0, 0 );
+	gpu.barriers.Transition( *target.Get(), targetState, D3D12_RESOURCE_STATE_COPY_SOURCE );
+	gpu.barriers.Flush();
+	D3D12_TEXTURE_COPY_LOCATION destination = {};
+	destination.pResource = readback.Get();
+	destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	destination.PlacedFootprint.Footprint = { DXGI_FORMAT_R32G32B32A32_FLOAT, POINTS, 1, 1, POINTS * sizeof( idVec4 ) };
+	D3D12_TEXTURE_COPY_LOCATION source = {};
+	source.pResource = target.Get();
+	source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	list.CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+	gpu.WaitIdle();
+
+	std::array<idVec4, POINTS> drawn;
+	const D3D12_RANGE everything = { 0, sizeof( drawn ) };
+	void * read = nullptr;
+	if ( gpu.device.Check( readback->Map( 0, &everything, &read ), "Map (bindless test readback)" ) ) {
+		memcpy( drawn.data(), read, sizeof( drawn ) );
+		const D3D12_RANGE nothingWritten = { 0, 0 };
+		readback->Unmap( 0, &nothingWritten );
+		for ( UINT i = 0; i < POINTS; i++ ) {
+			Check( drawn[i] == expected[i], va( "pixel %u: %s, expected %s", i, drawn[i].ToString(), expected[i].ToString() ) );
+		}
+	}
+	CheckNoLayerErrors( gpu );
+}
+
 template <void ( *RULE )( idTestGpu & )>
 void OnWarp() {
 	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
@@ -3889,6 +4070,9 @@ constexpr testCase_t TESTS[] = {
 	{ "Hlsl_Golden", Test_HlslGolden },
 	{ "Hlsl_AllSources", Test_HlslAllSources },
 	{ "Hlsl_ReflectionMatchesGl", Test_HlslReflectionMatchesGl },
+	{ "Dxc_Compile", Test_DxcCompile },
+	{ "Warp_DxcBindless", OnWarp<DxcBindless> },
+	{ "Gpu_DxcBindless", OnGpu<DxcBindless> },
 	{ "Pipeline_Blend", Test_PipelineBlend },
 	{ "Pipeline_Depth", Test_PipelineDepth },
 	{ "Pipeline_Stencil", Test_PipelineStencil },

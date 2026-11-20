@@ -66,7 +66,7 @@ set_source_files_properties(
 	PROPERTIES SKIP_PRECOMPILE_HEADERS ON
 )
 # renderer/D3D12/ is new code without warnings: /WX in every config, with no build option. Its DLLs are
-# loaded from System32 at Init (idD3D12Library), so no d3d12, dxgi or d3dcompiler import library is linked.
+# loaded at Init (idD3D12Library), so no d3d12, dxgi, d3dcompiler or dxcompiler import library is linked.
 set_source_files_properties(${D3D12_SOURCES} TARGET_DIRECTORY engine PROPERTIES COMPILE_OPTIONS /WX)
 set_target_properties(engine PROPERTIES FOLDER "neo")
 
@@ -112,9 +112,44 @@ set_property(GLOBAL PROPERTY D3BFG_FFMPEG_IMPLIBS "${_ffmpeg_implibs}")
 set_property(GLOBAL PROPERTY D3BFG_FFMPEG_DLLS "${_ffmpeg_dlls}")
 set_property(GLOBAL PROPERTY D3BFG_FFMPEG_FOUND "${D3BFG_FFMPEG_FOUND}")
 
+# DXC, the Agility SDK and WARP (tools/d3d12/install-d3d12-sdk.ps1). The D3D12 backend compiles with the Agility
+# headers and DXC's dxcapi.h; dxcompiler.dll, dxil.dll and the Agility runtime ship next to the exe.
+set(D3BFG_D3D12_SDK_ROOT "${CMAKE_SOURCE_DIR}/external/d3d12-x64" CACHE PATH
+	"DXC, the Agility SDK and WARP for the Direct3D 12 backend (tools/d3d12/install-d3d12-sdk.ps1)")
+foreach(_file dxc/inc/dxcapi.h dxc/bin/x64/dxcompiler.dll dxc/bin/x64/dxil.dll agility/include/d3d12.h
+		agility/bin/x64/D3D12Core.dll agility/bin/x64/d3d12SDKLayers.dll warp/bin/x64/d3d10warp.dll)
+	if(NOT EXISTS "${D3BFG_D3D12_SDK_ROOT}/${_file}")
+		message(FATAL_ERROR "${D3BFG_D3D12_SDK_ROOT}/${_file} is missing: run tools/d3d12/install-d3d12-sdk.ps1 "
+			"(or point D3BFG_D3D12_SDK_ROOT at a copy), then configure again")
+	endif()
+endforeach()
+set(D3BFG_D3D12_INCLUDES "${D3BFG_D3D12_SDK_ROOT}/agility/include" "${D3BFG_D3D12_SDK_ROOT}/dxc/inc")
+# before the Windows SDK, whose older d3d12.h would win otherwise
+target_include_directories(engine SYSTEM BEFORE PRIVATE ${D3BFG_D3D12_INCLUDES})
+
+# DXC next to the exe and the Agility runtime in D3D12\ beside it (D3D12SDKPath, d3d12_Agility.cpp). WARP with
+# feature level 12_2 only for the tests: its license allows testing, not shipping it with the game.
+function(d3bfg_copy_d3d12_runtime tgt)
+	cmake_parse_arguments(PARSE_ARGV 1 ARG "WITH_WARP" "" "")
+	set(_sdk "${D3BFG_D3D12_SDK_ROOT}")
+	set(_beside "${_sdk}/dxc/bin/x64/dxcompiler.dll" "${_sdk}/dxc/bin/x64/dxil.dll")
+	if(ARG_WITH_WARP)
+		list(APPEND _beside "${_sdk}/warp/bin/x64/d3d10warp.dll")
+	endif()
+	add_custom_command(TARGET ${tgt} POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_beside} "$<TARGET_FILE_DIR:${tgt}>"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${tgt}>/D3D12"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_sdk}/agility/bin/x64/D3D12Core.dll"
+			"${_sdk}/agility/bin/x64/d3d12SDKLayers.dll" "$<TARGET_FILE_DIR:${tgt}>/D3D12"
+		COMMENT "Copying DXC and the Agility runtime next to ${tgt}"
+		VERBATIM
+	)
+endfunction()
+
 # Links the engine into an executable: its objects, the map compilers (editor/compilers), the system libraries, the 16 MB stack the
-# single-threaded frame needs, and the delay-loaded FFmpeg DLLs copied next to the exe.
+# single-threaded frame needs, the delay-loaded FFmpeg DLLs, DXC and the Agility runtime copied next to the exe.
 function(d3bfg_link_engine tgt)
+	d3bfg_copy_d3d12_runtime(${tgt})
 	target_link_libraries(${tgt} PRIVATE
 		engine
 		MapCompilers
@@ -190,17 +225,19 @@ add_test(NAME idlibTests COMMAND idlibTests)
 
 # d3d12Tests: the ring, the handle table, the format, sampler and pipeline state tables, the uploader, buffer
 # and texture stores, the PSO factory, the debug groups, the GPU timers, the screen copies and the draw recorder on a WARP
-# device (the texture border, decoding, timer, copy and draw tests also on the GPU), and the HLSL emitter and FXC over
-# base/renderprogs against neo/tests/d3d12_golden
+# device (the texture border, decoding, timer, copy and draw tests also on the GPU), DXC and a bindless draw on SM 6.6,
+# and the HLSL emitter and FXC over base/renderprogs against neo/tests/d3d12_golden
 #   bin/<config>/d3d12Tests.exe [filter]
 add_executable(d3d12Tests
 	tests/d3d12_tests.cpp
 	tests/d3d12_test_stubs.cpp
+	renderer/D3D12/d3d12_Agility.cpp
 	renderer/D3D12/d3d12_Buffers.cpp
 	renderer/D3D12/d3d12_Copies.cpp
 	renderer/D3D12/d3d12_Descriptors.cpp
 	renderer/D3D12/d3d12_Device.cpp
 	renderer/D3D12/d3d12_Draw.cpp
+	renderer/D3D12/d3d12_Dxc.cpp
 	renderer/D3D12/d3d12_Formats.cpp
 	renderer/D3D12/d3d12_HlslEmitter.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
@@ -227,7 +264,9 @@ target_compile_definitions(d3d12Tests PRIVATE
 	$<$<CONFIG:Retail>:ID_RETAIL>
 )
 target_precompile_headers(d3d12Tests PRIVATE "${D3BFG_PCH}")
+target_include_directories(d3d12Tests SYSTEM BEFORE PRIVATE ${D3BFG_D3D12_INCLUDES})
 target_link_libraries(d3d12Tests PRIVATE idLib winmm dbghelp dxguid)
+d3bfg_copy_d3d12_runtime(d3d12Tests WITH_WARP)
 target_link_options(d3d12Tests PRIVATE /DEBUG)
 set_target_properties(d3d12Tests PROPERTIES FOLDER "tests")
 add_test(NAME d3d12Tests COMMAND d3d12Tests)

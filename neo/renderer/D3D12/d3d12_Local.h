@@ -5,12 +5,14 @@
 #pragma once
 
 /*
-	The only include of the Direct3D 12, DXGI and D3DCompiler headers. Every file of renderer/D3D12/
+	The only include of the Direct3D 12, DXGI, D3DCompiler and DXC headers. Every file of renderer/D3D12/
 	includes precompiled.h first and this header after it. No file outside this folder (and
 	neo/tests/d3d12_*) names these APIs: tools/check-render-api-leaks.ps1 fails when one does.
+	d3d12.h is the Agility SDK's (external/d3d12-x64, tools/d3d12/install-d3d12-sdk.ps1).
 
-	The DLLs are never linked: idD3D12Library loads them from System32 at Init, so an OpenGL run
-	does not load them through this code.
+	The DLLs are never linked: idD3D12Library loads them at Init, so an OpenGL run does not load
+	them through this code. Windows' own (d3d12, dxgi, d3dcompiler_47) come from System32 only, the
+	ones that ship with the exe (dxcompiler and dxil, the Agility runtime in D3D12\) from its folder only.
 */
 
 #include <d3d12.h>
@@ -18,6 +20,7 @@
 #include <dxgidebug.h>
 #include <d3dcompiler.h>
 #include <d3d12shader.h>
+#include <dxcapi.h>
 #include <wrl/client.h>
 
 #include <array>

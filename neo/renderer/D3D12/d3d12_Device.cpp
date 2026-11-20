@@ -9,6 +9,8 @@
 #include "d3d12_Descriptors.h"
 #include "d3d12_Timers.h"
 
+#include <filesystem>
+
 namespace {
 
 // The messages the backend causes on purpose: clears with a colour or depth other than the clear value.
@@ -69,8 +71,61 @@ const char * VendorName( uint32 vendorId ) {
 	}
 }
 
+// DX12 Ultimate. Bindless (ResourceDescriptorHeap) needs shader model 6.6 and resource binding tier 3.
+constexpr D3D_FEATURE_LEVEL REQUIRED_LEVEL = D3D_FEATURE_LEVEL_12_2;
+constexpr D3D_SHADER_MODEL REQUIRED_SHADER_MODEL = D3D_SHADER_MODEL_6_6;
+constexpr const char * REQUIREMENT = "DX12 Ultimate, feature level 12_2 and shader model 6.6 (Radeon RX 6000, GeForce RTX 20, Intel Arc or newer)";
+constexpr const char * OPENGL_HINT = "+set r_renderApi opengl starts the old renderer";
+
+idStr LevelText( D3D_FEATURE_LEVEL level ) {
+	return va( "%d_%d", ( level >> 12 ) & 0xF, ( level >> 8 ) & 0xF );
+}
+
+idStr ShaderModelText( D3D_SHADER_MODEL model ) {
+	return va( "%d.%d", ( model >> 4 ) & 0xF, model & 0xF );
+}
+
+idStr AdapterName( IDXGIAdapter1 & adapter ) {
+	DXGI_ADAPTER_DESC1 desc = {};
+	adapter.GetDesc1( &desc );
+	return Utf8( desc.Description );
+}
+
+// The highest feature level the adapter has; 0 when it has no Direct3D 12 at all.
+int MaxFeatureLevel( const idD3D12Library & library, IDXGIAdapter1 & adapter ) {
+	idComPtr<ID3D12Device> device;
+	if ( FAILED( library.createDevice( &adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS( &device ) ) ) ) {
+		return 0;
+	}
+	constexpr D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_12_1,
+		D3D_FEATURE_LEVEL_12_2 };
+	D3D12_FEATURE_DATA_FEATURE_LEVELS data = { static_cast<UINT>( std::size( levels ) ), levels, D3D_FEATURE_LEVEL_11_0 };
+	return D3D12_CheckFeature( *device.Get(), D3D12_FEATURE_FEATURE_LEVELS, &data, sizeof( data ) ) ? data.MaxSupportedFeatureLevel : D3D_FEATURE_LEVEL_11_0;
+}
+
+// "AMD Radeon RX 5700 has feature level 12_1", for the error the player sees.
+idStr LevelOf( const idD3D12Library & library, IDXGIAdapter1 & adapter ) {
+	const int level = MaxFeatureLevel( library, adapter );
+	return ( level == 0 ) ? va( "%s has no Direct3D 12", AdapterName( adapter ).c_str() )
+		: va( "%s has feature level %s", AdapterName( adapter ).c_str(), LevelText( static_cast<D3D_FEATURE_LEVEL>( level ) ).c_str() );
+}
+
 bool CanCreateDevice( const idD3D12Library & library, IDXGIAdapter1 & adapter ) {
-	return SUCCEEDED( library.createDevice( &adapter, D3D_FEATURE_LEVEL_11_0, __uuidof( ID3D12Device ), nullptr ) );
+	return SUCCEEDED( library.createDevice( &adapter, REQUIRED_LEVEL, __uuidof( ID3D12Device ), nullptr ) );
+}
+
+// Which D3D12Core.dll the device runs on: the Agility SDK's from D3D12\ next to the exe, or the system's.
+idStr RuntimeText() {
+	HMODULE core = GetModuleHandleW( L"D3D12Core.dll" );
+	wchar_t corePath[MAX_PATH] = {};
+	wchar_t exePath[MAX_PATH] = {};
+	if ( core == nullptr || GetModuleFileNameW( core, corePath, MAX_PATH ) == 0 || GetModuleFileNameW( nullptr, exePath, MAX_PATH ) == 0 ) {
+		return "system";
+	}
+	const std::filesystem::path agilityDir = std::filesystem::path( exePath ).parent_path() / L"D3D12";
+	std::error_code failed;
+	const bool agility = std::filesystem::equivalent( std::filesystem::path( corePath ).parent_path(), agilityDir, failed );
+	return va( "%s %s", agility ? "Agility SDK" : "system", VersionText( FileVersion( core ) ).c_str() );
 }
 
 // "" picks the first hardware adapter by GPU preference that can run D3D12, "warp" the software one, "N" the Nth.
@@ -92,15 +147,20 @@ std::expected<idComPtr<IDXGIAdapter1>, idStr> FindAdapter( const idD3D12Library 
 		}
 		return adapter;
 	}
+	idStr rejected;
 	for ( UINT i = 0; SUCCEEDED( factory.EnumAdapterByGpuPreference( i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS( &adapter ) ) ); i++ ) {
 		DXGI_ADAPTER_DESC1 desc = {};
 		adapter->GetDesc1( &desc );
-		if ( ( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ) == 0 && CanCreateDevice( library, *adapter.Get() ) ) {
-			return adapter;
+		if ( ( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ) == 0 ) {
+			if ( CanCreateDevice( library, *adapter.Get() ) ) {
+				return adapter;
+			}
+			rejected += va( "%s%s", rejected.IsEmpty() ? "" : ", ", LevelOf( library, *adapter.Get() ).c_str() );
 		}
 		adapter.Reset();
 	}
-	return std::unexpected( idStr( "no hardware adapter supports Direct3D 12 at feature level 11_0" ) );
+	return std::unexpected( idStr( va( "Direct3D 12 needs %s; %s. %s", REQUIREMENT, rejected.IsEmpty() ? "there is no GPU" : rejected.c_str(),
+		OPENGL_HINT ) ) );
 }
 
 // Before the device exists: the layer, GPU-based validation and DRED are process settings read at creation.
@@ -110,7 +170,8 @@ int EnableDebugLayers( const idD3D12Library & library, int debugLevel ) {
 	}
 	idComPtr<ID3D12Debug> debug;
 	if ( FAILED( library.getDebugInterface( IID_PPV_ARGS( &debug ) ) ) ) {
-		common->Warning( "d3d12: r_debugContext %d needs the debug layer (the Windows optional feature Graphics Tools)", debugLevel );
+		common->Warning( "d3d12: r_debugContext %d needs the debug layer (D3D12\\d3d12SDKLayers.dll next to the exe, or the Windows "
+			"optional feature Graphics Tools)", debugLevel );
 		return 0;
 	}
 	debug->EnableDebugLayer();
@@ -132,7 +193,7 @@ int EnableDebugLayers( const idD3D12Library & library, int debugLevel ) {
 
 template<typename T>
 bool Feature( ID3D12Device2 & device, D3D12_FEATURE feature, T & data ) {
-	return SUCCEEDED( device.CheckFeatureSupport( feature, &data, sizeof( data ) ) );
+	return D3D12_CheckFeature( device, feature, &data, sizeof( data ) );
 }
 
 // D3D12_AUTO_BREADCRUMB_OP up to WRITEBUFFERIMMEDIATE: every operation this backend records.
@@ -172,6 +233,14 @@ void PrintAllocations( const char * what, const D3D12_DRED_ALLOCATION_NODE * nod
 }
 
 }	// namespace
+
+bool D3D12_CheckFeature( ID3D12Device & device, D3D12_FEATURE feature, void * data, UINT size ) {
+	idComPtr<ID3D12Device16> device16;
+	if ( SUCCEEDED( device.QueryInterface( IID_PPV_ARGS( &device16 ) ) ) ) {
+		return SUCCEEDED( device16->CheckFeatureSupport1( feature, data, size, D3D12_SDK_VERSION ) );
+	}
+	return SUCCEEDED( device.CheckFeatureSupport( feature, data, size ) );
+}
 
 idStr D3D12_BreadcrumbText( const D3D12_AUTO_BREADCRUMB_NODE & node ) {
 	const UINT done = ( node.pLastBreadcrumbValue != nullptr ) ? *node.pLastBreadcrumbValue : 0;
@@ -237,6 +306,18 @@ std::expected<idD3D12Library, idStr> idD3D12Library::Load() {
 		return std::unexpected( idStr( va( "the system DLLs have no %s", missing ) ) );
 	}
 	library.compilerVersion = FileVersion( library.compiler.get() );
+
+	// dxil.dll first: dxcompiler.dll loads it by name and then gets this one, never another on the search path
+	library.dxil.reset( LoadLibraryExW( L"dxil.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR ) );
+	library.dxc.reset( LoadLibraryExW( L"dxcompiler.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR ) );
+	if ( !library.dxil || !library.dxc ) {
+		return std::unexpected( idStr( va( "%s is missing next to the exe (the build copies it from external/d3d12-x64)",
+			!library.dxil ? "dxil.dll" : "dxcompiler.dll" ) ) );
+	}
+	if ( !Resolve( library.dxc.get(), "DxcCreateInstance", library.dxcCreateInstance ) ) {
+		return std::unexpected( idStr( "dxcompiler.dll has no DxcCreateInstance" ) );
+	}
+	library.dxcVersion = FileVersion( library.dxc.get() );
 	return library;
 }
 
@@ -262,12 +343,25 @@ std::expected<idD3D12Device, idStr> idD3D12Device::Create( const idD3D12Library 
 	}
 	created.adapter = std::move( *found );
 
-	hr = library.createDevice( created.adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS( &created.device ) );
+	hr = library.createDevice( created.adapter.Get(), REQUIRED_LEVEL, IID_PPV_ARGS( &created.device ) );
 	if ( FAILED( hr ) ) {
-		return std::unexpected( idStr( va( "D3D12CreateDevice (ID3D12Device2, feature level 11_0) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
+		if ( MaxFeatureLevel( library, *created.adapter.Get() ) < REQUIRED_LEVEL ) {
+			const bool warp = idStr::Icmp( adapterName, "warp" ) == 0;
+			return std::unexpected( idStr( va( "Direct3D 12 needs %s; %s%s. %s", REQUIREMENT, LevelOf( library, *created.adapter.Get() ).c_str(),
+				warp ? " (the system's WARP: d3d10warp.dll of the WARP package next to the exe has 12_2)" : "", OPENGL_HINT ) ) );
+		}
+		return std::unexpected( idStr( va( "D3D12CreateDevice (ID3D12Device2, feature level 12_2) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
 	}
 	created.device->SetName( L"doom3 device" );
 	created.ReadFeatures();
+	D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+	const bool bindingTier3 = Feature( created.Get(), D3D12_FEATURE_D3D12_OPTIONS, options )
+		&& options.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3;
+	if ( created.features.shaderModel < REQUIRED_SHADER_MODEL || !bindingTier3 ) {
+		return std::unexpected( idStr( va( "Direct3D 12 needs %s; %s has shader model %s%s (a newer driver may have it). %s", REQUIREMENT,
+			created.features.adapterName.c_str(), ShaderModelText( created.features.shaderModel ).c_str(),
+			bindingTier3 ? "" : " and resource binding below tier 3", OPENGL_HINT ) ) );
+	}
 
 	if ( created.debugLevel > 0 && SUCCEEDED( created.device.As( &created.infoQueue ) ) ) {
 		constexpr D3D12_MESSAGE_SEVERITY hidden[] = { D3D12_MESSAGE_SEVERITY_INFO, D3D12_MESSAGE_SEVERITY_MESSAGE };
@@ -304,9 +398,17 @@ void idD3D12Device::ReadFeatures() {
 	if ( SUCCEEDED( adapter->CheckInterfaceSupport( __uuidof( IDXGIDevice ), &umdVersion ) ) ) {
 		features.driverVersion = static_cast<uint64>( umdVersion.QuadPart );
 	}
-	features.versionString = va( "Direct3D 12, feature level 11_0, driver %s", VersionText( features.driverVersion ).c_str() );
-
 	ID3D12Device2 & d3d = *device.Get();
+	// a runtime older than the headers rejects a model it does not know: ask again one lower
+	D3D12_FEATURE_DATA_SHADER_MODEL model = { D3D_HIGHEST_SHADER_MODEL };
+	while ( !Feature( d3d, D3D12_FEATURE_SHADER_MODEL, model ) && model.HighestShaderModel > D3D_SHADER_MODEL_6_0 ) {
+		model.HighestShaderModel = static_cast<D3D_SHADER_MODEL>( model.HighestShaderModel - 1 );
+	}
+	features.shaderModel = model.HighestShaderModel;
+	features.runtime = RuntimeText();
+	features.versionString = va( "Direct3D 12, feature level 12_2, shader model %s, %s runtime, driver %s",
+		ShaderModelText( features.shaderModel ).c_str(), features.runtime.c_str(), VersionText( features.driverVersion ).c_str() );
+
 	for ( size_t i = 0; i < features.samples.size(); i++ ) {
 		bool supported = true;
 		for ( DXGI_FORMAT format : { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_D24_UNORM_S8_UINT } ) {
@@ -488,7 +590,8 @@ void idD3D12Device::PrintInfo() const {
 	const d3d12VideoMemory_t memory = VideoMemory();
 	common->Printf( "D3D12 video memory: %llu MB, %llu MB in use of a %llu MB budget\n", static_cast<unsigned long long>( features.dedicatedVideoMemory >> 20 ),
 		static_cast<unsigned long long>( memory.used >> 20 ), static_cast<unsigned long long>( memory.budget >> 20 ) );
-	common->Printf( "D3D12 driver: %s\n", VersionText( features.driverVersion ).c_str() );
+	common->Printf( "D3D12 driver: %s, runtime: %s, shader model %s\n", VersionText( features.driverVersion ).c_str(), features.runtime.c_str(),
+		ShaderModelText( features.shaderModel ).c_str() );
 	idStr samples;
 	for ( size_t i = 0; i < features.samples.size(); i++ ) {
 		if ( features.samples[i] ) {

@@ -6,7 +6,8 @@
 
 #include "d3d12_Local.h"
 
-// d3d12.dll, dxgi.dll and d3dcompiler_47.dll from System32 only, resolved by name, loaded only for r_renderApi d3d12.
+// d3d12.dll, dxgi.dll and d3dcompiler_47.dll from System32 only, dxcompiler.dll and dxil.dll (which signs the DXIL)
+// from the exe's folder only; resolved by name, loaded only for r_renderApi d3d12.
 class idD3D12Library {
 public:
 	[[nodiscard]] static std::expected<idD3D12Library, idStr>	Load();
@@ -19,10 +20,12 @@ public:
 	pD3DCompile						compile = nullptr;
 	HRESULT ( WINAPI *				reflect )( LPCVOID code, SIZE_T size, REFIID riid, void ** reflector ) = nullptr;
 	uint64							compilerVersion = 0;	// file version of d3dcompiler_47.dll, in the blob cache key
+	DxcCreateInstanceProc			dxcCreateInstance = nullptr;
+	uint64							dxcVersion = 0;			// file version of dxcompiler.dll
 
 private:
 									idD3D12Library() = default;
-	idD3D12Module					d3d12, dxgi, compiler;	// freed last: the context declares the library first
+	idD3D12Module					d3d12, dxgi, compiler, dxil, dxc;	// freed last: the context declares the library first
 };
 
 // What the adapter can do, read once in Create.
@@ -33,6 +36,8 @@ struct d3d12Features_t {
 	uint64							dedicatedVideoMemory = 0;
 	uint64							driverVersion = 0;		// UMD version, in the pipeline library key
 	bool							warp = false;
+	D3D_SHADER_MODEL				shaderModel = D3D_SHADER_MODEL_6_6;	// the highest the adapter runs
+	idStr							runtime;				// "Agility SDK 1.620.2" or "system 10.0.26100.1"
 	std::array<bool, 4>				samples = {};			// 1, 2, 4, 8 for RGBA8 and D24S8 together
 	bool							depthBounds = false;	// OPTIONS2, not on WARP
 	bool							unalignedBlocks = false;	// OPTIONS8
@@ -41,6 +46,10 @@ struct d3d12Features_t {
 	bool							anisoPointMip = false;	// OPTIONS19
 	bool							tearing = false;		// DXGI_FEATURE_PRESENT_ALLOW_TEARING
 };
+
+// CheckFeatureSupport1 with the Agility SDK's version where the runtime has it (the debug layer flags the old call):
+// the answers never go beyond what this SDK knows. The plain call on an older runtime.
+[[nodiscard]] bool					D3D12_CheckFeature( ID3D12Device & device, D3D12_FEATURE feature, void * data, UINT size );
 
 // One DRED list: its names, how far the GPU got through it and the operation it stopped before.
 [[nodiscard]] idStr					D3D12_BreadcrumbText( const D3D12_AUTO_BREADCRUMB_NODE & node );

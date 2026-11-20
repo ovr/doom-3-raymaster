@@ -374,7 +374,7 @@ std::vector<byte> idD3D12PipelineJournal::Write() const {
 
 std::optional<idD3D12PipelineLibrary> idD3D12PipelineLibrary::Open( const idD3D12Device & device, std::vector<byte> file ) {
 	D3D12_FEATURE_DATA_SHADER_CACHE shaderCache = {};
-	if ( FAILED( device.Get().CheckFeatureSupport( D3D12_FEATURE_SHADER_CACHE, &shaderCache, sizeof( shaderCache ) ) )
+	if ( !D3D12_CheckFeature( device.Get(), D3D12_FEATURE_SHADER_CACHE, &shaderCache, sizeof( shaderCache ) )
 			|| ( shaderCache.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_LIBRARY ) == 0 ) {
 		return std::nullopt;
 	}

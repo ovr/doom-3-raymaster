@@ -6,7 +6,7 @@
 Runs the visual demos (base/vdemos/*.vdemo) in a retail install and collects their frames.
 
 .DESCRIPTION
-Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs) from a build dir and base/vdemos into the game dir
+Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir and base/vdemos into the game dir
 (with -Api d3d12 also base/renderprogs, the sources D3D12 compiles), starts the game in a 1280x720
 window with an isolated fs_savepath (the real config in Saved Games is never read or written), runs
 "vdemo <demos> quit" and copies into -OutDir: the frames and vdemo.json of every demo, run.json,
@@ -97,10 +97,14 @@ if ( -not ( Test-Path ( Join-Path $GameDir 'base\_common.resources' ) ) ) {
 }
 
 if ( -not $NoDeploy ) {
-	foreach ( $file in 'Doom3BFG.exe', 'Doom3BFG.pdb', 'avformat-61.dll', 'avcodec-61.dll', 'avutil-59.dll' ) {
+	# never d3d10warp.dll: the WARP package may be used for testing only, not shipped with the game
+	foreach ( $file in 'Doom3BFG.exe', 'Doom3BFG.pdb', 'avformat-61.dll', 'avcodec-61.dll', 'avutil-59.dll', 'dxcompiler.dll', 'dxil.dll',
+		'D3D12\D3D12Core.dll', 'D3D12\d3d12SDKLayers.dll' ) {
 		$source = Join-Path $BuildDir $file
 		if ( Test-Path $source ) {
-			Copy-Item $source $GameDir -Force
+			$destination = Split-Path ( Join-Path $GameDir $file ) -Parent
+			New-Item -ItemType Directory -Force $destination | Out-Null
+			Copy-Item $source $destination -Force
 		} elseif ( $file -eq 'Doom3BFG.exe' ) {
 			Write-Error "no Doom3BFG.exe in $BuildDir"
 			exit 2
