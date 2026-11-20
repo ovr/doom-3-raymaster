@@ -23,6 +23,25 @@ set(EDITOR_BRIDGE_SOURCES
 	mtr/MtrText.h
 )
 
+# the map compilers (dmap), ported from the Doom 3 GPL release; the engine's precompiled header
+set(MAP_COMPILERS_SOURCES
+	compilers/dmap/dmap.cpp
+	compilers/dmap/dmap.h
+	compilers/dmap/DmapPatch.cpp
+	compilers/dmap/DmapPatch.h
+	compilers/dmap/DmapVert.h
+	compilers/dmap/facebsp.cpp
+	compilers/dmap/leakfile.cpp
+	compilers/dmap/map.cpp
+	compilers/dmap/optimize.cpp
+	compilers/dmap/output.cpp
+	compilers/dmap/portals.cpp
+	compilers/dmap/tritjunction.cpp
+	compilers/dmap/tritools.cpp
+	compilers/dmap/ubrush.cpp
+	compilers/dmap/usurface.cpp
+)
+
 # the Qt half: no engine header, no precompiled header, only api/ is shared with the bridge
 set(EDITOR_UI_SOURCES
 	api/EditorEngineApi.h

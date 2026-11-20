@@ -534,7 +534,10 @@ void idFileSystemLocal::BeginLevelLoad( const char *name, char *_blockBuffer, in
 	manifestName.StripPath();
 	
 	if ( resourceFiles.Num() > 0 ) {
-		AddResourceFile( va( "%s.resources", manifestName.c_str() ) );
+		// a map made after the resource files has none of its own: its media are in the other maps'
+		if ( AddResourceFile( va( "%s.resources", manifestName.c_str() ) ) == -1 && idStr::Icmp( manifestName, "_startup" ) != 0 ) {
+			MountAllMapResources();
+		}
 	}
 
 }

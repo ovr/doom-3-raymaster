@@ -112,11 +112,12 @@ set_property(GLOBAL PROPERTY D3BFG_FFMPEG_IMPLIBS "${_ffmpeg_implibs}")
 set_property(GLOBAL PROPERTY D3BFG_FFMPEG_DLLS "${_ffmpeg_dlls}")
 set_property(GLOBAL PROPERTY D3BFG_FFMPEG_FOUND "${D3BFG_FFMPEG_FOUND}")
 
-# Links the engine into an executable: its objects, the system libraries, the 16 MB stack the
+# Links the engine into an executable: its objects, the map compilers (editor/compilers), the system libraries, the 16 MB stack the
 # single-threaded frame needs, and the delay-loaded FFmpeg DLLs copied next to the exe.
 function(d3bfg_link_engine tgt)
 	target_link_libraries(${tgt} PRIVATE
 		engine
+		MapCompilers
 		idLib
 		Game-d3xp
 		external

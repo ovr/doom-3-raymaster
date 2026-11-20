@@ -9,6 +9,21 @@
 include(sources.cmake)
 
 # ---------------------------------------------------------------------------
+# MapCompilers: dmap. An OBJECT library like the engine, because its console commands register
+# themselves through static objects; d3bfg_link_engine links it into the game and the editor.
+# ---------------------------------------------------------------------------
+add_library(MapCompilers OBJECT ${MAP_COMPILERS_SOURCES})
+d3bfg_neo_common(MapCompilers)
+# /W3 until the ported code is modernized
+d3bfg_configure_target(MapCompilers WARNING_LEVEL 3 WITH_INLINES)
+target_compile_definitions(MapCompilers PRIVATE
+	__DOOM__ _MBCS
+	$<$<CONFIG:Retail>:ID_RETAIL>
+)
+target_precompile_headers(MapCompilers PRIVATE "${D3BFG_PCH}")
+set_target_properties(MapCompilers PROPERTIES FOLDER "editor")
+
+# ---------------------------------------------------------------------------
 # Doom3Editor executable
 # ---------------------------------------------------------------------------
 add_executable(Doom3Editor WIN32

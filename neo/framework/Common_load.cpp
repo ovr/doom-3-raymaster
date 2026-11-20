@@ -1192,7 +1192,7 @@ CONSOLE_COMMAND_SHIP( netmap, "loads a map in multiplayer mode", idCmdSystem::Ar
 Common_TestMap_f
 ==================
 */
-CONSOLE_COMMAND( testmap, "tests a map", idCmdSystem::ArgCompletion_MapName ) {
+CONSOLE_COMMAND_SHIP( testmap, "tests a map", idCmdSystem::ArgCompletion_MapName ) {
 	idStr map, string;
 
 	map = args.Argv(1);
