@@ -169,7 +169,7 @@ ContentBrowser::ContentBrowser( EngineClient * engineClient, QWidget * parent ) 
 	view->setWordWrap( false );
 	view->setTextElideMode( Qt::ElideMiddle );
 	view->setContextMenuPolicy( Qt::CustomContextMenu );
-	view->setToolTip( tr( "Double click: a class or a model is put in front of the camera, a map is opened, a sound is played" ) );
+	view->setToolTip( tr( "Double click: a material is edited, a class or a model is put in front of the camera, a map is opened, a sound is played" ) );
 
 	auto * const top = new QHBoxLayout;
 	top->setContentsMargins( 0, 0, 0, 0 );

@@ -21,7 +21,7 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 6;
+constexpr int EDITOR_API_VERSION = 7;
 
 // what the content browser lists
 enum editorAssetKind_t : int {
@@ -94,6 +94,16 @@ using editorKeyVisitor_t = void ( * )( void * context, const editorKeyInfo_t & k
 using editorClassVisitor_t = void ( * )( void * context, const char * classname );
 using editorAssetVisitor_t = void ( * )( void * context, const char * name );
 
+// A material's declaration: text is all of it, "[type] name { ... }", as the engine has it now.
+struct editorMaterialInfo_t {
+	const char *		text;
+	const char *		fileName;		// "materials/base_wall.mtr"; "" for an implicit material
+	int					line;
+	bool				implicit;		// made by the engine from a texture name: it has no file
+	bool				valid;			// the text parsed without an error
+};
+using editorMaterialVisitor_t = void ( * )( void * context, const editorMaterialInfo_t & material );
+
 // implemented by the UI
 class idEditorHost {
 public:
@@ -123,6 +133,9 @@ public:
 	virtual void		OnSelectionChanged() = 0;
 	// an edit, an undo, a redo or a save: GetDocumentState() is new
 	virtual void		OnDocumentChanged() = 0;
+
+	// the console asked for a material in the material editor (editorEditMaterial)
+	virtual void		OnEditMaterial( const char * name ) = 0;
 
 	// A picture asked for with RequestPreview(): RGB8, tightly packed, top row first, valid during
 	// the call. It can be smaller than asked when the viewport is. width 0 and rgb nullptr: the
@@ -186,6 +199,15 @@ public:
 	// The selection; brush entities are not duplicated, the copies become the selection.
 	virtual void		DuplicateSelection() = 0;
 	virtual void		DeleteSelection() = 0;
+
+	// false when there is no material of the name
+	[[nodiscard]] virtual bool	GetMaterial( const char * name, editorMaterialVisitor_t visitor, void * context ) = 0;
+	// Makes text the material's declaration; everything drawn with it changes at once, no file does.
+	// false: the engine is inside a frame, there is no such material, or the text has an error
+	// (then the material is the default one until the next good text).
+	[[nodiscard]] virtual bool	ApplyMaterialText( const char * name, const char * text ) = 0;
+	// Writes the material's text into its .mtr file in the project folder (fs_savepath).
+	[[nodiscard]] virtual bool	SaveMaterial( const char * name ) = 0;
 
 	// The names of the game data's assets of a kind (editorAssetKind_t), in no order.
 	virtual void		EnumAssets( int kind, editorAssetVisitor_t visitor, void * context ) = 0;

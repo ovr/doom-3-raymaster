@@ -8,6 +8,7 @@
 class ContentBrowser;
 class EngineClient;
 class Inspector;
+class MaterialEditor;
 class Outliner;
 class Palette;
 class OutputLog;
@@ -39,6 +40,7 @@ private:
 	void				DocumentChanged();
 	[[nodiscard]] bool	ConfirmDiscard();
 	void				AssetActivated( int kind, const QString & name );
+	void				EditMaterial( const QString & name );
 
 	idEditorEngine *	engine;
 	ViewportHost *		viewport;
@@ -56,6 +58,8 @@ private:
 	Palette *			palette = nullptr;
 	ContentBrowser *	contentBrowser = nullptr;
 	QDockWidget *		contentDock = nullptr;
+	MaterialEditor *	materialEditor = nullptr;
+	QDockWidget *		materialDock = nullptr;
 	bool				closing = false;
 	EngineClient *		client;
 };

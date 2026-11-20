@@ -20,6 +20,7 @@ set(EDITOR_BRIDGE_SOURCES
 	bridge/EditorView.h
 	bridge/EditorWorld.cpp
 	bridge/EditorWorld.h
+	mtr/MtrText.h
 )
 
 # the Qt half: no engine header, no precompiled header, only api/ is shared with the bridge
@@ -31,8 +32,11 @@ set(EDITOR_UI_SOURCES
 	ui/EngineClient.h
 	ui/Inspector.cpp
 	ui/Inspector.h
+	mtr/MtrText.h
 	ui/MainWindow.cpp
 	ui/MainWindow.h
+	ui/MaterialEditor.cpp
+	ui/MaterialEditor.h
 	ui/OutputLog.cpp
 	ui/OutputLog.h
 	ui/Outliner.cpp

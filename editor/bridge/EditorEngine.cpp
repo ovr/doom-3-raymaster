@@ -18,6 +18,7 @@
 #include "EditorEngine.h"
 #include "EditorHistory.h"
 #include "EditorPreview.h"
+#include "../mtr/MtrText.h"
 #include "EditorTool.h"
 #include "EditorView.h"
 #include "EditorWorld.h"
@@ -65,6 +66,10 @@ public:
 	void				EnumEntityClasses( editorClassVisitor_t visitor, void * context ) override;
 	void				CreateEntity( const char * classname, const char * model ) override;
 	void				EnumAssets( int kind, editorAssetVisitor_t visitor, void * context ) override;
+	[[nodiscard]] bool	GetMaterial( const char * name, editorMaterialVisitor_t visitor, void * context ) override;
+	[[nodiscard]] bool	ApplyMaterialText( const char * name, const char * text ) override;
+	[[nodiscard]] bool	SaveMaterial( const char * name ) override;
+	void				EditMaterial( const char * name ) { ui->OnEditMaterial( name ); }
 	void				PlaySound( const char * name ) override;
 	void				DuplicateSelection() override;
 	void				DeleteSelection() override;
@@ -481,6 +486,49 @@ void idEditorEngineLocal::EnumAssets( int kind, editorAssetVisitor_t visitor, vo
 	}
 }
 
+// the text of a decl; the engine keeps it compressed
+static void DeclText( const idDecl * decl, idList<char> & text ) {
+	text.SetNum( decl->GetTextLength() + 1 );
+	decl->GetText( text.Ptr() );
+	text[decl->GetTextLength()] = '\0';
+}
+
+bool idEditorEngineLocal::GetMaterial( const char * name, editorMaterialVisitor_t visitor, void * context ) {
+	const idMaterial * const material = started ? declManager->FindMaterial( name, false ) : nullptr;
+	if ( material == nullptr ) {
+		return false;
+	}
+	idList<char> text;
+	DeclText( material, text );
+	const bool implicit = material->IsImplicit();
+	const editorMaterialInfo_t info = { text.Ptr(), implicit ? "" : material->GetFileName(), material->GetLineNum(), implicit, material->GetState() != DS_DEFAULTED };
+	visitor( context, info );
+	return true;
+}
+
+bool idEditorEngineLocal::ApplyMaterialText( const char * name, const char * text ) {
+	// with com_smp 0 nothing of the last frame still reads the material between two frames
+	if ( !started || inFrame ) {
+		return false;
+	}
+	idMaterial * const material = const_cast<idMaterial *>( declManager->FindMaterial( name, false ) );
+	if ( material == nullptr ) {
+		return false;
+	}
+	material->SetText( text );
+	material->Invalidate();
+	material->EnsureNotPurged();
+	return material->GetState() != DS_DEFAULTED;
+}
+
+bool idEditorEngineLocal::SaveMaterial( const char * name ) {
+	if ( !started || inFrame ) {
+		return false;
+	}
+	idMaterial * const material = const_cast<idMaterial *>( declManager->FindMaterial( name, false ) );
+	return material != nullptr && material->ReplaceSourceFileText();
+}
+
 void idEditorEngineLocal::PlaySound( const char * name ) {
 	idSoundWorld * const soundWorld = started ? soundSystem->GetPlayingSoundWorld() : nullptr;
 	if ( soundWorld != nullptr ) {
@@ -834,6 +882,105 @@ CONSOLE_COMMAND_SHIP( editorPreviewSweep, "makes the preview of every material, 
 		}
 	}, &sweep );
 	common->Printf( "editorPreviewSweep: %d pictures asked for\n", sweep.asked );
+}
+
+// every line of the block and of its blocks, the last one first, so that an edit moves no offset still needed
+static void CollectLines( const mtr::block_t & block, std::vector<mtr::line_t> & lines ) {
+	for ( const mtr::line_t & line : block.lines ) {
+		lines.push_back( line );
+	}
+	for ( const mtr::block_t & child : block.blocks ) {
+		CollectLines( child, lines );
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorEditMaterial, "opens a material in the material editor", nullptr ) {
+	if ( args.Argc() != 2 || !NeedEditor() ) {
+		common->Printf( "usage: editorEditMaterial <material>\n" );
+		return;
+	}
+	editorEngine->EditMaterial( args.Argv( 1 ) );
+}
+
+CONSOLE_COMMAND_SHIP( editorCheckMaterials, "parses the text of every material as the material editor does and writes every value back: the text must not change", nullptr ) {
+	int checked = 0;
+	int failed = 0;
+	const int num = declManager->GetNumDecls( DECL_MATERIAL );
+	for ( int i = 0; i < num; i++ ) {
+		const idDecl * const material = declManager->DeclByIndex( DECL_MATERIAL, i, false );
+		if ( material->IsImplicit() || material->GetTextLength() == 0 ) {
+			continue;
+		}
+		idList<char> buffer;
+		DeclText( material, buffer );
+		const std::string text( buffer.Ptr() );
+		checked++;
+
+		mtr::decl_t decl;
+		std::string error;
+		if ( !mtr::ParseDecl( text, decl, error ) ) {
+			common->Printf( "%s: %s\n", material->GetName(), error.c_str() );
+			failed++;
+			continue;
+		}
+		std::vector<mtr::line_t> lines;
+		CollectLines( decl.body, lines );
+		std::sort( lines.begin(), lines.end(), []( const mtr::line_t & a, const mtr::line_t & b ) { return a.begin > b.begin; } );
+		std::string rewritten = text;
+		for ( const mtr::line_t & line : lines ) {
+			rewritten = mtr::WithValue( rewritten, line, std::string( mtr::Value( rewritten, line ) ) );
+		}
+		// the engine's name has no extension and no backslashes
+		idStr name = decl.name.c_str();
+		name.BackSlashesToSlashes();
+		name.StripFileExtension();
+		if ( rewritten != text ) {
+			common->Printf( "%s: the text changed\n", material->GetName() );
+			failed++;
+		} else if ( name.Icmpn( material->GetName(), name.Length() ) != 0 ) {
+			// not Icmp: the engine reads the retail 'textures/sfx/pane//1' as one name, comment and all
+			common->Printf( "%s: the name is read as '%s'\n", material->GetName(), decl.name.c_str() );
+			failed++;
+		}
+	}
+	common->Printf( "editorCheckMaterials: %d materials checked, %d failed\n", checked, failed );
+}
+
+CONSOLE_COMMAND_SHIP( editorSetMaterialKey, "changes a key of a material's declaration as the material editor does: editorSetMaterialKey <material> <key> <value> [save]", nullptr ) {
+	if ( args.Argc() < 4 || !NeedEditor() ) {
+		common->Printf( "usage: editorSetMaterialKey <material> <key> <value> [save]\n" );
+		return;
+	}
+	struct found_t {
+		std::string		text;
+	} found;
+	if ( !editorEngine->GetMaterial( args.Argv( 1 ), []( void * context, const editorMaterialInfo_t & material ) {
+			static_cast<found_t *>( context )->text = material.text;
+		}, &found ) ) {
+		common->Printf( "There is no material '%s'.\n", args.Argv( 1 ) );
+		return;
+	}
+	mtr::decl_t decl;
+	std::string error;
+	if ( !mtr::ParseDecl( found.text, decl, error ) ) {
+		common->Printf( "%s: %s\n", args.Argv( 1 ), error.c_str() );
+		return;
+	}
+	const mtr::line_t * const line = mtr::FindLine( decl.body, args.Argv( 2 ) );
+	std::string text;
+	if ( line != nullptr ) {
+		text = mtr::WithValue( found.text, *line, args.Argv( 3 ) );
+	} else {
+		// a new line, first in the body
+		text = found.text.substr( 0, decl.body.open + 1 ) + va( "\n\t%s\t%s", args.Argv( 2 ), args.Argv( 3 ) ) + found.text.substr( decl.body.open + 1 );
+	}
+	bool ok = false;
+	editorEngine->RunEdit( [&] { ok = editorEngine->ApplyMaterialText( args.Argv( 1 ), text.c_str() ); } );
+	common->Printf( "editorSetMaterialKey: %s %s\n", args.Argv( 1 ), ok ? "applied" : "NOT applied" );
+	if ( ok && idStr::Icmp( args.Argv( 4 ), "save" ) == 0 ) {
+		editorEngine->RunEdit( [&] { ok = editorEngine->SaveMaterial( args.Argv( 1 ) ); } );
+		common->Printf( "editorSetMaterialKey: %s %s\n", args.Argv( 1 ), ok ? "saved" : "NOT saved" );
+	}
 }
 
 CONSOLE_COMMAND_SHIP( editorSaveMap, "saves the map open in the editor into fs_savepath", nullptr ) {

@@ -45,6 +45,7 @@ public:
 	void				OnSelectionChanged() override { emit selectionChanged(); }
 	void				OnDocumentChanged() override { emit documentChanged(); }
 	void				OnPreviewReady( int id, int width, int height, const unsigned char * rgb ) override;
+	void				OnEditMaterial( const char * name ) override { emit editMaterialRequested( QString::fromLocal8Bit( name ) ); }
 
 signals:
 	void				printed( const QString & text );
@@ -52,6 +53,7 @@ signals:
 	void				entitiesChanged();
 	void				selectionChanged();
 	void				documentChanged();
+	void				editMaterialRequested( const QString & name );
 	// a null image: the engine could not draw the picture
 	void				previewReady( int id, const QImage & image );
 	// the last thing before the engine and the process end

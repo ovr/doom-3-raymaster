@@ -2207,7 +2207,8 @@ bool idDeclLocal::ReplaceSourceFileText() {
 	memcpy( buffer.Ptr() + sourceTextOffset, declText, textLength );
 
 	// write out new file
-	file = fileSystem->OpenFileWrite( GetFileName(), "fs_basepath" );
+	// the save path: the game install stays as it is, and the loose file wins the next read
+	file = fileSystem->OpenFileWrite( GetFileName(), "fs_savepath" );
 	if ( !file ) {
 		common->Warning( "Couldn't open %s for writing.", GetFileName() );
 		return false;
@@ -2218,7 +2219,12 @@ bool idDeclLocal::ReplaceSourceFileText() {
 	// set new file size, checksum and timestamp
 	sourceFile->fileSize = newFileLength;
 	sourceFile->checksum = MD5_BlockChecksum( buffer.Ptr(), newFileLength );
-	fileSystem->ReadFile( GetFileName(), NULL, &sourceFile->timestamp );
+	// not ReadFile( name, NULL, &timestamp ): with resource files it answers from them, not from the file just written
+	file = fileSystem->OpenFileRead( GetFileName() );
+	if ( file != NULL ) {
+		sourceFile->timestamp = file->Timestamp();
+		fileSystem->CloseFile( file );
+	}
 
 	// move all decls in the same file
 	for ( idDeclLocal *decl = sourceFile->decls; decl; decl = decl->nextInFile ) {

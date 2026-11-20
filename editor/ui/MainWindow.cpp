@@ -27,6 +27,7 @@
 #include "ContentBrowser.h"
 #include "EngineClient.h"
 #include "Inspector.h"
+#include "MaterialEditor.h"
 #include "Outliner.h"
 #include "Palette.h"
 #include "OutputLog.h"
@@ -35,7 +36,7 @@
 namespace {
 
 // bump when the set of docks changes in a way an old saved layout would break
-constexpr int LAYOUT_VERSION = 5;
+constexpr int LAYOUT_VERSION = 6;
 constexpr float GRID_SIZES[] = { 0.0f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
 constexpr int DEFAULT_GRID = 4;		// index into GRID_SIZES
 constexpr int MAP_NAME_ROLE = Qt::UserRole;
@@ -131,6 +132,15 @@ MainWindow::MainWindow( idEditorEngine * engine_, QWidget * parent ) : QMainWind
 	tabifyDockWidget( outputDock, contentDock );
 	contentDock->raise();
 	connect( contentBrowser, &ContentBrowser::activated, this, &MainWindow::AssetActivated );
+
+	materialEditor = new MaterialEditor( client, contentBrowser->Thumbnails(), this );
+	materialDock = new QDockWidget( tr( "Material Editor" ), this );
+	materialDock->setObjectName( QStringLiteral( "MaterialEditorDock" ) );
+	materialDock->setWidget( materialEditor );
+	addDockWidget( Qt::RightDockWidgetArea, materialDock );
+	tabifyDockWidget( inspectorDock, materialDock );
+	inspectorDock->raise();
+	connect( client, &EngineClient::editMaterialRequested, this, &MainWindow::EditMaterial );
 	connect( client, &EngineClient::mapChanged, this, &MainWindow::MapChanged );
 	connect( client, &EngineClient::entitiesChanged, outliner, &Outliner::Reload );
 	connect( client, &EngineClient::selectionChanged, outliner, &Outliner::SyncSelection );
@@ -224,6 +234,7 @@ void MainWindow::CreateMenus() {
 	viewMenu->addAction( inspectorDock->toggleViewAction() );
 	viewMenu->addAction( paletteDock->toggleViewAction() );
 	viewMenu->addAction( contentDock->toggleViewAction() );
+	viewMenu->addAction( materialDock->toggleViewAction() );
 	viewMenu->addAction( outputDock->toggleViewAction() );
 	viewMenu->addSeparator();
 	QAction * const consoleAction = viewMenu->addAction( tr( "&Console Command" ) );
@@ -250,6 +261,12 @@ void MainWindow::Start() {
 	palette->Load();
 }
 
+void MainWindow::EditMaterial( const QString & name ) {
+	materialDock->show();
+	materialDock->raise();
+	materialEditor->Open( name );
+}
+
 void MainWindow::AssetActivated( int kind, const QString & name ) {
 	const QByteArray text = name.toLocal8Bit();
 	const bool mapOpen = engine->CurrentMap()[0] != '\0';
@@ -271,6 +288,9 @@ void MainWindow::AssetActivated( int kind, const QString & name ) {
 			break;
 		case EDITOR_ASSET_SOUND:
 			engine->PlaySound( text.constData() );
+			break;
+		case EDITOR_ASSET_MATERIAL:
+			EditMaterial( name );
 			break;
 		default:
 			break;
