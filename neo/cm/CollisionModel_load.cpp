@@ -3419,7 +3419,10 @@ cm_model_t *idCollisionModelManagerLocal::LoadRenderModel( const char *fileName 
 	// shutdown the hash
 	ShutdownHash();
 
-	WriteBinaryModel( model, generatedFileName, sourceTimeStamp );
+	// the collision of a model that was not found is not kept either
+	if ( !renderModel->IsDefaultModel() ) {
+		WriteBinaryModel( model, generatedFileName, sourceTimeStamp );
+	}
 
 	return model;
 }
