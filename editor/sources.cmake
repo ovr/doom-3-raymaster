@@ -12,6 +12,8 @@ set(EDITOR_BRIDGE_SOURCES
 	bridge/EditorHistory.cpp
 	bridge/EditorHistory.h
 	bridge/EditorMain.cpp
+	bridge/EditorPreview.cpp
+	bridge/EditorPreview.h
 	bridge/EditorTool.cpp
 	bridge/EditorTool.h
 	bridge/EditorView.cpp

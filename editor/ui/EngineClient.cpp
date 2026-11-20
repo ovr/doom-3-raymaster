@@ -66,6 +66,11 @@ void EngineClient::GetViewportSize( int & width, int & height ) {
 	height = qRound( viewport->height() * scale );
 }
 
+void EngineClient::OnPreviewReady( int id, int width, int height, const unsigned char * rgb ) {
+	// a deep copy: the pixels are the engine's
+	emit previewReady( id, QImage( rgb, width, height, width * 3, QImage::Format_RGB888 ).copy() );
+}
+
 void EngineClient::PumpEvents() {
 	if ( inPump || sincePump.elapsed() < PUMP_INTERVAL_MSEC ) {
 		return;

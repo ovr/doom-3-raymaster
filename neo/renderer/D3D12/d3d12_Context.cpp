@@ -250,6 +250,12 @@ presentResult_t idD3D12Context::Present( presentMode_t mode ) {
 	if ( device.IsLost() || !swapChain ) {
 		return presentResult_t::DEVICE_LOST;
 	}
+	// a frame nobody sees stays in the scene target: no blit, and the swap chain keeps its buffer
+	if ( mode == presentMode_t::NONE ) {
+		WaitFor( SubmitChunk() );
+		EndFrameStats();
+		return device.IsLost() ? presentResult_t::DEVICE_LOST : presentResult_t::OK;
+	}
 	idD3D12SwapChain::backBuffer_t & back = swapChain->Current();
 	BlitToBackBuffer( back );
 	barriers.Transition( *back.resource.Get(), back.state, D3D12_RESOURCE_STATE_PRESENT );

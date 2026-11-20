@@ -13,8 +13,11 @@
 #include "sys/win32/win_entry.h"
 
 #include "../api/EditorEngineApi.h"
+#include "renderer/Image.h"
+
 #include "EditorEngine.h"
 #include "EditorHistory.h"
+#include "EditorPreview.h"
 #include "EditorTool.h"
 #include "EditorView.h"
 #include "EditorWorld.h"
@@ -23,6 +26,8 @@ namespace {
 
 constexpr char		EDITOR_TITLE[] = "Doom 3 Editor";
 constexpr float		PICK_DISTANCE = 16384.0f;
+constexpr float		EMPTY_VIEW_GREY = 0.11f;
+constexpr int		PREVIEW_TEST_ID = -1;			// the picture of editorPreviewTest
 constexpr float		CREATE_DISTANCE = 192.0f;		// a new entity appears this far in front of the camera
 constexpr float		CREATE_WALL_GAP = 24.0f;
 constexpr float		DUPLICATE_OFFSET = 16.0f;
@@ -59,6 +64,8 @@ public:
 	void				DuplicateSelection() override;
 	void				DeleteSelection() override;
 	void				GetDocumentState( editorDocumentState_t & state ) const override;
+	void				RequestPreview( int id, int kind, const char * name, int size ) override;
+	void				CancelPreviews() override { preview.Cancel(); }
 	void				Undo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorUndo\n" ); }
 	void				Redo() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorRedo\n" ); }
 	void				SaveMap() override { cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "editorSaveMap\n" ); }
@@ -120,6 +127,9 @@ private:
 	idEditorView		view;
 	idEditorTool		tool;
 	idEditorHistory		history;
+	idEditorPreview		preview;
+	bool				previewFrame = false;	// the frame being drawn is a preview picture
+	bool				lastWasPreview = false;	// so the edit view gets every other frame
 };
 
 // for the console commands; nullptr in the bare shell
@@ -141,22 +151,57 @@ void idEditorEngineLocal::Frame() {
 	if ( !started || inFrame ) {
 		return;
 	}
-	// Nothing paces the edit view (no game tics), and an editor has no use for a thousand frames a second.
-	if ( world.IsOpen() ) {
-		const int sinceLast = Sys_Milliseconds() - lastFrameMsec;
-		if ( sinceLast >= 0 && sinceLast < EDIT_FRAME_MSEC ) {
-			Sys_Sleep( EDIT_FRAME_MSEC - sinceLast );
-		}
+	// Nothing paces the editor's frames (no game tics), and it has no use for a thousand of them a second.
+	const int sinceLast = Sys_Milliseconds() - lastFrameMsec;
+	if ( sinceLast >= 0 && sinceLast < EDIT_FRAME_MSEC ) {
+		Sys_Sleep( EDIT_FRAME_MSEC - sinceLast );
 	}
 	lastFrameMsec = Sys_Milliseconds();
 
 	inFrame = true;
+	previewFrame = false;
 	Sys_EngineFrame();
 	inFrame = false;
+
+	if ( previewFrame ) {
+		previewFrame = false;
+		idEditorPreview::job_t job;
+		idList<byte> rgb;
+		if ( preview.Finish( job, rgb ) ) {
+			if ( job.id == PREVIEW_TEST_ID ) {
+				// R_WriteTGA takes RGBA; its flipVertical false is the top row first
+				idList<byte> rgba;
+				rgba.SetNum( job.size * job.size * 4 );
+				for ( int i = 0; i < job.size * job.size; i++ ) {
+					rgba[i * 4 + 0] = rgb[i * 3 + 0];
+					rgba[i * 4 + 1] = rgb[i * 3 + 1];
+					rgba[i * 4 + 2] = rgb[i * 3 + 2];
+					rgba[i * 4 + 3] = 255;
+				}
+				R_WriteTGA( "editor_preview.tga", rgba.Ptr(), job.size, job.size, false );
+				common->Printf( "wrote editor_preview.tga, %s\n", job.name.c_str() );
+			} else {
+				ui->OnPreviewReady( job.id, job.size, job.size, rgb.Ptr() );
+			}
+		}
+	}
 }
 
 void idEditorEngineLocal::Shutdown() {
+	preview.Shutdown();
 	Sys_EngineShutdown();
+}
+
+void idEditorEngineLocal::RequestPreview( int id, int kind, const char * name, int size ) {
+	if ( !started || name == nullptr || name[0] == '\0' ) {
+		return;
+	}
+	idEditorPreview::job_t job;
+	job.id = id;
+	job.kind = kind;
+	job.name = name;
+	job.size = size;
+	preview.Request( job );
 }
 
 void idEditorEngineLocal::ResizeViewport( int width, int height ) {
@@ -547,8 +592,19 @@ void idEditorEngineLocal::LookAtEntity( int index ) {
 }
 
 bool idEditorEngineLocal::DrawScene() {
+	// a picture takes a frame of its own; with a map open, every other frame at most
+	if ( preview.HasPending() && !( world.IsOpen() && lastWasPreview ) && preview.Draw() ) {
+		previewFrame = true;
+		lastWasPreview = true;
+		return true;
+	}
+	lastWasPreview = false;
 	if ( !world.IsOpen() ) {
-		return false;
+		// an empty viewport; left to the engine, it would show the game selection screen
+		renderSystem->SetColor4( EMPTY_VIEW_GREY, EMPTY_VIEW_GREY, EMPTY_VIEW_GREY, 1.0f );
+		renderSystem->DrawStretchPic( 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, 0.0f, 1.0f, 1.0f, declManager->FindMaterial( "_white" ) );
+		renderSystem->SetColor4( 1.0f, 1.0f, 1.0f, 1.0f );
+		return true;
 	}
 	view.Frame();
 	// The lines of the last frame: the game clears them every tic, nothing does here, and a full
@@ -662,6 +718,23 @@ CONSOLE_COMMAND_SHIP( editorDuplicate, "duplicates the entities selected in the 
 CONSOLE_COMMAND_SHIP( editorDelete, "removes the entities selected in the editor", nullptr ) {
 	if ( NeedEditor() ) {
 		editorEngine->RunEdit( [] { editorEngine->DeleteSelection(); } );
+	}
+}
+
+CONSOLE_COMMAND_SHIP( editorPreviewTest, "writes a preview picture to editor_preview.tga: editorPreviewTest material|model|class <name> [size]", nullptr ) {
+	const char * const kinds[] = { "material", "model", "class" };
+	int kind = -1;
+	for ( int i = 0; i < 3; i++ ) {
+		if ( idStr::Icmp( args.Argv( 1 ), kinds[i] ) == 0 ) {
+			kind = i;
+		}
+	}
+	if ( args.Argc() < 3 || kind == -1 ) {
+		common->Printf( "usage: editorPreviewTest material|model|class <name> [size]\n" );
+		return;
+	}
+	if ( NeedEditor() ) {
+		editorEngine->RequestPreview( PREVIEW_TEST_ID, kind, args.Argv( 2 ), ( args.Argc() > 3 ) ? atoi( args.Argv( 3 ) ) : 256 );
 	}
 }
 

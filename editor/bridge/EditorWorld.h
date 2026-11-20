@@ -72,13 +72,18 @@ public:
 	void				GetStartView( idVec3 & origin, idAngles & angles ) const;
 
 	[[nodiscard]] idRenderWorld *	RenderWorld() const { return world; }
+
+	// the game's rule: the spawn args are the entityDef's key/values with the map's on top
+	static void			MergedSpawnArgs( const idDict & mapArgs, idDict & out );
+	// A skinned model cannot be drawn without joints: the first frame of the class's idle animation,
+	// or the bind pose. joints is Mem_Alloc16 memory the caller owns; an old block is freed.
+	static void			PoseSkinnedModel( const idDict & args, renderEntity_t & renderEntity, idJointMat * & joints );
 	void				Draw( const idVec3 & origin, const idMat3 & axis, float fovX, float fovY, int timeMsec );
 
 private:
 	// from entities[index].args: adds, updates or frees the model and the light
 	void				ShowEntity( int index );
 	void				FreeEntity( editorMapEntity_t & entity );
-	void				PoseSkinnedModel( editorMapEntity_t & entity ) const;
 	void				DrawMarkers( const idVec3 & viewOrigin );
 
 	idStr				mapName;

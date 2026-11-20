@@ -835,7 +835,15 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
 
 	int windowWidth = tr.GetWidth();
 	int windowHeight = tr.GetHeight();
-	tr.PerformResolutionScaling( windowWidth, windowHeight );
+	const bool cropped = ( tr.currentRenderCrop > 0 );
+	if ( cropped ) {
+		// inside a CropRenderSize the scene fills the crop, not the window
+		const idScreenRect & crop = tr.renderCrops[tr.currentRenderCrop];
+		windowWidth = crop.x2 - crop.x1 + 1;
+		windowHeight = crop.y2 - crop.y1 + 1;
+	} else {
+		tr.PerformResolutionScaling( windowWidth, windowHeight );
+	}
 
 	// screenFraction is just for quickly testing fill rate limitations
 	if ( r_screenFraction.GetInteger() != 100 ) {
@@ -882,8 +890,11 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
 	// updated to the demo file
 	R_RenderView( parms );
 
-	// render any post processing after the view and all its subviews has been draw
-	R_RenderPostProcess( parms );
+	// render any post processing after the view and all its subviews has been draw;
+	// it stretches the view over the window, which a cropped scene must not be
+	if ( !cropped ) {
+		R_RenderPostProcess( parms );
+	}
 
 	RestoreTicPoses();
 

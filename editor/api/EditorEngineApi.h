@@ -21,7 +21,14 @@
 	the engine may call the host back from inside Init() and Frame().
 */
 
-constexpr int EDITOR_API_VERSION = 4;
+constexpr int EDITOR_API_VERSION = 5;
+
+// what a preview picture shows; a material is put on a sphere
+enum editorPreviewKind_t : int {
+	EDITOR_PREVIEW_MATERIAL,
+	EDITOR_PREVIEW_MODEL,
+	EDITOR_PREVIEW_ENTITY_CLASS
+};
 
 // what a drag in the viewport does to the selection
 enum editorGizmo_t : int {
@@ -106,6 +113,10 @@ public:
 	// an edit, an undo, a redo or a save: GetDocumentState() is new
 	virtual void		OnDocumentChanged() = 0;
 
+	// A picture asked for with RequestPreview(): RGB8, tightly packed, top row first, valid during
+	// the call. It can be smaller than asked when the viewport is.
+	virtual void		OnPreviewReady( int id, int width, int height, const unsigned char * rgb ) = 0;
+
 protected:
 						~idEditorHost() = default;
 };
@@ -163,6 +174,12 @@ public:
 	// The selection; brush entities are not duplicated, the copies become the selection.
 	virtual void		DuplicateSelection() = 0;
 	virtual void		DeleteSelection() = 0;
+
+	// Queues a picture of size x size pixels; it arrives in OnPreviewReady() with the id, one
+	// picture a frame, in the order asked. The viewport has to be visible and at least that big.
+	virtual void		RequestPreview( int id, int kind, const char * name, int size ) = 0;
+	// forgets the pictures not made yet
+	virtual void		CancelPreviews() = 0;
 
 	// Undo, Redo and SaveMap happen in the next frame and end in OnDocumentChanged().
 	// The map is saved into the project folder (fs_savepath), never into the game install.

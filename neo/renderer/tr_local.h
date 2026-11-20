@@ -753,6 +753,7 @@ public:
 
 	virtual void			RenderCommandBuffers( const emptyCommand_t * commandBuffers );
 	virtual void			TakeScreenshot( int width, int height, const char *fileName, int downSample, renderView_t *ref );
+	virtual void			ReadLastFrame( int x, int y, int width, int height, byte * rgb, bool discard );
 	virtual void			CropRenderSize( int width, int height );
 	virtual void			CaptureRenderToImage( const char *imageName, bool clearColorAfterCopy = false );
 	virtual void			UnCrop();
@@ -775,6 +776,7 @@ public:
 	bool					registered;		// cleared at shutdown, set at InitOpenGL
 
 	bool					takingScreenshot;
+	bool					discardFrame = false;	// the next Present shows nothing (ReadLastFrame)
 
 	int						frameCount;		// incremented every frame
 	int						viewCount;		// incremented every view (twice a scene if subviewed)

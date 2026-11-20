@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QImage>
 #include <QObject>
 #include <QString>
 #include <QTimer>
@@ -43,6 +44,7 @@ public:
 	void				OnEntitiesChanged() override { emit entitiesChanged(); }
 	void				OnSelectionChanged() override { emit selectionChanged(); }
 	void				OnDocumentChanged() override { emit documentChanged(); }
+	void				OnPreviewReady( int id, int width, int height, const unsigned char * rgb ) override;
 
 signals:
 	void				printed( const QString & text );
@@ -50,6 +52,7 @@ signals:
 	void				entitiesChanged();
 	void				selectionChanged();
 	void				documentChanged();
+	void				previewReady( int id, const QImage & image );
 	// the last thing before the engine and the process end
 	void				aboutToShutdown();
 

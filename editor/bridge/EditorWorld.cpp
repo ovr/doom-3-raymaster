@@ -15,19 +15,8 @@ namespace {
 // entities without a model are drawn as a box when the view is this near
 constexpr float		MARKER_DISTANCE = 512.0f;
 constexpr float		PLAYER_EYE_HEIGHT = 68.0f;
+constexpr float		SKIN_MARGIN = 12.0f;				// how far a skin reaches beyond its joints
 const idBounds		DEFAULT_MARKER_BOUNDS( idVec3( -8.0f, -8.0f, -8.0f ), idVec3( 8.0f, 8.0f, 8.0f ) );
-
-// the game's rule: the spawn args are the entityDef's key/values with the map's on top
-void MergedSpawnArgs( const idDict & mapArgs, idDict & out ) {
-	out = mapArgs;
-	const char * const classname = mapArgs.GetString( "classname" );
-	if ( classname[0] == '\0' ) {
-		return;
-	}
-	if ( const idDict * const defaults = gameEdit->FindEntityDefDict( classname, false ) ) {
-		out.SetDefaults( defaults );
-	}
-}
 
 [[nodiscard]] idBounds MarkerBounds( const idDict & args ) {
 	idBounds bounds;
@@ -41,6 +30,17 @@ void MergedSpawnArgs( const idDict & mapArgs, idDict & out ) {
 }
 
 }	// namespace
+
+void idEditorWorld::MergedSpawnArgs( const idDict & mapArgs, idDict & out ) {
+	out = mapArgs;
+	const char * const classname = mapArgs.GetString( "classname" );
+	if ( classname[0] == '\0' ) {
+		return;
+	}
+	if ( const idDict * const defaults = gameEdit->FindEntityDefDict( classname, false ) ) {
+		out.SetDefaults( defaults );
+	}
+}
 
 bool idEditorWorld::Open( const char * name ) {
 	Close();
@@ -193,7 +193,7 @@ void idEditorWorld::ShowEntity( int index ) {
 	// Pick() finds the map entity of a hit model by this
 	entity.renderEntity.entityNum = index;
 	if ( entity.renderEntity.hModel->NumJoints() > 0 ) {
-		PoseSkinnedModel( entity );
+		PoseSkinnedModel( entity.args, entity.renderEntity, entity.joints );
 	}
 	if ( entity.modelHandle == -1 ) {
 		entity.modelHandle = world->AddEntityDef( &entity.renderEntity );
@@ -202,35 +202,37 @@ void idEditorWorld::ShowEntity( int index ) {
 	}
 }
 
-// A skinned model cannot be drawn without joints: the first frame of its idle animation, or the
-// bind pose when the class has none.
-void idEditorWorld::PoseSkinnedModel( editorMapEntity_t & entity ) const {
-	renderEntity_t & renderEntity = entity.renderEntity;
+void idEditorWorld::PoseSkinnedModel( const idDict & args, renderEntity_t & renderEntity, idJointMat * & joints ) {
 	const idRenderModel * const model = renderEntity.hModel;
 	const int numJoints = model->NumJoints();
-	if ( entity.joints != nullptr ) {
-		Mem_Free16( entity.joints );
+	if ( joints != nullptr ) {
+		Mem_Free16( joints );
 	}
-	entity.joints = static_cast<idJointMat *>( Mem_Alloc16( SIMD_ROUND_JOINTS( numJoints ) * sizeof( idJointMat ), TAG_JOINTMAT ) );
+	joints = static_cast<idJointMat *>( Mem_Alloc16( SIMD_ROUND_JOINTS( numJoints ) * sizeof( idJointMat ), TAG_JOINTMAT ) );
 
-	const char * const classname = entity.args.GetString( "classname" );
-	const idMD5Anim * anim = gameEdit->ANIM_GetAnimFromEntityDef( classname, entity.args.GetString( "anim", "idle" ) );
+	const char * const classname = args.GetString( "classname" );
+	const idMD5Anim * const anim = ( classname[0] != '\0' ) ? gameEdit->ANIM_GetAnimFromEntityDef( classname, args.GetString( "anim", "idle" ) ) : nullptr;
 	if ( anim != nullptr && gameEdit->ANIM_GetNumFrames( anim ) > 0 ) {
-		gameEdit->ANIM_CreateAnimFrame( model, anim, numJoints, entity.joints, 1, vec3_origin, false );
+		gameEdit->ANIM_CreateAnimFrame( model, anim, numJoints, joints, 1, vec3_origin, false );
 	} else {
-		SIMDProcessor->ConvertJointQuatsToJointMats( entity.joints, model->GetDefaultPose(), numJoints );
+		SIMDProcessor->ConvertJointQuatsToJointMats( joints, model->GetDefaultPose(), numJoints );
 		const idMD5Joint * const md5Joints = model->GetJoints();
 		for ( int i = 1; i < numJoints; i++ ) {
 			if ( md5Joints[i].parent != nullptr ) {
-				entity.joints[i] *= entity.joints[static_cast<int>( md5Joints[i].parent - md5Joints )];
+				joints[i] *= joints[static_cast<int>( md5Joints[i].parent - md5Joints )];
 			}
 		}
 	}
-	SIMD_INIT_LAST_JOINT( entity.joints, numJoints );
+	SIMD_INIT_LAST_JOINT( joints, numJoints );
 
-	renderEntity.joints = entity.joints;
+	renderEntity.joints = joints;
 	renderEntity.numJoints = numJoints;
-	renderEntity.bounds = model->Bounds( &renderEntity );
+	// a skinned model has the bounds its entity gives it: around the joints, with room for the skin
+	renderEntity.bounds.Clear();
+	for ( int i = 0; i < numJoints; i++ ) {
+		renderEntity.bounds.AddPoint( joints[i].ToVec3() );
+	}
+	renderEntity.bounds.ExpandSelf( SKIN_MARGIN );
 }
 
 void idEditorWorld::FreeEntity( editorMapEntity_t & entity ) {
@@ -334,7 +336,8 @@ void idEditorWorld::Draw( const idVec3 & origin, const idMat3 & axis, float fovX
 	}
 	DrawMarkers( origin );
 
-	renderView_t view = {};
+	renderView_t view;
+	memset( &view, 0, sizeof( view ) );
 	view.vieworg = origin;
 	view.viewaxis = axis;
 	view.fov_x = fovX;

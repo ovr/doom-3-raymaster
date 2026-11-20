@@ -410,7 +410,7 @@ presentResult_t idRenderBackendGL::Present( presentMode_t mode ) {
 	}
 
 	// the first present of a context and every change of mode
-	if ( !swapModeSet || mode != swapMode ) {
+	if ( mode != presentMode_t::NONE && ( !swapModeSet || mode != swapMode ) ) {
 		swapModeSet = true;
 		swapMode = mode;
 
@@ -424,7 +424,9 @@ presentResult_t idRenderBackendGL::Present( presentMode_t mode ) {
 		GLimp_SetSwapInterval( interval );
 	}
 
-	GLimp_SwapBuffers();
+	if ( mode != presentMode_t::NONE ) {
+		GLimp_SwapBuffers();
+	}
 
 	const int beforeFence = Sys_Milliseconds();
 	if ( r_showSwapBuffers.GetBool() && beforeFence - beforeSwap > 1 ) {

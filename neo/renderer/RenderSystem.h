@@ -281,6 +281,9 @@ public:
 	// to render to a texture, first set the crop size with makePowerOfTwo = true,
 	// then perform all desired rendering, then capture to an image
 	// if the specified physical dimensions are larger than the current cropped region, they will be cut down to fit
+	// The frame drawn last, before it is shown; without SMP only (the frame is drawn in the swap).
+	// RGB8, tightly packed, bottom row first. discard: that frame is never shown.
+	virtual void			ReadLastFrame( int x, int y, int width, int height, byte * rgb, bool discard ) = 0;
 	virtual void			CropRenderSize( int width, int height ) = 0;
 	virtual void			CaptureRenderToImage( const char *imageName, bool clearColorAfterCopy = false ) = 0;
 	virtual void			UnCrop() = 0;
