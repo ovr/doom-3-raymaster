@@ -10,6 +10,7 @@
 #include "../renderer/D3D12/d3d12_Copies.h"
 #include "../renderer/D3D12/d3d12_Draw.h"
 #include "../renderer/D3D12/d3d12_Dxc.h"
+#include "../renderer/D3D12/d3d12_HlslCompiler.h"
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
@@ -1703,7 +1704,7 @@ void Test_HlslReflectionMatchesGl() {
 		const programInfo_t & info = program->info;
 		const uint16 glAttribs = static_cast<uint16>( strtoul( InfoField( line, "attribMask" ), nullptr, 16 ) );
 		const idStr d3d12 = va( "samplerMask=0x%04x cubeMask=0x%04x usesJoints=%d vsParms=%s fsParms=%s", info.samplerMask, info.cubeMask, info.usesJoints ? 1 : 0,
-			ParmList( vertex->emitted.info ).c_str(), fragment ? ParmList( fragment->emitted.info ).c_str() : "-" );
+			ParmList( vertex->info ).c_str(), fragment ? ParmList( fragment->info ).c_str() : "-" );
 		const idStr gl = va( "samplerMask=%s cubeMask=%s usesJoints=%s vsParms=%s fsParms=%s", InfoField( line, "samplerMask" ).c_str(),
 			InfoField( line, "cubeMask" ).c_str(), InfoField( line, "usesJoints" ).c_str(), InfoField( line, "vsParms" ).c_str(), InfoField( line, "fsParms" ).c_str() );
 		Check( d3d12 == gl, va( "%s|%s: D3D12 %s, GL %s", vertexName.c_str(), fragmentName.c_str(), d3d12.c_str(), gl.c_str() ) );
@@ -1711,6 +1712,155 @@ void Test_HlslReflectionMatchesGl() {
 			info.attribMask, glAttribs ) );
 	}
 	Check( programs == 43, va( "%d programs in renderProgInfo-gl.txt, not 43", programs ) );
+}
+
+// ---- base/shaders through DXC -------------------------------------------------------------------------------
+
+// A path under base/ from the repo, as fileSystem gives it to the engine.
+[[nodiscard]] d3d12ShaderReader_t RepoReader() {
+	return []( const char * path ) { return ReadDiskText( RepoPath( idStr( "base/" ) + path ) ); };
+}
+
+// Every stage of a shaders/*.hlsl, the SKINNED variant included.
+[[nodiscard]] std::vector<d3d12HlslEntry_t> HlslStages( const idD3D12Library & library, const char * file ) {
+	const std::optional<d3d12HlslSource_t> plain = D3D12_FindHlslSource( file, RepoReader() );
+	if ( !Check( plain.has_value(), va( "%s: not found", file ) ) ) {
+		return {};
+	}
+	auto entries = D3D12_HlslEntries( library, *plain, RepoReader() );
+	if ( !Check( entries.has_value(), va( "%s: %s", file, entries ? "" : entries.error().c_str() ) ) ) {
+		return {};
+	}
+	return std::move( *entries );
+}
+
+// Stages from the preprocessed text: names in comments, and a SKINNED that changes nothing, add none.
+void Test_HlslEntries() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	const d3d12ShaderReader_t reader = []( const char * path ) -> std::optional<idStr> {
+		if ( idStr::Icmp( path, "shaders/include/a.hlsli" ) == 0 ) {
+			return idStr( "#if SKINNED\nfloat4 Skin( float4 p ) { return p * 2.0; }\n#endif\n" );
+		}
+		return std::nullopt;
+	};
+	const auto Entries = [&]( const char * text ) {
+		d3d12HlslSource_t source;
+		source.name = "test";
+		source.path = "shaders/test.hlsl";
+		source.text = text;
+		idStr list;
+		if ( const auto entries = D3D12_HlslEntries( *library, source, reader ) ) {
+			for ( const auto & [variant, stage] : *entries ) {
+				list += va( "%s%s:%s", list.IsEmpty() ? "" : " ", variant.name.c_str(), ( stage == shaderStageType_t::VERTEX ) ? "VS" : "PS" );
+			}
+		} else {
+			list = entries.error();
+		}
+		return list;
+	};
+	const idStr vsOnly = Entries( "// no PSMain here, and SKINNED is a word\nfloat4 VSMain() : SV_Position { return 0; }\n" );
+	Check( vsOnly == "test:VS", va( "a comment adds nothing: %s", vsOnly.c_str() ) );
+	const idStr both = Entries( "float4 VSMain () : SV_Position { return 0; }\nfloat4 PSMainColor() { return 1; }\nfloat4 PSMain() : SV_Target { return 1; }\n" );
+	Check( both == "test:VS test:PS", va( "whole names before a '(': %s", both.c_str() ) );
+	const idStr skinned = Entries( "#include \"include/a.hlsli\"\nfloat4 VSMain( float4 p : POSITION ) : SV_Position { return p; }\n" );
+	Check( skinned == "test:VS test_skinned:VS", va( "SKINNED in an include makes a variant: %s", skinned.c_str() ) );
+	const idStr unchanged = Entries( "#if SKINNED\n#endif\nfloat4 VSMain() : SV_Position { return 0; }\n" );
+	Check( unchanged == "test:VS", va( "an empty SKINNED block makes none: %s", unchanged.c_str() ) );
+}
+
+// DXC compiles every stage of base/shaders without a warning; the backend can fill every binding it has.
+void Test_HlslSourcesCompile() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
+	int stages = 0;
+	for ( const std::filesystem::directory_entry & entry : std::filesystem::directory_iterator( RepoPath( "base/shaders" ).c_str() ) ) {
+		if ( !entry.is_regular_file() || entry.path().extension() != ".hlsl" ) {
+			continue;
+		}
+		for ( const auto & [source, type] : HlslStages( *library, entry.path().filename().string().c_str() ) ) {
+			stages++;
+			const char * entryPoint = ( type == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain";
+			std::vector<const char *> defines;
+			for ( int i = 0; i < source.defines.Num(); i++ ) {
+				defines.push_back( source.defines[i].c_str() );
+			}
+			const d3d12ShaderReader_t reader = RepoReader();
+			const auto preprocessed = D3D12_DxcPreprocess( *library, std::string_view( source.text.c_str(), source.text.Length() ), source.path,
+				defines, reader );
+			if ( !Check( preprocessed.has_value(), va( "%s %s: %s", source.name.c_str(), entryPoint, preprocessed ? "" : preprocessed.error().c_str() ) ) ) {
+				continue;
+			}
+			const auto output = D3D12_DxcCompile( *library, std::string_view( preprocessed->c_str(), preprocessed->Length() ), source.path, entryPoint,
+				( type == shaderStageType_t::VERTEX ) ? "vs_6_6" : "ps_6_6" );
+			if ( Check( output.has_value(), va( "%s %s: %s", source.name.c_str(), entryPoint, output ? "" : output.error().c_str() ) ) ) {
+				Check( output->warnings.IsEmpty(), va( "%s %s: %s", source.name.c_str(), entryPoint, output->warnings.c_str() ) );
+				Check( D3D12_DxilSigned( output->code ), va( "%s %s: signed", source.name.c_str(), entryPoint ) );
+			}
+			const auto built = compiler.Build( source, type );
+			Check( built.has_value(), va( "%s %s: %s", source.name.c_str(), entryPoint, built ? "" : built.error().c_str() ) );
+		}
+	}
+	printf( "  %d stages\n", stages );
+	Check( stages > 0, "base/shaders has stages" );
+}
+
+// GL's renderProgInfo of mars_city1 against base/shaders: every program has its stages there, with the same parms
+// in the same order, masks and joints, attribMask a superset, and the PS reads what the VS writes.
+void Test_HlslProgramsMatchGl() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	const std::optional<idStr> reference = ReadDiskText( RepoPath( "neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) );
+	if ( !library || !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) ) {
+		return;
+	}
+	idD3D12ShaderCompiler fxc( *library, false );
+	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
+	const auto Build = [&compiler]( const idStr & stageName, shaderStageType_t type ) -> std::expected<d3d12ShaderStage_t, idStr> {
+		const std::optional<d3d12HlslSource_t> source = D3D12_FindHlslSource( stageName, compiler.Reader() );
+		if ( !source ) {
+			return std::unexpected( idStr( "no HLSL" ) );
+		}
+		return D3D12_BuildHlslStage( compiler, type, stageName, *source );
+	};
+	const idStr text = WithoutCarriageReturns( *reference );
+	int programs = 0;
+	for ( int start = 0, newline; ( newline = text.Find( '\n', start ) ) >= 0; start = newline + 1 ) {
+		const idStr line = text.Mid( start, newline - start );
+		if ( line.IsEmpty() || line[0] == '#' ) {
+			continue;
+		}
+		const idStr vertexName = InfoField( line, "vs" );
+		const idStr fragmentName = InfoField( line, "fs" );
+		programs++;
+		const auto vertex = Build( vertexName, shaderStageType_t::VERTEX );
+		const auto fragment = ( fragmentName != "-" ) ? Build( fragmentName, shaderStageType_t::FRAGMENT )
+			: std::expected<d3d12ShaderStage_t, idStr>( std::unexpected( idStr( "-" ) ) );
+		if ( !vertex || ( !fragment && fragmentName != "-" ) ) {
+			Check( false, va( "%s|%s: %s", vertexName.c_str(), fragmentName.c_str(), !vertex ? vertex.error().c_str() : fragment.error().c_str() ) );
+			continue;
+		}
+		auto program = D3D12_LinkProgram( fxc, *vertex, fragment ? &*fragment : nullptr );
+		if ( !Check( program.has_value(), va( "%s|%s: link: %s", vertexName.c_str(), fragmentName.c_str(), program ? "" : program.error().c_str() ) ) ) {
+			continue;
+		}
+		const programInfo_t & info = program->info;
+		const uint16 glAttribs = static_cast<uint16>( strtoul( InfoField( line, "attribMask" ), nullptr, 16 ) );
+		const idStr d3d12 = va( "samplerMask=0x%04x cubeMask=0x%04x usesJoints=%d vsParms=%s fsParms=%s", info.samplerMask, info.cubeMask,
+			info.usesJoints ? 1 : 0, ParmList( vertex->info ).c_str(), fragment ? ParmList( fragment->info ).c_str() : "-" );
+		const idStr gl = va( "samplerMask=%s cubeMask=%s usesJoints=%s vsParms=%s fsParms=%s", InfoField( line, "samplerMask" ).c_str(),
+			InfoField( line, "cubeMask" ).c_str(), InfoField( line, "usesJoints" ).c_str(), InfoField( line, "vsParms" ).c_str(),
+			InfoField( line, "fsParms" ).c_str() );
+		Check( d3d12 == gl, va( "%s|%s: HLSL %s, GL %s", vertexName.c_str(), fragmentName.c_str(), d3d12.c_str(), gl.c_str() ) );
+		Check( ( info.attribMask & glAttribs ) == glAttribs, va( "%s|%s: attribMask 0x%04x lacks some of GL's 0x%04x", vertexName.c_str(),
+			fragmentName.c_str(), info.attribMask, glAttribs ) );
+	}
+	printf( "  %d programs\n", programs );
+	Check( programs == 43, va( "renderProgInfo-gl.txt has %d programs, 43 expected", programs ) );
 }
 
 // ---- pipeline state: pipelineKey_t → the PSO description ---------------------------------------------------
@@ -3134,6 +3284,7 @@ public:
 	idTestGpu &						gpu;
 	UINT							samples;
 	idD3D12ShaderCompiler			compiler;
+	idD3D12HlslCompiler				hlslCompiler;
 	idD3D12RootSignature			root;
 	idD3D12DescriptorPool			dsvPool;
 	idD3D12UploadRing				constants;
@@ -3152,13 +3303,14 @@ idTestCopies::idTestCopies( idTestGpu & owner, UINT sampleCount ) :
 	gpu( owner ),
 	samples( sampleCount ),
 	compiler( owner.library, false ),
+	hlslCompiler( owner.library, RepoReader(), false ),
 	root( owner.device, owner.library ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
 	constants( owner.device, 1 << 20, L"test constants ring" ),
 	descriptors( owner.device ),
 	samplers( owner.device ),
 	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
-	passes( owner.device, root, compiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
+	passes( owner.device, root, hlslCompiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
 	copies( owner, owner.barriers, scene, owner.textures, passes, owner.rtvPool ),
 	readback( owner.device, owner, owner.barriers, owner.graveyard ) {
 	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
@@ -3633,6 +3785,7 @@ public:
 
 	idTestGpu &						gpu;
 	idD3D12ShaderCompiler			compiler;
+	idD3D12HlslCompiler				hlslCompiler;
 	idD3D12RootSignature			root;
 	idD3D12DescriptorPool			dsvPool;
 	idD3D12UploadRing				constants;
@@ -3652,16 +3805,17 @@ private:
 idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t framePlacement ) :
 	gpu( owner ),
 	compiler( owner.library, false ),
+	hlslCompiler( owner.library, RepoReader(), false ),
 	root( owner.device, owner.library ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
 	constants( owner.device, 1 << 20, L"test constants ring" ),
 	descriptors( owner.device ),
 	samplers( owner.device ),
 	buffers( owner.device, owner.graveyard, owner.uploader, owner.barriers, framePlacement ),
-	shaders( compiler, owner.graveyard ),
+	shaders( compiler, hlslCompiler, owner.graveyard ),
 	factory( owner.device, root, nullptr, nullptr ),
 	scene( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool, dsvPool ),
-	passes( owner.device, root, compiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
+	passes( owner.device, root, hlslCompiler, owner, owner.barriers, owner.uploader, constants, descriptors, samplers, owner.srvPool ),
 	recorder( owner.device, owner, owner.barriers, scene, passes, factory, shaders, buffers, owner.textures, owner.srvPool, constants, descriptors,
 		samplers ) {
 	if ( !gpu.textures.Fallback( textureKind_t::TEX_2D ).IsValid() ) {
@@ -4071,6 +4225,9 @@ constexpr testCase_t TESTS[] = {
 	{ "Hlsl_AllSources", Test_HlslAllSources },
 	{ "Hlsl_ReflectionMatchesGl", Test_HlslReflectionMatchesGl },
 	{ "Dxc_Compile", Test_DxcCompile },
+	{ "Hlsl_Entries", Test_HlslEntries },
+	{ "Hlsl_SourcesCompile", Test_HlslSourcesCompile },
+	{ "Hlsl_ProgramsMatchGl", Test_HlslProgramsMatchGl },
 	{ "Warp_DxcBindless", OnWarp<DxcBindless> },
 	{ "Gpu_DxcBindless", OnGpu<DxcBindless> },
 	{ "Pipeline_Blend", Test_PipelineBlend },

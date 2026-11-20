@@ -122,13 +122,14 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	buffers( device, graveyard, uploader, barriers, FramePlacement( device ) ),
 	textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ),
 	compiler( library, r_d3d12ShaderCache.GetBool() ),
-	shaders( compiler, graveyard ),
+	hlslCompiler( library, D3D12_GameDataReader(), r_d3d12ShaderCache.GetBool() ),
+	shaders( compiler, hlslCompiler, graveyard ),
 	rootSignature( device, library ),
 	journal( LoadJournal() ),
 	pipelineLibrary( OpenPipelineLibrary( device ) ),
 	pipelines( device, rootSignature, &journal, pipelineLibrary ? &*pipelineLibrary : nullptr ),
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
-	passes( device, rootSignature, compiler, *this, barriers, uploader, constants, descriptors, samplers, srvPool ),
+	passes( device, rootSignature, hlslCompiler, *this, barriers, uploader, constants, descriptors, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
 	copies( *this, barriers, scene, textures, passes, rtvPool ),
 	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, srvPool, constants, descriptors, samplers ) {
@@ -415,10 +416,13 @@ void idD3D12Context::SavePipelines( bool withLibrary ) {
 
 void idD3D12Context::PrintInfo() const {
 	device.PrintInfo();
-	const uint64 version = library.compilerVersion;
-	common->Printf( "D3D12 shader compiler: d3dcompiler_47.dll %u.%u.%u.%u, compiled %d, %d from the cache; %d stages, %d programs\n",
-		static_cast<unsigned>( version >> 48 ), static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ), static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ),
-		static_cast<unsigned>( version & 0xFFFF ), compiler.Compiled(), compiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
+	const auto Version = []( uint64 version ) {
+		return idStr( va( "%u.%u.%u.%u", static_cast<unsigned>( version >> 48 ), static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ),
+			static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ), static_cast<unsigned>( version & 0xFFFF ) ) );
+	};
+	common->Printf( "D3D12 shader compilers: dxcompiler.dll %s compiled %d, %d from the cache; d3dcompiler_47.dll %s compiled %d, %d from the cache; "
+		"%d stages, %d programs\n", Version( library.dxcVersion ).c_str(), hlslCompiler.Compiled(), hlslCompiler.CacheHits(),
+		Version( library.compilerVersion ).c_str(), compiler.Compiled(), compiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
 	const idD3D12PipelineFactory::stats_t & made = pipelines.TotalStats();
 	common->Printf( "D3D12 pipelines: %d PSOs, %d warmed from the journal and %d made by draws, %d from the library; %d depth biases; depth bounds %s\n",
 		pipelines.Num(), made.warmed, made.drawn, made.loaded, pipelines.Bias().Num(), device.Features().depthBounds ? "in every PSO" : "unsupported" );

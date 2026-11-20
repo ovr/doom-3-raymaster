@@ -30,7 +30,8 @@
 	      ├── idD3D12BufferStore              bufferHandle_t → FRAME where r_d3d12FrameBuffers says, STATIC in DEFAULT + a CPU mirror
 	      ├── idD3D12TextureStore             textureHandle_t → a committed texture + SRV, the black fallbacks
 	      ├── idD3D12ShaderCompiler           FXC with constant flags, the DXBC cache in renderprogs/dxbc
-	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → emitted stages, DXBC pairs, their PSOs
+	      ├── idD3D12HlslCompiler             DXC over base/shaders/*.hlsl, the DXIL cache in shaders/cache
+	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → HLSL or emitted stages, their PSOs
 	      ├── idD3D12RootSignature            the 5 parameters of every PSO
 	      ├── idD3D12PipelineJournal          every key drawn with, by program name: renderprogs/dxbc/pipelines.journal
 	      ├── optional<idD3D12PipelineLibrary>  ID3D12PipelineLibrary1 over renderprogs/dxbc/pipelines.bin
@@ -124,6 +125,7 @@ public:
 	idD3D12BufferStore				buffers;
 	idD3D12TextureStore				textures;
 	idD3D12ShaderCompiler			compiler;
+	idD3D12HlslCompiler				hlslCompiler;
 	idD3D12ShaderLibrary			shaders;
 	idD3D12RootSignature			rootSignature;
 	idD3D12PipelineJournal			journal;

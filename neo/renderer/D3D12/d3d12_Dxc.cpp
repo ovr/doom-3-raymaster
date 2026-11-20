@@ -9,6 +9,7 @@
 #include "d3d12_Dxc.h"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 
 namespace {
@@ -18,21 +19,88 @@ std::wstring Widen( std::string_view text ) {
 	return std::wstring( text.begin(), text.end() );
 }
 
-}	// namespace
+// DXC asks for ".\shaders\include\common.hlsli": the path under base/ with forward slashes.
+idStr IncludePath( LPCWSTR fileName ) {
+	idStr path;
+	for ( const wchar_t * c = fileName; *c != 0; c++ ) {
+		path += ( *c == L'\\' ) ? '/' : static_cast<char>( *c );
+	}
+	while ( path.Cmpn( "./", 2 ) == 0 ) {
+		path = idStr( path.c_str() + 2 );
+	}
+	return path;
+}
 
-std::expected<d3d12DxcOutput_t, idStr> D3D12_DxcCompile( const idD3D12Library & library, std::string_view source, const char * name,
-	const char * entry, const char * profile, std::span<const char * const> defines ) {
+// Lives on the stack of one call: DXC holds it only during Compile.
+class idDxcIncludeHandler final : public IDxcIncludeHandler {
+public:
+	idDxcIncludeHandler( IDxcUtils & dxcUtils, const d3d12ShaderReader_t & read ) : utils( dxcUtils ), reader( read ) {}
+	virtual ~idDxcIncludeHandler() = default;
+	HRESULT STDMETHODCALLTYPE LoadSource( LPCWSTR fileName, IDxcBlob ** includeSource ) override {
+		*includeSource = nullptr;
+		const std::optional<idStr> text = reader( IncludePath( fileName ) );
+		if ( !text ) {
+			return HRESULT_FROM_WIN32( ERROR_FILE_NOT_FOUND );
+		}
+		idComPtr<IDxcBlobEncoding> blob;
+		const HRESULT hr = utils.CreateBlob( text->c_str(), static_cast<UINT32>( text->Length() ), DXC_CP_UTF8, &blob );
+		if ( SUCCEEDED( hr ) ) {
+			*includeSource = blob.Detach();
+		}
+		return hr;
+	}
+	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void ** object ) override {
+		if ( riid == __uuidof( IDxcIncludeHandler ) || riid == __uuidof( IUnknown ) ) {
+			*object = static_cast<IDxcIncludeHandler *>( this );
+			return S_OK;
+		}
+		*object = nullptr;
+		return E_NOINTERFACE;
+	}
+	ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+	ULONG STDMETHODCALLTYPE Release() override { return 1; }
+
+private:
+	IDxcUtils &						utils;
+	const d3d12ShaderReader_t &		reader;
+};
+
+std::expected<idComPtr<IDxcUtils>, idStr> CreateUtils( const idD3D12Library & library ) {
+	idComPtr<IDxcUtils> utils;
+	const HRESULT hr = library.dxcCreateInstance( CLSID_DxcUtils, IID_PPV_ARGS( &utils ) );
+	if ( FAILED( hr ) ) {
+		return std::unexpected( idStr( va( "DxcCreateInstance (IDxcUtils) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
+	}
+	return utils;
+}
+
+std::vector<std::wstring> Arguments( const char * name, std::span<const char * const> defines ) {
+	std::vector<std::wstring> args = { Widen( name ), L"-HV", L"2021" };
+	for ( const char * define : defines ) {
+		args.push_back( L"-D" );
+		args.push_back( Widen( define ) );
+	}
+	return args;
+}
+
+// The result of a successful run and its warnings; the errors otherwise.
+std::expected<idComPtr<IDxcResult>, idStr> Run( const idD3D12Library & library, std::string_view source, const char * name,
+	std::span<const std::wstring> args, const d3d12ShaderReader_t * include, idStr & warnings ) {
 	// a compiler per call: IDxcCompiler3 is not safe across threads
 	idComPtr<IDxcCompiler3> compiler;
 	HRESULT hr = library.dxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( &compiler ) );
 	if ( FAILED( hr ) ) {
 		return std::unexpected( idStr( va( "DxcCreateInstance (IDxcCompiler3) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
 	}
-
-	std::vector<std::wstring> args = { Widen( name ), L"-E", Widen( entry ), L"-T", Widen( profile ), L"-HV", L"2021", L"-O3" };
-	for ( const char * define : defines ) {
-		args.push_back( L"-D" );
-		args.push_back( Widen( define ) );
+	idComPtr<IDxcUtils> utils;
+	std::optional<idDxcIncludeHandler> handler;
+	if ( include != nullptr ) {
+		auto created = CreateUtils( library );
+		if ( !created ) {
+			return std::unexpected( created.error() );
+		}
+		utils = std::move( *created );
+		handler.emplace( *utils.Get(), *include );
 	}
 	std::vector<LPCWSTR> argv;
 	for ( const std::wstring & arg : args ) {
@@ -40,32 +108,80 @@ std::expected<d3d12DxcOutput_t, idStr> D3D12_DxcCompile( const idD3D12Library & 
 	}
 	const DxcBuffer buffer = { source.data(), source.size(), DXC_CP_UTF8 };
 	idComPtr<IDxcResult> result;
-	hr = compiler->Compile( &buffer, argv.data(), static_cast<UINT32>( argv.size() ), nullptr, IID_PPV_ARGS( &result ) );
+	hr = compiler->Compile( &buffer, argv.data(), static_cast<UINT32>( argv.size() ), handler ? &*handler : nullptr, IID_PPV_ARGS( &result ) );
 	if ( FAILED( hr ) ) {
 		return std::unexpected( idStr( va( "IDxcCompiler3::Compile( %s ) failed: %s", name, D3D12_ErrorText( hr ).c_str() ) ) );
 	}
-
-	idComPtr<IDxcBlobUtf8> messages;
-	result->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( &messages ), nullptr );
-	idStr text;
-	if ( messages && messages->GetStringLength() > 0 ) {
-		text = messages->GetStringPointer();
+	idComPtr<IDxcBlobUtf8> errors;
+	result->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( &errors ), nullptr );
+	idStr messages;
+	if ( errors && errors->GetStringLength() > 0 ) {
+		messages = errors->GetStringPointer();
+		messages.StripTrailingWhitespace();
 	}
 	HRESULT status = E_FAIL;
 	result->GetStatus( &status );
 	if ( FAILED( status ) ) {
-		return std::unexpected( text.IsEmpty() ? idStr( va( "%s: DXC failed with %s", name, D3D12_ErrorText( status ).c_str() ) ) : text );
+		return std::unexpected( messages.IsEmpty() ? idStr( va( "%s: DXC failed with %s", name, D3D12_ErrorText( status ).c_str() ) ) : messages );
+	}
+	warnings = messages;
+	return result;
+}
+
+}	// namespace
+
+std::expected<d3d12DxcOutput_t, idStr> D3D12_DxcCompile( const idD3D12Library & library, std::string_view source, const char * name,
+	const char * entry, const char * profile, std::span<const char * const> defines, const d3d12ShaderReader_t * include ) {
+	std::vector<std::wstring> args = Arguments( name, defines );
+	args.insert( args.end(), { L"-E", Widen( entry ), L"-T", Widen( profile ), L"-O3" } );
+	idStr warnings;
+	const auto result = Run( library, source, name, args, include, warnings );
+	if ( !result ) {
+		return std::unexpected( result.error() );
 	}
 	idComPtr<IDxcBlob> object;
-	result->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &object ), nullptr );
+	( *result )->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &object ), nullptr );
 	if ( !object || object->GetBufferSize() == 0 ) {
 		return std::unexpected( idStr( va( "%s: DXC returned no DXIL", name ) ) );
 	}
 	d3d12DxcOutput_t output;
 	const byte * code = static_cast<const byte *>( object->GetBufferPointer() );
 	output.code.assign( code, code + object->GetBufferSize() );
-	output.warnings = text;
+	output.warnings = warnings;
 	return output;
+}
+
+std::expected<idStr, idStr> D3D12_DxcPreprocess( const idD3D12Library & library, std::string_view source, const char * name,
+	std::span<const char * const> defines, const d3d12ShaderReader_t & include ) {
+	std::vector<std::wstring> args = Arguments( name, defines );
+	args.push_back( L"-P" );
+	idStr warnings;
+	const auto result = Run( library, source, name, args, &include, warnings );
+	if ( !result ) {
+		return std::unexpected( result.error() );
+	}
+	idComPtr<IDxcBlobUtf8> text;
+	( *result )->GetOutput( DXC_OUT_HLSL, IID_PPV_ARGS( &text ), nullptr );
+	if ( !text ) {
+		return std::unexpected( idStr( va( "%s: DXC returned no preprocessed text", name ) ) );
+	}
+	idStr preprocessed;
+	preprocessed.Append( text->GetStringPointer(), static_cast<int>( text->GetStringLength() ) );
+	return preprocessed;
+}
+
+std::expected<idComPtr<ID3D12ShaderReflection>, idStr> D3D12_DxcReflect( const idD3D12Library & library, std::span<const byte> container ) {
+	auto utils = CreateUtils( library );
+	if ( !utils ) {
+		return std::unexpected( utils.error() );
+	}
+	const DxcBuffer buffer = { container.data(), container.size(), 0 };
+	idComPtr<ID3D12ShaderReflection> reflection;
+	const HRESULT hr = ( *utils )->CreateReflection( &buffer, IID_PPV_ARGS( &reflection ) );
+	if ( FAILED( hr ) ) {
+		return std::unexpected( idStr( va( "IDxcUtils::CreateReflection failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
+	}
+	return reflection;
 }
 
 bool D3D12_DxilSigned( std::span<const byte> container ) {

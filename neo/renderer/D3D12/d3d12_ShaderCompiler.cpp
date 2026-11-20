@@ -45,10 +45,6 @@ idStr BlobText( ID3DBlob * blob ) {
 	return file;
 }
 
-[[nodiscard]] idStr CachePath( const char * name, shaderStageType_t stage, uint64 hash ) {
-	return va( "renderprogs/dxbc/%s.%s.%016llx.dxbc", FileName( name ).c_str(), StageSuffix( stage ), static_cast<unsigned long long>( hash ) );
-}
-
 // A file another FXC or a crash cut short is not used.
 [[nodiscard]] bool IsDxbc( std::span<const byte> code ) {
 	if ( code.size() < DXBC_HEADER || memcmp( code.data(), "DXBC", 4 ) != 0 ) {
@@ -61,11 +57,16 @@ idStr BlobText( ID3DBlob * blob ) {
 
 }	// namespace
 
+// DXIL comes in the same container as DXBC.
+idStr idD3D12BlobCache::Path( const char * name, shaderStageType_t stage, uint64 hash ) const {
+	return va( "%s/%s.%s.%016llx.%s", directory, FileName( name ).c_str(), StageSuffix( stage ), static_cast<unsigned long long>( hash ), extension );
+}
+
 std::optional<d3d12Bytecode_t> idD3D12BlobCache::Find( const char * name, shaderStageType_t stage, uint64 hash ) const {
 	if ( !enabled ) {
 		return std::nullopt;
 	}
-	const idStr path = CachePath( name, stage, hash );
+	const idStr path = Path( name, stage, hash );
 	void * buffer = nullptr;
 	const int length = fileSystem->ReadFile( path, &buffer );
 	if ( length <= 0 || buffer == nullptr ) {
@@ -75,7 +76,7 @@ std::optional<d3d12Bytecode_t> idD3D12BlobCache::Find( const char * name, shader
 	d3d12Bytecode_t code( bytes, bytes + length );
 	fileSystem->FreeFile( buffer );
 	if ( !IsDxbc( code ) ) {
-		common->Warning( "d3d12: %s is no DXBC; compiling again", path.c_str() );
+		common->Warning( "d3d12: %s is no shader container; compiling again", path.c_str() );
 		return std::nullopt;
 	}
 	return code;
@@ -83,7 +84,7 @@ std::optional<d3d12Bytecode_t> idD3D12BlobCache::Find( const char * name, shader
 
 void idD3D12BlobCache::Store( const char * name, shaderStageType_t stage, uint64 hash, std::span<const byte> code ) const {
 	if ( enabled ) {
-		fileSystem->WriteFile( CachePath( name, stage, hash ), code.data(), static_cast<int>( code.size() ) );
+		fileSystem->WriteFile( Path( name, stage, hash ), code.data(), static_cast<int>( code.size() ) );
 	}
 }
 
@@ -132,22 +133,41 @@ std::expected<d3d12Bytecode_t, idStr> idD3D12ShaderCompiler::Compile( std::strin
 	return result;
 }
 
-// The rows of the input signature count whether or not the code reads them: GL's attribMask is a subset.
 d3d12StageReflection_t idD3D12ShaderCompiler::Reflect( std::span<const byte> code, shaderStageType_t stage ) const {
-	d3d12StageReflection_t result;
 	idComPtr<ID3D12ShaderReflection> reflection;
 	const HRESULT hr = library.reflect( code.data(), code.size(), __uuidof( ID3D12ShaderReflection ), reinterpret_cast<void **>( reflection.GetAddressOf() ) );
 	if ( FAILED( hr ) || !reflection ) {
 		common->Warning( "d3d12: D3DReflect: %s", D3D12_ErrorText( hr ).c_str() );
-		return result;
+		return {};
 	}
+	return D3D12_ReflectStage( *reflection.Get(), stage );
+}
+
+namespace {
+
+[[nodiscard]] d3d12SignatureElement_t SignatureElement( const D3D12_SIGNATURE_PARAMETER_DESC & parameter ) {
+	d3d12SignatureElement_t element;
+	element.semantic = parameter.SemanticName;
+	element.semantic.ToUpper();
+	element.index = parameter.SemanticIndex;
+	element.reg = parameter.Register;
+	element.mask = parameter.Mask;
+	element.systemValue = parameter.SystemValueType;
+	return element;
+}
+
+}	// namespace
+
+// The rows of the input signature count whether or not the code reads them: GL's attribMask is a subset.
+d3d12StageReflection_t D3D12_ReflectStage( ID3D12ShaderReflection & reflection, shaderStageType_t stage ) {
+	d3d12StageReflection_t result;
 	D3D12_SHADER_DESC desc = {};
-	if ( FAILED( reflection->GetDesc( &desc ) ) ) {
+	if ( FAILED( reflection.GetDesc( &desc ) ) ) {
 		return result;
 	}
 	for ( UINT i = 0; i < desc.BoundResources; i++ ) {
 		D3D12_SHADER_INPUT_BIND_DESC bind = {};
-		if ( FAILED( reflection->GetResourceBindingDesc( i, &bind ) ) || bind.Space != 0 ) {
+		if ( FAILED( reflection.GetResourceBindingDesc( i, &bind ) ) || bind.Space != 0 ) {
 			continue;
 		}
 		if ( bind.Type == D3D_SIT_TEXTURE && bind.BindPoint < 16 ) {
@@ -155,23 +175,29 @@ d3d12StageReflection_t idD3D12ShaderCompiler::Reflect( std::span<const byte> cod
 			if ( bind.Dimension == D3D_SRV_DIMENSION_TEXTURECUBE ) {
 				result.cubeMask = static_cast<uint16>( result.cubeMask | ( 1u << bind.BindPoint ) );
 			}
-		} else if ( bind.Type == D3D_SIT_CBUFFER && idStr::Cmp( bind.Name, "matrices_ubo" ) == 0 ) {
+		} else if ( bind.Type == D3D_SIT_CBUFFER && bind.BindPoint == 2 ) {
 			result.usesJoints = true;
 		}
 	}
-	if ( stage != shaderStageType_t::VERTEX ) {
+	const bool vertex = ( stage == shaderStageType_t::VERTEX );
+	for ( UINT i = 0; i < ( vertex ? desc.OutputParameters : desc.InputParameters ); i++ ) {
+		D3D12_SIGNATURE_PARAMETER_DESC parameter = {};
+		if ( SUCCEEDED( vertex ? reflection.GetOutputParameterDesc( i, &parameter ) : reflection.GetInputParameterDesc( i, &parameter ) ) ) {
+			( vertex ? result.outputs : result.inputs ).push_back( SignatureElement( parameter ) );
+		}
+	}
+	if ( !vertex ) {
 		return result;
 	}
 	for ( UINT i = 0; i < desc.InputParameters; i++ ) {
 		D3D12_SIGNATURE_PARAMETER_DESC parameter = {};
-		if ( FAILED( reflection->GetInputParameterDesc( i, &parameter ) ) ) {
+		if ( FAILED( reflection.GetInputParameterDesc( i, &parameter ) ) ) {
 			continue;
 		}
-		idStr semantic = parameter.SemanticName;
-		semantic.ToUpper();
-		int attrib = R_VertexAttribIndex( va( "%s%u", semantic.c_str(), parameter.SemanticIndex ) );
-		if ( attrib < 0 && parameter.SemanticIndex == 0 ) {
-			attrib = R_VertexAttribIndex( semantic.c_str() );
+		const d3d12SignatureElement_t element = SignatureElement( parameter );
+		int attrib = R_VertexAttribIndex( va( "%s%u", element.semantic.c_str(), element.index ) );
+		if ( attrib < 0 && element.index == 0 ) {
+			attrib = R_VertexAttribIndex( element.semantic.c_str() );
 		}
 		if ( attrib >= 0 ) {
 			result.attribMask = static_cast<uint16>( result.attribMask | ( 1 << attrib ) );

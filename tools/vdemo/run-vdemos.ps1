@@ -119,31 +119,41 @@ if ( -not $NoDeploy ) {
 		$progTarget = Join-Path $GameDir 'base\renderprogs'
 		New-Item -ItemType Directory -Force $progTarget | Out-Null
 		Get-ChildItem ( Join-Path $repoRoot 'base\renderprogs' ) -File | Copy-Item -Destination $progTarget -Force
+		# the HLSL DXC compiles, with its include folder; a file an older deploy left is removed
+		$shaderTarget = Join-Path $GameDir 'base\shaders'
+		if ( Test-Path $shaderTarget ) { Remove-Item -Recurse -Force $shaderTarget }
+		Copy-Item ( Join-Path $repoRoot 'base\shaders' ) $shaderTarget -Recurse -Force
 	}
 	Write-Host "deployed $BuildDir and base\vdemos to $GameDir"
 }
 
 # the save path is ours only: a marker file guards against wiping anything else
 $marker = Join-Path $SavePath '.vdemo-save'
-$shaderCache = Join-Path $SavePath 'base\renderprogs\dxbc'
-$keptCache = "$SavePath-dxbc"
-if ( Test-Path $keptCache ) { Remove-Item -Recurse -Force $keptCache }
+$caches = @( @{ Path = ( Join-Path $SavePath 'base\renderprogs\dxbc' ); Kept = "$SavePath-dxbc" },
+	@{ Path = ( Join-Path $SavePath 'base\shaders\cache' ); Kept = "$SavePath-dxil" } )
+foreach ( $cache in $caches ) {
+	if ( Test-Path $cache.Kept ) { Remove-Item -Recurse -Force $cache.Kept }
+}
 if ( Test-Path $SavePath ) {
 	if ( -not ( Test-Path $marker ) ) {
 		Write-Error "$SavePath exists but was not made by this script (no .vdemo-save marker); pick another -SavePath."
 		exit 2
 	}
-	if ( $KeepShaderCache -and ( Test-Path $shaderCache ) ) {
-		Move-Item $shaderCache $keptCache
+	foreach ( $cache in $caches ) {
+		if ( $KeepShaderCache -and ( Test-Path $cache.Path ) ) {
+			Move-Item $cache.Path $cache.Kept
+		}
 	}
 	Remove-Item -Recurse -Force $SavePath
 }
 New-Item -ItemType Directory -Force $SavePath | Out-Null
 New-Item -ItemType File -Force $marker | Out-Null
-if ( Test-Path $keptCache ) {
-	New-Item -ItemType Directory -Force ( Split-Path -Parent $shaderCache ) | Out-Null
-	Move-Item $keptCache $shaderCache
-	Write-Host "kept the shader cache: $( @( Get-ChildItem $shaderCache -File -Recurse ).Count ) files"
+foreach ( $cache in $caches ) {
+	if ( Test-Path $cache.Kept ) {
+		New-Item -ItemType Directory -Force ( Split-Path -Parent $cache.Path ) | Out-Null
+		Move-Item $cache.Kept $cache.Path
+		Write-Host "kept the shader cache $( $cache.Path ): $( @( Get-ChildItem $cache.Path -File -Recurse ).Count ) files"
+	}
 }
 
 # a failed run must not leave the files of an earlier one in place

@@ -5,125 +5,11 @@
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
 
-#include <string>
-
 #include "../tr_local.h"
 #include "d3d12_InternalPasses.h"
 #include "d3d12_StateMap.h"
 
 namespace {
-
-// (-1, 1), (3, 1), (-1, -3): one triangle covers the viewport, and the scissor cuts it.
-constexpr std::string_view TRIANGLE_VS = R"(
-float4 vsMain( uint vertexId : SV_VertexID ) : SV_Position {
-	float2 corner = float2( ( vertexId << 1 ) & 2, vertexId & 2 );
-	return float4( corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0 );
-}
-)";
-
-// Memory row 0 of the scene is the bottom of the screen, row 0 of a back buffer its top. GAMMA looks each
-// channel's byte up in its channel of the LUT; alpha stays, the swap chain ignores it.
-constexpr std::string_view BLIT_PS = R"(
-cbuffer blitParms : register( b1 ) {
-	int4 sceneSize;		// x = width, y = height
-};
-Texture2D<float4> scene : register( t0 );
-#ifdef GAMMA
-Texture2D<float4> gammaLut : register( t1 );
-#endif
-float4 psMain( float4 position : SV_Position ) : SV_Target {
-	int2 pixel = int2( position.xy );
-	float4 texel = scene.Load( int3( pixel.x, sceneSize.y - 1 - pixel.y, 0 ) );
-#ifdef GAMMA
-	int3 index = int3( texel.rgb * 255.0 + 0.5 );
-	texel.rgb = float3( gammaLut.Load( int3( index.r, 0, 0 ) ).r, gammaLut.Load( int3( index.g, 0, 0 ) ).g, gammaLut.Load( int3( index.b, 0, 0 ) ).b );
-#endif
-	return texel;
-}
-)";
-
-constexpr std::string_view CLEAR_PS = R"(
-cbuffer clearParms : register( b1 ) {
-	float4 clearColor;
-};
-float4 psMain() : SV_Target {
-	return clearColor;
-}
-)";
-
-// The panel's top row is v = 0, as GL draws an image; the target is in GL row order (row 0 at the bottom).
-// Minified panels read the mip level of their scale, magnified ones the nearest texel of level 0.
-constexpr std::string_view SHOW_PARMS = R"(
-cbuffer showParms : register( b1 ) {
-	float4 panel;		// x, y, width, height in target pixels
-	float4 options;		// x: 1 = alpha as grey, y: mip level, 0 = magnified
-};
-SamplerState linearSampler : register( s0 );
-SamplerState pointSampler : register( s1 );
-float2 PanelUv( float4 position ) {
-	return float2( ( position.x - panel.x ) / panel.z, 1.0 - ( position.y - panel.y ) / panel.w );
-}
-float4 Shown( float4 texel ) {
-	return ( options.x != 0.0 ) ? float4( texel.aaa, 1.0 ) : float4( texel.rgb, 1.0 );
-}
-)";
-
-constexpr std::string_view SHOW_2D_PS = R"(
-Texture2D<float4> image : register( t0 );
-float4 psMain( float4 position : SV_Position ) : SV_Target {
-	float2 uv = PanelUv( position );
-	return Shown( ( options.y > 0.0 ) ? image.SampleLevel( linearSampler, uv, options.y ) : image.SampleLevel( pointSampler, uv, 0.0 ) );
-}
-)";
-
-// GL's cube face orientation, inverted: a face's (s, t) back to the direction that selects it.
-constexpr std::string_view SHOW_CUBE_PS = R"(
-TextureCube<float4> image : register( t1 );
-float4 psMain( float4 position : SV_Position ) : SV_Target {
-	float2 cells = PanelUv( position ) * float2( 4.0, 3.0 );
-	int2 cell = int2( cells );
-	float2 st = frac( cells ) * 2.0 - 1.0;
-	float3 direction;
-	if ( cell.y == 0 && cell.x == 1 ) {
-		direction = float3( st.x, 1.0, st.y );			// +Y
-	} else if ( cell.y == 2 && cell.x == 1 ) {
-		direction = float3( st.x, -1.0, -st.y );		// -Y
-	} else if ( cell.y == 1 && cell.x == 0 ) {
-		direction = float3( -1.0, -st.y, st.x );		// -X
-	} else if ( cell.y == 1 && cell.x == 1 ) {
-		direction = float3( st.x, -st.y, 1.0 );			// +Z
-	} else if ( cell.y == 1 && cell.x == 2 ) {
-		direction = float3( 1.0, -st.y, -st.x );		// +X
-	} else if ( cell.y == 1 && cell.x == 3 ) {
-		direction = float3( -st.x, -st.y, -1.0 );		// -Z
-	} else {
-		discard;
-		direction = float3( 0.0, 0.0, 1.0 );
-	}
-	return Shown( ( options.y > 0.0 ) ? image.SampleLevel( linearSampler, direction, options.y ) : image.SampleLevel( pointSampler, direction, 0.0 ) );
-}
-)";
-
-// Target row r is scene row y + r, as glCopyTexImage2D lays the rows of its box out. The value is the
-// one GL's GL_DEPTH_COMPONENT copy keeps: the 24-bit depth as a float, which shaders read in .x.
-constexpr std::string_view DEPTH_COPY_PS = R"(
-cbuffer depthCopyParms : register( b1 ) {
-	int4 origin;		// x, y of the box in the scene
-};
-#ifdef MULTISAMPLED
-Texture2DMS<float> depth : register( t0 );
-#else
-Texture2D<float> depth : register( t0 );
-#endif
-float psMain( float4 position : SV_Position ) : SV_Target {
-	int2 pixel = int2( position.xy ) + origin.xy;
-#ifdef MULTISAMPLED
-	return depth.Load( pixel, 0 );
-#else
-	return depth.Load( int3( pixel, 0 ) );
-#endif
-}
-)";
 
 constexpr uint64 PARM_BYTES = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 constexpr int SHOW_MARGIN = 16;
@@ -165,12 +51,12 @@ bool D3D12_GammaIsIdentity( const d3d12GammaRamp_t & ramp ) {
 	return true;
 }
 
-idD3D12InternalPasses::idD3D12InternalPasses( const idD3D12Device & owner, const idD3D12RootSignature & signature, idD3D12ShaderCompiler & fxc,
+idD3D12InternalPasses::idD3D12InternalPasses( const idD3D12Device & owner, const idD3D12RootSignature & signature, idD3D12HlslCompiler & dxc,
 	idD3D12Submitter & submit, idD3D12Barriers & batch, idD3D12Uploader & copies, idD3D12UploadRing & constantRing,
 	idD3D12DescriptorRing & descriptorRing, idD3D12SamplerHeap & samplerHeap, idD3D12DescriptorPool & srvs ) :
 	device( owner ),
 	root( signature ),
-	compiler( fxc ),
+	compiler( dxc ),
 	submitter( submit ),
 	barriers( batch ),
 	uploader( copies ),
@@ -180,26 +66,32 @@ idD3D12InternalPasses::idD3D12InternalPasses( const idD3D12Device & owner, const
 	srvPool( srvs ) {
 }
 
-// The texts are part of the executable, so a compile error is a bug of this file.
+// shaders/internal/*.hlsl: without them the backend cannot present, so a missing or broken file is fatal.
 void idD3D12InternalPasses::CreateDefaults( d3d12Descriptor_t black2D, d3d12Descriptor_t blackCube ) {
 	black = { black2D, blackCube };
 	showSamplers = ShowSamplers();
-	const auto compile = [this]( std::string_view hlsl, shaderStageType_t stage, const char * name ) {
-		auto code = compiler.Compile( hlsl, stage, name );
-		if ( !code ) {
-			common->FatalError( "d3d12: %s", code.error().c_str() );
-			return d3d12Bytecode_t();
+	const auto compile = [this]( const char * file, shaderStageType_t stage, const char * name, const char * define = nullptr ) {
+		std::optional<d3d12HlslSource_t> source = D3D12_LoadHlslFile( va( "shaders/internal/%s.hlsl", file ), name, compiler.Reader() );
+		if ( !source ) {
+			common->FatalError( "d3d12: shaders/internal/%s.hlsl is missing: copy base/shaders into the game folder", file );
 		}
-		return std::move( *code );
+		if ( define != nullptr ) {
+			source->defines.Append( define );
+		}
+		auto built = compiler.Build( *source, stage, hlslParms_t::ANY );
+		if ( !built ) {
+			common->FatalError( "d3d12: %s", built.error().c_str() );
+		}
+		return std::move( built->code );
 	};
-	triangleVs = compile( TRIANGLE_VS, shaderStageType_t::VERTEX, "d3d12 triangle" );
-	blitPs = compile( BLIT_PS, shaderStageType_t::FRAGMENT, "d3d12 present blit" );
-	blitGammaPs = compile( std::string( "#define GAMMA\n" ).append( BLIT_PS ), shaderStageType_t::FRAGMENT, "d3d12 present blit with gamma" );
-	clearPs = compile( CLEAR_PS, shaderStageType_t::FRAGMENT, "d3d12 masked clear" );
-	show2DPs = compile( std::string( SHOW_PARMS ).append( SHOW_2D_PS ), shaderStageType_t::FRAGMENT, "d3d12 show image 2D" );
-	showCubePs = compile( std::string( SHOW_PARMS ).append( SHOW_CUBE_PS ), shaderStageType_t::FRAGMENT, "d3d12 show image cube" );
-	depthCopyPs[0] = compile( DEPTH_COPY_PS, shaderStageType_t::FRAGMENT, "d3d12 depth copy" );
-	depthCopyPs[1] = compile( std::string( "#define MULTISAMPLED\n" ).append( DEPTH_COPY_PS ), shaderStageType_t::FRAGMENT, "d3d12 depth copy MSAA" );
+	triangleVs = compile( "triangle", shaderStageType_t::VERTEX, "internal_triangle" );
+	blitPs = compile( "blit", shaderStageType_t::FRAGMENT, "internal_blit" );
+	blitGammaPs = compile( "blit", shaderStageType_t::FRAGMENT, "internal_blit_gamma", "GAMMA=1" );
+	clearPs = compile( "clear", shaderStageType_t::FRAGMENT, "internal_clear" );
+	show2DPs = compile( "showImage", shaderStageType_t::FRAGMENT, "internal_showImage" );
+	showCubePs = compile( "showImage", shaderStageType_t::FRAGMENT, "internal_showImage_cube", "CUBE=1" );
+	depthCopyPs[0] = compile( "depthCopy", shaderStageType_t::FRAGMENT, "internal_depthCopy" );
+	depthCopyPs[1] = compile( "depthCopy", shaderStageType_t::FRAGMENT, "internal_depthCopy_msaa", "MULTISAMPLED=1" );
 	blit = CreatePipeline( blitPs, idD3D12SwapChain::FORMAT, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ), L"doom3 present blit" );
 }
 

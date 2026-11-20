@@ -6,7 +6,7 @@
 
 #include "d3d12_Output.h"
 #include "d3d12_Pipelines.h"
-#include "d3d12_ShaderCompiler.h"
+#include "d3d12_HlslCompiler.h"
 
 // The ramp of r_gamma and r_brightness as R_SetColorMappings builds it: a 16-bit output per 8-bit input.
 struct d3d12GammaRamp_t {
@@ -24,7 +24,7 @@ struct d3d12GammaRamp_t {
 // room first (and may submit), then records; the caller invalidates the recorder afterwards.
 class idD3D12InternalPasses {
 public:
-									idD3D12InternalPasses( const idD3D12Device & device, const idD3D12RootSignature & root, idD3D12ShaderCompiler & compiler,
+									idD3D12InternalPasses( const idD3D12Device & device, const idD3D12RootSignature & root, idD3D12HlslCompiler & compiler,
 										idD3D12Submitter & submitter, idD3D12Barriers & barriers, idD3D12Uploader & uploader, idD3D12UploadRing & constants,
 										idD3D12DescriptorRing & descriptors, idD3D12SamplerHeap & samplers, idD3D12DescriptorPool & srvPool );
 	// The shaders and the blit PSO: device work, so after construction. The black views fill the unused table slots.
@@ -66,7 +66,7 @@ private:
 
 	const idD3D12Device &			device;
 	const idD3D12RootSignature &	root;
-	idD3D12ShaderCompiler &			compiler;
+	idD3D12HlslCompiler &			compiler;
 	idD3D12Submitter &				submitter;
 	idD3D12Barriers &				barriers;
 	idD3D12Uploader &				uploader;
