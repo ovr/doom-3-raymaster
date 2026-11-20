@@ -47,6 +47,9 @@ void idEditorView::SetEditMode( bool edit ) {
 		SetFocus( GetParent( window ) );
 	}
 	editMode = edit;
+	// Outside a map nothing is drawn: without a clear the void keeps the frames before,
+	// alternating between the swap chain's buffers. A game leaves it as it always was.
+	cvarSystem->SetCVarString( "r_clear", edit ? "0.11 0.11 0.11" : "0" );
 }
 
 void idEditorView::SetView( const idVec3 & newOrigin, const idAngles & newAngles ) {
