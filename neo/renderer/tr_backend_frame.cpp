@@ -100,27 +100,35 @@ static void RB_DrawTestClearPattern() {
 	}
 }
 
-// R13: the 3D view the HDR scene resolves at, the last drawing one of a world before the first drawing GUI
-// view. Subviews, the portal sky and remote views come before it and draw into the scene too; what follows the
-// first GUI view (the PDA, the menus, the editor's previews) stays LDR. stereoEye != 0: that eye's views only.
+// R13: the 3D view the HDR scene resolves at: the last drawing one of a world before the first drawing GUI view.
+// Subviews, the portal sky and remote views before it draw into the scene too; the PDA, menus and previews stay LDR.
+// In stereo only that eye's views count, and GUI views among the other eye's are that eye's full-screen FX.
 static const drawSurfsCommand_t * RB_FindHdrMainView( const emptyCommand_t * cmds, int stereoEye ) {
 	if ( !renderBackend->Caps().hdrScene ) {
 		return nullptr;
 	}
 	const drawSurfsCommand_t * found = nullptr;
+	bool otherEye = false;
 	for ( ; cmds != nullptr; cmds = (const emptyCommand_t *)cmds->next ) {
 		if ( cmds->commandId != RC_DRAW_VIEW_3D && cmds->commandId != RC_DRAW_VIEW_GUI ) {
 			continue;
 		}
 		const drawSurfsCommand_t * dsc = (const drawSurfsCommand_t *)cmds;
 		const viewDef_t * viewDef = dsc->viewDef;
-		if ( stereoEye != 0 && viewDef->renderView.viewEyeBuffer != 0 && viewDef->renderView.viewEyeBuffer != stereoEye ) {
-			continue;
+		const int viewEye = viewDef->renderView.viewEyeBuffer;
+		if ( stereoEye != 0 && viewEye != 0 ) {
+			otherEye = ( viewEye != stereoEye );
+			if ( otherEye ) {
+				continue;
+			}
 		}
 		if ( !RB_ViewDraws( viewDef ) ) {
 			continue;
 		}
 		if ( cmds->commandId == RC_DRAW_VIEW_GUI ) {
+			if ( otherEye ) {
+				continue;
+			}
 			break;
 		}
 		if ( !viewDef->isSubview && viewDef->viewEntitys != nullptr ) {
