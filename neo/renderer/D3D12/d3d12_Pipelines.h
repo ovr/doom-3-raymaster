@@ -30,6 +30,31 @@ private:
 	idComPtr<ID3D12RootSignature>	signature;
 };
 
+/*
+	The root signature of the backend's own compute passes (render graph passes), both heaps directly indexed:
+
+	  0  PARMS      root CBV b0                   the pass's parms, heap indices of its views included
+	  1  CONSTANTS  8 constants b1                what changes between the dispatches of a pass (a level)
+*/
+class idD3D12ComputeRootSignature {
+public:
+									idD3D12ComputeRootSignature( const idD3D12Device & device, const idD3D12Library & library );
+	[[nodiscard]] ID3D12RootSignature *	Get() const { return signature.Get(); }
+
+private:
+	idComPtr<ID3D12RootSignature>	signature;
+};
+
+// A compute PSO and the numthreads of its stage, which turns threads into groups.
+struct d3d12ComputePipeline_t {
+	idComPtr<ID3D12PipelineState>	pso;
+	std::array<uint32, 3>			threadGroup = {};
+	[[nodiscard]] explicit			operator bool() const { return pso != nullptr; }
+};
+// nullptr pso only on a lost device.
+[[nodiscard]] d3d12ComputePipeline_t	D3D12_CreateComputePipeline( const idD3D12Device & device, const idD3D12ComputeRootSignature & root,
+											const d3d12Bytecode_t & code, const d3d12StageReflection_t & reflection, const wchar_t * name );
+
 // pipelineKey_t::depthBias → a D3D12 bias. Each slot holds a distinct bias and none holds no bias, so
 // equal slots ⇔ equal PSOs; slots live as long as the backend.
 class idD3D12DepthBiasTable {

@@ -21,10 +21,15 @@ public:
 	// The view in its slot and in the shader-visible heap. A slot a submitted list may still read is buried, never
 	// written again: the GPU reads the heap when it runs the list.
 	void							CreateSrv( d3d12Descriptor_t slot, ID3D12Resource & resource, const D3D12_SHADER_RESOURCE_VIEW_DESC & desc );
+	void							CreateUav( d3d12Descriptor_t slot, ID3D12Resource & resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC & desc );
+	// The slot in the shader-visible heap: ClearUnorderedAccessView* takes it beside the slot's own handle.
+	[[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE	VisibleGpu( d3d12Descriptor_t slot ) const;
 	[[nodiscard]] ID3D12DescriptorHeap *	ShaderVisibleHeap() const { return visible.Get(); }
 	[[nodiscard]] int				Used() const { return static_cast<int>( next - freeSlots.size() ); }
 
 private:
+	void							Mirror( d3d12Descriptor_t slot );	// the slot's view into the shader-visible heap
+
 	const idD3D12Device &			device;
 	D3D12_DESCRIPTOR_HEAP_TYPE		type;
 	uint32							increment;
@@ -35,6 +40,7 @@ private:
 	uint32							visibleSize = 0;
 	idComPtr<ID3D12DescriptorHeap>	visible;
 	D3D12_CPU_DESCRIPTOR_HANDLE		visibleStart = {};
+	D3D12_GPU_DESCRIPTOR_HANDLE		visibleGpuStart = {};
 };
 
 // The one shader-visible sampler heap, the SamplerDescriptorHeap of every draw: a slot per packed sampler

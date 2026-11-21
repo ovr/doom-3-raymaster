@@ -126,6 +126,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	hlslCompiler( library, D3D12_GameDataReader(), r_d3d12ShaderCache.GetBool(), r_d3d12ShaderThreads.GetInteger() ),
 	shaders( hlslCompiler, graveyard ),
 	rootSignature( device, library ),
+	computeRootSignature( device, library ),
 	journal( LoadJournal() ),
 	pipelineLibrary( OpenPipelineLibrary( device ) ),
 	pipelines( device, rootSignature, &journal, pipelineLibrary ? &*pipelineLibrary : nullptr ),
@@ -133,7 +134,9 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	passes( device, rootSignature, hlslCompiler, *this, barriers, uploader, constants, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
 	copies( *this, barriers, scene, textures, passes, rtvPool ),
-	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, constants, samplers ) {
+	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, constants, samplers ),
+	resourcePool( device, graveyard, srvPool, rtvPool ),
+	graph( device, *this, barriers, resourcePool, srvPool, rtvPool, constants, computeRootSignature ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -148,6 +151,7 @@ idD3D12Context::~idD3D12Context() {
 	buffers.DestroyAll();
 	textures.DestroyAll();
 	shaders.DestroyAll();
+	resourcePool.FreeAll();
 	graveyard.CollectAll();
 	device.DrainMessages();
 }
@@ -295,6 +299,7 @@ void idD3D12Context::EndFrameStats() {
 	samplers.ResetFrameCounters();
 	groups.ResetFrameCounters();
 	timers.ResetFrameCounters();
+	resourcePool.EndFrame();
 }
 
 void idD3D12Context::PushGroup( const char * name ) {
@@ -440,6 +445,7 @@ void idD3D12Context::PrintInfo() const {
 	common->Printf( "D3D12 buffers: %d, FRAME %.1f MB in %s, STATIC %.1f MB in DEFAULT heaps; %.1f MB CPU mirrors\n", buffers.Num(),
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), D3D12_PlacementName( buffers.FramePlacement() ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ),
 		Megabytes( buffers.MirrorBytes() ) );
+	common->Printf( "D3D12 render graph: %d pooled resources, %.1f MB\n", resourcePool.Num(), Megabytes( resourcePool.Bytes() ) );
 	common->Printf( "D3D12 textures: %d, %.1f MB; shader-visible SRVs %d of %u, samplers %d of %u; unaligned BC %s, anisotropic point mips %s\n",
 		textures.Num(), textures.Bytes() / ( 1024.0 * 1024.0 ), srvPool.Used(), SHADER_VISIBLE_SRVS, samplers.Used(), idD3D12SamplerHeap::SIZE,
 		device.Features().unalignedBlocks ? "yes" : "decoded",

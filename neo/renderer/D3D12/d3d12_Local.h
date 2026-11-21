@@ -48,6 +48,13 @@ using idD3D12CpuBlock = std::unique_ptr<byte[], d3d12MemFree_t>;
 enum class d3d12RootSlot_t : UINT { VERTEX_PARMS, FRAGMENT_PARMS, JOINTS, DRAW_RESOURCES, COUNT };
 [[nodiscard]] constexpr UINT D3D12_Root( d3d12RootSlot_t slot ) { return static_cast<UINT>( slot ); }
 
+// The compute root signature of the backend's own compute passes: root CBV b0, then root constants b1.
+enum class d3d12ComputeSlot_t : UINT { PARMS, CONSTANTS, COUNT };
+[[nodiscard]] constexpr UINT D3D12_ComputeRoot( d3d12ComputeSlot_t slot ) { return static_cast<UINT>( slot ); }
+struct d3d12ComputeConstants_t {
+	static constexpr UINT			COUNT = 8;		// 32-bit values at b1: what changes between dispatches of one pass
+};
+
 // The root constants b3 of base/shaders/include/bindless.hlsli, in its member order: the heap index of each
 // texture slot's 2D view, then of its cube view, then of its sampler. A slot the program does not read stays 0.
 struct d3d12DrawResources_t {

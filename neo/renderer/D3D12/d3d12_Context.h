@@ -32,6 +32,7 @@
 	      ├── idD3D12HlslCompiler             DXC over base/shaders/*.hlsl, the DXIL cache in shaders/cache
 	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → DXIL stages, their PSOs
 	      ├── idD3D12RootSignature            the 5 parameters of every PSO
+	      ├── idD3D12ComputeRootSignature     b0 and b1 of the compute passes
 	      ├── idD3D12PipelineJournal          every key drawn with, by program name: renderprogs/dxbc/pipelines.journal
 	      ├── optional<idD3D12PipelineLibrary>  ID3D12PipelineLibrary1 over renderprogs/dxbc/pipelines.bin
 	      ├── idD3D12PipelineFactory          normalized pipelineKey_t → a PSO kept with its program; the depth bias slots
@@ -40,7 +41,9 @@
 	      ├── idD3D12InternalPasses           the present blit with the gamma LUT, the masked clear, the depth copy, r_d3d12ShowImage
 	      ├── idD3D12Readback                 copies into a READBACK buffer for ReadOutputPixels
 	      ├── idD3D12ScreenCopies             CopyOutputToTexture, CopyDepthToTexture: scene boxes into textures
-	      └── idD3D12DrawRecorder             clears and draws into the open pass: Prepare, Reserve, Record
+	      ├── idD3D12DrawRecorder             clears and draws into the open pass: Prepare, Reserve, Record
+	      ├── idD3D12ResourcePool             the render graph's transient textures and buffers, kept 30 frames unused
+	      └── idD3D12RenderGraph              the post-process passes: culling, transient resources, barriers
 
 	Sync points: every wait is explicit, and everything that frees or reuses memory reads
 	idD3D12Queue::Waited(), never the fence, so two runs record the same commands.
@@ -63,6 +66,7 @@
 #include "d3d12_Copies.h"
 #include "d3d12_Draw.h"
 #include "d3d12_Programs.h"
+#include "d3d12_RenderGraph.h"
 #include "d3d12_Textures.h"
 #include "d3d12_Timers.h"
 
@@ -125,6 +129,7 @@ public:
 	idD3D12HlslCompiler				hlslCompiler;
 	idD3D12ShaderLibrary			shaders;
 	idD3D12RootSignature			rootSignature;
+	idD3D12ComputeRootSignature		computeRootSignature;
 	idD3D12PipelineJournal			journal;
 	std::optional<idD3D12PipelineLibrary>	pipelineLibrary;
 	idD3D12PipelineFactory			pipelines;
@@ -134,6 +139,8 @@ public:
 	idD3D12Readback					readback;
 	idD3D12ScreenCopies				copies;
 	idD3D12DrawRecorder				recorder;
+	idD3D12ResourcePool				resourcePool;
+	idD3D12RenderGraph				graph;
 
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );

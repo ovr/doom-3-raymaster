@@ -55,7 +55,8 @@ enum class bufferUsage_t : uint8 {
 	STATIC,		// written rarely, in growing ranges; lives as long as the level
 	FRAME		// remapped whole every frame; written by the front end while the previous frame draws from another buffer
 };
-enum class shaderStageType_t : uint8 { VERTEX, FRAGMENT };		// not shaderStage_t: that is a material stage (Material.h)
+// not shaderStage_t: that is a material stage (Material.h). COMPUTE: only a backend's own passes, no render program.
+enum class shaderStageType_t : uint8 { VERTEX, FRAGMENT, COMPUTE };
 enum class primitive_t : uint8 { TRIANGLES, LINES };
 enum class textureKind_t : uint8 { TEX_2D, TEX_CUBE };
 enum class textureRole_t : uint8 {

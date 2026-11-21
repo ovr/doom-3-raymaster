@@ -57,12 +57,13 @@ public:
 	// into the whole width x height R32_FLOAT target (in RENDER_TARGET), rows in order. Texels outside the scene read 0.
 	void							CopyDepth( d3d12Descriptor_t depthSrv, UINT samples, D3D12_CPU_DESCRIPTOR_HANDLE target, int x, int y,
 										int width, int height );
+	// The triangle and pixelShader into one target of format, no blend, no depth: also the render graph's raster passes.
+	[[nodiscard]] idComPtr<ID3D12PipelineState>	CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
+										uint8 writeMask, const wchar_t * name ) const;
 
 private:
 	// The 256 bytes of root CBV b1. A full ring: submit, wait for the oldest chunk and take again, before anything is recorded.
 	[[nodiscard]] d3d12UploadSpan_t	Parms();
-	[[nodiscard]] idComPtr<ID3D12PipelineState>	CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
-										uint8 writeMask, const wchar_t * name ) const;
 	void							Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
 										const renderRect_t & viewport, const d3d12UploadSpan_t & parms, const d3d12DrawResources_t * resources );
 	void							ShowPanel( ID3D12PipelineState & pso, const d3d12DrawResources_t & resources, D3D12_CPU_DESCRIPTOR_HANDLE target,

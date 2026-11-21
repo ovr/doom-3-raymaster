@@ -22,6 +22,24 @@ D3D12_ROOT_PARAMETER1 RootCbv( UINT shaderRegister, D3D12_SHADER_VISIBILITY visi
 	return parameter;
 }
 
+// A serialization error is the backend's own bug: fatal.
+[[nodiscard]] idComPtr<ID3D12RootSignature> CreateRootSignature( const idD3D12Device & device, const idD3D12Library & library,
+	const D3D12_VERSIONED_ROOT_SIGNATURE_DESC & desc, const wchar_t * name ) {
+	idComPtr<ID3DBlob> blob;
+	idComPtr<ID3DBlob> error;
+	const HRESULT hr = library.serializeRootSignature( &desc, &blob, &error );
+	if ( FAILED( hr ) ) {
+		common->FatalError( "d3d12: D3D12SerializeVersionedRootSignature failed: %s %s", D3D12_ErrorText( hr ).c_str(),
+			error ? static_cast<const char *>( error->GetBufferPointer() ) : "" );
+	}
+	idComPtr<ID3D12RootSignature> signature;
+	if ( device.Check( device.Get().CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &signature ) ),
+			"CreateRootSignature" ) ) {
+		signature->SetName( name );
+	}
+	return signature;
+}
+
 // A pipeline state stream subobject as the runtime parses it: the type, then the value, pointer aligned.
 // The padding the alignment adds is what the stream wants (C4324).
 #pragma warning( push )
@@ -218,17 +236,38 @@ idD3D12RootSignature::idD3D12RootSignature( const idD3D12Device & device, const 
 		| D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS
 		| D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
 
-	idComPtr<ID3DBlob> blob;
-	idComPtr<ID3DBlob> error;
-	const HRESULT hr = library.serializeRootSignature( &desc, &blob, &error );
-	if ( FAILED( hr ) ) {
-		common->FatalError( "d3d12: D3D12SerializeVersionedRootSignature failed: %s %s", D3D12_ErrorText( hr ).c_str(),
-			error ? static_cast<const char *>( error->GetBufferPointer() ) : "" );
+	signature = CreateRootSignature( device, library, desc, L"doom3 root signature" );
+}
+
+idD3D12ComputeRootSignature::idD3D12ComputeRootSignature( const idD3D12Device & device, const idD3D12Library & library ) {
+	D3D12_ROOT_PARAMETER1 constants = {};
+	constants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+	constants.Constants = { D3D12_ComputeRoot( d3d12ComputeSlot_t::CONSTANTS ), 0, d3d12ComputeConstants_t::COUNT };
+	constants.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+	std::array<D3D12_ROOT_PARAMETER1, D3D12_ComputeRoot( d3d12ComputeSlot_t::COUNT )> parameters;
+	parameters[D3D12_ComputeRoot( d3d12ComputeSlot_t::PARMS )] = RootCbv( D3D12_ComputeRoot( d3d12ComputeSlot_t::PARMS ), D3D12_SHADER_VISIBILITY_ALL );
+	parameters[D3D12_ComputeRoot( d3d12ComputeSlot_t::CONSTANTS )] = constants;
+
+	D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc = {};
+	desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+	desc.Desc_1_1.NumParameters = static_cast<UINT>( parameters.size() );
+	desc.Desc_1_1.pParameters = parameters.data();
+	desc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+	signature = CreateRootSignature( device, library, desc, L"doom3 compute root signature" );
+}
+
+d3d12ComputePipeline_t D3D12_CreateComputePipeline( const idD3D12Device & device, const idD3D12ComputeRootSignature & root,
+	const d3d12Bytecode_t & code, const d3d12StageReflection_t & reflection, const wchar_t * name ) {
+	D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
+	desc.pRootSignature = root.Get();
+	desc.CS = { code.data(), code.size() };
+	d3d12ComputePipeline_t pipeline;
+	pipeline.threadGroup = reflection.threadGroup;
+	if ( device.Check( device.Get().CreateComputePipelineState( &desc, IID_PPV_ARGS( &pipeline.pso ) ), "CreateComputePipelineState" ) ) {
+		pipeline.pso->SetName( name );
 	}
-	if ( device.Check( device.Get().CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &signature ) ),
-			"CreateRootSignature" ) ) {
-		signature->SetName( L"doom3 root signature" );
-	}
+	return pipeline;
 }
 
 uint8 idD3D12DepthBiasTable::Slot( float factor, float units ) {

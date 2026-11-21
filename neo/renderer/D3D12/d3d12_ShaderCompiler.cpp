@@ -14,7 +14,11 @@ namespace {
 constexpr int DXBC_HEADER = 32;		// 'DXBC', the checksum, 1, the total size, the chunk count
 
 [[nodiscard]] const char * StageSuffix( shaderStageType_t stage ) {
-	return ( stage == shaderStageType_t::VERTEX ) ? "vs" : "ps";
+	switch ( stage ) {
+		case shaderStageType_t::VERTEX:		return "vs";
+		case shaderStageType_t::FRAGMENT:	return "ps";
+		default:							return "cs";
+	}
 }
 
 // A name as one file name: "d3d12 present blit" → "d3d12_present_blit".
@@ -129,6 +133,10 @@ d3d12StageReflection_t D3D12_ReflectStage( ID3D12ShaderReflection & reflection, 
 		} else if ( bind.BindPoint == d3d12DrawResources_t::REGISTER ) {
 			ReadDrawResources( reflection, bind.Name, result );
 		}
+	}
+	if ( stage == shaderStageType_t::COMPUTE ) {
+		reflection.GetThreadGroupSize( &result.threadGroup[0], &result.threadGroup[1], &result.threadGroup[2] );
+		return result;
 	}
 	const bool vertex = ( stage == shaderStageType_t::VERTEX );
 	for ( UINT i = 0; i < ( vertex ? desc.OutputParameters : desc.InputParameters ); i++ ) {

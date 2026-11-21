@@ -13,6 +13,7 @@
 #include "../renderer/D3D12/d3d12_HlslCompiler.h"
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
+#include "../renderer/D3D12/d3d12_RenderGraph.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
 #include "../renderer/D3D12/d3d12_Textures.h"
 #include "../renderer/D3D12/d3d12_Timers.h"
@@ -39,7 +40,7 @@
 	DXC compiles every stage of the repo's base/shaders, and the reflection of every program is held
 	to what GL reported on mars_city1 (neo/tests/d3d12_golden/renderProgInfo-gl.txt).
 	The pipeline state map runs per GLS family and on random keys; the PSO factory, the journal replayed
-	into the next run and the pipeline library on WARP. The screen
+	into the next run, the pipeline library and the render graph's compute and raster passes on WARP. The screen
 	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU, and so do the
 	GPU timers of r_pix and the draw recorder over every placement of the vertex cache's FRAME buffers.
 
@@ -1544,7 +1545,7 @@ void Test_HlslTargetMacros() {
 		"#endif\n";
 	for ( const shaderStageType_t stage : { shaderStageType_t::VERTEX, shaderStageType_t::FRAGMENT } ) {
 		const auto built = compiler.Build( source, stage, hlslParms_t::ANY );
-		Check( built.has_value(), va( "%s: %s", ( stage == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain", built ? "" : built.error().c_str() ) );
+		Check( built.has_value(), va( "%s: %s", D3D12_StageEntry( stage ), built ? "" : built.error().c_str() ) );
 	}
 	Check( compiler.Compiled() == 2, va( "two texts, two DXC runs: %d", compiler.Compiled() ) );
 }
@@ -1574,6 +1575,48 @@ void Test_HlslInternalStages() {
 	for ( size_t i = 0; i < built.size(); i++ ) {
 		Check( built[i].has_value(), va( "%s: %s", sources[i].name.c_str(), built[i] ? "" : built[i].error().c_str() ) );
 	}
+}
+
+// A compute stage binds b0 and b1 (at most the root constants) and reads its resources through ResourceDescriptorHeap.
+void Test_HlslCompute() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
+	const auto source = []( const char * text ) {
+		d3d12HlslSource_t made;
+		made.name = "test_compute";
+		made.path = "shaders/test_compute.hlsl";
+		made.text = text;
+		return made;
+	};
+	const auto built = compiler.Build( source(
+		"cbuffer Parms : register( b0 ) { uint target; };\n"
+		"cbuffer Level : register( b1 ) { uint level; };\n"
+		"[numthreads( 8, 4, 1 )]\n"
+		"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+		"	RWTexture2D<float4> output = ResourceDescriptorHeap[target];\n"
+		"	output[id.xy] = float4( level, 0.0, 0.0, 1.0 );\n"
+		"}\n" ), shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	if ( Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		const std::array<uint32, 3> & group = built->reflection.threadGroup;
+		Check( group[0] == 8 && group[1] == 4 && group[2] == 1, va( "numthreads %u %u %u, not 8 4 1", group[0], group[1], group[2] ) );
+	}
+	const auto bound = compiler.Build( source(
+		"RWTexture2D<float4> output : register( u0 );\n"
+		"[numthreads( 8, 8, 1 )]\n"
+		"void CSMain( uint3 id : SV_DispatchThreadID ) { output[id.xy] = 1.0; }\n" ), shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	Check( !bound && bound.error().Find( "ResourceDescriptorHeap" ) >= 0, bound ? "a UAV at u0 compiled" : bound.error().c_str() );
+	const auto large = compiler.Build( source(
+		"cbuffer Parms : register( b0 ) { uint target; };\n"
+		"cbuffer Level : register( b1 ) { uint4 a; uint4 b; uint c; };\n"
+		"[numthreads( 8, 8, 1 )]\n"
+		"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+		"	RWTexture2D<float4> output = ResourceDescriptorHeap[target];\n"
+		"	output[id.xy] = float4( a.x, b.x, c, 1.0 );\n"
+		"}\n" ), shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	Check( !large && large.error().Find( "root constants" ) >= 0, large ? "36 bytes at b1 compiled" : large.error().c_str() );
 }
 
 // Stages from the preprocessed text: names in comments, and a SKINNED that changes nothing, add none.
@@ -1627,7 +1670,7 @@ void Test_HlslSourcesCompile() {
 		}
 		for ( const auto & [source, type] : HlslStages( *library, entry.path().filename().string().c_str() ) ) {
 			stages++;
-			const char * entryPoint = ( type == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain";
+			const char * entryPoint = D3D12_StageEntry( type );
 			std::vector<const char *> defines;
 			for ( int i = 0; i < source.defines.Num(); i++ ) {
 				defines.push_back( source.defines[i].c_str() );
@@ -3440,7 +3483,9 @@ void idTestCopies::FillDepth() {
 }
 
 // Level 0 of a single-sample texture as 32-bit texels, rows in memory order; waits for the GPU.
-[[nodiscard]] std::vector<uint32> ReadTexels( idTestGpu & gpu, ID3D12Resource & resource, d3d12ResourceState_t & state ) {
+// Level 0 as texels of sizeof( T ) bytes, rows in memory order.
+template<typename T = uint32>
+[[nodiscard]] std::vector<T> ReadTexels( idTestGpu & gpu, ID3D12Resource & resource, d3d12ResourceState_t & state ) {
 	const D3D12_RESOURCE_DESC desc = resource.GetDesc();
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
 	UINT rows = 0;
@@ -3464,12 +3509,12 @@ void idTestCopies::FillDepth() {
 	gpu.WaitIdle();
 
 	const size_t width = static_cast<size_t>( desc.Width );
-	std::vector<uint32> texels( width * rows );
+	std::vector<T> texels( width * rows );
 	const D3D12_RANGE everything = { 0, static_cast<SIZE_T>( total ) };
 	void * mapped = nullptr;
 	if ( gpu.device.Check( buffer->Map( 0, &everything, &mapped ), "Map (test copy readback)" ) ) {
 		for ( UINT row = 0; row < rows; row++ ) {
-			memcpy( &texels[row * width], static_cast<const byte *>( mapped ) + static_cast<size_t>( row ) * footprint.Footprint.RowPitch, width * 4 );
+			memcpy( &texels[row * width], static_cast<const byte *>( mapped ) + static_cast<size_t>( row ) * footprint.Footprint.RowPitch, width * sizeof( T ) );
 		}
 		const D3D12_RANGE nothingWritten = { 0, 0 };
 		buffer->Unmap( 0, &nothingWritten );
@@ -4298,6 +4343,246 @@ void DxcBindless( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+// ---- WARP: the render graph --------------------------------------------------------------------------------
+
+// FILL writes ( x, y, 1.5, 1 ), DOWN averages 2 x 2 texels of source into target, ADD adds 1; CLEAR and COUNT
+// clear and add to word 0 of a raw buffer.
+constexpr const char * GRAPH_COMPUTE =
+	"cbuffer Parms : register( b0 ) { uint target; uint source; uint2 size; };\n"
+	"cbuffer Dispatch : register( b1 ) { uint amount; };\n"
+	"[numthreads( 8, 8, 1 )]\n"
+	"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+	"#if defined( CLEAR ) || defined( COUNT )\n"
+	"	RWByteAddressBuffer counter = ResourceDescriptorHeap[target];\n"
+	"#if defined( CLEAR )\n"
+	"	if ( all( id == 0 ) ) { counter.Store( 0, 0 ); }\n"
+	"#else\n"
+	"	counter.InterlockedAdd( 0, amount );\n"
+	"#endif\n"
+	"#else\n"
+	"	RWTexture2D<float4> output = ResourceDescriptorHeap[target];\n"
+	"	if ( any( id.xy >= size ) ) { return; }\n"
+	"#if defined( FILL )\n"
+	"	output[id.xy] = float4( id.x, id.y, 1.5, 1.0 );\n"
+	"#elif defined( DOWN )\n"
+	"	Texture2D<float4> input = ResourceDescriptorHeap[source];\n"
+	"	const int2 at = int2( id.xy * 2 );\n"
+	"	output[id.xy] = ( input.Load( int3( at, 0 ) ) + input.Load( int3( at + int2( 1, 0 ), 0 ) ) + input.Load( int3( at + int2( 0, 1 ), 0 ) )\n"
+	"		+ input.Load( int3( at + int2( 1, 1 ), 0 ) ) ) * 0.25;\n"
+	"#else\n"
+	"	Texture2D<float4> input = ResourceDescriptorHeap[source];\n"
+	"	output[id.xy] = input.Load( int3( id.xy, 0 ) ) + 1.0;\n"
+	"#endif\n"
+	"#endif\n"
+	"}\n";
+
+// The texel of source under the pixel, the counter's word 0 added to alpha.
+constexpr const char * GRAPH_PIXEL =
+	"cbuffer Parms : register( b1 ) { uint source; uint counter; };\n"
+	"float4 PSMain( float4 position : SV_Position ) : SV_Target {\n"
+	"	Texture2D<float4> input = ResourceDescriptorHeap[source];\n"
+	"	ByteAddressBuffer count = ResourceDescriptorHeap[counter];\n"
+	"	return input.Load( int3( position.xy, 0 ) ) + float4( 0.0, 0.0, 0.0, float( count.Load( 0 ) ) );\n"
+	"}\n";
+
+[[nodiscard]] d3d12HlslSource_t GraphSource( const char * text, const char * define ) {
+	d3d12HlslSource_t source;
+	source.name = va( "test_graph_%s", define );
+	source.path = "shaders/test_graph.hlsl";
+	source.text = text;
+	source.defines.Append( va( "%s=1", define ) );
+	return source;
+}
+
+[[nodiscard]] d3d12ComputePipeline_t GraphCompute( idTestCopies & fixture, const idD3D12ComputeRootSignature & root, const char * define ) {
+	const auto built = fixture.hlslCompiler.Build( GraphSource( GRAPH_COMPUTE, define ), shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	if ( !Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		return {};
+	}
+	return D3D12_CreateComputePipeline( fixture.gpu.device, root, built->code, built->reflection, L"test graph" );
+}
+
+// A committed resource the graph imports; its views are made by the caller.
+[[nodiscard]] idComPtr<ID3D12Resource> GraphTarget( idTestGpu & gpu, const D3D12_RESOURCE_DESC & desc ) {
+	const D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
+	idComPtr<ID3D12Resource> resource;
+	gpu.device.Check( gpu.device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+		IID_PPV_ARGS( &resource ) ), "CreateCommittedResource (test graph target)" );
+	return resource;
+}
+
+/*
+	One graph of compute, raster and copy passes, built twice as two frames would build it:
+
+	  fill      levels mip 0 = ( x, y, 1.5, 1 )                  16 x 16, 2 mips
+	  down      levels mip 1 = the 2 x 2 average of mip 0         the same resource as SRV (mip 0) and UAV (mip 1)
+	  unused    a transient nobody reads                          culled, never recorded
+	  count     counter = 0, UAV barrier, += amount x 256         two dispatches in one pass
+	  draw      output = levels mip 1 + ( 0, 0, 0, counter )      raster into an imported 8 x 8 target
+	  copy      result = counter                                  buffer copy into an imported buffer
+	  chain     a = fill, b = a + 1, c = b + 1, added = c + 1      c takes a's pooled resource
+*/
+void RenderGraph( idTestGpu & gpu ) {
+	idTestCopies fixture( gpu, 1 );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	const d3d12ComputePipeline_t fill = GraphCompute( fixture, computeRoot, "FILL" );
+	const d3d12ComputePipeline_t down = GraphCompute( fixture, computeRoot, "DOWN" );
+	const d3d12ComputePipeline_t add = GraphCompute( fixture, computeRoot, "ADD" );
+	const d3d12ComputePipeline_t clear = GraphCompute( fixture, computeRoot, "CLEAR" );
+	const d3d12ComputePipeline_t count = GraphCompute( fixture, computeRoot, "COUNT" );
+	const auto pixel = fixture.hlslCompiler.Build( GraphSource( GRAPH_PIXEL, "DRAW" ), shaderStageType_t::FRAGMENT, hlslParms_t::ANY );
+	if ( !Check( pixel.has_value(), pixel ? "" : pixel.error().c_str() ) || !computeRoot.Get() || !fill || !down || !add || !clear || !count ) {
+		return;
+	}
+	const idComPtr<ID3D12PipelineState> drawPso = fixture.passes.CreatePipeline( pixel->code, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,
+		static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ), L"test graph draw" );
+
+	constexpr DXGI_FORMAT FLOAT4 = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	D3D12_RESOURCE_DESC textureDesc = {};
+	textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	textureDesc.Width = 8;
+	textureDesc.Height = 8;
+	textureDesc.DepthOrArraySize = 1;
+	textureDesc.MipLevels = 1;
+	textureDesc.Format = FLOAT4;
+	textureDesc.SampleDesc.Count = 1;
+	textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	const idComPtr<ID3D12Resource> output = GraphTarget( gpu, textureDesc );
+	textureDesc.Width = textureDesc.Height = 16;
+	textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	const idComPtr<ID3D12Resource> added = GraphTarget( gpu, textureDesc );
+	const idComPtr<ID3D12Resource> result = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, 16, D3D12_RESOURCE_STATE_COMMON, L"test graph result" );
+	if ( !Check( drawPso && output && added && result, "the graph's PSO and imported resources" ) ) {
+		return;
+	}
+	d3d12ResourceState_t outputState, addedState, resultState;
+	resultState.decays = true;
+	const d3d12Descriptor_t outputRtv = gpu.rtvPool.Allocate();
+	D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+	rtvDesc.Format = FLOAT4;
+	rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+	gpu.device.Get().CreateRenderTargetView( output.Get(), &rtvDesc, gpu.rtvPool.Cpu( outputRtv ) );
+	const d3d12Descriptor_t addedUav = gpu.srvPool.Allocate();
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = FLOAT4;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+	gpu.srvPool.CreateUav( addedUav, *added.Get(), uavDesc );
+
+	uint32 amount = 1;
+	bool unusedRecorded = false;
+	const auto build = [&]() {
+		constexpr d3d12PoolDesc_t PLAIN = { .format = FLOAT4, .width = 16, .height = 16, .unorderedAccess = true };
+		constexpr d3d12PoolDesc_t MIPPED = { .format = FLOAT4, .width = 16, .height = 16, .mips = 2, .unorderedAccess = true };
+		constexpr d3d12PoolDesc_t COUNTER = { .kind = d3d12PoolDesc_t::kind_t::BUFFER, .width = 16, .unorderedAccess = true };
+		using access = d3d12GraphAccess_t;
+		using pass = d3d12GraphPass_t;
+		const d3d12GraphResource_t levels = graph.Create( "test levels", MIPPED );
+		const d3d12GraphResource_t counter = graph.Create( "test counter", COUNTER );
+		const d3d12GraphResource_t unused = graph.Create( "test unused", PLAIN );
+		const std::array<d3d12GraphResource_t, 3> chain = { graph.Create( "test chain a", PLAIN ), graph.Create( "test chain b", PLAIN ),
+			graph.Create( "test chain c", PLAIN ) };
+		const d3d12GraphResource_t outputs = graph.Import( "test output", { output.Get(), &outputState, {}, {}, gpu.rtvPool.Cpu( outputRtv ), 8, 8 } );
+		const d3d12GraphResource_t results = graph.Import( "test result", { result.Get(), &resultState, {}, {}, {}, 16, 1 } );
+		const d3d12GraphResource_t adds = graph.Import( "test added", { added.Get(), &addedState, {}, addedUav, {}, 16, 16 } );
+		const auto dispatch = [&]( const d3d12ComputePipeline_t & pipeline, d3d12GraphResource_t target, std::optional<d3d12GraphResource_t> source,
+			uint16 targetMip, uint16 sourceMip ) {
+			return [&pipeline, target, source, targetMip, sourceMip]( idD3D12GraphContext & context ) {
+				const uint32 size = context.Width( target, targetMip );
+				const std::array<uint32, 4> parms = { context.Uav( target, targetMip ), source ? context.Srv( *source, sourceMip ) : 0, size, size };
+				const d3d12UploadSpan_t span = context.Parms( parms );
+				context.Dispatch( pipeline, &span, size, size );
+			};
+		};
+		graph.AddPass( "fill", pass::COMPUTE, { { levels, access::UAV, 0 } }, dispatch( fill, levels, std::nullopt, 0, 0 ) );
+		graph.AddPass( "down", pass::COMPUTE, { { levels, access::SRV, 0 }, { levels, access::UAV, 1 } }, dispatch( down, levels, levels, 1, 0 ) );
+		graph.AddPass( "unused", pass::COMPUTE, { { unused, access::UAV, 0 } }, [&unusedRecorded]( idD3D12GraphContext & ) {
+			unusedRecorded = true;
+		} );
+		graph.AddPass( "count", pass::COMPUTE, { { counter, access::UAV } }, [&, counter]( idD3D12GraphContext & context ) {
+			const std::array<uint32, 4> parms = { context.Uav( counter ), 0, 0, 0 };
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( clear, &span, 1 );
+			context.UavBarrier( counter );
+			context.Dispatch( count, &span, 16, 16, 1, std::span( &amount, 1 ) );
+		} );
+		graph.AddPass( "draw", pass::RASTER, { { levels, access::SRV, 1 }, { counter, access::SRV }, { outputs, access::RTV } },
+			[&, levels, counter, outputs]( idD3D12GraphContext & context ) {
+				const d3d12UploadSpan_t span = context.Parms( std::array<uint32, 2>{ context.Srv( levels, 1 ), context.Srv( counter ) } );
+				context.Draw( *drawPso.Get(), outputs, 0, { 0, 0, 8, 8 }, span );
+			} );
+		graph.AddPass( "copy", pass::COPY, { { counter, access::COPY_SOURCE }, { results, access::COPY_DEST } },
+			[counter, results]( idD3D12GraphContext & context ) {
+				context.List().CopyBufferRegion( &context.Resource( results ), 0, &context.Resource( counter ), 0, 16 );
+			} );
+		graph.AddPass( "chain a", pass::COMPUTE, { { chain[0], access::UAV, 0 } }, dispatch( fill, chain[0], std::nullopt, 0, 0 ) );
+		graph.AddPass( "chain b", pass::COMPUTE, { { chain[0], access::SRV }, { chain[1], access::UAV, 0 } }, dispatch( add, chain[1], chain[0], 0, 0 ) );
+		graph.AddPass( "chain c", pass::COMPUTE, { { chain[1], access::SRV }, { chain[2], access::UAV, 0 } }, dispatch( add, chain[2], chain[1], 0, 0 ) );
+		graph.AddPass( "chain out", pass::COMPUTE, { { chain[2], access::SRV }, { adds, access::UAV } }, dispatch( add, adds, chain[2], 0, 0 ) );
+	};
+
+	const auto checkFrame = [&]( const char * frame ) {
+		const idD3D12RenderGraph::stats_t & stats = graph.LastStats();
+		Check( stats.passes == 9 && stats.culled == 1 && stats.transients == 5, va( "%s: %d passes, %d culled, %d transients: not 9, 1, 5", frame,
+			stats.passes, stats.culled, stats.transients ) );
+		Check( !unusedRecorded, va( "%s: the culled pass was recorded", frame ) );
+		const std::vector<idVec4> drawn = ReadTexels<idVec4>( gpu, *output.Get(), outputState );
+		const std::vector<idVec4> chained = ReadTexels<idVec4>( gpu, *added.Get(), addedState );
+		const std::vector<byte> counted = gpu.Read( *result.Get(), &resultState, 0, 4 );
+		if ( !Check( drawn.size() == 64 && chained.size() == 256 && counted.size() == 4, va( "%s: the readbacks", frame ) ) ) {
+			return;
+		}
+		uint32 total = 0;
+		memcpy( &total, counted.data(), sizeof( total ) );
+		Check( total == amount * 256, va( "%s: the counter is %u, not %u", frame, total, amount * 256 ) );
+		int wrongDrawn = 0;
+		int wrongChained = 0;
+		for ( int y = 0; y < 16; y++ ) {
+			for ( int x = 0; x < 16; x++ ) {
+				const idVec4 chainExpected( x + 3.0f, y + 3.0f, 4.5f, 4.0f );
+				wrongChained += ( chained[y * 16 + x] != chainExpected ) ? 1 : 0;
+				if ( x < 8 && y < 8 ) {
+					const idVec4 drawExpected( x * 2.0f + 0.5f, y * 2.0f + 0.5f, 1.5f, 1.0f + static_cast<float>( amount * 256 ) );
+					wrongDrawn += ( drawn[y * 8 + x] != drawExpected ) ? 1 : 0;
+				}
+			}
+		}
+		Check( wrongDrawn == 0, va( "%s: %d of 64 drawn texels wrong, ( 0, 0 ) is %s", frame, wrongDrawn, drawn[0].ToString() ) );
+		Check( wrongChained == 0, va( "%s: %d of 256 chained texels wrong, ( 0, 0 ) is %s", frame, wrongChained, chained[0].ToString() ) );
+		CheckNoLayerErrors( gpu );
+	};
+
+	fixture.Bind();
+	build();
+	graph.Execute();
+	checkFrame( "frame 1" );
+	// levels, the counter and two of the three chain textures: c reuses a's
+	Check( pool.CreatedThisFrame() == 4 && pool.Num() == 4, va( "frame 1: %d pooled resources, %d created: not 4", pool.Num(), pool.CreatedThisFrame() ) );
+	pool.EndFrame();
+
+	amount = 2;
+	fixture.Bind();
+	build();
+	graph.Execute();
+	checkFrame( "frame 2" );
+	Check( pool.CreatedThisFrame() == 0 && pool.Num() == 4, va( "frame 2: %d pooled resources, %d created: not 4 and 0", pool.Num(), pool.CreatedThisFrame() ) );
+
+	for ( uint64 frame = 0; frame < idD3D12ResourcePool::UNUSED_FRAMES; frame++ ) {
+		pool.EndFrame();
+	}
+	Check( pool.Num() == 4, va( "%d pooled resources after %llu unused frames: not 4", pool.Num(), idD3D12ResourcePool::UNUSED_FRAMES ) );
+	pool.EndFrame();
+	Check( pool.Num() == 0 && pool.Bytes() == 0, va( "%d pooled resources after %llu unused frames: not 0", pool.Num(), idD3D12ResourcePool::UNUSED_FRAMES + 1 ) );
+	gpu.WaitIdle();
+	gpu.srvPool.Free( addedUav );
+	gpu.rtvPool.Free( outputRtv );
+	CheckNoLayerErrors( gpu );
+}
+
 template <void ( *RULE )( idTestGpu & )>
 void OnWarp() {
 	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
@@ -4357,6 +4642,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Hlsl_BuildAll", Test_HlslBuildAll },
 	{ "Hlsl_TargetMacros", Test_HlslTargetMacros },
 	{ "Hlsl_InternalStages", Test_HlslInternalStages },
+	{ "Hlsl_Compute", Test_HlslCompute },
 	{ "Warp_DxcBindless", OnWarp<DxcBindless> },
 	{ "Warp_PrebuiltStages", OnWarp<PrebuiltStages> },
 	{ "Gpu_DxcBindless", OnGpu<DxcBindless> },
@@ -4409,6 +4695,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_DrawBindless", OnWarp<DrawBindless> },
 	{ "Gpu_DrawBindless", OnGpu<DrawBindless> },
 	{ "Gpu_DrawFrameBuffers", OnGpu<DrawFrameBufferPlacements> },
+	{ "Warp_RenderGraph", OnWarp<RenderGraph> },
+	{ "Gpu_RenderGraph", OnGpu<RenderGraph> },
 };
 
 }	// namespace
