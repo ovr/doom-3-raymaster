@@ -10,9 +10,9 @@
 	neo/tests/d3d12_*) names these APIs: tools/check-render-api-leaks.ps1 fails when one does.
 	d3d12.h is the Agility SDK's (external/d3d12-x64, tools/d3d12/install-d3d12-sdk.ps1).
 
-	The DLLs are never linked: idD3D12Library loads them at Init, so an OpenGL run does not load
-	them through this code. Windows' own (d3d12, dxgi) come from System32 only, the ones that ship
-	with the exe (dxcompiler and dxil, the Agility runtime in D3D12\) from its folder only.
+	The DLLs are never linked: idD3D12Library loads them at Init. Windows' own (d3d12, dxgi) come
+	from System32 only, the ones that ship with the exe (dxcompiler and dxil, the Agility runtime in
+	D3D12\) from its folder only.
 */
 
 #include <d3d12.h>

@@ -993,7 +993,7 @@ constexpr samplerDesc_t POINT_CLAMP = { samplerFilter_t::NEAREST, samplerAddress
 	return static_cast<float>( p[0] | ( p[1] << 8 ) ) / 65535.0f;
 }
 
-// What GL samples from one texel of the uploaded data: its internal format, then the swizzle of GL_SetTexParameters.
+// What GL sampled from one texel of the uploaded data: its internal format, then the swizzle of GL_SetTexParameters.
 [[nodiscard]] idVec4 GlTexel( textureFormat_t format, const byte * p ) {
 	switch ( format ) {
 		case FMT_RGBA8:		return idVec4( Unorm8( p[0] ), Unorm8( p[1] ), Unorm8( p[2] ), Unorm8( p[3] ) );
@@ -2117,7 +2117,7 @@ void Test_PipelineStencil() {
 	Check( !off.StencilEnable, "no function and no front ops: no stencil test" );
 	Check( D3D12_NormalizeKey( Key( GLS_STENCIL_MAKE_MASK( 0x0F ) | GLS_SEPARATE_STENCIL ) ) == D3D12_NormalizeKey( Key( 0 ) ),
 		"with the test off the mask and the back ops do not count" );
-	// GLS:316-322 reads the front ops only: back ops alone leave GL's test off
+	// GL's backend read the front ops only: back ops alone left its test off
 	const D3D12_DEPTH_STENCIL_DESC1 backOnly = Desc( Key( GLS_SEPARATE_STENCIL | GLS_BackStencilOps( GLS_STENCIL_OP_PASS_INCR ) ) ).depthStencil;
 	Check( !backOnly.StencilEnable, "back ops alone: no stencil test, as in GL" );
 
@@ -3030,7 +3030,7 @@ void RasterGlRows( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
-// R_PipelineCull and FrontCounterClockwise FALSE against API_Cull: GL's front faces wind counter-clockwise in its window,
+// R_PipelineCull and FrontCounterClockwise FALSE against GL's API_Cull: its front faces wind counter-clockwise in its window,
 // a mirror swaps the culled face, and the two-sided stencil ops of a shadow volume go to GL's faces.
 void RasterCull( idTestGpu & gpu ) {
 	idTestRaster raster( gpu );

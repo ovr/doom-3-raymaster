@@ -39,14 +39,11 @@ If you have questions concerning this license or the applicable additional terms
 /*
 	The render programs the engine draws with. A program <name> has a vertex stage and, unless it only
 	writes depth, a fragment stage; shared code names both "<name>.vfp" (".vp" without a fragment
-	stage), and "<name>_skinned.vfp" is its skinned variant. The backends load a stage by that name:
-
-	  OpenGL    renderprogs/glsl/<name>_vertex.glsl, _fragment.glsl and .uniforms, the GLSL id baked
-	            into the resource files (never a loose file); a stage the packs lack has no shader
-	  D3D12     base/shaders/<name>.hlsl, VSMain and PSMain; the skinned variant with SKINNED=1
+	stage), and "<name>_skinned.vfp" is its skinned variant. The backend loads a stage by that name
+	from base/shaders/<name>.hlsl, VSMain and PSMain; the skinned variant with SKINNED=1.
 
 	Materials name programs too ("heatHaze.vfp"), case ignored. A name the table lacks, or a stage it
-	does not list, is a stage without a shader on D3D12, and its program fails to link as in GL.
+	does not list, is a stage without a shader, and its program fails to link as it did in GL.
 */
 
 enum class renderProgBuiltin_t : uint8 {

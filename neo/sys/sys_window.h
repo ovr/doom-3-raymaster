@@ -60,13 +60,10 @@ bool		Sys_CreateWindow( const windowParms_t & parms );
 // Changes the mode or the size without destroying the window.
 bool		Sys_SetWindowMode( const windowParms_t & parms );
 
-// Closes the window, resets the display mode and the gamma ramps.
+// Closes the window and resets the display mode.
 void		Sys_DestroyWindow();
 
 // HWND on Windows, nullptr without a window.
 void *		Sys_GetNativeWindow();
-
-// Hardware gamma ramps for r_gamma and r_brightness, 16 bit values.
-void		Sys_SetDeviceGammaRamp( const unsigned short red[256], const unsigned short green[256], const unsigned short blue[256] );
 
 #endif /* !__SYS_WINDOW_H__ */

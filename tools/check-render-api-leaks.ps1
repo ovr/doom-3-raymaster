@@ -3,25 +3,23 @@
 Fails when a file uses the names of a graphics API outside the folder of that API.
 
 .DESCRIPTION
-OpenGL belongs to neo/renderer/OpenGL/ and to the WGL part of the platform layer
-(neo/sys/win32/win_glimp.cpp, win_qgl.cpp). Every other .cpp, .h and .inl file under neo/ and editor/ is
-shared code: there the script looks, outside comments and string literals, for
+Direct3D 12, DXGI and DXC belong to neo/renderer/D3D12/ and to the tests named neo/tests/d3d12_*, and
+so would D3DCompiler, which no code uses any more. Every other .cpp, .h and .inl file under neo/ and
+editor/ is shared code: there the script looks, outside comments and string literals, for
+
+  - ID3D12*, IDXGI* and IDxc* interfaces, D3D12_*, DXGI_*, D3D_* and DXC_* names, D3DCompile*, Dxc*,
+  - #include lines of d3d12*.h, dxgi*.h, d3dcompiler.h and dxcapi.h.
+
+The OpenGL backend is gone, so OpenGL names belong nowhere, the D3D12 folder included:
 
   - qgl* and qwgl* calls and pointers, and gl*( / wgl*( calls,
   - GL_* constants and GL* types (GLuint, GLenum, ...),
   - #include lines of qgl.h, glext.h, wglext.h and gl/gl.h.
 
-Direct3D 12, DXGI and DXC belong to neo/renderer/D3D12/ and to the tests named neo/tests/d3d12_*, and
-so would D3DCompiler, which no code uses any more. Every other file is checked for
-
-  - ID3D12*, IDXGI* and IDxc* interfaces, D3D12_*, DXGI_*, D3D_* and DXC_* names, D3DCompile*, Dxc*,
-  - #include lines of d3d12*.h, dxgi*.h, d3dcompiler.h and dxcapi.h.
-
-The D3D12 folder itself is shared code for the OpenGL rule: it must not name OpenGL either.
-
-The precompiled header includes neither qgl.h nor the D3D headers, so most of these names do not
-compile in the wrong place. The script also catches what compiles anyway: gl* and wgl* functions
-that windows.h declares, an #include of an API header, and code inside #if blocks no config builds.
+GL's conventions keep their names (GLS_* state bits, GLMatrix, GLClipToD3D): they are not API names.
+The precompiled header includes no API header, so most of these names do not compile in the wrong
+place. The script also catches what compiles anyway: gl* and wgl* functions that windows.h declares,
+an #include of an API header, and code inside #if blocks no config builds.
 
 Exit code: 0 when no file names an API outside its folder, 1 otherwise (the names are listed per
 file). ctest runs it as the test renderApiLeaks.
@@ -46,9 +44,8 @@ $literalOnly = New-Object regex $literal, $none
 $apis = @(
 	@{
 		Name = 'GL'
-		Home = 'neo/renderer/OpenGL/'
-		AllowedDirs = @( 'neo/renderer/OpenGL/' )
-		AllowedFiles = @( 'neo/sys/win32/win_glimp.cpp', 'neo/sys/win32/win_qgl.cpp' )
+		AllowedDirs = @()
+		AllowedFiles = @()
 		AllowedPrefixes = @()
 		Hint = 'gl'
 		Includes = ( New-Object regex '(?im)^[ \t]*#[ \t]*include[ \t]*[<"][^>"\n]*\b(qgl\.h|glext\.h|wglext\.h|gl/gl\.h)[>"]', $none )
@@ -61,7 +58,6 @@ $apis = @(
 	},
 	@{
 		Name = 'D3D12'
-		Home = 'neo/renderer/D3D12/'
 		AllowedDirs = @( 'neo/renderer/D3D12/' )
 		AllowedFiles = @()
 		AllowedPrefixes = @( 'neo/tests/d3d12_' )
@@ -113,7 +109,7 @@ foreach ( $file in ( $files | Sort-Object FullName ) ) {
 }
 
 if ( $counts.Count -eq 0 ) {
-	Write-Host 'no GL or D3D12 names outside their folders'
+	Write-Host 'no GL names and no D3D12 names outside their folder'
 	exit 0
 }
 $total = 0
@@ -121,5 +117,5 @@ foreach ( $entry in $counts.Values ) {
 	$total += $entry.Found.Count
 	Write-Host "$( $entry.Api.Name ) LEAK: $( $entry.File ) has $( $entry.Found.Count ) $( $entry.Api.Name ) names: $( ( $entry.Found | Select-Object -Unique ) -join ', ' )"
 }
-Write-Host "$total API names in $( $counts.Count ) files outside their folders; GL belongs to neo/renderer/OpenGL/, D3D12 to neo/renderer/D3D12/, shared code calls renderBackend"
+Write-Host "$total API names in $( $counts.Count ) files outside their folders; GL belongs nowhere, D3D12 to neo/renderer/D3D12/, shared code calls renderBackend"
 exit 1

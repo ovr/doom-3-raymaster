@@ -713,13 +713,11 @@ public:
 	virtual void			Init();
 	virtual void			Shutdown();
 	virtual void			ResetGuiModels();
-	virtual void			InitOpenGL();
-	virtual void			ShutdownOpenGL();
-	virtual bool			IsOpenGLRunning() const;
-	const char *			GetRenderApi() const override;
+	void					InitBackend() override;
+	void					ShutdownBackend() override;
+	bool					IsBackendRunning() const override;
 	virtual bool			IsFullScreen() const;
 	virtual stereo3DMode_t	GetStereo3DMode() const;
-	virtual bool			HasQuadBufferSupport() const;
 	virtual bool			IsStereoScopicRenderingSupported() const;
 	virtual stereo3DMode_t	GetStereoScopicRenderingMode() const;
 	virtual void			EnableStereoScopicRendering( const stereo3DMode_t mode ) const;
@@ -788,7 +786,7 @@ public:
 
 public:
 	// renderer globals
-	bool					registered;		// cleared at shutdown, set at InitOpenGL
+	bool					registered;		// cleared at shutdown, set at InitBackend
 
 	bool					takingScreenshot;
 	bool					discardFrame = false;	// the next Present shows nothing (ReadLastFrame)
@@ -858,8 +856,7 @@ extern screenConfig_t			screenConfig;		// outside of TR since it shouldn't be cl
 //
 // cvars
 //
-extern idCVar r_debugContext;				// enable various levels of context debug
-extern idCVar r_skipIntelWorkarounds;		// skip work arounds for Intel driver bugs
+extern idCVar r_debugContext;				// the Direct3D 12 debug layer, GPU-based validation, DRED
 extern idCVar r_vidMode;					// video mode number
 extern idCVar r_displayRefresh;				// optional display refresh rate option for vid mode
 extern idCVar r_fullscreen;					// 0 = windowed, 1 = full screen
@@ -868,11 +865,11 @@ extern idCVar r_multiSamples;				// number of antialiasing samples
 
 extern idCVar r_znear;						// near Z clip plane
 
-extern idCVar r_swapInterval;				// changes wglSwapIntarval
+extern idCVar r_swapInterval;				// 0 = tear, 1 and 2 = v-sync
 extern idCVar r_offsetFactor;				// polygon offset parameter
 extern idCVar r_offsetUnits;				// polygon offset parameter
 extern idCVar r_singleTriangle;				// only draw a single triangle per primitive
-extern idCVar r_logFile;					// number of frames to emit GL logs
+extern idCVar r_logFile;					// number of frames to write the render log of
 extern idCVar r_clear;						// force screen clear every frame
 extern idCVar r_subviewOnly;				// 1 = don't render main view, allowing subviews to be debugged
 extern idCVar r_lightScale;					// all light intensities are multiplied by this, which is normally 2
@@ -905,7 +902,7 @@ extern idCVar r_skipPrelightShadows;		// 1 = skip the dmap generated static shad
 extern idCVar r_useCachedDynamicModels;		// 1 = cache snapshots of dynamic models
 extern idCVar r_useScissor;					// 1 = scissor clip as portals and lights are processed
 extern idCVar r_usePortals;					// 1 = use portals to perform area culling, otherwise draw everything
-extern idCVar r_useStateCaching;			// avoid redundant state changes in GL_*() calls
+extern idCVar r_useStateCaching;			// 0 = every State() changes every bit
 extern idCVar r_useEntityCallbacks;			// if 0, issue the callback immediately at update time, rather than defering
 extern idCVar r_lightAllBackFaces;			// light all the back faces, even when they would be shadowed
 extern idCVar r_useLightDepthBounds;		// use depth bounds test on lights to reduce both shadow and interaction fill
@@ -935,8 +932,6 @@ extern idCVar r_skipDiffuse;				// use black for diffuse
 extern idCVar r_skipDecals;					// skip decal surfaces
 extern idCVar r_skipOverlays;				// skip overlay surfaces
 extern idCVar r_skipShadows;				// disable shadows
-
-extern idCVar r_ignoreGLErrors;
 
 extern idCVar r_screenFraction;				// for testing fill rate, the resolution of the entire screen can be changed
 extern idCVar r_showUpdates;				// report entity and light updates and ref counts
@@ -994,7 +989,7 @@ INITIALIZATION
 */
 
 void R_Init();
-void R_InitOpenGL();
+void R_InitBackend();
 
 void R_SetColorMappings();
 
@@ -1027,7 +1022,6 @@ bool R_GetDesktopResolution( const int displayNum, int & width, int & height );
 
 // The window comes from the platform layer. When a mode cannot be set, the renderer
 // resets the parms to "safe mode" and tries again; if that also fails, the error is fatal.
-// The OpenGL context on that window is renderer/OpenGL/gl_glimp.h.
 #include "../sys/sys_window.h"
 
 

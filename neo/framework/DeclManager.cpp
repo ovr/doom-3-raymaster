@@ -1148,8 +1148,8 @@ const idDecl *idDeclManagerLocal::FindType( declType_t type, const char *name, b
 	// if it hasn't been parsed yet, parse it now
 	if ( decl->declState == DS_UNPARSED ) {
 		if ( !idLib::IsMainThread() ) {
-			// we can't load images from a background thread on OpenGL,
-			// the renderer on the main thread should parse it if needed
+			// images load only on the main thread, where the render backend lives;
+			// the renderer there should parse it if needed
 			idLib::Error( "Attempted to load %s decl '%s' from game thread!", GetDeclNameFromType( type ), name );
 		}
 		decl->ParseLocal();

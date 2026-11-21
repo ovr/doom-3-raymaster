@@ -272,8 +272,6 @@ void idImage::PurgeImage() {
 		renderBackend->DestroyTexture( handle );
 		handle = textureHandle_t::NONE;
 	}
-	// clear all the current binding caches, so the next bind will do a real one
-	renderBackend->ForgetTextureBindings();
 }
 
 /*

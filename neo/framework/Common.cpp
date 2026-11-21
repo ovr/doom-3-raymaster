@@ -1052,8 +1052,8 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 		// if any archived cvars are modified after this, we will trigger a writing of the config file
 		cvarSystem->ClearModifiedFlags( CVAR_ARCHIVE );
 		
-		// init OpenGL, which will open a window and connect sound and input hardware
-		renderSystem->InitOpenGL();
+		// the render backend, which opens the window and connects sound and input hardware
+		renderSystem->InitBackend();
 
 		// Support up to 2 digits after the decimal point
 		com_engineHz_denominator = 100LL * com_engineHz.GetFloat();

@@ -233,21 +233,10 @@ static void R_CheckCvars() {
 		}
 	}
 
-	extern idCVar r_useSeamlessCubeMap;
-	if ( r_useSeamlessCubeMap.IsModified() ) {
-		r_useSeamlessCubeMap.ClearModified();
-		renderBackend->SetOption( renderOption_t::SEAMLESS_CUBE_MAPS, r_useSeamlessCubeMap.GetBool() );
-	}
-
 	extern idCVar r_useSRGB;
 	if ( r_useSRGB.IsModified() ) {
 		r_useSRGB.ClearModified();
 		renderBackend->SetOption( renderOption_t::SRGB_OUTPUT, r_useSRGB.GetBool() );
-	}
-
-
-	if ( r_multiSamples.IsModified() ) {
-		renderBackend->SetOption( renderOption_t::MULTISAMPLE, r_multiSamples.GetInteger() > 0 );
 	}
 
 	// the wndproc changes the native size when the border is dragged; the output follows between frames

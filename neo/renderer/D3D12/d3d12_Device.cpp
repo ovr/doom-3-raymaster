@@ -464,9 +464,6 @@ void idD3D12Device::FillCaps( renderCaps_t & caps ) const {
 	caps.depthBits = 24;
 	caps.maxDebugGroupDepth = idD3D12DebugGroups::MAX_DEPTH;
 	caps.depthBoundsTest = features.depthBounds;
-	caps.maskedColorClear = true;
-	caps.quadBufferStereo = false;
-	caps.adaptiveSync = false;
 	caps.debugGroups = true;
 }
 

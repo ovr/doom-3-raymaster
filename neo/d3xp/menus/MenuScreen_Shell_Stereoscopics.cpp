@@ -40,8 +40,7 @@ static const char * stereoRender_enable_text[] = {
 	"#str_swf_stereo_side_by_side",
 	"#str_swf_stereo_top_and_bottom",
 	"#str_swf_stereo_side_by_side_full",
-	"#str_swf_stereo_interlaced",
-	"#str_swf_stereo_quad"
+	"#str_swf_stereo_interlaced"
 };
 static const int NUM_STEREO_ENABLE = sizeof( stereoRender_enable_text ) / sizeof( stereoRender_enable_text[0] );
 
@@ -342,11 +341,7 @@ idMenuScreen_Shell_Stereoscopics::idMenuDataSource_StereoSettings::AdjustField
 void idMenuScreen_Shell_Stereoscopics::idMenuDataSource_StereoSettings::AdjustField( const int fieldIndex, const int adjustAmount ) {
 	
 	if ( fieldIndex == STEREO_FIELD_ENABLE ) {
-		int numOptions = NUM_STEREO_ENABLE;
-		if ( !renderSystem->HasQuadBufferSupport() ) {
-			numOptions--;
-		}
-
+		const int numOptions = NUM_STEREO_ENABLE;
 		int adjusted = fields[ fieldIndex ].ToInteger() + adjustAmount;
 		adjusted += numOptions;
 		adjusted %= numOptions;
@@ -413,10 +408,5 @@ idMenuScreen_Shell_Stereoscopics::idMenuDataSource_StereoSettings::IsRestartRequ
 ========================
 */
 bool idMenuScreen_Shell_Stereoscopics::idMenuDataSource_StereoSettings::IsRestartRequired() const {
-	if ( fields[ STEREO_FIELD_ENABLE ].ToInteger() != originalFields[ STEREO_FIELD_ENABLE ].ToInteger() ) {
-		if ( fields[ STEREO_FIELD_ENABLE ].ToInteger() == STEREO3D_QUAD_BUFFER || originalFields[ STEREO_FIELD_ENABLE ].ToInteger() == STEREO3D_QUAD_BUFFER ) {
-			return true;
-		}
-	}
-	return false;
+	return false;	// only the OpenGL quad buffer needed a new window
 }

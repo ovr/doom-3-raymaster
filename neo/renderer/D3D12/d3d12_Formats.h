@@ -8,7 +8,8 @@
 
 /*
 	The texture formats of shared code (ImageOpts.h) as DXGI formats and SRV component mappings, so a
-	shader samples what GL's swizzles (gl_Image.cpp GL_SetTexParameters) give:
+	shader samples what the swizzles of the removed OpenGL backend gave (GL_SetTexParameters,
+	git show d647250:neo/renderer/OpenGL/gl_Image.cpp):
 
 	  format                  resource / view          mapping   bytes      upload
 	  RGBA8, COLOR_COPY role  R8G8B8A8_UNORM           R G B A   4          copied
@@ -25,7 +26,7 @@
 	  X16                     R16_UNORM                R R R R   2          copied
 	  Y16_X16                 R16G16_UNORM             R R R G   4          copied
 	  NONE                    -                        -         -          Create warns, returns NONE
-	CFM_GREEN_ALPHA maps 1 1 1 G for any format: GL tests it before the format.
+	CFM_GREEN_ALPHA maps 1 1 1 G for any format: GL tested it before the format.
 
 	Q3, the border colour under a mapping: GL swizzles the border, so INT8 with BORDER_BLACK samples
 	(0,0,0,0) outside and ALPHA (1,1,1,0). D3D12 applies the mapping to the border too (the Borders
