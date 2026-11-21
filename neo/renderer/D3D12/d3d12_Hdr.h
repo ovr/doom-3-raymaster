@@ -22,7 +22,8 @@
 
 	The histogram and EyeAdaptation outlive the frame: the adaptation empties the histogram for the next one, and
 	EyeAdaptation keeps the adapted EV100 (include/exposure.hlsli). The CPU reads its copy once the frame's fence
-	was waited for (Present waits for it), so preExposure is the exposure of the last read-back resolve.
+	was waited for (Present waits for it), so preExposure is the exposure of the last read-back resolve; after a
+	reset, until a resolve is read back, the manual exposure.
 
 	The gamma composite: Encode turns a view's rectangle of the scene into its sRGB encoding after the lights
 	and back after the fog, each through a copy and a raster pass (per sample under MSAA).
@@ -99,8 +100,10 @@ public:
 	// adaptation moves by step. Executes the graph.
 	void							Resolve( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const postProcessSettings_t & settings,
 										const renderRect_t & viewport, float preExposure, const hdrExposureStep_t & step, idD3D12DebugGroups * groups );
-	// The next resolve's adaptation jumps to its target (a level load, a new output size).
-	void							ResetExposure() { exposureReset = true; }
+	// The next resolve's adaptation jumps to its target (a level load, a new output size). The readbacks are
+	// dropped: the gamma-phase blends depend on preExposure, so the frames until the next one are drawn with
+	// the manual exposure, as after Init, and give the same target whatever ran before.
+	void							ResetExposure() { exposureReset = true; lastExposure.reset(); readbackFence = 0; }
 	// Reads the last resolve's EyeAdaptation once the submitter has waited for its fence.
 	void							Poll();
 	[[nodiscard]] const std::optional<d3d12ExposureReadback_t> &	LastExposure() const { return lastExposure; }
