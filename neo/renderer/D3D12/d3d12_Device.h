@@ -35,7 +35,7 @@ struct d3d12Features_t {
 	bool							warp = false;
 	D3D_SHADER_MODEL				shaderModel = D3D_SHADER_MODEL_6_6;	// the highest the adapter runs
 	idStr							runtime;				// "Agility SDK 1.620.2" or "system 10.0.26100.1"
-	std::array<bool, 4>				samples = {};			// 1, 2, 4, 8 for RGBA8 and D24S8 together
+	std::array<bool, 4>				samples = {};			// 1, 2, 4, 8 for RGBA8, RGBA16F (the HDR scene) and D24S8 together
 	bool							depthBounds = false;	// OPTIONS2, not on WARP
 	bool							unalignedBlocks = false;	// OPTIONS8
 	bool							gpuUploadHeap = false;	// OPTIONS16

@@ -47,6 +47,7 @@ idD3D12DescriptorPool::idD3D12DescriptorPool( const idD3D12Device & owner, D3D12
 		visible = CreateHeap( owner, heapType, shaderVisible, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, L"doom3 shader-visible SRV heap" );
 		if ( visible ) {
 			visibleStart = visible->GetCPUDescriptorHandleForHeapStart();
+			visibleGpuStart = visible->GetGPUDescriptorHandleForHeapStart();
 		}
 	}
 }
@@ -82,13 +83,28 @@ D3D12_CPU_DESCRIPTOR_HANDLE idD3D12DescriptorPool::Cpu( d3d12Descriptor_t slot )
 }
 
 void idD3D12DescriptorPool::CreateSrv( d3d12Descriptor_t slot, ID3D12Resource & resource, const D3D12_SHADER_RESOURCE_VIEW_DESC & desc ) {
-	const D3D12_CPU_DESCRIPTOR_HANDLE source = Cpu( slot );
-	device.Get().CreateShaderResourceView( &resource, &desc, source );
+	device.Get().CreateShaderResourceView( &resource, &desc, Cpu( slot ) );
+	Mirror( slot );
+}
+
+void idD3D12DescriptorPool::CreateUav( d3d12Descriptor_t slot, ID3D12Resource & resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC & desc ) {
+	device.Get().CreateUnorderedAccessView( &resource, nullptr, &desc, Cpu( slot ) );
+	Mirror( slot );
+}
+
+void idD3D12DescriptorPool::Mirror( d3d12Descriptor_t slot ) {
 	if ( visible ) {
 		D3D12_CPU_DESCRIPTOR_HANDLE destination = visibleStart;
 		destination.ptr += static_cast<SIZE_T>( slot.index ) * increment;
-		device.Get().CopyDescriptorsSimple( 1, destination, source, type );
+		device.Get().CopyDescriptorsSimple( 1, destination, Cpu( slot ), type );
 	}
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE idD3D12DescriptorPool::VisibleGpu( d3d12Descriptor_t slot ) const {
+	assert( visible && slot.IsValid() && slot.index < next );
+	D3D12_GPU_DESCRIPTOR_HANDLE handle = visibleGpuStart;
+	handle.ptr += static_cast<UINT64>( slot.index ) * increment;
+	return handle;
 }
 
 idD3D12SamplerHeap::idD3D12SamplerHeap( const idD3D12Device & owner, idD3D12Graveyard & graves ) :

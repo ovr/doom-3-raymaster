@@ -66,6 +66,9 @@ float4 PSMain( VSOutput input ) : SV_Target {
 	binkImage.xyz = p;
 	binkImage.w = 1.0;
 
-	const float4 color = ( binkImage * input.color ) + input.add;
-	return float4( color.xyz * color.w, color.w );
+	float4 color = ( binkImage * input.color ) + input.add;
+	if ( HdrPhase() ) {
+		color = float4( SRGBToLinear( saturate( color.xyz ) ), saturate( color.w ) );	// the GUI formula is in gamma
+	}
+	return SceneOutput( float4( color.xyz * color.w, color.w ) );
 }

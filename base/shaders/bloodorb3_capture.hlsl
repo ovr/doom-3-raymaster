@@ -73,18 +73,18 @@ float4 PSMain( VSOutput input ) : SV_Target {
 	const float4 color1 = float4( 1.0, 0.95 - colorFactor, 0.95, 0.5 );
 	const float4 color2 = float4( 0.015, 0.015, 0.015, 0.01 );
 
-	const float4 accumSample0 = accumMap.Sample( accumSampler, input.texcoord0 ) * color0;
-	const float4 accumSample1 = accumMap.Sample( accumSampler, input.texcoord1 ) * color1;
-	const float4 accumSample2 = accumMap.Sample( accumSampler, input.texcoord2 ) * color2;
+	const float4 accumSample0 = SceneColor( accumMap.Sample( accumSampler, input.texcoord0 ), 0 ) * color0;
+	const float4 accumSample1 = SceneColor( accumMap.Sample( accumSampler, input.texcoord1 ), 0 ) * color1;
+	const float4 accumSample2 = SceneColor( accumMap.Sample( accumSampler, input.texcoord2 ), 0 ) * color2;
 	const float4 maskSample = maskMap.Sample( maskSampler, input.texcoord3 );
 
 	const float4 tint = float4( 0.8, 0.5, 0.5, 1 );
-	const float4 currentRenderSample = currentRenderMap.Sample( currentRenderSampler, input.texcoord3 ) * tint;
+	const float4 currentRenderSample = SceneColor( currentRenderMap.Sample( currentRenderSampler, input.texcoord3 ), 1 ) * tint;
 
 	// the first two accumulation samples blended, the third added
 	float4 accumColor = lerp( accumSample0, accumSample1, 0.5 );
 	accumColor += accumSample2;
 
 	accumColor = lerp( accumColor, currentRenderSample, maskSample.a );
-	return accumColor;
+	return SceneOutput( accumColor );
 }

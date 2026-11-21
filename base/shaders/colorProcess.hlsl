@@ -49,7 +49,7 @@ VSOutput VSMain( VSInput input ) {
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	const float4 src = sourceMap.Sample( sourceSampler, input.texcoord0.xy );
-	const float4 target = input.color * dot3( float3( 0.333, 0.333, 0.333 ), src );
-	return lerp( src, target, input.texcoord0.z );
+	const float4 src = SceneColor( sourceMap.Sample( sourceSampler, input.texcoord0.xy ), 0 );
+	const float4 target = DecodeColor( input.color ) * dot3( float3( 0.333, 0.333, 0.333 ), src );
+	return SceneOutput( lerp( src, target, input.texcoord0.z ) );
 }

@@ -48,10 +48,10 @@ VSOutput VSMain( VSInput input ) {
 	output.direction.y = dot3( fromView, rpWobbleSkyY );
 	output.direction.z = dot3( fromView, rpWobbleSkyZ );
 
-	output.color = saturate( ( input.color * rpVertexColorModulate ) + rpVertexColorAdd );
+	output.color = saturate( ( DecodeColor( input.color ) * rpVertexColorModulate ) + rpVertexColorAdd );
 	return output;
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	return skyMap.Sample( skySampler, input.direction ) * input.color;
+	return SceneOutput( DecodeColor( skyMap.Sample( skySampler, input.direction ) ) * input.color );
 }

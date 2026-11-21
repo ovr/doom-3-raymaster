@@ -19,8 +19,8 @@ idD3D12ScreenCopies::idD3D12ScreenCopies( idD3D12Submitter & submit, idD3D12Barr
 }
 
 // Only the part of the box inside the scene is copied; it lands at its offset in the texture.
-void idD3D12ScreenCopies::Color( textureHandle_t texture, int x, int y, int width, int height ) {
-	d3d12TextureSurface_t * target = textures.PrepareCopyTarget( texture, d3d12CopyKind_t::COLOR, width, height );
+void idD3D12ScreenCopies::Color( textureHandle_t texture, int x, int y, int width, int height, bool hdr ) {
+	d3d12TextureSurface_t * target = textures.PrepareCopyTarget( texture, d3d12CopyKind_t::COLOR, width, height, hdr );
 	if ( target == nullptr ) {
 		return;
 	}
@@ -33,7 +33,7 @@ void idD3D12ScreenCopies::Color( textureHandle_t texture, int x, int y, int widt
 		return;
 	}
 	const D3D12_RECT region = { x0, y0, x1, y1 };
-	idD3D12SceneTarget::surface_t & source = scene.Resolved( barriers, submitter, region );
+	idD3D12SceneTarget::surface_t & source = scene.Resolved( barriers, submitter, region, hdr );
 	barriers.Transition( *source.resource.Get(), source.state, D3D12_RESOURCE_STATE_COPY_SOURCE );
 	barriers.Transition( *target->resource.Get(), target->state, D3D12_RESOURCE_STATE_COPY_DEST );
 	barriers.Flush();

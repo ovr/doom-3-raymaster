@@ -100,8 +100,89 @@ static void RB_DrawTestClearPattern() {
 	}
 }
 
+// R13: the 3D view the HDR scene resolves at, the last drawing one of a world before the first drawing GUI
+// view. Subviews, the portal sky and remote views come before it and draw into the scene too; what follows the
+// first GUI view (the PDA, the menus, the editor's previews) stays LDR. stereoEye != 0: that eye's views only.
+static const drawSurfsCommand_t * RB_FindHdrMainView( const emptyCommand_t * cmds, int stereoEye ) {
+	if ( !renderBackend->Caps().hdrScene ) {
+		return nullptr;
+	}
+	const drawSurfsCommand_t * found = nullptr;
+	for ( ; cmds != nullptr; cmds = (const emptyCommand_t *)cmds->next ) {
+		if ( cmds->commandId != RC_DRAW_VIEW_3D && cmds->commandId != RC_DRAW_VIEW_GUI ) {
+			continue;
+		}
+		const drawSurfsCommand_t * dsc = (const drawSurfsCommand_t *)cmds;
+		const viewDef_t * viewDef = dsc->viewDef;
+		if ( stereoEye != 0 && viewDef->renderView.viewEyeBuffer != 0 && viewDef->renderView.viewEyeBuffer != stereoEye ) {
+			continue;
+		}
+		if ( !RB_ViewDraws( viewDef ) ) {
+			continue;
+		}
+		if ( cmds->commandId == RC_DRAW_VIEW_GUI ) {
+			break;
+		}
+		if ( !viewDef->isSubview && viewDef->viewEntitys != nullptr ) {
+			found = dsc;
+		}
+	}
+	if ( found != nullptr && !found->viewDef->postProcess.hdr ) {
+		found = nullptr;
+	}
+	if ( r_hdrDebug.GetInteger() == 2 ) {
+		common->Printf( "hdr: %s\n", ( found == nullptr ) ? "LDR frame" : va( "main view %d x %d, eye %d", found->viewDef->viewport.GetWidth(),
+			found->viewDef->viewport.GetHeight(), stereoEye ) );
+	}
+	return found;
+}
+
+// r_hdrDebug 1: what the eye adaptation of the last read-back resolve chose, once a second; 3: every frame, exactly
+// and with the view's time, so two runs can be compared line by line.
+static void RB_PrintHdrExposure( const viewDef_t & viewDef ) {
+	static int lastPrint;
+	const int now = Sys_Milliseconds();
+	const std::optional<hdrExposure_t> exposure = renderBackend->LastHdrExposure();
+	if ( !exposure ) {
+		return;
+	}
+	if ( r_hdrDebug.GetInteger() == 3 ) {
+		common->Printf( "hdr %d: EV100 measured %.6f, target %.6f, adapted %.6f; exposure %.6g, preExposure %.6g\n", viewDef.renderView.time[0],
+			exposure->measuredEV100, exposure->targetEV100, exposure->adaptedEV100, exposure->exposure, exposure->preExposure );
+		return;
+	}
+	if ( now - lastPrint < 1000 ) {
+		return;
+	}
+	lastPrint = now;
+	common->Printf( "hdr: EV100 measured %.2f, target %.2f, adapted %.2f; exposure %.3f (%+.2f EV), preExposure %.3f\n", exposure->measuredEV100,
+		exposure->targetEV100, exposure->adaptedEV100, exposure->exposure, idMath::Log( Max( exposure->exposure, 1e-30f ) ) / idMath::Log( 2.0f ),
+		exposure->preExposure );
+}
+
+static void RB_BeginHdrScene( const drawSurfsCommand_t * mainView ) {
+	if ( mainView != nullptr && ( r_hdrDebug.GetInteger() == 1 || r_hdrDebug.GetInteger() == 3 ) ) {
+		RB_PrintHdrExposure( *mainView->viewDef );
+	}
+	if ( mainView != nullptr ) {
+		renderBackend->BeginHdrScene( mainView->viewDef->postProcess );
+		backEnd.hdrPhase = true;
+		backEnd.hdrGamma = false;
+	}
+}
+
+// A phase no resolve ended: the 2D that follows must not draw into the HDR scene.
+static void RB_EndHdrScene() {
+	if ( backEnd.hdrPhase ) {
+		renderBackend->EndHdrScene();
+		backEnd.hdrPhase = false;
+		backEnd.hdrGamma = false;
+	}
+}
+
 // the debug tools that draw last, then the end of the frame (mono and stereo)
 static void RB_EndFrame() {
+	RB_EndHdrScene();
 	RB_DrawFlickerBox();
 	RB_DrawTestClearPattern();
 	renderBackend->EndDrawStream();
@@ -210,6 +291,8 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		renderBackend->SetDefaultState();
 		renderProgManager.Unbind();
 		renderProgManager.ZeroUniforms();
+		const drawSurfsCommand_t * const hdrView = RB_FindHdrMainView( allCmds, stereoEye );
+		RB_BeginHdrScene( hdrView );
 
 		for ( const emptyCommand_t * cmds = allCmds; cmds != NULL; cmds = (const emptyCommand_t *)cmds->next ) {
 			switch ( cmds->commandId ) {
@@ -227,7 +310,10 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 					}
 
 					foundEye[ targetEye ] = true;
-					RB_DrawView( dsc, stereoEye );
+					RB_DrawView( dsc, stereoEye, dsc == hdrView );
+					if ( dsc == hdrView ) {
+						RB_EndHdrScene();
+					}
 				}
 				break;
 			case RC_SET_BUFFER:
@@ -252,6 +338,7 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 		}
 
 		// copy to the target
+		RB_EndHdrScene();
 		stereoRenderImages[ targetEye ]->CopyFramebuffer( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 	}
 
@@ -463,13 +550,18 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// performance penalty.
 	renderBackend->SelectOutput( outputEye_t::BOTH );
 
+	const drawSurfsCommand_t * const hdrView = RB_FindHdrMainView( cmds, 0 );
+	RB_BeginHdrScene( hdrView );
 	for ( ; cmds != NULL; cmds = (const emptyCommand_t *)cmds->next ) {
 		switch ( cmds->commandId ) {
 		case RC_NOP:
 			break;
 		case RC_DRAW_VIEW_3D:
 		case RC_DRAW_VIEW_GUI:
-			RB_DrawView( cmds, 0 );
+			RB_DrawView( cmds, 0, cmds == static_cast<const void *>( hdrView ) );
+			if ( cmds == static_cast<const void *>( hdrView ) ) {
+				RB_EndHdrScene();
+			}
 			if ( ((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys ) {
 				c_draw3d++;
 			} else {

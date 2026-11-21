@@ -17,6 +17,15 @@ namespace {
 // Small, so the GPU starts early in the frame; r_d3d12SubmitDraws takes over after it.
 constexpr int FIRST_CHUNK_DRAWS = 64;
 
+// A draw whose source colour the blend multiplies the target by (a blend light, a subview's mask) writes a
+// factor, not light: PreExposure must not scale it.
+[[nodiscard]] constexpr bool WritesRadiance( uint64 stateBits ) {
+	const uint64 source = stateBits & GLS_SRCBLEND_BITS;
+	const uint64 dest = stateBits & GLS_DSTBLEND_BITS;
+	return source != GLS_SRCBLEND_DST_COLOR && source != GLS_SRCBLEND_ONE_MINUS_DST_COLOR && dest != GLS_DSTBLEND_SRC_COLOR
+		&& dest != GLS_DSTBLEND_ONE_MINUS_SRC_COLOR;
+}
+
 // A root CBV reads its cbuffer whole: the parms a stage packs, in 256-byte steps of the ring.
 [[nodiscard]] constexpr uint32 ParmBytes( const shaderStageInfo_t & info ) {
 	const uint32 bytes = static_cast<uint32>( info.numParms ) * static_cast<uint32>( sizeof( idVec4 ) );
@@ -42,12 +51,12 @@ idD3D12DrawRecorder::idD3D12DrawRecorder( const idD3D12Device & owner, idD3D12Su
 }
 
 void idD3D12DrawRecorder::BeginPass( ID3D12GraphicsCommandList1 & list ) {
-	idD3D12SceneTarget::surface_t & color = scene.Color();
+	idD3D12SceneTarget::surface_t & color = scene.Color( hdr );
 	idD3D12SceneTarget::surface_t & depth = scene.Depth();
 	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	barriers.Transition( *depth.resource.Get(), depth.state, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 	barriers.Flush();
-	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = scene.Rtv( srgb );
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = scene.Rtv( srgb, hdr );
 	const D3D12_CPU_DESCRIPTOR_HANDLE dsv = scene.Dsv();
 	list.OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
 	bound.passOpen = true;
@@ -61,6 +70,18 @@ void idD3D12DrawRecorder::SetSrgb( bool enable ) {
 	}
 }
 
+void idD3D12DrawRecorder::SetHdr( bool enable, float scenePreExposure ) {
+	EndPass();
+	hdr = enable;
+	hdrGamma = false;
+	preExposure = scenePreExposure;
+}
+
+void idD3D12DrawRecorder::SetHdrGamma( bool enable ) {
+	EndPass();
+	hdrGamma = enable;
+}
+
 // The scene is in GL row order, so the rectangle of shared code is used as it is. glClear obeys
 // glDepthMask; the stencil write mask is never changed from 0xFF.
 void idD3D12DrawRecorder::Clear( const renderLatch_t & latch, const clearDesc_t & clear ) {
@@ -72,6 +93,13 @@ void idD3D12DrawRecorder::Clear( const renderLatch_t & latch, const clearDesc_t 
 		return;
 	}
 	const uint8 mask = clear.color ? static_cast<uint8>( clear.colorWriteMask & 0xF ) : 0;
+	std::array<float, 4> rgba = { clear.rgba[0], clear.rgba[1], clear.rgba[2], clear.rgba[3] };
+	if ( hdr && ( !hdrGamma || preExposure != 1.0f ) ) {
+		for ( int i = 0; i < 3; i++ ) {	// a colour like any other draw's (colorspace.hlsli)
+			const float exposed = R_SRGBToLinear( rgba[i] ) * preExposure;
+			rgba[i] = hdrGamma ? R_LinearToSRGB( exposed ) : exposed;
+		}
+	}
 	D3D12_CLEAR_FLAGS depthStencil = {};
 	if ( clear.depth && ( latch.stateBits & GLS_DEPTHMASK ) == 0 ) {
 		depthStencil |= D3D12_CLEAR_FLAG_DEPTH;
@@ -87,16 +115,16 @@ void idD3D12DrawRecorder::Clear( const renderLatch_t & latch, const clearDesc_t 
 		}
 		const D3D12_RECT rect = { x0, y0, x1, y1 };
 		if ( mask == 0xF ) {
-			list.ClearRenderTargetView( scene.Rtv( srgb ), clear.rgba, 1, &rect );
+			list.ClearRenderTargetView( scene.Rtv( srgb, hdr ), rgba.data(), 1, &rect );
 		}
 		if ( depthStencil != 0 ) {
 			list.ClearDepthStencilView( scene.Dsv(), depthStencil, 1.0f, clear.stencilValue, 1, &rect );
 		}
 	}
 	if ( mask != 0 && mask != 0xF ) {
-		idD3D12SceneTarget::surface_t & color = scene.Color();
+		idD3D12SceneTarget::surface_t & color = scene.Color( hdr );
 		barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
-		passes.MaskedClear( scene.Rtv( srgb ), scene.Target( srgb ), { x0, y0, x1 - x0, y1 - y0 }, clear.rgba, mask );
+		passes.MaskedClear( scene.Rtv( srgb, hdr ), scene.Target( srgb, hdr ), { x0, y0, x1 - x0, y1 - y0 }, rgba.data(), mask );
 		Invalidate();
 	}
 }
@@ -146,7 +174,7 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 	prepared_t prepared;
 	pipelineKey_t key = sharedKey;
 	key.program = program.dense;
-	key.raster = static_cast<uint8>( key.raster | ( scene.Target( srgb ).value << D3D12_KEY_TARGET_SHIFT ) );
+	key.raster = static_cast<uint8>( key.raster | D3D12_KeyRaster( scene.Target( srgb, hdr ) ) );
 	if ( ( latch.stateBits & GLS_POLYGON_OFFSET ) != 0 && dc.topology == primitive_t::TRIANGLES ) {
 		key.depthBias = pipelines.Bias().Slot( latch.polyOfsScale, latch.polyOfsBias );
 	}
@@ -161,6 +189,11 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 	// incomplete copy (T6), with its own sampler
 	bool unbound = false;
 	bool incomplete = false;
+	uint32 colorFlags = 0;
+	if ( hdr ) {
+		colorFlags = ( hdrGamma ? d3d12ColorFlags::GAMMA_PHASE : d3d12ColorFlags::HDR_PHASE )
+			| ( WritesRadiance( latch.stateBits ) ? d3d12ColorFlags::RADIANCE : 0 );
+	}
 	for ( int slot = 0; slot < MAX_TEXTURE_SLOTS; slot++ ) {
 		const int bit = 1 << slot;
 		if ( ( program.info.samplerMask & bit ) == 0 ) {
@@ -174,6 +207,7 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 		if ( texture != nullptr && texture->kind == kind ) {
 			sampler = texture->samplerSlot;
 			incomplete |= texture->IncompleteCopy();
+			colorFlags |= texture->surface.linear ? static_cast<uint32>( bit ) : 0u;
 		} else {
 			handle = textureHandle_t::NONE;
 			sampler = samplers.FallbackSlot();
@@ -183,6 +217,7 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 		prepared.resources.SetTexture( slot, cube, textures.SampledView( handle, kind ).index );
 		prepared.resources.SetSampler( slot, sampler );
 	}
+	prepared.resources.SetColor( colorFlags, preExposure );
 	stats.unboundSlots += unbound ? 1 : 0;
 	stats.incompleteBinds += incomplete ? 1 : 0;
 	prepared.vertexParmBytes = ParmBytes( program.vertexInfo );
@@ -348,9 +383,9 @@ void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList1 & list, std::op
 	}
 }
 
-// A program that samples nothing does not read b3, so it keeps what the last one set.
+// A program that neither samples nor reads the colour constants does not read b3, so it keeps what the last one set.
 void idD3D12DrawRecorder::BindResources( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const d3d12Program_t & program ) {
-	if ( program.info.samplerMask != 0 && bound.resources != prepared.resources ) {
+	if ( ( program.info.samplerMask != 0 || program.colorConstants ) && bound.resources != prepared.resources ) {
 		list.SetGraphicsRoot32BitConstants( D3D12_Root( d3d12RootSlot_t::DRAW_RESOURCES ), d3d12DrawResources_t::COUNT,
 			prepared.resources.indices.data(), 0 );
 		bound.resources = prepared.resources;

@@ -60,5 +60,5 @@ float4 PSMain( VSOutput input ) : SV_Target {
 
 	const float2 warped = warpCenter + float2( 0.5, 0.5 ) * radialDir * rescaled;
 
-	return eyeMap.Sample( eyeSampler, warped );
+	return SceneOutput( eyeMap.Sample( eyeSampler, warped ) );
 }

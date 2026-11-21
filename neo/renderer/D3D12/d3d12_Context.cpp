@@ -126,6 +126,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	hlslCompiler( library, D3D12_GameDataReader(), r_d3d12ShaderCache.GetBool(), r_d3d12ShaderThreads.GetInteger() ),
 	shaders( hlslCompiler, graveyard ),
 	rootSignature( device, library ),
+	computeRootSignature( device, library ),
 	journal( LoadJournal() ),
 	pipelineLibrary( OpenPipelineLibrary( device ) ),
 	pipelines( device, rootSignature, &journal, pipelineLibrary ? &*pipelineLibrary : nullptr ),
@@ -133,7 +134,10 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	passes( device, rootSignature, hlslCompiler, *this, barriers, uploader, constants, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
 	copies( *this, barriers, scene, textures, passes, rtvPool ),
-	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, constants, samplers ) {
+	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, constants, samplers ),
+	resourcePool( device, graveyard, srvPool, rtvPool ),
+	graph( device, *this, barriers, resourcePool, srvPool, rtvPool, constants, computeRootSignature ),
+	hdr( device, *this, computeRootSignature, passes, samplers, srvPool ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -148,6 +152,7 @@ idD3D12Context::~idD3D12Context() {
 	buffers.DestroyAll();
 	textures.DestroyAll();
 	shaders.DestroyAll();
+	resourcePool.FreeAll();
 	graveyard.CollectAll();
 	device.DrainMessages();
 }
@@ -166,6 +171,7 @@ std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width,
 void idD3D12Context::CreateDefaults() {
 	textures.CreateDefaults();
 	passes.CreateDefaults();
+	hdr.CreateDefaults();
 	buffers.CreateDefaults();
 	shaders.Prebuild();
 }
@@ -295,6 +301,7 @@ void idD3D12Context::EndFrameStats() {
 	samplers.ResetFrameCounters();
 	groups.ResetFrameCounters();
 	timers.ResetFrameCounters();
+	resourcePool.EndFrame();
 }
 
 void idD3D12Context::PushGroup( const char * name ) {
@@ -325,7 +332,61 @@ void idD3D12Context::CopyOutputToTexture( textureHandle_t texture, int x, int y,
 		return;
 	}
 	recorder.EndPass();
-	copies.Color( texture, x, y, width, height );
+	copies.Color( texture, x, y, width, height, hdrScene );
+}
+
+// preExposure: the manual exposure, or the auto exposure of the last resolve read back (Present waits for its
+// frame, so that is the last frame's); a finite one, else the manual exposure.
+void idD3D12Context::BeginHdrScene( const postProcessSettings_t & settings ) {
+	if ( device.IsLost() ) {
+		return;
+	}
+	recorder.EndPass();
+	scene.EnsureHdr( barriers, *this );
+	if ( !scene.Color( true ).resource ) {
+		return;
+	}
+	hdr.Poll();
+	preExposure = R_ManualExposure( settings );
+	if ( settings.autoExposure && hdr.LastExposure() ) {
+		const float last = hdr.LastExposure()->exposure.exposure;
+		preExposure = ( last > 1e-6f && last < 1e6f ) ? last : preExposure;
+	}
+	recorder.SetHdr( true, preExposure );
+	hdrScene = true;
+}
+
+void idD3D12Context::SetHdrSceneGamma( bool gamma, const renderRect_t & viewport ) {
+	if ( !hdrScene || recorder.HdrGamma() == gamma || device.IsLost() ) {
+		return;
+	}
+	recorder.SetHdrGamma( gamma );
+	hdr.Encode( graph, scene, gamma, viewport, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	recorder.Invalidate();
+}
+
+void idD3D12Context::ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport, const hdrExposureStep_t & step ) {
+	if ( !hdrScene ) {
+		return;
+	}
+	SetHdrSceneGamma( false, viewport );
+	EndHdrScene();
+	if ( device.IsLost() ) {
+		return;
+	}
+	hdr.Resolve( graph, scene, settings, viewport, preExposure, step, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	recorder.Invalidate();
+}
+
+std::optional<hdrExposure_t> idD3D12Context::LastHdrExposure() const {
+	return hdr.LastExposure() ? std::optional( hdr.LastExposure()->exposure ) : std::nullopt;
+}
+
+void idD3D12Context::EndHdrScene() {
+	if ( hdrScene ) {
+		recorder.SetHdr( false, preExposure );
+		hdrScene = false;
+	}
 }
 
 void idD3D12Context::CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
@@ -368,6 +429,7 @@ void idD3D12Context::Resize( int width, int height ) {
 	swapChain->Resize( width, height );
 	scene.Create( swapChain->Width(), swapChain->Height(), scene.Samples() );
 	recorder.Invalidate();
+	hdr.ResetExposure();
 	// the old scene target dies after the next wait: a leak shows as memory that grows from resize to resize
 	const d3d12VideoMemory_t memory = device.VideoMemory();
 	common->DPrintf( "d3d12: output resized to %d x %d; %d graves, %.1f MB of video memory in use\n", width, height, graveyard.Pending(),
@@ -400,6 +462,7 @@ void idD3D12Context::EndLevelLoad() {
 		level.warmed, static_cast<double>( level.warmMicroseconds ) / 1000.0, level.drawn, static_cast<double>( level.drawnMicroseconds ) / 1000.0,
 		level.loaded );
 	SavePipelines( false );
+	hdr.ResetExposure();
 }
 
 // The file system outlives the renderer (common's Shutdown), but not a failed Init.
@@ -440,6 +503,7 @@ void idD3D12Context::PrintInfo() const {
 	common->Printf( "D3D12 buffers: %d, FRAME %.1f MB in %s, STATIC %.1f MB in DEFAULT heaps; %.1f MB CPU mirrors\n", buffers.Num(),
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), D3D12_PlacementName( buffers.FramePlacement() ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ),
 		Megabytes( buffers.MirrorBytes() ) );
+	common->Printf( "D3D12 render graph: %d pooled resources, %.1f MB\n", resourcePool.Num(), Megabytes( resourcePool.Bytes() ) );
 	common->Printf( "D3D12 textures: %d, %.1f MB; shader-visible SRVs %d of %u, samplers %d of %u; unaligned BC %s, anisotropic point mips %s\n",
 		textures.Num(), textures.Bytes() / ( 1024.0 * 1024.0 ), srvPool.Used(), SHADER_VISIBLE_SRVS, samplers.Used(), idD3D12SamplerHeap::SIZE,
 		device.Features().unalignedBlocks ? "yes" : "decoded",

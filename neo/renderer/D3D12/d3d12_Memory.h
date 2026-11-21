@@ -9,7 +9,7 @@
 
 // A committed buffer of one heap type, named for the debug tools; nullptr only when the device is lost.
 [[nodiscard]] idComPtr<ID3D12Resource>	D3D12_CreateBuffer( const idD3D12Device & device, D3D12_HEAP_TYPE heap, uint64 bytes,
-											D3D12_RESOURCE_STATES state, const wchar_t * name );
+											D3D12_RESOURCE_STATES state, const wchar_t * name, D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE );
 
 // CPU-written memory the GPU reads once; write-combined: write it sequentially, never read it.
 struct d3d12UploadSpan_t {
@@ -46,10 +46,16 @@ struct d3d12ResourceState_t {
 };
 
 // Legacy transitions batched until the next draw, clear, copy, resolve or submit; a reversed pending pair cancels out.
+// A state tracks the whole resource, or one subresource when it is given: never both for one resource.
 class idD3D12Barriers {
 public:
 	explicit						idD3D12Barriers( idD3D12Submitter & owner ) : submitter( owner ) {}
-	void							Transition( ID3D12Resource & resource, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES after );
+	void							Transition( ID3D12Resource & resource, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES after,
+										UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES );
+	// Between two accesses as UAV: the second waits for the writes of the first.
+	void							Uav( ID3D12Resource & resource );
+	// What the resource is in for the next command: a decaying one starts every list in COMMON.
+	[[nodiscard]] D3D12_RESOURCE_STATES	Current( const d3d12ResourceState_t & state ) const;
 	void							Flush();			// into submitter.List(); a no-op when empty
 	void							Discard();			// the list was abandoned
 	[[nodiscard]] int				IssuedThisFrame() const { return issued; }
@@ -61,7 +67,7 @@ private:
 
 	idD3D12Submitter &				submitter;
 	std::array<D3D12_RESOURCE_BARRIER, BATCH>	batch = {};
-	std::array<d3d12ResourceState_t *, BATCH>	owners = {};	// owners[i] is the state of batch[i]
+	std::array<d3d12ResourceState_t *, BATCH>	owners = {};	// owners[i] is the state of batch[i]; nullptr for a UAV barrier
 	int								count = 0;
 	int								issued = 0;		// flushed into lists
 };

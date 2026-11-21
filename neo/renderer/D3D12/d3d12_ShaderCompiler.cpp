@@ -14,7 +14,11 @@ namespace {
 constexpr int DXBC_HEADER = 32;		// 'DXBC', the checksum, 1, the total size, the chunk count
 
 [[nodiscard]] const char * StageSuffix( shaderStageType_t stage ) {
-	return ( stage == shaderStageType_t::VERTEX ) ? "vs" : "ps";
+	switch ( stage ) {
+		case shaderStageType_t::VERTEX:		return "vs";
+		case shaderStageType_t::FRAGMENT:	return "ps";
+		default:							return "cs";
+	}
 }
 
 // A name as one file name: "d3d12 present blit" → "d3d12_present_blit".
@@ -85,7 +89,8 @@ namespace {
 	return element;
 }
 
-// The members of b3 the code reads: texture2D<n> and textureCube<n> are GL's active sampler uniforms.
+// The members of b3 the code reads: texture2D<n> and textureCube<n> are GL's active sampler uniforms; colorFlags and
+// preExposure are no slot.
 void ReadDrawResources( ID3D12ShaderReflection & reflection, const char * name, d3d12StageReflection_t & result ) {
 	ID3D12ShaderReflectionConstantBuffer * block = reflection.GetConstantBufferByName( name );
 	D3D12_SHADER_BUFFER_DESC desc = {};
@@ -104,8 +109,10 @@ void ReadDrawResources( ID3D12ShaderReflection & reflection, const char * name, 
 			if ( index >= d3d12DrawResources_t::CUBES ) {
 				result.cubeMask = static_cast<uint16>( result.cubeMask | ( 1u << slot ) );
 			}
-		} else if ( index < d3d12DrawResources_t::COUNT ) {
+		} else if ( index < d3d12DrawResources_t::SLOTS ) {
 			result.samplerReads = static_cast<uint16>( result.samplerReads | ( 1u << ( index - d3d12DrawResources_t::SAMPLERS ) ) );
+		} else {
+			result.colorConstants = true;
 		}
 	}
 }
@@ -129,6 +136,10 @@ d3d12StageReflection_t D3D12_ReflectStage( ID3D12ShaderReflection & reflection, 
 		} else if ( bind.BindPoint == d3d12DrawResources_t::REGISTER ) {
 			ReadDrawResources( reflection, bind.Name, result );
 		}
+	}
+	if ( stage == shaderStageType_t::COMPUTE ) {
+		reflection.GetThreadGroupSize( &result.threadGroup[0], &result.threadGroup[1], &result.threadGroup[2] );
+		return result;
 	}
 	const bool vertex = ( stage == shaderStageType_t::VERTEX );
 	for ( UINT i = 0; i < ( vertex ? desc.OutputParameters : desc.InputParameters ); i++ ) {

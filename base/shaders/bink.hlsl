@@ -63,6 +63,9 @@ float4 PSMain( VSOutput input ) : SV_Target {
 	float4 color;
 	color.xyz = p;
 	color.w = 1.0;
+	if ( HdrPhase() ) {
+		color.xyz = SRGBToLinear( saturate( color.xyz ) );	// a video frame is sRGB
+	}
 	color *= rpColor;
-	return color;
+	return SceneOutput( color );
 }

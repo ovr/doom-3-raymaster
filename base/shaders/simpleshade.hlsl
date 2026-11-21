@@ -59,5 +59,5 @@ float4 PSMain( VSOutput input ) : SV_Target {
 	float4 color;
 	color.xyz = (float3)( dot3( normal, toLight ) * 0.75 );
 	color.w = 1.0;
-	return color;
+	return SceneOutput( color );
 }

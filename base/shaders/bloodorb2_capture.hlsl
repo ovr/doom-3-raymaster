@@ -61,12 +61,12 @@ VSOutput VSMain( VSInput input ) {
 
 float4 PSMain( VSOutput input ) : SV_Target {
 	const float4 redTint = float4( 1, 0.98, 0.98, 1 );
-	const float4 accumSample = accumMap.Sample( accumSampler, input.texcoord0 ) * redTint;
+	const float4 accumSample = SceneColor( accumMap.Sample( accumSampler, input.texcoord0 ), 0 ) * redTint;
 
 	const float4 maskSample = maskMap.Sample( maskSampler, input.texcoord1 );
 
 	const float4 tint = float4( 1.0, 0.8, 0.8, 1 );
-	const float4 currentRenderSample = currentRenderMap.Sample( currentRenderSampler, input.texcoord2 ) * tint;
+	const float4 currentRenderSample = SceneColor( currentRenderMap.Sample( currentRenderSampler, input.texcoord2 ), 1 ) * tint;
 
-	return lerp( accumSample, currentRenderSample, maskSample.a );
+	return SceneOutput( lerp( accumSample, currentRenderSample, maskSample.a ) );
 }

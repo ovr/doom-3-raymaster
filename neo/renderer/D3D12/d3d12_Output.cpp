@@ -71,13 +71,14 @@ idD3D12SceneTarget::idD3D12SceneTarget( const idD3D12Device & owner, idD3D12Grav
 	dsvPool( dsvs ) {
 	rtvUnorm = rtvPool.Allocate();
 	rtvSrgb = rtvPool.Allocate();
+	rtvHdr = rtvPool.Allocate();
 	dsv = dsvPool.Allocate();
 }
 
 // The RTVs and the DSV are rewritten in their slots, a recorded list keeps what it was given. A submitted list
 // reads the SRVs from the shader-visible heap when it runs: each new resource takes new SRV slots.
 void idD3D12SceneTarget::Create( int newWidth, int newHeight, UINT sampleCount ) {
-	for ( surface_t * surface : { &color, &depth, &resolved } ) {
+	for ( surface_t * surface : { &color, &depth, &resolved, &hdrColor, &hdrResolved } ) {
 		graveyard.Bury( std::move( surface->resource ) );
 		if ( surface->srv.IsValid() ) {
 			graveyard.Bury( srvPool, surface->srv );
@@ -89,7 +90,7 @@ void idD3D12SceneTarget::Create( int newWidth, int newHeight, UINT sampleCount )
 	height = Max( newHeight, 1 );
 	samples = sampleCount;
 
-	CreateColor( color, samples, true, L"doom3 scene colour" );
+	CreateColor( color, COLOR_RESOURCE, samples, true, L"doom3 scene colour" );
 	for ( const bool srgb : { false, true } ) {
 		D3D12_RENDER_TARGET_VIEW_DESC view = {};
 		view.Format = Target( srgb ).ColorView();
@@ -97,23 +98,45 @@ void idD3D12SceneTarget::Create( int newWidth, int newHeight, UINT sampleCount )
 		device.Get().CreateRenderTargetView( color.resource.Get(), &view, Rtv( srgb ) );
 	}
 	if ( samples > 1 ) {
-		CreateColor( resolved, 1, false, L"doom3 scene resolve" );
+		CreateColor( resolved, COLOR_RESOURCE, 1, false, L"doom3 scene resolve" );
 	}
 	CreateDepth();
 }
 
-void idD3D12SceneTarget::CreateColor( surface_t & surface, UINT sampleCount, bool renderTarget, const wchar_t * name ) {
+// Its contents are radiance times PreExposure; r_clear 0 never clears it, so it starts black.
+void idD3D12SceneTarget::EnsureHdr( idD3D12Barriers & barriers, idD3D12Submitter & submitter ) {
+	if ( hdrColor.resource ) {
+		return;
+	}
+	CreateColor( hdrColor, d3d12TargetId_t::HDR_FORMAT, samples, true, L"doom3 HDR scene colour" );
+	if ( !hdrColor.resource ) {
+		return;
+	}
+	D3D12_RENDER_TARGET_VIEW_DESC view = {};
+	view.Format = d3d12TargetId_t::HDR_FORMAT;
+	view.ViewDimension = ( samples > 1 ) ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
+	device.Get().CreateRenderTargetView( hdrColor.resource.Get(), &view, Rtv( false, true ) );
+	if ( samples > 1 ) {
+		CreateColor( hdrResolved, d3d12TargetId_t::HDR_FORMAT, 1, false, L"doom3 HDR scene resolve" );
+	}
+	barriers.Transition( *hdrColor.resource.Get(), hdrColor.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	barriers.Flush();
+	submitter.List().ClearRenderTargetView( Rtv( false, true ), CLEAR_COLOR, 0, nullptr );
+}
+
+void idD3D12SceneTarget::CreateColor( surface_t & surface, DXGI_FORMAT format, UINT sampleCount, bool renderTarget, const wchar_t * name ) {
 	const D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
-	const D3D12_RESOURCE_DESC desc = TextureDesc( COLOR_RESOURCE, width, height, sampleCount,
+	const D3D12_RESOURCE_DESC desc = TextureDesc( format, width, height, sampleCount,
 		renderTarget ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE );
-	D3D12_CLEAR_VALUE clear = { COLOR_UNORM };
+	const DXGI_FORMAT viewFormat = ( format == COLOR_RESOURCE ) ? COLOR_UNORM : format;
+	D3D12_CLEAR_VALUE clear = { viewFormat };
 	memcpy( clear.Color, CLEAR_COLOR, sizeof( clear.Color ) );
 	surface.state.current = renderTarget ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_RESOLVE_DEST;
 	if ( device.Check( device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, surface.state.current,
 			renderTarget ? &clear : nullptr, IID_PPV_ARGS( &surface.resource ) ), "CreateCommittedResource (scene colour)" ) ) {
 		surface.resource->SetName( name );
 		surface.srv = srvPool.Allocate();
-		srvPool.CreateSrv( surface.srv, *surface.resource.Get(), ShaderView( COLOR_UNORM, sampleCount ) );
+		srvPool.CreateSrv( surface.srv, *surface.resource.Get(), ShaderView( viewFormat, sampleCount ) );
 	}
 }
 
@@ -137,21 +160,24 @@ void idD3D12SceneTarget::CreateDepth() {
 }
 
 idD3D12SceneTarget::surface_t & idD3D12SceneTarget::Resolved( idD3D12Barriers & barriers, idD3D12Submitter & submitter,
-	std::optional<D3D12_RECT> region ) {
+	std::optional<D3D12_RECT> region, bool hdr ) {
+	surface_t & source = Color( hdr );
 	if ( samples == 1 ) {
-		return color;
+		return source;
 	}
-	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE );
-	barriers.Transition( *resolved.resource.Get(), resolved.state, D3D12_RESOURCE_STATE_RESOLVE_DEST );
+	surface_t & target = hdr ? hdrResolved : resolved;
+	const DXGI_FORMAT format = hdr ? d3d12TargetId_t::HDR_FORMAT : COLOR_UNORM;
+	barriers.Transition( *source.resource.Get(), source.state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE );
+	barriers.Transition( *target.resource.Get(), target.state, D3D12_RESOURCE_STATE_RESOLVE_DEST );
 	barriers.Flush();
 	if ( region ) {
 		assert( region->left >= 0 && region->top >= 0 && region->right <= width && region->bottom <= height );
-		submitter.List().ResolveSubresourceRegion( resolved.resource.Get(), 0, static_cast<UINT>( region->left ), static_cast<UINT>( region->top ),
-			color.resource.Get(), 0, &*region, COLOR_UNORM, D3D12_RESOLVE_MODE_AVERAGE );
+		submitter.List().ResolveSubresourceRegion( target.resource.Get(), 0, static_cast<UINT>( region->left ), static_cast<UINT>( region->top ),
+			source.resource.Get(), 0, &*region, format, D3D12_RESOLVE_MODE_AVERAGE );
 	} else {
-		submitter.List().ResolveSubresource( resolved.resource.Get(), 0, color.resource.Get(), 0, COLOR_UNORM );
+		submitter.List().ResolveSubresource( target.resource.Get(), 0, source.resource.Get(), 0, format );
 	}
-	return resolved;
+	return target;
 }
 
 // The engine owns full screen (a borderless window, win_window.cpp) and Alt+Enter (the wndproc), so

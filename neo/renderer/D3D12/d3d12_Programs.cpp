@@ -74,7 +74,9 @@ std::expected<d3d12Program_t, idStr> D3D12_LinkProgram( const d3d12ShaderStage_t
 		program.fragmentInfo = fragment->info;
 		program.info.samplerMask = fragment->reflection.samplerMask;
 		program.info.cubeMask = fragment->reflection.cubeMask;
+		program.colorConstants = fragment->reflection.colorConstants;
 	}
+	program.colorConstants = program.colorConstants || vertex.reflection.colorConstants;
 	program.info.attribMask = vertex.reflection.attribMask;
 	program.info.usesJoints = vertex.reflection.usesJoints;
 	program.journalName = vertex.name + "|" + ( ( fragment != nullptr ) ? fragment->name.c_str() : "-" );
@@ -274,7 +276,7 @@ int idD3D12ShaderLibrary::CompileAll( bool verbose ) {
 	std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
 	for ( size_t i = 0; i < entries.size(); i++ ) {
 		const char * name = entries[i].source.name.c_str();
-		const char * suffix = ( entries[i].stage == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain";
+		const char * suffix = D3D12_StageEntry( entries[i].stage );
 		if ( !built[i] ) {
 			common->Printf( "d3d12_compileAll: %s\n", built[i].error().c_str() );
 			failures.Append( va( "%s %s", name, suffix ) );

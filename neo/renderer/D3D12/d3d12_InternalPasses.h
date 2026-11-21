@@ -57,12 +57,15 @@ public:
 	// into the whole width x height R32_FLOAT target (in RENDER_TARGET), rows in order. Texels outside the scene read 0.
 	void							CopyDepth( d3d12Descriptor_t depthSrv, UINT samples, D3D12_CPU_DESCRIPTOR_HANDLE target, int x, int y,
 										int width, int height );
+	// A stage of D3D12_InternalStages() by its name, after CreateDefaults; a fatal error for an unknown one.
+	[[nodiscard]] const d3d12HlslStage_t &	Stage( const char * name ) const;
+	// The triangle and pixelShader into one target of format, no blend, no depth: also the render graph's raster passes.
+	[[nodiscard]] idComPtr<ID3D12PipelineState>	CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
+										uint8 writeMask, const wchar_t * name ) const;
 
 private:
 	// The 256 bytes of root CBV b1. A full ring: submit, wait for the oldest chunk and take again, before anything is recorded.
 	[[nodiscard]] d3d12UploadSpan_t	Parms();
-	[[nodiscard]] idComPtr<ID3D12PipelineState>	CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
-										uint8 writeMask, const wchar_t * name ) const;
 	void							Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
 										const renderRect_t & viewport, const d3d12UploadSpan_t & parms, const d3d12DrawResources_t * resources );
 	void							ShowPanel( ID3D12PipelineState & pso, const d3d12DrawResources_t & resources, D3D12_CPU_DESCRIPTOR_HANDLE target,
@@ -79,6 +82,7 @@ private:
 	idD3D12SamplerHeap &			samplers;
 	idD3D12DescriptorPool &			srvPool;
 	std::array<uint32, 2>			showSamplers = {};	// the heap slots of sampler0 trilinear and sampler1 point, both clamped
+	std::vector<d3d12HlslStage_t>	stages;			// every stage of INTERNAL_STAGES, in its order
 	d3d12Bytecode_t					triangleVs, blitPs, blitGammaPs, clearPs, show2DPs, showCubePs;
 	std::array<d3d12Bytecode_t, 2>	depthCopyPs;	// a single-sample and a multisampled depth view
 	idComPtr<ID3D12PipelineState>	blit, blitGamma;

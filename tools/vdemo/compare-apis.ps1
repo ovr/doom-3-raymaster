@@ -23,17 +23,23 @@ The summary is printed and written to <OutRoot>\d3d12-<Stage>-summary.md.
 -Layer <name> takes the "args" of that layer of -Bars into every run, runs OpenGL with them as the
 baseline (<OutRoot>\opengl-<Stage>-<name>) instead of -Baseline, and checks the layer's bars.
 
+The runs get "+set r_hdr 0": OpenGL has no HDR scene, so only those frames can be held to its bars.
+-Hdr keeps the HDR scene and holds the frames to research\vdemo\d3d12-hdr-ref instead (made by an
+earlier -Hdr gate with the same -Layer); a layer then adds its args but runs no OpenGL baseline.
+
 Exit code 0 when every check passed, 1 otherwise.
 
 .EXAMPLE
 tools\vdemo\compare-apis.ps1 -Stage s8 -Demos _x4_gui -Layer clear -Gbv
 tools\vdemo\compare-apis.ps1 -Stage selftest -Demos 01_camera,_x4_gui -Api opengl
+tools\vdemo\compare-apis.ps1 -Stage h6 -Demos 01_camera,04_lighting -Hdr -Gbv
 #>
 [CmdletBinding()]
 param(
 	[Parameter(Mandatory = $true)] [string] $Stage,
 	[Parameter(Mandatory = $true)] [string[]] $Demos,
 	[switch] $Gbv,
+	[switch] $Hdr,
 	[string[]] $ExtraArgs = @(),
 	[ValidateSet( 'opengl', 'd3d12' )] [string] $Api = 'd3d12',
 	[string] $Baseline,
@@ -44,7 +50,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = ( Resolve-Path ( Join-Path $PSScriptRoot '..\..' ) ).Path
-if ( -not $Baseline ) { $Baseline = Join-Path $repoRoot 'research\vdemo\gl-ref' }
+if ( -not $Baseline ) { $Baseline = Join-Path $repoRoot $( if ( $Hdr ) { 'research\vdemo\d3d12-hdr-ref' } else { 'research\vdemo\gl-ref' } ) }
 if ( -not $Bars ) { $Bars = Join-Path $PSScriptRoot 'bars-d3d12.json' }
 if ( -not $OutRoot ) { $OutRoot = Join-Path $repoRoot 'build\vdemo' }
 $Demos = @( $Demos | ForEach-Object { $_ -split ',' } | Where-Object { $_ } )
@@ -65,6 +71,9 @@ if ( $Layer ) {
 		exit 1
 	}
 	$ExtraArgs = @( $layerData.args ) + $ExtraArgs
+}
+if ( -not $Hdr ) {
+	$ExtraArgs = @( '+set', 'r_hdr', '0' ) + $ExtraArgs
 }
 
 $results = New-Object System.Collections.Generic.List[object]
@@ -109,7 +118,7 @@ function Invoke-Python( [string] $check, [string[]] $arguments ) {
 	Add-Result $check ( $code -eq 0 ) "exit $code, $last"
 }
 
-if ( $Layer ) {
+if ( $Layer -and -not $Hdr ) {
 	$Baseline = Invoke-Run $Layer @{} 'opengl'
 }
 $a = Invoke-Run 'a' @{ DebugLevel = 1; KeepShaderCache = $true }
@@ -134,7 +143,7 @@ if ( $Gbv ) {
 }
 
 $passed = -not ( $results | Where-Object { $_.result -ne 'pass' } )
-$lines = @( "# compare-apis $Stage ($Api): $( if ( $passed ) { 'PASS' } else { 'FAIL' } )", '',
+$lines = @( "# compare-apis $Stage ($Api$( if ( $Hdr ) { ', HDR' } )): $( if ( $passed ) { 'PASS' } else { 'FAIL' } )", '',
 	"Demos: $demoList. Baseline: $Baseline. Bars: $Bars$( if ( $Layer ) { ", layer $Layer" } ). Extra args: $( $ExtraArgs -join ' ' ).", '',
 	'| check | result | detail |', '|---|---|---|' )
 $lines += $results | ForEach-Object { "| $( $_.check ) | $( $_.result ) | $( $_.detail ) |" }

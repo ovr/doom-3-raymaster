@@ -224,7 +224,7 @@ set_target_properties(idlibTests PROPERTIES FOLDER "tests")
 add_test(NAME idlibTests COMMAND idlibTests)
 
 # d3d12Tests: the ring, the handle table, the format, sampler and pipeline state tables, the uploader, buffer
-# and texture stores, the PSO factory, the debug groups, the GPU timers, the screen copies and the draw recorder on a WARP
+# and texture stores, the PSO factory, the debug groups, the GPU timers, the screen copies, the draw recorder and the render graph on a WARP
 # device (the texture border, decoding, timer, copy and draw tests also on the GPU), DXC and a bindless draw on SM 6.6,
 # and base/shaders against GL's reflection in neo/tests/d3d12_golden/renderProgInfo-gl.txt
 #   bin/<config>/d3d12Tests.exe [filter]
@@ -239,12 +239,14 @@ add_executable(d3d12Tests
 	renderer/D3D12/d3d12_Draw.cpp
 	renderer/D3D12/d3d12_Dxc.cpp
 	renderer/D3D12/d3d12_Formats.cpp
+	renderer/D3D12/d3d12_Hdr.cpp
 	renderer/D3D12/d3d12_HlslCompiler.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
 	renderer/D3D12/d3d12_Memory.cpp
 	renderer/D3D12/d3d12_Output.cpp
 	renderer/D3D12/d3d12_Pipelines.cpp
 	renderer/D3D12/d3d12_Programs.cpp
+	renderer/D3D12/d3d12_RenderGraph.cpp
 	renderer/D3D12/d3d12_RingAllocator.cpp
 	renderer/D3D12/d3d12_ShaderCompiler.cpp
 	renderer/D3D12/d3d12_StateMap.cpp

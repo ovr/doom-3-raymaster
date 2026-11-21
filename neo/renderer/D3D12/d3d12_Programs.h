@@ -28,6 +28,7 @@ struct d3d12Program_t {
 	shaderStageInfo_t				vertexInfo = {};
 	shaderStageInfo_t				fragmentInfo = {};
 	programInfo_t					info = {};
+	bool							colorConstants = false;	// a stage reads colorFlags or preExposure of b3
 	uint16							dense = 0;		// pipelineKey_t::program
 	idStr							journalName;	// "<vs>|<ps>": stable across runs, unlike handles
 	std::vector<d3d12Pipeline_t>	pipelines;		// 1-20 keys: a linear search beats a hash

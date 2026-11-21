@@ -71,13 +71,13 @@ VSOutput VSMain( VSInput input ) {
 		output.texcoord.y = dot4( input.texcoord.xy, rpTextureMatrixT );
 	}
 
-	const float4 vertexColor = ( input.color * rpVertexColorModulate ) + rpVertexColorAdd;
+	const float4 vertexColor = ( DecodeColor( input.color ) * rpVertexColorModulate ) + rpVertexColorAdd;
 	output.color = saturate( vertexColor * rpColor );
 	return output;
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	const float4 color = textureMap.Sample( textureSampler, input.texcoord ) * input.color;
+	const float4 color = SceneColor( textureMap.Sample( textureSampler, input.texcoord ), 0 ) * input.color;
 	clip( color.a - rpAlphaTest.x );
-	return color;
+	return SceneOutput( color );
 }

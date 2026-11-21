@@ -70,12 +70,17 @@ RB_SetColor
 ====================
 */
 void RB_SetColor( float r, float g, float b, float a ) {
-	float parm[4];
-	parm[0] = idMath::ClampFloat( 0.0f, 1.0f, r );
-	parm[1] = idMath::ClampFloat( 0.0f, 1.0f, g );
-	parm[2] = idMath::ClampFloat( 0.0f, 1.0f, b );
-	parm[3] = idMath::ClampFloat( 0.0f, 1.0f, a );
-	renderProgManager.SetRenderParm( RENDERPARM_COLOR, parm );
+	const idVec4 parm = RB_ColorParm( idVec4( idMath::ClampFloat( 0.0f, 1.0f, r ), idMath::ClampFloat( 0.0f, 1.0f, g ),
+		idMath::ClampFloat( 0.0f, 1.0f, b ), idMath::ClampFloat( 0.0f, 1.0f, a ) ) );
+	renderProgManager.SetRenderParm( RENDERPARM_COLOR, parm.ToFloatPtr() );
+}
+
+// The fog's alpha is a distance and a modulate's alpha a weight: only rgb is a colour.
+idVec4 RB_ColorParm( const idVec4 & color ) {
+	if ( !backEnd.hdrPhase || backEnd.hdrGamma ) {
+		return color;
+	}
+	return idVec4( R_SRGBToLinear( color.x ), R_SRGBToLinear( color.y ), R_SRGBToLinear( color.z ), color.w );
 }
 
 /*
@@ -911,8 +916,10 @@ static void RB_DrawSingleInteraction( drawInteraction_t * din ) {
 
 	RB_SetVertexColorParms( din->vertexColor );
 
-	SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, din->diffuseColor.ToFloatPtr() );
-	SetFragmentParm( RENDERPARM_SPECULARMODIFIER, din->specularColor.ToFloatPtr() );
+	// the whole modifier (r_lightScale, the light, the surface, 2 for specular) decodes as one colour, so at
+	// N.L = 1 one light gives the linear value of the LDR pixel
+	SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, RB_ColorParm( din->diffuseColor ).ToFloatPtr() );
+	SetFragmentParm( RENDERPARM_SPECULARMODIFIER, RB_ColorParm( din->specularColor ).ToFloatPtr() );
 
 	// texture 0 will be the per-surface bump map
 	din->bumpImage->Bind( INTERACTION_TEXUNIT_BUMP );
@@ -951,8 +958,8 @@ static void RB_SetupForFastPathInteractions( const idVec4 & diffuseColor, const 
 
 	RB_SetVertexColorParms( SVC_IGNORE );
 
-	SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, diffuseColor.ToFloatPtr() );
-	SetFragmentParm( RENDERPARM_SPECULARMODIFIER, specularColor.ToFloatPtr() );
+	SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, RB_ColorParm( diffuseColor ).ToFloatPtr() );
+	SetFragmentParm( RENDERPARM_SPECULARMODIFIER, RB_ColorParm( specularColor ).ToFloatPtr() );
 }
 
 /*
@@ -2307,7 +2314,17 @@ BACKEND COMMANDS
 RB_DrawViewInternal
 ==================
 */
-void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
+// The gamma composite of the view (R13): the backend converts the view's rectangle of the HDR scene.
+static void RB_SetHdrGamma( bool gamma ) {
+	if ( !backEnd.hdrPhase || backEnd.hdrGamma == gamma ) {
+		return;
+	}
+	const idScreenRect & v = backEnd.viewDef->viewport;
+	renderBackend->SetHdrSceneGamma( gamma, { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
+	backEnd.hdrGamma = gamma;
+}
+
+void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool debugTools ) {
 	renderLog.OpenBlock( "RB_DrawViewInternal" );
 
 	//-------------------------------------------------
@@ -2406,6 +2423,9 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 	//-------------------------------------------------
 	RB_DrawInteractions();
 
+	// in HDR the lights add in linear, what follows blends in gamma as in the retail frame
+	RB_SetHdrGamma( r_hdrGammaBlend.GetBool() );
+
 	//-------------------------------------------------
 	// now draw any non-light dependent shading passes
 	//-------------------------------------------------
@@ -2429,6 +2449,7 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 	// so they are properly dimmed down
 	//-------------------------------------------------
 	RB_FogAllLights();
+	RB_SetHdrGamma( false );
 
 	//-------------------------------------------------
 	// capture the depth for the motion blur before rendering any post process surfaces that may contribute to the depth
@@ -2483,9 +2504,11 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye ) {
 	}
 
 	//-------------------------------------------------
-	// render debug tools
+	// render debug tools; the HDR main view draws them after its resolve, over the tonemapped frame
 	//-------------------------------------------------
-	RB_RenderDebugTools( drawSurfs, numDrawSurfs );
+	if ( debugTools ) {
+		RB_RenderDebugTools( drawSurfs, numDrawSurfs );
+	}
 
 	renderLog.CloseBlock();
 }
@@ -2633,7 +2656,31 @@ If the view is a GUI view that is repeated for both eyes, the viewDef.stereoEye 
 is 0, so the stereoEye parameter is not always the same as that.
 ==================
 */
-void RB_DrawView( const void *data, const int stereoEye ) {
+bool RB_ViewDraws( const viewDef_t * viewDef ) {
+	// skip render bypasses everything that has models, assuming
+	// them to be 3D views, but leaves 2D rendering visible
+	return viewDef->numDrawSurfs != 0 && !( r_skipRender.GetBool() && viewDef->viewEntitys );
+}
+
+// The eye adaptation's step at the main view's resolve: its time since the last resolve; at once to the target
+// for a new view, viewport size or a time that went back; none while a screenshot is taken or for the second eye.
+static hdrExposureStep_t RB_HdrExposureStep( const viewDef_t & viewDef, int stereoEye ) {
+	hdrExposureStep_t step;
+	if ( tr.takingScreenshot || stereoEye == -1 ) {
+		step.reset = false;
+		return step;
+	}
+	hdrLastResolve_t & last = backEnd.hdrLastResolve;
+	const int time = viewDef.renderView.time[0];
+	const int width = viewDef.viewport.GetWidth();
+	const int height = viewDef.viewport.GetHeight();
+	step.reset = !last.valid || viewDef.renderView.viewID != last.viewID || width != last.width || height != last.height || time < last.time;
+	step.seconds = step.reset ? 0.0f : static_cast<float>( time - last.time ) * 0.001f;
+	last = { time, viewDef.renderView.viewID, width, height, true };
+	return step;
+}
+
+void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	const drawSurfsCommand_t * cmd = (const drawSurfsCommand_t *)data;
 
 	backEnd.viewDef = cmd->viewDef;
@@ -2642,23 +2689,28 @@ void RB_DrawView( const void *data, const int stereoEye ) {
 	// when a SS_POST_PROCESS material is used
 	backEnd.currentRenderCopied = false;
 
-	// if there aren't any drawsurfs, do nothing
-	if ( !backEnd.viewDef->numDrawSurfs ) {
-		return;
-	}
-
-	// skip render bypasses everything that has models, assuming
-	// them to be 3D views, but leaves 2D rendering visible
-	if ( r_skipRender.GetBool() && backEnd.viewDef->viewEntitys ) {
+	if ( !RB_ViewDraws( backEnd.viewDef ) ) {
 		return;
 	}
 
 	backEnd.pc.c_surfaces += backEnd.viewDef->numDrawSurfs;
 
 	// render the scene
-	RB_DrawViewInternal( cmd->viewDef, stereoEye );
+	RB_DrawViewInternal( cmd->viewDef, stereoEye, !hdrMainView );
 
+	// motion blur is in HDR: the resolve comes after it
 	RB_MotionBlur();
+
+	if ( hdrMainView ) {
+		const idScreenRect & v = backEnd.viewDef->viewport;
+		renderLog.OpenMainBlock( MRB_HDR );
+		renderBackend->ResolveHdrScene( backEnd.viewDef->postProcess, { v.x1, v.y1, v.GetWidth(), v.GetHeight() },
+			RB_HdrExposureStep( *backEnd.viewDef, stereoEye ) );
+		renderLog.CloseMainBlock();
+		backEnd.hdrPhase = false;
+		backEnd.hdrGamma = false;
+		RB_RenderDebugTools( (drawSurf_t **)&backEnd.viewDef->drawSurfs[0], backEnd.viewDef->numDrawSurfs );
+	}
 
 	// optionally draw a box colored based on the eye number
 	if ( r_drawEyeColor.GetBool() ) {

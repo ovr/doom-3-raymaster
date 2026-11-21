@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "RenderState.h"
 #include "RenderBackendTypes.h"
+#include "PostProcessSettings.h"
 #include "ScreenRect.h"
 #include "ImageOpts.h"
 #include "Image.h"
@@ -433,6 +434,7 @@ struct viewDef_t {
 	idPlane				clipPlanes[MAX_CLIP_PLANES];		// in world space, the positive side
 												// of the plane is the visible side
 	idScreenRect		viewport;				// in real pixels and proper Y flip
+	postProcessSettings_t	postProcess;		// R_DefaultPostProcessSettings; the back end reads the main view's
 
 	idScreenRect		scissor;
 	// for scissor clipping, local inside renderView viewport
@@ -659,6 +661,15 @@ const int MAX_DEBUG_BATCHES	= 64;
 
 // all state modified by the back end is separated
 // from the front end state
+// The main view at its last HDR resolve, for the eye adaptation's step (R13).
+struct hdrLastResolve_t {
+	int					time;					// renderView.time[0], ms
+	int					viewID;
+	int					width;
+	int					height;
+	bool				valid;
+};
+
 struct backEndState_t {
 	const viewDef_t	*	viewDef;
 	backEndCounters_t	pc;
@@ -667,6 +678,9 @@ struct backEndState_t {
 	idScreenRect		currentScissor;			// for scissor clipping, local inside renderView viewport
 
 	bool				currentRenderCopied;	// true if any material has already referenced _currentRender
+	bool				hdrPhase;				// BeginHdrScene .. ResolveHdrScene: the colour parms decode from sRGB (R13)
+	bool				hdrGamma;				// in hdrPhase, the gamma composite: they do not
+	hdrLastResolve_t	hdrLastResolve;
 
 	idRenderMatrix		prevMVP[2];				// world MVP from previous frame for motion blur, per-eye
 
@@ -862,6 +876,12 @@ extern idCVar r_logFile;					// number of frames to emit GL logs
 extern idCVar r_clear;						// force screen clear every frame
 extern idCVar r_subviewOnly;				// 1 = don't render main view, allowing subviews to be debugged
 extern idCVar r_lightScale;					// all light intensities are multiplied by this, which is normally 2
+extern idCVar r_hdr;						// PostProcessSettings.h: the main view in linear HDR
+extern idCVar r_hdrDebug;
+extern idCVar r_hdrGammaBlend;
+
+// The r_hdr* cvars as settings, which RenderScene copies into the view.
+postProcessSettings_t R_DefaultPostProcessSettings();
 extern idCVar r_flareSize;					// scale the flare deforms from the material def
 
 extern idCVar r_gamma;						// changes gamma tables
@@ -1270,6 +1290,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds );
 void RB_SetColor( float * color );
 void RB_SetColor( float r, float g, float b );
 void RB_SetColor( float r, float g, float b, float a );
+// A colour parm as the render programs read it: rgb decoded from sRGB in the HDR phase (R13), alpha kept.
+idVec4 RB_ColorParm( const idVec4 & color );
 
 /*
 ============================================================
@@ -1280,8 +1302,11 @@ TR_BACKEND_DRAW
 */
 
 void RB_DrawElementsWithCounters( const drawSurf_t *surf, primitive_t topology = primitive_t::TRIANGLES );
-void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye );
-void RB_DrawView( const void *data, const int stereoEye );
+void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool debugTools = true );
+// hdrMainView: the view whose end resolves the HDR scene; its debug tools draw after the resolve.
+void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView = false );
+// The view draws something: RB_DrawView returns early for none.
+bool RB_ViewDraws( const viewDef_t * viewDef );
 void RB_CopyRender( const void *data );
 void RB_PostProcess( const void *data );
 

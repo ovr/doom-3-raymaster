@@ -28,6 +28,7 @@ std::expected<void, idStr> idRenderBackendD3D12::Init( const renderBackendInit_t
 	context->device.FillCaps( caps );
 	caps.gpuTimer = context->timers.Available();
 	caps.timestamps = context->timers.Available();
+	caps.hdrScene = true;
 	context->textures.RecordUploads( r_d3d12CheckImages.GetBool() );
 	context->SetSrgb( srgbOutput );
 	context->SetGamma( gamma );
@@ -172,6 +173,26 @@ void idRenderBackendD3D12::EndLevelLoad() {
 
 void idRenderBackendD3D12::CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
 	context->CopyOutputToTexture( texture, x, y, width, height );
+}
+
+void idRenderBackendD3D12::BeginHdrScene( const postProcessSettings_t & settings ) {
+	context->BeginHdrScene( settings );
+}
+
+void idRenderBackendD3D12::ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport, const hdrExposureStep_t & step ) {
+	context->ResolveHdrScene( settings, viewport, step );
+}
+
+void idRenderBackendD3D12::EndHdrScene() {
+	context->EndHdrScene();
+}
+
+void idRenderBackendD3D12::SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) {
+	context->SetHdrSceneGamma( encoded, viewport );
+}
+
+std::optional<hdrExposure_t> idRenderBackendD3D12::LastHdrExposure() const {
+	return context ? context->LastHdrExposure() : std::nullopt;
 }
 
 void idRenderBackendD3D12::CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) {

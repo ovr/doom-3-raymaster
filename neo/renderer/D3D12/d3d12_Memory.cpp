@@ -16,7 +16,7 @@ constexpr uint64 BUFFER_COPY_ALIGN = 16;
 }	// namespace
 
 idComPtr<ID3D12Resource> D3D12_CreateBuffer( const idD3D12Device & device, D3D12_HEAP_TYPE heap, uint64 bytes,
-	D3D12_RESOURCE_STATES state, const wchar_t * name ) {
+	D3D12_RESOURCE_STATES state, const wchar_t * name, D3D12_RESOURCE_FLAGS flags ) {
 	D3D12_HEAP_PROPERTIES properties = {};
 	properties.Type = heap;
 	D3D12_RESOURCE_DESC desc = {};
@@ -27,6 +27,7 @@ idComPtr<ID3D12Resource> D3D12_CreateBuffer( const idD3D12Device & device, D3D12
 	desc.MipLevels = 1;
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	desc.Flags = flags;
 	idComPtr<ID3D12Resource> buffer;
 	if ( device.Check( device.Get().CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS( &buffer ) ),
 			"CreateCommittedResource (buffer)" ) ) {
@@ -53,7 +54,7 @@ std::optional<d3d12UploadSpan_t> idD3D12UploadRing::TryAllocate( uint64 bytes, u
 }
 
 // A decaying resource starts every list in COMMON; a pending barrier never outlives its list (SubmitChunk flushes).
-void idD3D12Barriers::Transition( ID3D12Resource & resource, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES after ) {
+void idD3D12Barriers::Transition( ID3D12Resource & resource, d3d12ResourceState_t & state, D3D12_RESOURCE_STATES after, UINT subresource ) {
 	if ( state.decays && state.listSerial != submitter.ListSerial() ) {
 		assert( state.pending < 0 );
 		state.current = D3D12_RESOURCE_STATE_COMMON;
@@ -61,7 +62,7 @@ void idD3D12Barriers::Transition( ID3D12Resource & resource, d3d12ResourceState_
 	}
 	if ( state.pending >= 0 ) {
 		D3D12_RESOURCE_TRANSITION_BARRIER & queued = batch[state.pending].Transition;
-		assert( queued.pResource == &resource );
+		assert( queued.pResource == &resource && queued.Subresource == subresource );
 		if ( queued.StateBefore == after ) {
 			Remove( state.pending );
 		} else {
@@ -80,12 +81,29 @@ void idD3D12Barriers::Transition( ID3D12Resource & resource, d3d12ResourceState_
 	barrier = {};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	barrier.Transition.pResource = &resource;
-	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.Subresource = subresource;
 	barrier.Transition.StateBefore = state.current;
 	barrier.Transition.StateAfter = after;
 	owners[count] = &state;
 	state.pending = static_cast<int16>( count++ );
 	state.current = after;
+}
+
+// A UAV barrier only follows writes as UAV, and a transition out of UNORDERED_ACCESS waits for them too, so
+// where it lands among the transitions of the batch does not matter.
+void idD3D12Barriers::Uav( ID3D12Resource & resource ) {
+	if ( count == BATCH ) {
+		Flush();
+	}
+	D3D12_RESOURCE_BARRIER & barrier = batch[count];
+	barrier = {};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+	barrier.UAV.pResource = &resource;
+	owners[count++] = nullptr;
+}
+
+D3D12_RESOURCE_STATES idD3D12Barriers::Current( const d3d12ResourceState_t & state ) const {
+	return ( state.decays && state.listSerial != submitter.ListSerial() ) ? D3D12_RESOURCE_STATE_COMMON : state.current;
 }
 
 // The last entry moves into the hole, so its owner learns its new index.
@@ -95,7 +113,9 @@ void idD3D12Barriers::Remove( int index ) {
 	if ( index != count ) {
 		batch[index] = batch[count];
 		owners[index] = owners[count];
-		owners[index]->pending = static_cast<int16>( index );
+		if ( owners[index] != nullptr ) {
+			owners[index]->pending = static_cast<int16>( index );
+		}
 	}
 }
 
@@ -110,7 +130,9 @@ void idD3D12Barriers::Flush() {
 
 void idD3D12Barriers::Discard() {
 	for ( d3d12ResourceState_t * owner : std::span( owners.data(), static_cast<size_t>( count ) ) ) {
-		owner->pending = -1;
+		if ( owner != nullptr ) {
+			owner->pending = -1;
+		}
 	}
 	count = 0;
 }

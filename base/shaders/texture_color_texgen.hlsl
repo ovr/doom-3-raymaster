@@ -55,13 +55,13 @@ VSOutput VSMain( VSInput input ) {
 	output.texcoord.y = dot4( texGen, rpTextureMatrixT );
 	output.texcoord.zw = texGen.zw;
 
-	const float4 vertexColor = ( input.color * rpVertexColorModulate ) + rpVertexColorAdd;
+	const float4 vertexColor = ( DecodeColor( input.color ) * rpVertexColorModulate ) + rpVertexColorAdd;
 	output.color = saturate( vertexColor * rpColor );
 	return output;
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
 	// Always projective, so texgen materials need no program of their own: plain coordinates have w = 1.
-	const float4 texSample = SampleProjected( textureMap, textureSampler, input.texcoord );
-	return texSample * input.color;
+	const float4 texSample = SceneColor( SampleProjected( textureMap, textureSampler, input.texcoord ), 0 );
+	return SceneOutput( texSample * input.color );
 }

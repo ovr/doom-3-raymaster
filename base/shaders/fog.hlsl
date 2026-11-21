@@ -69,5 +69,5 @@ VSOutput VSMain( VSInput input ) {
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	return fogMap.Sample( fogSampler, input.fogUV ) * fogEnterMap.Sample( fogEnterSampler, input.fogEnterUV ) * rpColor;
+	return SceneOutput( fogMap.Sample( fogSampler, input.fogUV ) * fogEnterMap.Sample( fogEnterSampler, input.fogEnterUV ) * rpColor );
 }

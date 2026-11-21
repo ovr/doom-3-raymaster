@@ -12,14 +12,15 @@
 #include "d3d12_StateMap.h"
 
 /*
-	The one root signature of every program and every internal pass, version 1.1, 30 DWORDs, with both heaps
+	The one root signature of every program and every internal pass, version 1.1, 32 DWORDs, with both heaps
 	directly indexed (SM 6.6 ResourceDescriptorHeap and SamplerDescriptorHeap):
 
 	  0  VERTEX_PARMS    root CBV b0, vertex shader     the program's vertex parms (GL's _va_[])
 	  1  FRAGMENT_PARMS  root CBV b1, pixel shader      the program's fragment parms (GL's _fa_[])
 	  2  JOINTS          root CBV b2, vertex shader     the joint block at the draw's joint offset
-	  3  DRAW_RESOURCES  24 constants b3, all stages    d3d12DrawResources_t: the heap indices of the slots'
-	                                                    views and samplers (base/shaders/include/bindless.hlsli)
+	  3  DRAW_RESOURCES  26 constants b3, all stages    d3d12DrawResources_t: the heap indices of the slots'
+	                                                    views and samplers (base/shaders/include/bindless.hlsli),
+	                                                    colorFlags and preExposure (include/colorspace.hlsli)
 */
 class idD3D12RootSignature {
 public:
@@ -29,6 +30,31 @@ public:
 private:
 	idComPtr<ID3D12RootSignature>	signature;
 };
+
+/*
+	The root signature of the backend's own compute passes (render graph passes), both heaps directly indexed:
+
+	  0  PARMS      root CBV b0                   the pass's parms, heap indices of its views included
+	  1  CONSTANTS  8 constants b1                what changes between the dispatches of a pass (a level)
+*/
+class idD3D12ComputeRootSignature {
+public:
+									idD3D12ComputeRootSignature( const idD3D12Device & device, const idD3D12Library & library );
+	[[nodiscard]] ID3D12RootSignature *	Get() const { return signature.Get(); }
+
+private:
+	idComPtr<ID3D12RootSignature>	signature;
+};
+
+// A compute PSO and the numthreads of its stage, which turns threads into groups.
+struct d3d12ComputePipeline_t {
+	idComPtr<ID3D12PipelineState>	pso;
+	std::array<uint32, 3>			threadGroup = {};
+	[[nodiscard]] explicit			operator bool() const { return pso != nullptr; }
+};
+// nullptr pso only on a lost device.
+[[nodiscard]] d3d12ComputePipeline_t	D3D12_CreateComputePipeline( const idD3D12Device & device, const idD3D12ComputeRootSignature & root,
+											const d3d12Bytecode_t & code, const d3d12StageReflection_t & reflection, const wchar_t * name );
 
 // pipelineKey_t::depthBias → a D3D12 bias. Each slot holds a distinct bias and none holds no bias, so
 // equal slots ⇔ equal PSOs; slots live as long as the backend.
@@ -70,7 +96,7 @@ struct d3d12JournalEntry_t {
 // its keys. It only grows: a key of another sample count waits for the run that has it.
 class idD3D12PipelineJournal {
 public:
-	static constexpr uint32			VERSION = 1;	// bump when the bits of pipelineKey_t change their meaning
+	static constexpr uint32			VERSION = 2;	// bump when the bits of pipelineKey_t change their meaning
 
 	void							Record( std::string_view journalName, const d3d12JournalEntry_t & entry );	// a known one is ignored
 	[[nodiscard]] std::span<const d3d12JournalEntry_t>	EntriesFor( std::string_view journalName ) const;
@@ -102,7 +128,7 @@ struct d3d12PipelineName_t {
 // other.
 class idD3D12PipelineLibrary {
 public:
-	static constexpr uint32			VERSION = 2;	// bump when the root signature or the pipeline stream changes
+	static constexpr uint32			VERSION = 3;	// bump when the root signature or the pipeline stream changes
 
 	// nullopt: the adapter keeps no pipeline library. A file of another driver, adapter or VERSION, or a corrupt
 	// one, gives an empty library, whose Write then replaces the file.

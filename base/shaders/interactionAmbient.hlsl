@@ -123,20 +123,20 @@ VSOutput VSMain( VSInput input ) {
 	const float4 halfAngleVector = toLight + toView;
 	output.halfAngle = float4( dot3( tangent, halfAngleVector ), dot3( binormal, halfAngleVector ), dot3( normal, halfAngleVector ), 1.0 );
 
-	output.color = saturate( ( input.color * rpVertexColorModulate ) + rpVertexColorAdd );
+	output.color = saturate( ( DecodeColor( input.color ) * rpVertexColorModulate ) + rpVertexColorAdd );
 	return output;
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
 	const float4 bump = bumpMap.Sample( bumpSampler, input.bumpUV.xy );
-	const float4 lightFalloff = SampleProjected( lightFalloffMap, lightFalloffSampler, input.lightFalloff );
-	const float4 lightProjection = SampleProjected( lightProjectionMap, lightProjectionSampler, input.lightProjection );
+	const float4 lightFalloff = DecodeColor( SampleProjected( lightFalloffMap, lightFalloffSampler, input.lightFalloff ) );
+	const float4 lightProjection = DecodeColor( SampleProjected( lightProjectionMap, lightProjectionSampler, input.lightProjection ) );
 	const float4 YCoCG = diffuseMap.Sample( diffuseSampler, input.diffuseUV.xy );
-	const float4 specMap = specularMap.Sample( specularSampler, input.specularUV.xy );
+	const float4 specMap = DecodeColor( specularMap.Sample( specularSampler, input.specularUV.xy ) );
 
 	const float3 ambientLightVector = float3( 0.5, 9.5 - 0.385, 0.8925 );
 	const float3 lightVector = normalize( ambientLightVector );
-	const float3 diffuse = ConvertYCoCgToRGB( YCoCG );
+	const float3 diffuse = DecodeColor( ConvertYCoCgToRGB( YCoCG ) );
 
 	float3 localNormal;
 	localNormal.xy = bump.wy - 0.5;
@@ -151,5 +151,5 @@ float4 PSMain( VSOutput input ) : SV_Target {
 	const float3 specularColor = specMap.xyz * specularContribution * rpSpecularModifier.xyz;
 	const float3 lightColor = dot3( lightVector, localNormal ) * lightProjection.xyz * lightFalloff.xyz;
 
-	return float4( ( diffuseColor + specularColor ) * lightColor * input.color.xyz, 1.0 );
+	return SceneOutput( float4( ( diffuseColor + specularColor ) * lightColor * input.color.xyz, 1.0 ) );
 }

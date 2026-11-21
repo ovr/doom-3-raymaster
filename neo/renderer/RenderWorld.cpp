@@ -828,6 +828,7 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
 	// setup view parms for the initial view
 	viewDef_t * parms = (viewDef_t *)R_ClearedFrameAlloc( sizeof( *parms ), FRAME_ALLOC_VIEW_DEF );
 	parms->renderView = *renderView;
+	parms->postProcess = R_DefaultPostProcessSettings();
 
 	if ( tr.takingScreenshot ) {
 		parms->renderView.forceUpdate = true;

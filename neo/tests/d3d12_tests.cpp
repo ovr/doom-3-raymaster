@@ -9,10 +9,12 @@
 #include "../renderer/D3D12/d3d12_Buffers.h"
 #include "../renderer/D3D12/d3d12_Copies.h"
 #include "../renderer/D3D12/d3d12_Draw.h"
+#include "../renderer/D3D12/d3d12_Hdr.h"
 #include "../renderer/D3D12/d3d12_Dxc.h"
 #include "../renderer/D3D12/d3d12_HlslCompiler.h"
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
+#include "../renderer/D3D12/d3d12_RenderGraph.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
 #include "../renderer/D3D12/d3d12_Textures.h"
 #include "../renderer/D3D12/d3d12_Timers.h"
@@ -39,7 +41,7 @@
 	DXC compiles every stage of the repo's base/shaders, and the reflection of every program is held
 	to what GL reported on mars_city1 (neo/tests/d3d12_golden/renderProgInfo-gl.txt).
 	The pipeline state map runs per GLS family and on random keys; the PSO factory, the journal replayed
-	into the next run and the pipeline library on WARP. The screen
+	into the next run, the pipeline library and the render graph's compute and raster passes on WARP. The screen
 	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU, and so do the
 	GPU timers of r_pix and the draw recorder over every placement of the vertex cache's FRAME buffers.
 
@@ -1544,7 +1546,7 @@ void Test_HlslTargetMacros() {
 		"#endif\n";
 	for ( const shaderStageType_t stage : { shaderStageType_t::VERTEX, shaderStageType_t::FRAGMENT } ) {
 		const auto built = compiler.Build( source, stage, hlslParms_t::ANY );
-		Check( built.has_value(), va( "%s: %s", ( stage == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain", built ? "" : built.error().c_str() ) );
+		Check( built.has_value(), va( "%s: %s", D3D12_StageEntry( stage ), built ? "" : built.error().c_str() ) );
 	}
 	Check( compiler.Compiled() == 2, va( "two texts, two DXC runs: %d", compiler.Compiled() ) );
 }
@@ -1574,6 +1576,48 @@ void Test_HlslInternalStages() {
 	for ( size_t i = 0; i < built.size(); i++ ) {
 		Check( built[i].has_value(), va( "%s: %s", sources[i].name.c_str(), built[i] ? "" : built[i].error().c_str() ) );
 	}
+}
+
+// A compute stage binds b0 and b1 (at most the root constants) and reads its resources through ResourceDescriptorHeap.
+void Test_HlslCompute() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
+	const auto source = []( const char * text ) {
+		d3d12HlslSource_t made;
+		made.name = "test_compute";
+		made.path = "shaders/test_compute.hlsl";
+		made.text = text;
+		return made;
+	};
+	const auto built = compiler.Build( source(
+		"cbuffer Parms : register( b0 ) { uint target; };\n"
+		"cbuffer Level : register( b1 ) { uint level; };\n"
+		"[numthreads( 8, 4, 1 )]\n"
+		"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+		"	RWTexture2D<float4> output = ResourceDescriptorHeap[target];\n"
+		"	output[id.xy] = float4( level, 0.0, 0.0, 1.0 );\n"
+		"}\n" ), shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	if ( Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		const std::array<uint32, 3> & group = built->reflection.threadGroup;
+		Check( group[0] == 8 && group[1] == 4 && group[2] == 1, va( "numthreads %u %u %u, not 8 4 1", group[0], group[1], group[2] ) );
+	}
+	const auto bound = compiler.Build( source(
+		"RWTexture2D<float4> output : register( u0 );\n"
+		"[numthreads( 8, 8, 1 )]\n"
+		"void CSMain( uint3 id : SV_DispatchThreadID ) { output[id.xy] = 1.0; }\n" ), shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	Check( !bound && bound.error().Find( "ResourceDescriptorHeap" ) >= 0, bound ? "a UAV at u0 compiled" : bound.error().c_str() );
+	const auto large = compiler.Build( source(
+		"cbuffer Parms : register( b0 ) { uint target; };\n"
+		"cbuffer Level : register( b1 ) { uint4 a; uint4 b; uint c; };\n"
+		"[numthreads( 8, 8, 1 )]\n"
+		"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+		"	RWTexture2D<float4> output = ResourceDescriptorHeap[target];\n"
+		"	output[id.xy] = float4( a.x, b.x, c, 1.0 );\n"
+		"}\n" ), shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	Check( !large && large.error().Find( "root constants" ) >= 0, large ? "36 bytes at b1 compiled" : large.error().c_str() );
 }
 
 // Stages from the preprocessed text: names in comments, and a SKINNED that changes nothing, add none.
@@ -1627,7 +1671,7 @@ void Test_HlslSourcesCompile() {
 		}
 		for ( const auto & [source, type] : HlslStages( *library, entry.path().filename().string().c_str() ) ) {
 			stages++;
-			const char * entryPoint = ( type == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain";
+			const char * entryPoint = D3D12_StageEntry( type );
 			std::vector<const char *> defines;
 			for ( int i = 0; i < source.defines.Num(); i++ ) {
 				defines.push_back( source.defines[i].c_str() );
@@ -2355,9 +2399,36 @@ void Test_PipelineJournal() {
 	Check( !read.Read( {} ), "nor no file" );
 	idD3D12PipelineJournal foreign;
 	d3d12JournalEntry_t bad = a;
-	bad.key.raster = 0x80;
+	bad.key.layout = NUM_VERTEX_LAYOUTS;
 	foreign.Record( "gui|gui", bad );
-	Check( !read.Read( foreign.Write() ), "a raster bit the backend never sets: not a journal this code wrote" );
+	Check( !read.Read( foreign.Write() ), "a layout the backend has not: not a journal this code wrote" );
+
+	idD3D12PipelineJournal hdr;
+	d3d12JournalEntry_t hdrEntry = a;
+	hdrEntry.key.raster = static_cast<uint8>( D3D12_KEY_STRICT_DEPTH | D3D12_KeyRaster( d3d12TargetId_t::Of( false, 4, true ) ) );
+	hdr.Record( "interaction|interaction", hdrEntry );
+	Check( read.Read( hdr.Write() ) && read.EntriesFor( "interaction|interaction" ).size() == 1
+		&& read.EntriesFor( "interaction|interaction" )[0] == hdrEntry, "the HDR scene's bit 7 is read back" );
+}
+
+// Raster bits 3-5 and 7: every target id goes through the key and back; the HDR scene has no sRGB view.
+void Test_PipelineTargetIds() {
+	for ( uint8 value = 0; value < d3d12TargetId_t::COUNT; value++ ) {
+		const d3d12TargetId_t id = { value };
+		Check( D3D12_KeyTarget( D3D12_KeyRaster( id ) ) == id, va( "target id %u round trip", value ) );
+		Check( ( D3D12_KeyRaster( id ) & ~( D3D12_KEY_TARGET_BITS | D3D12_KEY_HDR_TARGET ) ) == 0, va( "target id %u stays in its bits", value ) );
+	}
+	for ( UINT samples : { 1u, 2u, 4u, 8u } ) {
+		const d3d12TargetId_t hdr = d3d12TargetId_t::Of( true, samples, true );
+		Check( hdr.Hdr() && !hdr.Srgb() && hdr.Samples() == samples && hdr.ColorView() == DXGI_FORMAT_R16G16B16A16_FLOAT,
+			va( "the HDR scene of %u samples: RGBA16F, no sRGB view", samples ) );
+		const d3d12TargetId_t ldr = d3d12TargetId_t::Of( true, samples );
+		Check( !ldr.Hdr() && ldr.Srgb() && ldr.Samples() == samples && ldr.ColorView() == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+			va( "the output of %u samples keeps its ids", samples ) );
+	}
+	pipelineKey_t key = {};
+	key.raster = static_cast<uint8>( D3D12_KeyRaster( d3d12TargetId_t::Of( false, 2, true ) ) | ( 1 << D3D12_KEY_TARGET_SHIFT ) );
+	Check( D3D12_KeyTarget( D3D12_NormalizeKey( key ).raster ) == d3d12TargetId_t::Of( false, 2, true ), "the normalized key drops an sRGB bit under HDR" );
 }
 
 // gui and shadow.vertex alone (no PS), from the repo's base/shaders.
@@ -3440,7 +3511,9 @@ void idTestCopies::FillDepth() {
 }
 
 // Level 0 of a single-sample texture as 32-bit texels, rows in memory order; waits for the GPU.
-[[nodiscard]] std::vector<uint32> ReadTexels( idTestGpu & gpu, ID3D12Resource & resource, d3d12ResourceState_t & state ) {
+// Level 0 as texels of sizeof( T ) bytes, rows in memory order.
+template<typename T = uint32>
+[[nodiscard]] std::vector<T> ReadTexels( idTestGpu & gpu, ID3D12Resource & resource, d3d12ResourceState_t & state ) {
 	const D3D12_RESOURCE_DESC desc = resource.GetDesc();
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
 	UINT rows = 0;
@@ -3464,12 +3537,12 @@ void idTestCopies::FillDepth() {
 	gpu.WaitIdle();
 
 	const size_t width = static_cast<size_t>( desc.Width );
-	std::vector<uint32> texels( width * rows );
+	std::vector<T> texels( width * rows );
 	const D3D12_RANGE everything = { 0, static_cast<SIZE_T>( total ) };
 	void * mapped = nullptr;
 	if ( gpu.device.Check( buffer->Map( 0, &everything, &mapped ), "Map (test copy readback)" ) ) {
 		for ( UINT row = 0; row < rows; row++ ) {
-			memcpy( &texels[row * width], static_cast<const byte *>( mapped ) + static_cast<size_t>( row ) * footprint.Footprint.RowPitch, width * 4 );
+			memcpy( &texels[row * width], static_cast<const byte *>( mapped ) + static_cast<size_t>( row ) * footprint.Footprint.RowPitch, width * sizeof( T ) );
 		}
 		const D3D12_RANGE nothingWritten = { 0, 0 };
 		buffer->Unmap( 0, &nothingWritten );
@@ -4298,6 +4371,1466 @@ void DxcBindless( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+// ---- WARP: the render graph --------------------------------------------------------------------------------
+
+// FILL writes ( x, y, 1.5, 1 ), DOWN averages 2 x 2 texels of source into target, ADD adds 1; CLEAR and COUNT
+// clear and add to word 0 of a raw buffer.
+constexpr const char * GRAPH_COMPUTE =
+	"cbuffer Parms : register( b0 ) { uint target; uint source; uint2 size; };\n"
+	"cbuffer Dispatch : register( b1 ) { uint amount; };\n"
+	"[numthreads( 8, 8, 1 )]\n"
+	"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+	"#if defined( CLEAR ) || defined( COUNT )\n"
+	"	RWByteAddressBuffer counter = ResourceDescriptorHeap[target];\n"
+	"#if defined( CLEAR )\n"
+	"	if ( all( id == 0 ) ) { counter.Store( 0, 0 ); }\n"
+	"#else\n"
+	"	counter.InterlockedAdd( 0, amount );\n"
+	"#endif\n"
+	"#else\n"
+	"	RWTexture2D<float4> output = ResourceDescriptorHeap[target];\n"
+	"	if ( any( id.xy >= size ) ) { return; }\n"
+	"#if defined( FILL )\n"
+	"	output[id.xy] = float4( id.x, id.y, 1.5, 1.0 );\n"
+	"#elif defined( DOWN )\n"
+	"	Texture2D<float4> input = ResourceDescriptorHeap[source];\n"
+	"	const int2 at = int2( id.xy * 2 );\n"
+	"	output[id.xy] = ( input.Load( int3( at, 0 ) ) + input.Load( int3( at + int2( 1, 0 ), 0 ) ) + input.Load( int3( at + int2( 0, 1 ), 0 ) )\n"
+	"		+ input.Load( int3( at + int2( 1, 1 ), 0 ) ) ) * 0.25;\n"
+	"#else\n"
+	"	Texture2D<float4> input = ResourceDescriptorHeap[source];\n"
+	"	output[id.xy] = input.Load( int3( id.xy, 0 ) ) + 1.0;\n"
+	"#endif\n"
+	"#endif\n"
+	"}\n";
+
+// The texel of source under the pixel, the counter's word 0 added to alpha.
+constexpr const char * GRAPH_PIXEL =
+	"cbuffer Parms : register( b1 ) { uint source; uint counter; };\n"
+	"float4 PSMain( float4 position : SV_Position ) : SV_Target {\n"
+	"	Texture2D<float4> input = ResourceDescriptorHeap[source];\n"
+	"	ByteAddressBuffer count = ResourceDescriptorHeap[counter];\n"
+	"	return input.Load( int3( position.xy, 0 ) ) + float4( 0.0, 0.0, 0.0, float( count.Load( 0 ) ) );\n"
+	"}\n";
+
+[[nodiscard]] d3d12HlslSource_t GraphSource( const char * text, const char * define ) {
+	d3d12HlslSource_t source;
+	source.name = va( "test_graph_%s", define );
+	source.path = "shaders/test_graph.hlsl";
+	source.text = text;
+	source.defines.Append( va( "%s=1", define ) );
+	return source;
+}
+
+[[nodiscard]] d3d12ComputePipeline_t GraphCompute( idTestCopies & fixture, const idD3D12ComputeRootSignature & root, const char * define ) {
+	const auto built = fixture.hlslCompiler.Build( GraphSource( GRAPH_COMPUTE, define ), shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	if ( !Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		return {};
+	}
+	return D3D12_CreateComputePipeline( fixture.gpu.device, root, built->code, built->reflection, L"test graph" );
+}
+
+// A committed resource the graph imports; its views are made by the caller.
+[[nodiscard]] idComPtr<ID3D12Resource> GraphTarget( idTestGpu & gpu, const D3D12_RESOURCE_DESC & desc ) {
+	const D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
+	idComPtr<ID3D12Resource> resource;
+	gpu.device.Check( gpu.device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+		IID_PPV_ARGS( &resource ) ), "CreateCommittedResource (test graph target)" );
+	return resource;
+}
+
+/*
+	One graph of compute, raster and copy passes, built twice as two frames would build it:
+
+	  fill      levels mip 0 = ( x, y, 1.5, 1 )                  16 x 16, 2 mips
+	  down      levels mip 1 = the 2 x 2 average of mip 0         the same resource as SRV (mip 0) and UAV (mip 1)
+	  unused    a transient nobody reads                          culled, never recorded
+	  count     counter = 0, UAV barrier, += amount x 256         two dispatches in one pass
+	  draw      output = levels mip 1 + ( 0, 0, 0, counter )      raster into an imported 8 x 8 target
+	  copy      result = counter                                  buffer copy into an imported buffer
+	  chain     a = fill, b = a + 1, c = b + 1, added = c + 1      c takes a's pooled resource
+*/
+void RenderGraph( idTestGpu & gpu ) {
+	idTestCopies fixture( gpu, 1 );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	const d3d12ComputePipeline_t fill = GraphCompute( fixture, computeRoot, "FILL" );
+	const d3d12ComputePipeline_t down = GraphCompute( fixture, computeRoot, "DOWN" );
+	const d3d12ComputePipeline_t add = GraphCompute( fixture, computeRoot, "ADD" );
+	const d3d12ComputePipeline_t clear = GraphCompute( fixture, computeRoot, "CLEAR" );
+	const d3d12ComputePipeline_t count = GraphCompute( fixture, computeRoot, "COUNT" );
+	const auto pixel = fixture.hlslCompiler.Build( GraphSource( GRAPH_PIXEL, "DRAW" ), shaderStageType_t::FRAGMENT, hlslParms_t::ANY );
+	if ( !Check( pixel.has_value(), pixel ? "" : pixel.error().c_str() ) || !computeRoot.Get() || !fill || !down || !add || !clear || !count ) {
+		return;
+	}
+	const idComPtr<ID3D12PipelineState> drawPso = fixture.passes.CreatePipeline( pixel->code, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,
+		static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ), L"test graph draw" );
+
+	constexpr DXGI_FORMAT FLOAT4 = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	D3D12_RESOURCE_DESC textureDesc = {};
+	textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	textureDesc.Width = 8;
+	textureDesc.Height = 8;
+	textureDesc.DepthOrArraySize = 1;
+	textureDesc.MipLevels = 1;
+	textureDesc.Format = FLOAT4;
+	textureDesc.SampleDesc.Count = 1;
+	textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	const idComPtr<ID3D12Resource> output = GraphTarget( gpu, textureDesc );
+	textureDesc.Width = textureDesc.Height = 16;
+	textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	const idComPtr<ID3D12Resource> added = GraphTarget( gpu, textureDesc );
+	const idComPtr<ID3D12Resource> result = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, 16, D3D12_RESOURCE_STATE_COMMON, L"test graph result" );
+	if ( !Check( drawPso && output && added && result, "the graph's PSO and imported resources" ) ) {
+		return;
+	}
+	d3d12ResourceState_t outputState, addedState, resultState;
+	resultState.decays = true;
+	const d3d12Descriptor_t outputRtv = gpu.rtvPool.Allocate();
+	D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+	rtvDesc.Format = FLOAT4;
+	rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+	gpu.device.Get().CreateRenderTargetView( output.Get(), &rtvDesc, gpu.rtvPool.Cpu( outputRtv ) );
+	const d3d12Descriptor_t addedUav = gpu.srvPool.Allocate();
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = FLOAT4;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+	gpu.srvPool.CreateUav( addedUav, *added.Get(), uavDesc );
+
+	uint32 amount = 1;
+	bool unusedRecorded = false;
+	const auto build = [&]() {
+		constexpr d3d12PoolDesc_t PLAIN = { .format = FLOAT4, .width = 16, .height = 16, .unorderedAccess = true };
+		constexpr d3d12PoolDesc_t MIPPED = { .format = FLOAT4, .width = 16, .height = 16, .mips = 2, .unorderedAccess = true };
+		constexpr d3d12PoolDesc_t COUNTER = { .kind = d3d12PoolDesc_t::kind_t::BUFFER, .width = 16, .unorderedAccess = true };
+		using access = d3d12GraphAccess_t;
+		using pass = d3d12GraphPass_t;
+		const d3d12GraphResource_t levels = graph.Create( "test levels", MIPPED );
+		const d3d12GraphResource_t counter = graph.Create( "test counter", COUNTER );
+		const d3d12GraphResource_t unused = graph.Create( "test unused", PLAIN );
+		const std::array<d3d12GraphResource_t, 3> chain = { graph.Create( "test chain a", PLAIN ), graph.Create( "test chain b", PLAIN ),
+			graph.Create( "test chain c", PLAIN ) };
+		const d3d12GraphResource_t outputs = graph.Import( "test output", { output.Get(), &outputState, {}, {}, gpu.rtvPool.Cpu( outputRtv ), 8, 8 } );
+		const d3d12GraphResource_t results = graph.Import( "test result", { result.Get(), &resultState, {}, {}, {}, 16, 1 } );
+		const d3d12GraphResource_t adds = graph.Import( "test added", { added.Get(), &addedState, {}, addedUav, {}, 16, 16 } );
+		const auto dispatch = [&]( const d3d12ComputePipeline_t & pipeline, d3d12GraphResource_t target, std::optional<d3d12GraphResource_t> source,
+			uint16 targetMip, uint16 sourceMip ) {
+			return [&pipeline, target, source, targetMip, sourceMip]( idD3D12GraphContext & context ) {
+				const uint32 size = context.Width( target, targetMip );
+				const std::array<uint32, 4> parms = { context.Uav( target, targetMip ), source ? context.Srv( *source, sourceMip ) : 0, size, size };
+				const d3d12UploadSpan_t span = context.Parms( parms );
+				context.Dispatch( pipeline, &span, size, size );
+			};
+		};
+		graph.AddPass( "fill", pass::COMPUTE, { { levels, access::UAV, 0 } }, dispatch( fill, levels, std::nullopt, 0, 0 ) );
+		graph.AddPass( "down", pass::COMPUTE, { { levels, access::SRV, 0 }, { levels, access::UAV, 1 } }, dispatch( down, levels, levels, 1, 0 ) );
+		graph.AddPass( "unused", pass::COMPUTE, { { unused, access::UAV, 0 } }, [&unusedRecorded]( idD3D12GraphContext & ) {
+			unusedRecorded = true;
+		} );
+		graph.AddPass( "count", pass::COMPUTE, { { counter, access::UAV } }, [&, counter]( idD3D12GraphContext & context ) {
+			const std::array<uint32, 4> parms = { context.Uav( counter ), 0, 0, 0 };
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( clear, &span, 1 );
+			context.UavBarrier( counter );
+			context.Dispatch( count, &span, 16, 16, 1, std::span( &amount, 1 ) );
+		} );
+		graph.AddPass( "draw", pass::RASTER, { { levels, access::SRV, 1 }, { counter, access::SRV }, { outputs, access::RTV } },
+			[&, levels, counter, outputs]( idD3D12GraphContext & context ) {
+				const d3d12UploadSpan_t span = context.Parms( std::array<uint32, 2>{ context.Srv( levels, 1 ), context.Srv( counter ) } );
+				context.Draw( *drawPso.Get(), outputs, 0, { 0, 0, 8, 8 }, span );
+			} );
+		graph.AddPass( "copy", pass::COPY, { { counter, access::COPY_SOURCE }, { results, access::COPY_DEST } },
+			[counter, results]( idD3D12GraphContext & context ) {
+				context.List().CopyBufferRegion( &context.Resource( results ), 0, &context.Resource( counter ), 0, 16 );
+			} );
+		graph.AddPass( "chain a", pass::COMPUTE, { { chain[0], access::UAV, 0 } }, dispatch( fill, chain[0], std::nullopt, 0, 0 ) );
+		graph.AddPass( "chain b", pass::COMPUTE, { { chain[0], access::SRV }, { chain[1], access::UAV, 0 } }, dispatch( add, chain[1], chain[0], 0, 0 ) );
+		graph.AddPass( "chain c", pass::COMPUTE, { { chain[1], access::SRV }, { chain[2], access::UAV, 0 } }, dispatch( add, chain[2], chain[1], 0, 0 ) );
+		graph.AddPass( "chain out", pass::COMPUTE, { { chain[2], access::SRV }, { adds, access::UAV } }, dispatch( add, adds, chain[2], 0, 0 ) );
+	};
+
+	const auto checkFrame = [&]( const char * frame ) {
+		const idD3D12RenderGraph::stats_t & stats = graph.LastStats();
+		Check( stats.passes == 9 && stats.culled == 1 && stats.transients == 5, va( "%s: %d passes, %d culled, %d transients: not 9, 1, 5", frame,
+			stats.passes, stats.culled, stats.transients ) );
+		Check( !unusedRecorded, va( "%s: the culled pass was recorded", frame ) );
+		const std::vector<idVec4> drawn = ReadTexels<idVec4>( gpu, *output.Get(), outputState );
+		const std::vector<idVec4> chained = ReadTexels<idVec4>( gpu, *added.Get(), addedState );
+		const std::vector<byte> counted = gpu.Read( *result.Get(), &resultState, 0, 4 );
+		if ( !Check( drawn.size() == 64 && chained.size() == 256 && counted.size() == 4, va( "%s: the readbacks", frame ) ) ) {
+			return;
+		}
+		uint32 total = 0;
+		memcpy( &total, counted.data(), sizeof( total ) );
+		Check( total == amount * 256, va( "%s: the counter is %u, not %u", frame, total, amount * 256 ) );
+		int wrongDrawn = 0;
+		int wrongChained = 0;
+		for ( int y = 0; y < 16; y++ ) {
+			for ( int x = 0; x < 16; x++ ) {
+				const idVec4 chainExpected( x + 3.0f, y + 3.0f, 4.5f, 4.0f );
+				wrongChained += ( chained[y * 16 + x] != chainExpected ) ? 1 : 0;
+				if ( x < 8 && y < 8 ) {
+					const idVec4 drawExpected( x * 2.0f + 0.5f, y * 2.0f + 0.5f, 1.5f, 1.0f + static_cast<float>( amount * 256 ) );
+					wrongDrawn += ( drawn[y * 8 + x] != drawExpected ) ? 1 : 0;
+				}
+			}
+		}
+		Check( wrongDrawn == 0, va( "%s: %d of 64 drawn texels wrong, ( 0, 0 ) is %s", frame, wrongDrawn, drawn[0].ToString() ) );
+		Check( wrongChained == 0, va( "%s: %d of 256 chained texels wrong, ( 0, 0 ) is %s", frame, wrongChained, chained[0].ToString() ) );
+		CheckNoLayerErrors( gpu );
+	};
+
+	fixture.Bind();
+	build();
+	graph.Execute();
+	checkFrame( "frame 1" );
+	// levels, the counter and two of the three chain textures: c reuses a's
+	Check( pool.CreatedThisFrame() == 4 && pool.Num() == 4, va( "frame 1: %d pooled resources, %d created: not 4", pool.Num(), pool.CreatedThisFrame() ) );
+	pool.EndFrame();
+
+	amount = 2;
+	fixture.Bind();
+	build();
+	graph.Execute();
+	checkFrame( "frame 2" );
+	Check( pool.CreatedThisFrame() == 0 && pool.Num() == 4, va( "frame 2: %d pooled resources, %d created: not 4 and 0", pool.Num(), pool.CreatedThisFrame() ) );
+
+	for ( uint64 frame = 0; frame < idD3D12ResourcePool::UNUSED_FRAMES; frame++ ) {
+		pool.EndFrame();
+	}
+	Check( pool.Num() == 4, va( "%d pooled resources after %llu unused frames: not 4", pool.Num(), idD3D12ResourcePool::UNUSED_FRAMES ) );
+	pool.EndFrame();
+	Check( pool.Num() == 0 && pool.Bytes() == 0, va( "%d pooled resources after %llu unused frames: not 0", pool.Num(), idD3D12ResourcePool::UNUSED_FRAMES + 1 ) );
+	gpu.WaitIdle();
+	gpu.srvPool.Free( addedUav );
+	gpu.rtvPool.Free( outputRtv );
+	CheckNoLayerErrors( gpu );
+}
+
+// ---- WARP: the HDR scene (R13) -----------------------------------------------------------------------------
+
+[[nodiscard]] float HalfToFloat( uint16 half ) {
+	const int exponent = ( half >> 10 ) & 0x1F;
+	const int mantissa = half & 0x3FF;
+	float value = 0.0f;
+	if ( exponent == 0 ) {
+		value = std::ldexp( static_cast<float>( mantissa ), -24 );
+	} else if ( exponent == 31 ) {
+		value = ( mantissa != 0 ) ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+	} else {
+		value = std::ldexp( static_cast<float>( mantissa | 0x400 ), exponent - 25 );
+	}
+	return ( ( half & 0x8000 ) != 0 ) ? -value : value;
+}
+
+// An RGBA16F texel as read back.
+[[nodiscard]] idVec4 HalfTexel( uint64 texel ) {
+	return idVec4( HalfToFloat( static_cast<uint16>( texel ) ), HalfToFloat( static_cast<uint16>( texel >> 16 ) ),
+		HalfToFloat( static_cast<uint16>( texel >> 32 ) ), HalfToFloat( static_cast<uint16>( texel >> 48 ) ) );
+}
+
+[[nodiscard]] double SrgbEncodeRef( double c ) {
+	return ( c <= 0.0031308 ) ? c * 12.92 : 1.055 * std::pow( c, 1.0 / 2.4 ) - 0.055;
+}
+
+[[nodiscard]] double SrgbDecodeRef( double c ) {
+	return ( c <= 0.04045 ) ? c / 12.92 : std::pow( ( c + 0.055 ) / 1.055, 2.4 );
+}
+
+// include/srgb.hlsli against the CPU: 256 inputs, below and above 1, and the round trip.
+constexpr const char * COLORSPACE_COMPUTE =
+	"#include \"include/srgb.hlsli\"\n"
+	"cbuffer Parms : register( b0 ) { uint target; };\n"
+	"[numthreads( 64, 1, 1 )]\n"
+	"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+	"	RWTexture2D<float4> output = ResourceDescriptorHeap[target];\n"
+	"	const float v = id.x / 255.0;\n"
+	"	output[id.xy] = float4( SRGBToLinear( v.xxx ).x, LinearToSRGB( v.xxx ).x, SRGBToLinear( ( v * 4.0 ).xxx ).x,\n"
+	"		LinearToSRGB( SRGBToLinear( v.xxx ) ).x );\n"
+	"}\n";
+
+void ColorSpace( idTestGpu & gpu ) {
+	idTestCopies fixture( gpu, 1 );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	d3d12HlslSource_t source;
+	source.name = "test_colorspace";
+	source.path = "shaders/test_colorspace.hlsl";
+	source.text = COLORSPACE_COMPUTE;
+	const auto built = fixture.hlslCompiler.Build( source, shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	if ( !Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		return;
+	}
+	const d3d12ComputePipeline_t pipeline = D3D12_CreateComputePipeline( gpu.device, computeRoot, built->code, built->reflection, L"test colorspace" );
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = 256;
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	desc.SampleDesc.Count = 1;
+	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	const idComPtr<ID3D12Resource> target = GraphTarget( gpu, desc );
+	if ( !Check( pipeline && target, "the pipeline and the target" ) ) {
+		return;
+	}
+	d3d12ResourceState_t state;
+	const d3d12Descriptor_t uav = gpu.srvPool.Allocate();
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = desc.Format;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+	gpu.srvPool.CreateUav( uav, *target.Get(), uavDesc );
+
+	fixture.Bind();
+	const d3d12GraphResource_t output = graph.Import( "colorspace", { target.Get(), &state, {}, uav, {}, 256, 1 } );
+	graph.AddPass( "colorspace", d3d12GraphPass_t::COMPUTE, { { output, d3d12GraphAccess_t::UAV, 0 } }, [&]( idD3D12GraphContext & context ) {
+		const uint32 index = context.Uav( output );
+		const d3d12UploadSpan_t parms = context.Parms( index );
+		context.Dispatch( pipeline, &parms, 256 );
+	} );
+	graph.Execute();
+	const std::vector<idVec4> texels = ReadTexels<idVec4>( gpu, *target.Get(), state );
+	if ( Check( texels.size() == 256, "the curves are read" ) ) {
+		double worst[4] = {};
+		for ( int i = 0; i < 256; i++ ) {
+			const double v = i / 255.0;
+			const double expected[4] = { SrgbDecodeRef( v ), SrgbEncodeRef( v ), SrgbDecodeRef( v * 4.0 ), v };
+			for ( int c = 0; c < 4; c++ ) {
+				worst[c] = Max( worst[c], std::abs( texels[i][c] - expected[c] ) / Max( 1.0, expected[c] ) );
+			}
+		}
+		Check( worst[0] < 2e-6 && worst[1] < 2e-6, va( "the curves within 2e-6 of the CPU's (%g, %g)", worst[0], worst[1] ) );
+		Check( worst[2] < 4e-6, va( "above 1 the decode goes on with the same formula (%g)", worst[2] ) );
+		Check( worst[3] < 4e-6, va( "decode then encode gives the input back (%g)", worst[3] ) );
+	}
+	gpu.srvPool.Free( uav );
+	CheckNoLayerErrors( gpu );
+}
+
+/*
+	Draws into the HDR scene with preExposure 0.5, four stripes of 16 columns, cleared to 0:
+
+	  0  ONE ONE: colour 2 twice           radiance 4 → 2 in the scene, alpha max( 1, 1 ) = 1
+	  1  ONE ONE: colour 1, then -1        the negative adds nothing: 0.5
+	  2  ONE ONE: colour 1, alpha 0.75 x2  alpha by MAX: 0.75, where a UNORM target would clamp the sum at 1
+	  3  ONE ZERO 1, then DST_COLOR ZERO   a factor of 0.5 multiplies the scene and is no radiance: 0.25
+	  then stripe 0 copied into a float texture and drawn over stripe 3 by texture.vfp: SceneColor and
+	  SceneOutput give back the 2 the scene held
+*/
+void HdrScene( idTestGpu & gpu ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	constexpr int STRIPES = 4;
+	constexpr int STRIPE = SIZE / STRIPES;
+	constexpr float PRE_EXPOSURE = 0.5f;
+	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const programHandle_t color = fixture.Program( "color" );
+	const programHandle_t texture = fixture.Program( "texture" );
+	const d3d12Program_t * colorProgram = fixture.shaders.FindProgram( color );
+	if ( !Check( colorProgram != nullptr && fixture.shaders.FindProgram( texture ) != nullptr, "color and texture" )
+			|| !Check( colorProgram->colorConstants && colorProgram->info.samplerMask == 0, "color reads the colour constants of b3, no slot" ) ) {
+		return;
+	}
+	std::array<idDrawVert, 4 * STRIPES> verts;
+	std::array<triIndex_t, 6 * STRIPES> indexes;
+	for ( int stripe = 0; stripe < STRIPES; stripe++ ) {
+		const float left = -1.0f + 2.0f * stripe / STRIPES;
+		const float right = left + 2.0f / STRIPES;
+		const float corners[4][2] = { { left, -1.0f }, { right, -1.0f }, { right, 1.0f }, { left, 1.0f } };
+		for ( int i = 0; i < 4; i++ ) {
+			idDrawVert & vert = verts[stripe * 4 + i];
+			vert.Clear();
+			vert.xyz.Set( corners[i][0], corners[i][1], 0.0f );
+			vert.SetTexCoord( 0.5f, 0.5f );
+		}
+		constexpr triIndex_t QUAD[6] = { 0, 1, 2, 0, 2, 3 };
+		for ( int i = 0; i < 6; i++ ) {
+			indexes[stripe * 6 + i] = static_cast<triIndex_t>( stripe * 4 + QUAD[i] );
+		}
+	}
+	fixture.NewList();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( fixture.scene.Color( true ).resource != nullptr, "the HDR scene" ) ) {
+		return;
+	}
+	const bufferHandle_t vertexBuffer = fixture.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( verts ) ), verts.data() );
+	const bufferHandle_t indexBuffer = fixture.buffers.Create( bufferType_t::INDEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( indexes ) ), indexes.data() );
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	for ( int row = 0; row < 4; row++ ) {
+		parms[RENDERPARM_MVPMATRIX_X + row][row] = 1.0f;
+	}
+	parms[RENDERPARM_TEXTUREMATRIX_S].Set( 1.0f, 0.0f, 0.0f, 0.0f );
+	parms[RENDERPARM_TEXTUREMATRIX_T].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+	renderLatch_t latch;
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.numIndexes = 6;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	const auto draw = [&]( int stripe, programHandle_t program, uint64 blend, const idVec4 & rgba ) {
+		latch.program = program;
+		latch.stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK | blend;
+		parms[RENDERPARM_COLOR] = rgba;
+		pipelineKey_t key = {};
+		key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+		key.layout = LAYOUT_DRAW_VERT;
+		dc.indexOffset = stripe * 6 * static_cast<int>( sizeof( triIndex_t ) );
+		fixture.recorder.Draw( latch, key, dc );
+	};
+
+	fixture.recorder.SetHdr( true, PRE_EXPOSURE );
+	clearDesc_t clear = {};
+	clear.rect = latch.viewport;
+	clear.color = true;
+	clear.colorWriteMask = 0xF;
+	renderLatch_t clearLatch = latch;
+	clearLatch.stateBits = 0;
+	fixture.recorder.Clear( clearLatch, clear );
+	constexpr uint64 ADD = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+	draw( 0, color, ADD, idVec4( 2.0f, 2.0f, 2.0f, 1.0f ) );
+	draw( 0, color, ADD, idVec4( 2.0f, 2.0f, 2.0f, 1.0f ) );
+	draw( 1, color, ADD, idVec4( 1.0f, 1.0f, 1.0f, 1.0f ) );
+	draw( 1, color, ADD, idVec4( -1.0f, -1.0f, -1.0f, 1.0f ) );
+	draw( 2, color, ADD, idVec4( 1.0f, 1.0f, 1.0f, 0.75f ) );
+	draw( 2, color, ADD, idVec4( 1.0f, 1.0f, 1.0f, 0.75f ) );
+	draw( 3, color, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO, idVec4( 1.0f, 1.0f, 1.0f, 1.0f ) );
+	draw( 3, color, GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+
+	const auto readScene = [&]() {
+		fixture.recorder.EndPass();
+		idD3D12SceneTarget::surface_t & hdr = fixture.scene.Color( true );
+		const std::vector<uint64> raw = ReadTexels<uint64>( gpu, *hdr.resource.Get(), hdr.state );
+		std::vector<idVec4> texels;
+		for ( uint64 texel : raw ) {
+			texels.push_back( HalfTexel( texel ) );
+		}
+		fixture.NewList();
+		return texels;
+	};
+	const auto checkStripe = [&]( const std::vector<idVec4> & texels, int stripe, const idVec4 & expected, const char * what ) {
+		int wrong = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = stripe * STRIPE; column < ( stripe + 1 ) * STRIPE; column++ ) {
+				wrong += texels[static_cast<size_t>( row ) * SIZE + column].Compare( expected, 1e-3f ) ? 0 : 1;
+			}
+		}
+		const idVec4 & first = texels[static_cast<size_t>( stripe ) * STRIPE];
+		Check( wrong == 0, va( "%s: %d pixels unlike %s (%s)", what, wrong, expected.ToString( 3 ), first.ToString( 3 ) ) );
+	};
+	std::vector<idVec4> texels = readScene();
+	if ( Check( texels.size() == static_cast<size_t>( SIZE ) * SIZE, "the HDR scene is read" ) ) {
+		checkStripe( texels, 0, idVec4( 2.0f, 2.0f, 2.0f, 1.0f ), "2 + 2 = 4 times 0.5" );
+		checkStripe( texels, 1, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ), "a negative output adds nothing" );
+		checkStripe( texels, 2, idVec4( 1.0f, 1.0f, 1.0f, 0.75f ), "alpha by MAX" );
+		checkStripe( texels, 3, idVec4( 0.25f, 0.25f, 0.25f, 1.0f ), "a factor is no radiance" );
+	}
+
+	const textureHandle_t copy = gpu.textures.Create( Opts( FMT_RGBA8, STRIPE, SIZE, 1 ), textureRole_t::COLOR_COPY, POINT_CLAMP, "test hdr copy" );
+	idD3D12ScreenCopies copies( gpu, gpu.barriers, fixture.scene, gpu.textures, fixture.passes, gpu.rtvPool );
+	fixture.recorder.EndPass();
+	copies.Color( copy, 0, 0, STRIPE, SIZE, true );
+	Check( gpu.textures.IsLinear( copy ), "a copy of the HDR scene is linear" );
+	latch.textures[0][static_cast<size_t>( textureKind_t::TEX_2D )] = copy;
+	draw( 3, texture, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO, idVec4( 1.0f, 1.0f, 1.0f, 1.0f ) );
+	texels = readScene();
+	if ( !texels.empty() ) {
+		checkStripe( texels, 3, idVec4( 2.0f, 2.0f, 2.0f, 1.0f ), "copy, SceneColor, SceneOutput: the scene's value again" );
+	}
+
+	// the gamma composite, preExposure 0.5: the clear is enc( 0.5 * dec( c ) ), an alpha blend mixes in gamma,
+	// a factor is not exposed
+	fixture.recorder.SetHdrGamma( true );
+	clear.rgba[0] = clear.rgba[1] = clear.rgba[2] = 0.5f;
+	clear.rgba[3] = 1.0f;
+	fixture.recorder.Clear( clearLatch, clear );
+	draw( 0, color, GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA, idVec4( 1.0f, 1.0f, 1.0f, 0.25f ) );
+	draw( 1, color, GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	texels = readScene();
+	const float cleared = R_LinearToSRGB( R_SRGBToLinear( 0.5f ) * PRE_EXPOSURE );
+	const float white = R_LinearToSRGB( PRE_EXPOSURE );
+	if ( !texels.empty() ) {
+		const float mixed = 0.25f * white + 0.75f * cleared;
+		checkStripe( texels, 0, idVec4( mixed, mixed, mixed, 0.8125f ), "an alpha blend in gamma" );
+		checkStripe( texels, 1, idVec4( 0.5f * cleared, 0.5f * cleared, 0.5f * cleared, 1.0f ), "a factor in gamma is not exposed" );
+		checkStripe( texels, 2, idVec4( cleared, cleared, cleared, 1.0f ), "a clear in gamma" );
+	}
+	fixture.recorder.SetHdr( false, PRE_EXPOSURE );
+	Check( !fixture.recorder.HdrGamma(), "the end of the HDR scene ends the gamma composite" );
+	fixture.recorder.EndPass();
+	gpu.WaitIdle();
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	gpu.textures.Destroy( copy );
+	CheckNoLayerErrors( gpu );
+}
+
+// A float copy of the HDR scene keeps its values; an LDR copy of the output into the same texture is UNORM as
+// before; switching between the two formats swaps the spare in and creates nothing.
+void HdrCopies( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( fixture.scene.Color( true ).resource != nullptr, "the HDR scene" ) ) {
+		return;
+	}
+	const auto value = []( int column, int row ) {
+		return idVec4( static_cast<float>( column / 4 ) * 0.25f, static_cast<float>( row / 4 ) * 0.5f, 3.0f, 0.5f );
+	};
+	for ( int row = 0; row < SIZE; row += 4 ) {
+		for ( int column = 0; column < SIZE; column += 4 ) {
+			const D3D12_RECT rect = { column, row, column + 4, row + 4 };
+			const idVec4 rgba = value( column, row );
+			gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), rgba.ToFloatPtr(), 1, &rect );
+		}
+	}
+	fixture.FillColor();
+	const idTestCopies::box_t box = { 8, 4, 24, 20 };
+	const textureHandle_t texture = gpu.textures.Create( Opts( FMT_RGBA8, box.width, box.height, 1 ), textureRole_t::COLOR_COPY, POINT_CLAMP,
+		"test hdr copies" );
+	d3d12Texture_t & made = gpu.textures.Get( texture );
+	gpu.textures.ResetFrameCounters();
+
+	fixture.copies.Color( texture, box.x, box.y, box.width, box.height, true );
+	Check( made.surface.linear && made.surface.resource->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT,
+		"a copy of the HDR scene: an RGBA16F surface, marked linear" );
+	const std::vector<uint64> raw = ReadTexels<uint64>( gpu, *made.surface.resource.Get(), made.surface.state );
+	int wrong = 0;
+	for ( int row = 0; row < box.height && !raw.empty(); row++ ) {
+		for ( int column = 0; column < box.width; column++ ) {
+			wrong += HalfTexel( raw[static_cast<size_t>( row ) * box.width + column] ).Compare( value( box.x + column, box.y + row ) ) ? 0 : 1;
+		}
+	}
+	Check( !raw.empty() && wrong == 0, va( "%u sample(s): %d texels unlike the HDR scene", samples, wrong ) );
+
+	fixture.Bind();
+	fixture.copies.Color( texture, box.x, box.y, box.width, box.height, false );
+	Check( !made.surface.linear && made.surface.resource->GetDesc().Format == DXGI_FORMAT_R8G8B8A8_UNORM, "an LDR copy: the UNORM surface" );
+	const std::vector<uint32> ldr = fixture.Read( *made.surface.resource.Get(), made.surface.state );
+	wrong = 0;
+	for ( int row = 0; row < box.height && !ldr.empty(); row++ ) {
+		for ( int column = 0; column < box.width; column++ ) {
+			wrong += ( ldr[static_cast<size_t>( row ) * box.width + column] != fixture.ColorAt( box.x + column, box.y + row ) ) ? 1 : 0;
+		}
+	}
+	Check( !ldr.empty() && wrong == 0, va( "%u sample(s): %d texels unlike the output", samples, wrong ) );
+	for ( int i = 0; i < 3; i++ ) {
+		fixture.Bind();
+		fixture.copies.Color( texture, box.x, box.y, box.width, box.height, ( i & 1 ) == 0 );
+	}
+	Check( gpu.textures.CopySurfacesThisFrame() == 1, va( "HDR, LDR and back create one surface (%d)", gpu.textures.CopySurfacesThisFrame() ) );
+	gpu.WaitIdle();
+	gpu.textures.Destroy( texture );
+	CheckNoLayerErrors( gpu );
+}
+
+void HdrCopiesAllSamples( idTestGpu & gpu ) {
+	HdrCopies( gpu, 1 );
+	HdrCopies( gpu, 4 );
+}
+
+// The CPU's reference of internal/combineLut.hlsl, in double.
+[[nodiscard]] idVec3 AgxRef( const idVec3 & input, bool punchy ) {
+	constexpr double INSET[3][3] = { { 0.842479062253094, 0.0423282422610123, 0.0423756549057051 },
+		{ 0.0784335999999992, 0.878468636469772, 0.0784336 }, { 0.0792237451477643, 0.0791661274605434, 0.879142973793104 } };
+	constexpr double OUTSET[3][3] = { { 1.19687900512017, -0.0528968517574562, -0.0529716355144438 },
+		{ -0.0980208811401368, 1.15190312990417, -0.0980434501171241 }, { -0.0990297440797205, -0.0989611768448433, 1.15107367264116 } };
+	constexpr double MIN_EV = -12.47393;
+	constexpr double MAX_EV = 4.026069;
+	double c[3];
+	for ( int j = 0; j < 3; j++ ) {
+		c[j] = 0.0;
+		for ( int i = 0; i < 3; i++ ) {
+			c[j] += Max( static_cast<double>( input[i] ), 1e-10 ) * INSET[i][j];
+		}
+		const double x = ( std::clamp( std::log2( c[j] ), MIN_EV, MAX_EV ) - MIN_EV ) / ( MAX_EV - MIN_EV );
+		const double x2 = x * x;
+		const double x4 = x2 * x2;
+		c[j] = 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+	}
+	if ( punchy ) {
+		const double luma = c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+		for ( double & v : c ) {
+			v = luma + 1.4 * ( std::pow( Max( v, 0.0 ), 1.35 ) - luma );
+		}
+	}
+	idVec3 out;
+	for ( int j = 0; j < 3; j++ ) {
+		out[j] = static_cast<float>( c[0] * OUTSET[0][j] + c[1] * OUTSET[1][j] + c[2] * OUTSET[2][j] );
+	}
+	return out;
+}
+
+[[nodiscard]] idVec3 FilmicRef( const idVec3 & input ) {
+	constexpr double TO_AP1[3][3] = { { 0.613097, 0.339523, 0.047379 }, { 0.070194, 0.916354, 0.013452 }, { 0.020616, 0.109570, 0.869815 } };
+	constexpr double FROM_AP1[3][3] = { { 1.704859, -0.621715, -0.083299 }, { -0.130078, 1.140734, -0.010560 }, { -0.023964, -0.128975, 1.153013 } };
+	constexpr double LUMA[3] = { 0.2722287168, 0.6740817658, 0.0536895174 };
+	constexpr double SLOPE = 0.88, TOE = 0.55, SHOULDER = 0.26, BLACK = 0.0, WHITE = 0.04;
+	double c[3];
+	for ( int i = 0; i < 3; i++ ) {
+		c[i] = Max( 0.0, TO_AP1[i][0] * input[0] + TO_AP1[i][1] * input[1] + TO_AP1[i][2] * input[2] );
+	}
+	double luma = c[0] * LUMA[0] + c[1] * LUMA[1] + c[2] * LUMA[2];
+	for ( double & v : c ) {
+		v = luma + 0.96 * ( v - luma );
+	}
+	const double toeScale = 1.0 + BLACK - TOE;
+	const double shoulderScale = 1.0 + WHITE - SHOULDER;
+	const double bt = ( 0.18 + BLACK ) / toeScale - 1.0;
+	const double toeMatch = std::log10( 0.18 ) - 0.5 * std::log( ( 1.0 + bt ) / ( 1.0 - bt ) ) * ( toeScale / SLOPE );
+	const double straightMatch = ( 1.0 - TOE ) / SLOPE - toeMatch;
+	const double shoulderMatch = SHOULDER / SLOPE - straightMatch;
+	for ( double & v : c ) {
+		const double logColor = std::log10( Max( v, 1e-10 ) );
+		const double straight = SLOPE * ( logColor + straightMatch );
+		double toe = -BLACK + ( 2.0 * toeScale ) / ( 1.0 + std::exp( ( -2.0 * SLOPE / toeScale ) * ( logColor - toeMatch ) ) );
+		double shoulder = ( 1.0 + WHITE ) - ( 2.0 * shoulderScale ) / ( 1.0 + std::exp( ( 2.0 * SLOPE / shoulderScale ) * ( logColor - shoulderMatch ) ) );
+		toe = ( logColor < toeMatch ) ? toe : straight;
+		shoulder = ( logColor > shoulderMatch ) ? shoulder : straight;
+		double t = std::clamp( ( logColor - toeMatch ) / ( shoulderMatch - toeMatch ), 0.0, 1.0 );
+		t = ( shoulderMatch < toeMatch ) ? 1.0 - t : t;
+		t = ( 3.0 - 2.0 * t ) * t * t;
+		v = toe + ( shoulder - toe ) * t;
+	}
+	luma = c[0] * LUMA[0] + c[1] * LUMA[1] + c[2] * LUMA[2];
+	for ( double & v : c ) {
+		v = Max( 0.0, luma + 0.93 * ( v - luma ) );
+	}
+	idVec3 out;
+	for ( int i = 0; i < 3; i++ ) {
+		out[i] = static_cast<float>( Max( 0.0, FROM_AP1[i][0] * c[0] + FROM_AP1[i][1] * c[1] + FROM_AP1[i][2] * c[2] ) );
+	}
+	return out;
+}
+
+[[nodiscard]] int ToByte( double encoded ) {
+	return static_cast<int>( std::floor( std::clamp( encoded, 0.0, 1.0 ) * 255.0 + 0.5 ) );
+}
+
+/*
+	The HDR resolve on a test scene of 8 x 8 blocks, each one colour, through the Combine LUT and the tonemap
+	into the output, with and without MSAA:
+
+	  clamp, neutral    the sRGB encoding of the clamped colour within 1 of 255, also between LUT texels
+	  AgX, filmic       the CPU's curves within 1 of 255 for colours on LUT texels
+	  the viewport      the pixels outside it keep the output's clear
+	  the LUT           built once for the same parms, again when they change
+*/
+void CombineLut( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	constexpr int BLOCK = 8;
+	constexpr int BLOCKS = SIZE / BLOCK;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	hdr.CreateDefaults();
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( computeRoot.Get() && fixture.scene.Color( true ).resource, "the compute root signature and the HDR scene" ) ) {
+		return;
+	}
+	const auto onTexel = []( int i ) { return d3d12Lut::Value( static_cast<float>( i ) / 31.0f ); };
+	// grey and coloured; the first half lies on LUT texels in every channel
+	std::array<idVec3, BLOCKS * BLOCKS> colors;
+	for ( int i = 0; i < BLOCKS * BLOCKS; i++ ) {
+		if ( i < 32 ) {
+			colors[i] = ( i < 16 ) ? idVec3( onTexel( i * 2 ), onTexel( i * 2 ), onTexel( i * 2 ) )
+				: idVec3( onTexel( ( i * 7 ) % 32 ), onTexel( ( i * 13 ) % 32 ), onTexel( ( i * 3 ) % 32 ) );
+		} else {
+			const float v = 0.0005f * std::pow( 1.25f, static_cast<float>( i - 32 ) );	// 0.0005 to 600, between texels
+			colors[i] = idVec3( v, v * 0.6f, v * 1.3f );
+		}
+	}
+	const auto colorAt = [&]( int column, int row ) -> const idVec3 & { return colors[( row / BLOCK ) * BLOCKS + column / BLOCK]; };
+	idD3D12SceneTarget::surface_t & output = fixture.scene.Color();
+	const auto fill = [&]() {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & scene = fixture.scene.Color( true );
+		gpu.barriers.Transition( *scene.resource.Get(), scene.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		for ( int row = 0; row < SIZE; row += BLOCK ) {
+			for ( int column = 0; column < SIZE; column += BLOCK ) {
+				const D3D12_RECT rect = { column, row, column + BLOCK, row + BLOCK };
+				const idVec3 & c = colorAt( column, row );
+				const float rgba[4] = { c.x, c.y, c.z, 1.0f };
+				gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), rgba, 1, &rect );
+			}
+		}
+		gpu.barriers.Transition( *output.resource.Get(), output.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false ), grey, 0, nullptr );
+	};
+	const auto run = [&]( const postProcessSettings_t & settings, const renderRect_t & viewport ) {
+		fill();
+		hdr.Resolve( graph, fixture.scene, settings, viewport, 1.0f, hdrExposureStep_t(), nullptr );
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		return fixture.Read( *resolved.resource.Get(), resolved.state );
+	};
+	const auto compare = [&]( const std::vector<uint32> & texels, const char * what, int blocks, auto expected ) {
+		int worst = 0;
+		int worstBlock = -1;
+		for ( int row = 0; row < SIZE && !texels.empty(); row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const int block = ( row / BLOCK ) * BLOCKS + column / BLOCK;
+				if ( block >= blocks ) {
+					continue;
+				}
+				const idVec3 want = expected( colorAt( column, row ) );
+				const uint32 texel = texels[static_cast<size_t>( row ) * SIZE + column];
+				for ( int c = 0; c < 3; c++ ) {
+					const int difference = std::abs( static_cast<int>( ( texel >> ( c * 8 ) ) & 0xFF ) - ToByte( want[c] ) );
+					if ( difference > worst ) {
+						worst = difference;
+						worstBlock = block;
+					}
+				}
+			}
+		}
+		Check( !texels.empty() && worst <= 1, va( "%u sample(s), %s: %d of 255 from the CPU's (block %d)", samples, what, worst, worstBlock ) );
+	};
+	const renderRect_t whole = { 0, 0, SIZE, SIZE };
+	postProcessSettings_t settings;
+	settings.autoExposure = false;
+	settings.bloomQuality = 0;
+	settings.localExposure = false;
+	settings.agxLook = 0;
+	settings.dither = false;
+	settings.tonemapper = hdrTonemapper_t::CLAMP;
+	compare( run( settings, whole ), "clamp", BLOCKS * BLOCKS, []( const idVec3 & c ) {
+		return idVec3( static_cast<float>( SrgbEncodeRef( std::clamp( c.x, 0.0f, 1.0f ) ) ), static_cast<float>( SrgbEncodeRef( std::clamp( c.y, 0.0f, 1.0f ) ) ),
+			static_cast<float>( SrgbEncodeRef( std::clamp( c.z, 0.0f, 1.0f ) ) ) );
+	} );
+	static_cast<void>( run( settings, whole ) );
+	Check( hdr.LutBuilds() == 1, va( "the same parms build the LUT once (%d)", hdr.LutBuilds() ) );
+	settings.tonemapper = hdrTonemapper_t::AGX;
+	compare( run( settings, whole ), "AgX", 32, []( const idVec3 & c ) { return AgxRef( c * d3d12Lut::CurveScale( hdrTonemapper_t::AGX, 0 ), false ); } );
+	settings.agxLook = 1;
+	compare( run( settings, whole ), "AgX punchy", 32, []( const idVec3 & c ) { return AgxRef( c * d3d12Lut::CurveScale( hdrTonemapper_t::AGX, 1 ), true ); } );
+	settings.agxLook = 0;
+	settings.tonemapper = hdrTonemapper_t::FILMIC;
+	compare( run( settings, whole ), "filmic", 32, []( const idVec3 & c ) {
+		const idVec3 toned = FilmicRef( c * d3d12Lut::CurveScale( hdrTonemapper_t::FILMIC, 0 ) );
+		return idVec3( static_cast<float>( SrgbEncodeRef( std::clamp( toned.x, 0.0f, 1.0f ) ) ), static_cast<float>( SrgbEncodeRef( std::clamp( toned.y, 0.0f, 1.0f ) ) ),
+			static_cast<float>( SrgbEncodeRef( std::clamp( toned.z, 0.0f, 1.0f ) ) ) );
+	} );
+	Check( hdr.LutBuilds() == 4, va( "each new curve builds the LUT again (%d)", hdr.LutBuilds() ) );
+
+	settings.tonemapper = hdrTonemapper_t::CLAMP;
+	const renderRect_t inner = { 16, 8, 24, 40 };
+	const std::vector<uint32> part = run( settings, inner );
+	int outside = 0;
+	for ( int row = 0; row < SIZE && !part.empty(); row++ ) {
+		for ( int column = 0; column < SIZE; column++ ) {
+			const bool inside = column >= inner.x && column < inner.x + inner.width && row >= inner.y && row < inner.y + inner.height;
+			outside += ( !inside && part[static_cast<size_t>( row ) * SIZE + column] != 0xFF808080u ) ? 1 : 0;
+		}
+	}
+	Check( !part.empty() && outside == 0, va( "%d pixels outside the viewport were written", outside ) );
+
+	settings.dither = true;
+	const std::vector<uint32> dithered = run( settings, whole );
+	const std::vector<uint32> again = run( settings, whole );
+	settings.dither = false;
+	const std::vector<uint32> plain = run( settings, whole );
+	int worst = 0;
+	for ( size_t i = 0; i < plain.size() && i < dithered.size(); i++ ) {
+		for ( int c = 0; c < 3; c++ ) {
+			worst = Max( worst, std::abs( static_cast<int>( ( dithered[i] >> ( c * 8 ) ) & 0xFF ) - static_cast<int>( ( plain[i] >> ( c * 8 ) ) & 0xFF ) ) );
+		}
+	}
+	Check( !dithered.empty() && dithered == again && worst <= 1, va( "the dither repeats and moves a byte by at most 1 (%d)", worst ) );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+// The gamma composite's conversion: inside the rectangle the sRGB encoding (above 1 too), outside nothing, and
+// back to the values the scene had, with and without MSAA.
+void HdrEncode( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	constexpr int BLOCK = 8;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	hdr.CreateDefaults();
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	idD3D12SceneTarget::surface_t & scene = fixture.scene.Color( true );
+	if ( !Check( scene.resource != nullptr, "the HDR scene" ) ) {
+		return;
+	}
+	const auto value = []( int column, int row ) {
+		const float bx = static_cast<float>( column / BLOCK );
+		const float by = static_cast<float>( row / BLOCK );
+		return idVec4( bx / 1024.0f, by * 0.25f, 0.25f + bx * by * 0.5f, 0.25f );	// exact in fp16: the toe, 0..1.75, to 24.75
+	};
+	gpu.barriers.Transition( *scene.resource.Get(), scene.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	gpu.barriers.Flush();
+	for ( int row = 0; row < SIZE; row += BLOCK ) {
+		for ( int column = 0; column < SIZE; column += BLOCK ) {
+			const D3D12_RECT rect = { column, row, column + BLOCK, row + BLOCK };
+			gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), value( column, row ).ToFloatPtr(), 1, &rect );
+		}
+	}
+	const renderRect_t inner = { 16, 8, 32, 40 };
+	const auto read = [&]() {
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu, std::nullopt, true );
+		std::vector<idVec4> texels;
+		for ( uint64 texel : ReadTexels<uint64>( gpu, *resolved.resource.Get(), resolved.state ) ) {
+			texels.push_back( HalfTexel( texel ) );
+		}
+		fixture.Bind();
+		return texels;
+	};
+	const auto check = [&]( const std::vector<idVec4> & texels, bool encoded, const char * what ) {
+		float worst = 0.0f;
+		int worstAt = -1;
+		int outside = 0;
+		for ( int row = 0; row < SIZE && !texels.empty(); row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const bool inside = column >= inner.x && column < inner.x + inner.width && row >= inner.y && row < inner.y + inner.height;
+				idVec4 want = value( column, row );
+				if ( inside && encoded ) {
+					want.Set( R_LinearToSRGB( want.x ), R_LinearToSRGB( want.y ), R_LinearToSRGB( want.z ), want.w );
+				}
+				const idVec4 & got = texels[static_cast<size_t>( row ) * SIZE + column];
+				for ( int c = 0; c < 4; c++ ) {
+					// in the encoded space, where one fp16 step of the encoding is what the round trip may lose
+					const float gotEncoded = ( c < 3 && !encoded ) ? R_LinearToSRGB( got[c] ) : got[c];
+					const float wantEncoded = ( c < 3 && !encoded ) ? R_LinearToSRGB( want[c] ) : want[c];
+					const float error = idMath::Fabs( gotEncoded - wantEncoded ) / Max( 1.0f, idMath::Fabs( wantEncoded ) );
+					worstAt = ( error > worst ) ? row * SIZE * 4 + column * 4 + c : worstAt;
+					worst = Max( worst, error );
+					outside += ( !inside && error > 0.0f ) ? 1 : 0;
+				}
+			}
+		}
+		Check( !texels.empty() && worst < 2e-3f && outside == 0, va( "%u sample(s), %s: worst %g (row %d, column %d, channel %d), %d changed outside",
+			samples, what, worst, worstAt / ( SIZE * 4 ), ( worstAt / 4 ) % SIZE, worstAt % 4, outside ) );
+	};
+	hdr.Encode( graph, fixture.scene, true, inner, nullptr );
+	check( read(), true, "encoded" );
+	hdr.Encode( graph, fixture.scene, false, inner, nullptr );
+	check( read(), false, "decoded again" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void HdrEncodeAllSamples( idTestGpu & gpu ) {
+	HdrEncode( gpu, 1 );
+	HdrEncode( gpu, 4 );
+}
+
+// The mean EV100 of counts between low and high of their weight, as internal/exposureAdapt.hlsl takes it, for a
+// histogram from EV100 -8 to 8.
+[[nodiscard]] double ExposureMeanRef( const std::array<double, d3d12Exposure::BINS> & counts, double low, double high ) {
+	double total = 0.0;
+	for ( const double count : counts ) {
+		total += count;
+	}
+	double below = 0.0;
+	double sum = 0.0;
+	double weight = 0.0;
+	for ( uint32 bin = 0; bin < d3d12Exposure::BINS; bin++ ) {
+		const double inside = Max( 0.0, Min( below + counts[bin], total * high ) - Max( below, total * low ) );
+		sum += inside * ( -8.0 + ( bin + 0.5 ) * 0.25 );
+		weight += inside;
+		below += counts[bin];
+	}
+	return sum / weight;
+}
+
+/*
+	The eye adaptation on a scene of 8 x 8 blocks, each a grey at the centre of a histogram bin (EV100 -8 to 8, a
+	quarter EV a bin), drawn with preExposure 2, with and without MSAA:
+
+	  histogram   the read-back counts are the CPU's: 32 per 2 x 2 pixels, black and darker than the range none,
+	              brighter in the last bin, only inside the viewport
+	  measured    the mean between the percents within 1e-3 EV of the CPU's; with a centre-weighted mask too
+	  adapted     a reset is the target (measured, clamped), a step moves by 1 - 2^( -seconds * speed ) up and down
+	  exposure    auto 2^( compensation + bias - adapted ) / 1.2, manual the CPU's; the tonemap shows radiance times it
+	  visualize   1 and 2 change the output, without a layer message
+*/
+void Exposure( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	constexpr int BLOCK = 8;
+	constexpr int BLOCKS = SIZE / BLOCK;
+	constexpr float PRE_EXPOSURE = 2.0f;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	hdr.CreateDefaults();
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( computeRoot.Get() && fixture.scene.Color( true ).resource, "the compute root signature and the HDR scene" ) ) {
+		return;
+	}
+	// every bin once (37 is odd), then black, darker and brighter than the range
+	std::array<float, BLOCKS * BLOCKS> radiance;
+	for ( int i = 0; i < BLOCKS * BLOCKS; i++ ) {
+		radiance[i] = std::exp2( -8.0f + ( static_cast<float>( ( i * 37 ) % 64 ) + 0.5f ) * 0.25f - 3.0f );
+	}
+	radiance[5] = 0.0f;
+	radiance[17] = std::exp2( -9.0f - 3.0f );
+	radiance[42] = std::exp2( 10.0f - 3.0f );
+	const auto radianceAt = [&]( int column, int row ) { return radiance[( row / BLOCK ) * BLOCKS + column / BLOCK]; };
+	idD3D12SceneTarget::surface_t & output = fixture.scene.Color();
+	const auto fill = [&]() {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & scene = fixture.scene.Color( true );
+		gpu.barriers.Transition( *scene.resource.Get(), scene.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		for ( int row = 0; row < SIZE; row += BLOCK ) {
+			for ( int column = 0; column < SIZE; column += BLOCK ) {
+				const D3D12_RECT rect = { column, row, column + BLOCK, row + BLOCK };
+				const float c = radianceAt( column, row ) * PRE_EXPOSURE;
+				const float rgba[4] = { c, c, c, 1.0f };
+				gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), rgba, 1, &rect );
+			}
+		}
+		gpu.barriers.Transition( *output.resource.Get(), output.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false ), grey, 0, nullptr );
+	};
+	const auto expectedCounts = [&]( const renderRect_t & rect, float mask ) {
+		std::array<double, d3d12Exposure::BINS> counts = {};
+		const int blocksX = ( rect.width + 1 ) / 2;
+		const int blocksY = ( rect.height + 1 ) / 2;
+		for ( int y = 0; y < blocksY; y++ ) {
+			for ( int x = 0; x < blocksX; x++ ) {
+				const float ev = std::log2( radianceAt( rect.x + x * 2, rect.y + y * 2 ) ) + 3.0f;
+				if ( !( ev >= -8.0f ) ) {
+					continue;
+				}
+				const float dx = ( static_cast<float>( x ) + 0.5f ) / static_cast<float>( blocksX ) * 2.0f - 1.0f;
+				const float dy = ( static_cast<float>( y ) + 0.5f ) / static_cast<float>( blocksY ) * 2.0f - 1.0f;
+				const float weight = 1.0f + ( std::exp( -( dx * dx + dy * dy ) ) - 1.0f ) * mask;
+				counts[Min( static_cast<int>( ( ev + 8.0f ) * 4.0f ), 63 )] += static_cast<double>( static_cast<uint32>( weight * 32.0f + 0.5f ) );
+			}
+		}
+		return counts;
+	};
+	const auto run = [&]( const postProcessSettings_t & settings, const renderRect_t & viewport, const hdrExposureStep_t & step ) {
+		fill();
+		hdr.Resolve( graph, fixture.scene, settings, viewport, PRE_EXPOSURE, step, nullptr );
+		gpu.WaitIdle();
+		hdr.Poll();
+		return hdr.LastExposure().value_or( d3d12ExposureReadback_t() );
+	};
+	const auto readOutput = [&]() {
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		return fixture.Read( *resolved.resource.Get(), resolved.state );
+	};
+	const auto within = []( double value, double want, double tolerance ) { return std::abs( value - want ) <= tolerance * Max( 1.0, std::abs( want ) ); };
+	const auto wrongBins = []( const d3d12ExposureReadback_t & read, const std::array<double, d3d12Exposure::BINS> & counts ) {
+		int wrong = 0;
+		for ( uint32 bin = 0; bin < d3d12Exposure::BINS; bin++ ) {
+			wrong += ( static_cast<double>( read.histogram[bin] ) != counts[bin] ) ? 1 : 0;
+		}
+		return wrong;
+	};
+
+	const renderRect_t whole = { 0, 0, SIZE, SIZE };
+	postProcessSettings_t base;
+	base.bloomQuality = 0;
+	base.dither = false;
+	base.tonemapper = hdrTonemapper_t::CLAMP;
+	base.meteringMask = 0.0f;
+	base.localExposure = false;
+	base.autoExposureBias = 0.0f;
+	base.minEV100 = -8.0f;
+	base.maxEV100 = 8.0f;
+	base.lowPercent = 0.0f;
+	base.highPercent = 1.0f;
+	const hdrExposureStep_t reset;
+	postProcessSettings_t settings = base;
+	d3d12ExposureReadback_t read = run( settings, whole, reset );
+	Check( hdr.LastExposure().has_value() && read.exposure.preExposure == PRE_EXPOSURE, "the EyeAdaptation is read back with its preExposure" );
+	const std::array<double, d3d12Exposure::BINS> counts = expectedCounts( whole, 0.0f );
+	Check( wrongBins( read, counts ) == 0, va( "%u sample(s): %d bins differ from the CPU's (the last %u, want %.0f)", samples, wrongBins( read, counts ),
+		read.histogram[63], counts[63] ) );
+	const double mean = ExposureMeanRef( counts, 0.0, 1.0 );
+	Check( within( read.exposure.measuredEV100, mean, 1e-3 ), va( "%u sample(s): measured %.4f EV100, the CPU's %.4f", samples, read.exposure.measuredEV100, mean ) );
+	const float stepped = std::nearbyint( read.exposure.measuredEV100 * d3d12Exposure::TARGET_STEPS ) / d3d12Exposure::TARGET_STEPS;
+	Check( read.exposure.targetEV100 == stepped && read.exposure.adaptedEV100 == stepped, va( "a reset adapts at once to the target in steps: %.5f, want %.5f",
+		read.exposure.adaptedEV100, stepped ) );
+	const float autoExposure = std::exp2( -read.exposure.adaptedEV100 ) / 1.2f;
+	Check( within( read.exposure.exposure, autoExposure, 1e-4 ), va( "exposure %g, want %g", read.exposure.exposure, autoExposure ) );
+	const std::vector<uint32> plain = readOutput();
+	int worst = 0;
+	for ( int row = 0; row < SIZE && !plain.empty(); row++ ) {
+		for ( int column = 0; column < SIZE; column++ ) {
+			const double shown = SrgbEncodeRef( std::clamp( static_cast<double>( radianceAt( column, row ) * read.exposure.exposure ), 0.0, 1.0 ) );
+			worst = Max( worst, std::abs( static_cast<int>( plain[static_cast<size_t>( row ) * SIZE + column] & 0xFF ) - ToByte( shown ) ) );
+		}
+	}
+	Check( !plain.empty() && worst <= 1, va( "%u sample(s): the tonemap shows radiance times the exposure within %d of 255", samples, worst ) );
+
+	settings.lowPercent = 0.25f;
+	settings.highPercent = 0.75f;
+	read = run( settings, whole, reset );
+	const double middle = ExposureMeanRef( counts, 0.25, 0.75 );
+	Check( within( read.exposure.measuredEV100, middle, 1e-3 ), va( "between 25 and 75 %%: %.4f EV100, the CPU's %.4f", read.exposure.measuredEV100, middle ) );
+	settings.maxEV100 = read.exposure.measuredEV100 - 1.0f;
+	read = run( settings, whole, reset );
+	Check( read.exposure.targetEV100 == settings.maxEV100 && read.exposure.adaptedEV100 == settings.maxEV100, "the target stays at most maxEV100" );
+
+	const float start = read.exposure.adaptedEV100;
+	settings.minEV100 = settings.maxEV100 = start + 2.0f;
+	settings.speedUp = 3.0f;
+	settings.speedDown = 1.0f;
+	read = run( settings, whole, { 0.25f, false } );
+	const float up = start + 2.0f * ( 1.0f - std::exp2( -0.25f * 3.0f ) );
+	Check( within( read.exposure.adaptedEV100, up, 1e-5 ), va( "toward a brighter target: %.5f, want %.5f", read.exposure.adaptedEV100, up ) );
+	settings.minEV100 = settings.maxEV100 = start - 2.0f;
+	read = run( settings, whole, { 0.25f, false } );
+	const float down = up + ( start - 2.0f - up ) * ( 1.0f - std::exp2( -0.25f ) );
+	Check( within( read.exposure.adaptedEV100, down, 1e-5 ), va( "toward a darker target: %.5f, want %.5f", read.exposure.adaptedEV100, down ) );
+	read = run( settings, whole, { 0.0f, false } );
+	Check( read.exposure.adaptedEV100 == down, "no time, no step" );
+	settings.exposureCompensation = 1.0f;
+	settings.autoExposureBias = -0.5f;
+	read = run( settings, whole, reset );
+	const float biased = std::exp2( 0.5f - read.exposure.adaptedEV100 ) / 1.2f;
+	Check( read.exposure.adaptedEV100 == start - 2.0f && within( read.exposure.exposure, biased, 1e-4 ), "the compensation and the bias add to the auto exposure" );
+	settings.autoExposure = false;
+	settings.exposureCompensation = 1.5f;
+	read = run( settings, whole, reset );
+	Check( read.exposure.exposure == R_ManualExposure( settings ), "manual: the CPU's exposure" );
+
+	settings = base;
+	settings.meteringMask = 1.0f;
+	read = run( settings, whole, reset );
+	const double masked = ExposureMeanRef( expectedCounts( whole, 1.0f ), 0.0, 1.0 );
+	Check( within( read.exposure.measuredEV100, masked, 0.01 ), va( "a centre-weighted mask: %.4f EV100, the CPU's %.4f (%.4f without)", read.exposure.measuredEV100,
+		masked, mean ) );
+	settings.meteringMask = 0.0f;
+	const renderRect_t inner = { 16, 8, 32, 40 };
+	read = run( settings, inner, reset );
+	Check( wrongBins( read, expectedCounts( inner, 0.0f ) ) == 0, va( "%u sample(s): only the viewport counts", samples ) );
+
+	settings.visualize = 1;
+	static_cast<void>( run( settings, whole, reset ) );
+	const std::vector<uint32> overlay = readOutput();
+	settings.visualize = 2;
+	static_cast<void>( run( settings, whole, reset ) );
+	const std::vector<uint32> falseColor = readOutput();
+	Check( !overlay.empty() && overlay != plain && !falseColor.empty() && falseColor != plain, "visualize 1 and 2 draw" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void ExposureAllSamples( idTestGpu & gpu ) {
+	Exposure( gpu, 1 );
+	Exposure( gpu, 4 );
+}
+
+// The 13-tap downsample of internal/bloomDownsample.hlsl without the Karis weights: ( w + 1 ) / 2 x ( h + 1 ) / 2
+// texels from the w x h rect at x0, y0 of source (stride texels a row), the taps clamped to the rect's texel centres.
+[[nodiscard]] std::vector<double> BloomDownsampleRef( const std::vector<double> & source, int stride, int x0, int y0, int w, int h ) {
+	const auto tap = [&]( double x, double y ) {
+		x = std::clamp( x, x0 + 0.5, x0 + w - 0.5 ) - 0.5;
+		y = std::clamp( y, y0 + 0.5, y0 + h - 0.5 ) - 0.5;
+		const int i = static_cast<int>( std::floor( x ) );
+		const int j = static_cast<int>( std::floor( y ) );
+		const double a = x - i;
+		const double b = y - j;
+		const auto at = [&]( int u, int v ) { return source[static_cast<size_t>( Min( v, y0 + h - 1 ) ) * stride + Min( u, x0 + w - 1 )]; };
+		return ( at( i, j ) * ( 1.0 - a ) + at( i + 1, j ) * a ) * ( 1.0 - b ) + ( at( i, j + 1 ) * ( 1.0 - a ) + at( i + 1, j + 1 ) * a ) * b;
+	};
+	const int width = ( w + 1 ) / 2;
+	const int height = ( h + 1 ) / 2;
+	std::vector<double> target( static_cast<size_t>( width ) * height );
+	for ( int v = 0; v < height; v++ ) {
+		for ( int u = 0; u < width; u++ ) {
+			const double x = x0 + ( u + 0.5 ) * 2.0;
+			const double y = y0 + ( v + 0.5 ) * 2.0;
+			const double corners = tap( x - 2, y - 2 ) + tap( x + 2, y - 2 ) + tap( x - 2, y + 2 ) + tap( x + 2, y + 2 );
+			const double edges = tap( x, y - 2 ) + tap( x - 2, y ) + tap( x + 2, y ) + tap( x, y + 2 );
+			const double inner = tap( x - 1, y - 1 ) + tap( x + 1, y - 1 ) + tap( x - 1, y + 1 ) + tap( x + 1, y + 1 );
+			target[static_cast<size_t>( v ) * width + u] = tap( x, y ) * 0.125 + corners * 0.03125 + edges * 0.0625 + inner * 0.125;
+		}
+	}
+	return target;
+}
+
+/*
+	The bloom on a 64 x 64 scene (levels 32 x 32 down to 1 x 1), with and without MSAA, through the clamp curve at
+	exposure 4; the blocks are dim, so the first level's Karis weights stay within 0.5 % of even:
+
+	  flat       a flat field stays as it is with the bloom at intensity 1
+	  block      the bloom alone of a centred 16 x 16 block is mirror-symmetric and spreads beyond the block; with
+	             three levels, which stay off the edges, it keeps the block's energy (dithered, decoded) within 2 %
+	  tints      only the last level's tint: one flat value, the 1 x 1 level of BloomDownsampleRef (from 4 x 4 on
+	             the taps clamped at the edges lose a centred field's mean); only the first: nearly all of it
+	             within 8 pixels of the block
+	  viewport   a bright scene outside the viewport does not reach the bloom inside it
+	  off        quality 0 and intensity 0 give the same bytes as no bloom; visualize 3 without levels the frame
+*/
+void Bloom( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	hdr.CreateDefaults();
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( computeRoot.Get() && fixture.scene.Color( true ).resource, "the compute root signature and the HDR scene" ) ) {
+		return;
+	}
+	idD3D12SceneTarget::surface_t & output = fixture.scene.Color();
+	struct block_t {
+		D3D12_RECT rect;
+		float radiance;
+	};
+	// the scene: background, then the blocks; the output grey
+	const auto run = [&]( const postProcessSettings_t & settings, const renderRect_t & viewport, float background, std::initializer_list<block_t> blocks ) {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & scene = fixture.scene.Color( true );
+		gpu.barriers.Transition( *scene.resource.Get(), scene.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float back[4] = { background, background, background, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), back, 0, nullptr );
+		for ( const block_t & block : blocks ) {
+			const float rgba[4] = { block.radiance, block.radiance, block.radiance, 1.0f };
+			gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), rgba, 1, &block.rect );
+		}
+		gpu.barriers.Transition( *output.resource.Get(), output.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false ), grey, 0, nullptr );
+		hdr.Resolve( graph, fixture.scene, settings, viewport, 1.0f, hdrExposureStep_t(), nullptr );
+		gpu.WaitIdle();
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		return fixture.Read( *resolved.resource.Get(), resolved.state );
+	};
+	const auto channel = []( const std::vector<uint32> & texels, int x, int y, int c ) {
+		return static_cast<int>( ( texels[static_cast<size_t>( y ) * SIZE + x] >> ( c * 8 ) ) & 0xFF );
+	};
+	const auto energy = [&]( const std::vector<uint32> & texels, int x0, int y0, int x1, int y1 ) {
+		double sum = 0.0;
+		for ( int y = y0; y < y1; y++ ) {
+			for ( int x = x0; x < x1; x++ ) {
+				sum += SrgbDecodeRef( channel( texels, x, y, 0 ) / 255.0 );
+			}
+		}
+		return sum;
+	};
+
+	constexpr float RADIANCE = 0.05f;
+	constexpr float EXPOSURE = 4.0f;
+	const renderRect_t whole = { 0, 0, SIZE, SIZE };
+	postProcessSettings_t base;
+	base.autoExposure = false;
+	base.exposureCompensation = 2.0f;
+	base.tonemapper = hdrTonemapper_t::CLAMP;
+	base.dither = false;
+	base.localExposure = false;
+	base.bloomIntensity = 1.0f;
+	Check( d3d12Bloom::Levels( base, SIZE, SIZE ) == 6 && d3d12Bloom::Levels( base, 3, 3 ) == 2 && d3d12Bloom::Levels( base, 2, 2 ) == 1,
+		"six levels for 64 x 64, as many as the mips of a small viewport" );
+
+	postProcessSettings_t none = base;
+	none.bloomQuality = 0;
+	const std::vector<uint32> flatPlain = run( none, whole, RADIANCE, {} );
+	const std::vector<uint32> flatBloom = run( base, whole, RADIANCE, {} );
+	int worst = 0;
+	for ( size_t i = 0; i < flatPlain.size() && flatPlain.size() == flatBloom.size(); i++ ) {
+		for ( int c = 0; c < 3; c++ ) {
+			worst = Max( worst, std::abs( static_cast<int>( ( flatPlain[i] >> ( c * 8 ) ) & 0xFF ) - static_cast<int>( ( flatBloom[i] >> ( c * 8 ) ) & 0xFF ) ) );
+		}
+	}
+	Check( !flatBloom.empty() && worst <= 2, va( "%u sample(s): a flat field under a full bloom moves by %d of 255", samples, worst ) );
+
+	const D3D12_RECT square = { 24, 24, 40, 40 };
+	postProcessSettings_t alone = base;
+	alone.visualize = 3;
+	const std::vector<uint32> block = run( alone, whole, 0.0f, { { square, RADIANCE } } );
+	int asymmetry = 0;
+	for ( int y = 0; y < SIZE && !block.empty(); y++ ) {
+		for ( int x = 0; x < SIZE; x++ ) {
+			asymmetry = Max( asymmetry, std::abs( channel( block, x, y, 0 ) - channel( block, SIZE - 1 - x, y, 0 ) ) );
+			asymmetry = Max( asymmetry, std::abs( channel( block, x, y, 0 ) - channel( block, x, SIZE - 1 - y, 0 ) ) );
+		}
+	}
+	Check( !block.empty() && asymmetry <= 1, va( "%u sample(s): the bloom of a centred block is symmetric within %d of 255", samples, asymmetry ) );
+	Check( !block.empty() && channel( block, 0, 0, 0 ) > 0 && channel( block, 20, 32, 0 ) > channel( block, 10, 32, 0 ), "the bloom spreads beyond the block" );
+	postProcessSettings_t dithered = alone;
+	dithered.dither = true;
+	dithered.bloomQuality = 2;
+	const std::vector<uint32> spread = run( dithered, whole, 0.0f, { { square, RADIANCE } } );
+	const double blockEnergy = 16.0 * 16.0 * RADIANCE * EXPOSURE;
+	const double spreadEnergy = spread.empty() ? 0.0 : energy( spread, 0, 0, SIZE, SIZE );
+	Check( std::abs( spreadEnergy / blockEnergy - 1.0 ) <= 0.02, va( "%u sample(s): the bloom keeps %.4f of the block's energy", samples, spreadEnergy / blockEnergy ) );
+
+	postProcessSettings_t last = alone;
+	last.bloomTints.fill( vec3_zero );
+	last.bloomTints[5] = idVec3( 1.0f, 1.0f, 1.0f );
+	const std::vector<uint32> flat = run( last, whole, 0.0f, { { square, RADIANCE } } );
+	int lowest = 255;
+	int highest = 0;
+	for ( int y = 0; y < SIZE && !flat.empty(); y++ ) {
+		for ( int x = 0; x < SIZE; x++ ) {
+			lowest = Min( lowest, channel( flat, x, y, 0 ) );
+			highest = Max( highest, channel( flat, x, y, 0 ) );
+		}
+	}
+	std::vector<double> level( static_cast<size_t>( SIZE ) * SIZE, 0.0 );
+	for ( int y = square.top; y < square.bottom; y++ ) {
+		for ( int x = square.left; x < square.right; x++ ) {
+			level[static_cast<size_t>( y ) * SIZE + x] = RADIANCE;
+		}
+	}
+	for ( int size = SIZE; size > 1; size /= 2 ) {
+		level = BloomDownsampleRef( level, size, 0, 0, size, size );
+	}
+	const int smallest = ToByte( SrgbEncodeRef( level[0] * EXPOSURE ) );
+	Check( !flat.empty() && highest - lowest <= 0 && std::abs( highest - smallest ) <= 1, va( "only the last level: one value %d .. %d, the CPU's %d (the mean %.5f, "
+		"the 1 x 1 level %.5f)", lowest, highest, smallest, blockEnergy / EXPOSURE / ( SIZE * SIZE ), level[0] ) );
+	postProcessSettings_t first = alone;
+	first.bloomTints.fill( vec3_zero );
+	first.bloomTints[0] = idVec3( 1.0f, 1.0f, 1.0f );
+	first.dither = true;
+	const std::vector<uint32> narrow = run( first, whole, 0.0f, { { square, RADIANCE } } );
+	const double close = narrow.empty() ? 0.0 : energy( narrow, 16, 16, 48, 48 ) / Max( energy( narrow, 0, 0, SIZE, SIZE ), 1e-9 );
+	Check( close >= 0.97, va( "only the first level: %.4f of the energy within 8 pixels of the block", close ) );
+
+	const renderRect_t inner = { 16, 16, 32, 32 };
+	const std::vector<uint32> confined = run( alone, inner, 4.0f, { { { 16, 16, 48, 48 }, 0.0f } } );
+	int leaked = 0;
+	for ( int y = inner.y; y < inner.y + inner.height && !confined.empty(); y++ ) {
+		for ( int x = inner.x; x < inner.x + inner.width; x++ ) {
+			leaked = Max( leaked, channel( confined, x, y, 0 ) );
+		}
+	}
+	Check( !confined.empty() && leaked == 0, va( "%u sample(s): the scene outside the viewport stays out of its bloom (%d)",
+		samples, leaked ) );
+
+	postProcessSettings_t zero = base;
+	zero.bloomIntensity = 0.0f;
+	postProcessSettings_t noLevels = alone;
+	noLevels.bloomQuality = 0;
+	const std::vector<uint32> plain = run( none, whole, 0.0f, { { square, RADIANCE } } );
+	Check( !plain.empty() && run( zero, whole, 0.0f, { { square, RADIANCE } } ) == plain && run( noLevels, whole, 0.0f, { { square, RADIANCE } } ) == plain,
+		"intensity 0, and visualize 3 without levels, give the frame without bloom" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void BloomAllSamples( idTestGpu & gpu ) {
+	Bloom( gpu, 1 );
+	Bloom( gpu, 4 );
+}
+
+/*
+	The local exposure on a 64 x 64 scene (one tile), with and without MSAA, through the clamp curve at exposure 1:
+
+	  step      a left half of 0.05 and a right half of 0.6, 7 bins apart, under the grid alone: each half keeps its
+	            own base up to the edge, so shadows of contrast 1.5 and highlights of 0.5 give 0.18 ( L / 0.18 )^c
+	  detail    2 x 2 squares of 0.1 and 0.4 under the blurred luminance alone: their log mean 0.2 is the base,
+	            detail 0 makes the frame flat at it, detail 2 puts the squares at 0.05 and 0.8
+	  viewport  a bright scene outside the viewport does not reach its grid or blurred luminance
+	  off       all 1, or the local exposure off, give the bytes without it; visualize 4 draws only when it is on
+*/
+void LocalExposure( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	hdr.CreateDefaults();
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( computeRoot.Get() && fixture.scene.Color( true ).resource, "the compute root signature and the HDR scene" ) ) {
+		return;
+	}
+	idD3D12SceneTarget::surface_t & output = fixture.scene.Color();
+	struct fill_t {
+		std::vector<D3D12_RECT> rects;
+		float radiance;
+	};
+	const auto run = [&]( const postProcessSettings_t & settings, const renderRect_t & viewport, float background, const std::vector<fill_t> & fills ) {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & scene = fixture.scene.Color( true );
+		gpu.barriers.Transition( *scene.resource.Get(), scene.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float back[4] = { background, background, background, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), back, 0, nullptr );
+		for ( const fill_t & fill : fills ) {
+			const float rgba[4] = { fill.radiance, fill.radiance, fill.radiance, 1.0f };
+			gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), rgba, static_cast<UINT>( fill.rects.size() ), fill.rects.data() );
+		}
+		gpu.barriers.Transition( *output.resource.Get(), output.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false ), grey, 0, nullptr );
+		hdr.Resolve( graph, fixture.scene, settings, viewport, 1.0f, hdrExposureStep_t(), nullptr );
+		gpu.WaitIdle();
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		return fixture.Read( *resolved.resource.Get(), resolved.state );
+	};
+	// the largest channel difference from expected( x, y ) over rect; 255 for an empty read
+	const auto worst = []( const std::vector<uint32> & texels, const renderRect_t & rect, const auto & expected ) {
+		int most = texels.empty() ? 255 : 0;
+		for ( int y = rect.y; y < rect.y + rect.height && !texels.empty(); y++ ) {
+			for ( int x = rect.x; x < rect.x + rect.width; x++ ) {
+				const int want = expected( x, y );
+				for ( int c = 0; c < 3; c++ ) {
+					most = Max( most, std::abs( static_cast<int>( ( texels[static_cast<size_t>( y ) * SIZE + x] >> ( c * 8 ) ) & 0xFF ) - want ) );
+				}
+			}
+		}
+		return most;
+	};
+	const auto encoded = []( double luminance ) { return ToByte( SrgbEncodeRef( luminance ) ); };
+	const auto contrast = []( double luminance, double c ) { return 0.18 * std::pow( luminance / 0.18, c ); };
+
+	const renderRect_t whole = { 0, 0, SIZE, SIZE };
+	postProcessSettings_t base;
+	base.autoExposure = false;
+	base.exposureCompensation = 0.0f;
+	base.tonemapper = hdrTonemapper_t::CLAMP;
+	base.dither = false;
+	base.bloomQuality = 0;
+	base.localHighlightContrast = 1.0f;
+	base.localBlurredBlend = 0.0f;
+
+	postProcessSettings_t step = base;
+	step.localShadowContrast = 1.5f;
+	step.localHighlightContrast = 0.5f;
+	const std::vector<fill_t> halves = { { { { 0, 0, SIZE / 2, SIZE } }, 0.05f } };
+	const std::vector<uint32> stepped = run( step, whole, 0.6f, halves );
+	const int shadow = encoded( contrast( 0.05, 1.5 ) );
+	const int highlight = encoded( contrast( 0.6, 0.5 ) );
+	const int stepError = worst( stepped, whole, [&]( int x, int ) { return ( x < SIZE / 2 ) ? shadow : highlight; } );
+	Check( stepError <= 1, va( "%u sample(s): the grid keeps each half's base up to the edge (%d, %d), off by %d", samples, shadow, highlight, stepError ) );
+
+	postProcessSettings_t flat = base;
+	flat.localBlurredBlend = 1.0f;
+	flat.localDetailStrength = 0.0f;
+	fill_t squares = { {}, 0.4f };
+	for ( int y = 0; y < SIZE; y += 2 ) {
+		for ( int x = ( y / 2 & 1 ) * 2; x < SIZE; x += 4 ) {
+			squares.rects.push_back( { x, y, x + 2, y + 2 } );
+		}
+	}
+	const std::vector<uint32> flattened = run( flat, whole, 0.1f, { squares } );
+	const int flatError = worst( flattened, whole, [&]( int, int ) { return encoded( 0.2 ); } );
+	Check( flatError <= 1, va( "%u sample(s): detail 0 makes the squares the blurred base 0.2, off by %d", samples, flatError ) );
+	postProcessSettings_t sharp = flat;
+	sharp.localDetailStrength = 2.0f;
+	const std::vector<uint32> sharpened = run( sharp, whole, 0.1f, { squares } );
+	const int sharpError = worst( sharpened, whole, [&]( int x, int y ) { return encoded( ( ( x / 2 + y / 2 ) & 1 ) ? 0.05 : 0.8 ); } );
+	Check( sharpError <= 1, va( "%u sample(s): detail 2 puts the squares at 0.05 and 0.8, off by %d", samples, sharpError ) );
+
+	postProcessSettings_t inside = base;
+	inside.localBlurredBlend = 1.0f;
+	inside.localShadowContrast = 0.5f;
+	const renderRect_t inner = { 16, 16, 32, 32 };
+	const std::vector<uint32> confined = run( inside, inner, 4.0f, { { { { 16, 16, 48, 48 } }, 0.05f } } );
+	const int insideError = worst( confined, inner, [&]( int, int ) { return encoded( contrast( 0.05, 0.5 ) ); } );
+	Check( insideError <= 1, va( "%u sample(s): the scene outside the viewport stays out of its local exposure, off by %d", samples, insideError ) );
+
+	postProcessSettings_t neutral = base;
+	neutral.localBlurredBlend = 0.6f;
+	postProcessSettings_t none = step;
+	none.localExposure = false;
+	postProcessSettings_t shown = step;
+	shown.visualize = 4;
+	postProcessSettings_t hidden = none;
+	hidden.visualize = 4;
+	const std::vector<uint32> plain = run( none, whole, 0.6f, halves );
+	Check( !plain.empty() && run( neutral, whole, 0.6f, halves ) == plain && run( hidden, whole, 0.6f, halves ) == plain,
+		"all 1, and visualize 4 with the local exposure off, give the frame without it" );
+	const std::vector<uint32> visualized = run( shown, whole, 0.6f, halves );
+	Check( !visualized.empty() && visualized != plain && visualized != stepped, "visualize 4 draws the local exposure" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void LocalExposureAllSamples( idTestGpu & gpu ) {
+	LocalExposure( gpu, 1 );
+	LocalExposure( gpu, 4 );
+}
+
+void CombineLutAllSamples( idTestGpu & gpu ) {
+	CombineLut( gpu, 1 );
+	CombineLut( gpu, 4 );
+}
+
+// White balance and grading are skipped at their neutral values; a warm white is made neutral by cooling.
+void Test_HdrSettings() {
+	const d3d12LutParms_t neutral = D3D12_LutParms( postProcessSettings_t() );
+	Check( neutral.encoding[2] == 0.0f && neutral.encoding[3] == 0.0f, "the default settings skip white balance and grading" );
+	Check( neutral.options[2] == static_cast<float>( hdrTonemapper_t::AGX ), "AgX by default" );
+	const std::array<std::array<float, 3>, 3> same = D3D12_WhiteBalance( 6500.0f, 0.0f );
+	float off = 0.0f;
+	for ( int i = 0; i < 3; i++ ) {
+		for ( int j = 0; j < 3; j++ ) {
+			off = Max( off, idMath::Fabs( same[i][j] - ( ( i == j ) ? 1.0f : 0.0f ) ) );
+		}
+	}
+	Check( off < 1e-5f, va( "6500 K, tint 0 is the identity (%g)", off ) );
+	const auto applied = []( const std::array<std::array<float, 3>, 3> & m ) {
+		return idVec3( m[0][0] + m[0][1] + m[0][2], m[1][0] + m[1][1] + m[1][2], m[2][0] + m[2][1] + m[2][2] );
+	};
+	const idVec3 warm = applied( D3D12_WhiteBalance( 3000.0f, 0.0f ) );
+	const idVec3 cool = applied( D3D12_WhiteBalance( 10000.0f, 0.0f ) );
+	Check( warm.z > warm.x && cool.x > cool.z, va( "3000 K cools white (%s), 10000 K warms it (%s)", warm.ToString( 3 ), cool.ToString( 3 ) ) );
+	postProcessSettings_t graded;
+	graded.global.saturation.w = 0.5f;
+	graded.shadows.gain.x = 2.0f;
+	const d3d12LutParms_t parms = D3D12_LutParms( graded );
+	Check( parms.encoding[3] == 1.0f && parms.grade[0][3] == 0.5f && parms.grade[3][0] == 2.0f && parms.grade[8][0] == 1.0f,
+		"the global saturation multiplies each range's, a range's gain stays its own" );
+	Check( d3d12Lut::Value( 17.0f / 31.0f ) > 0.9999f && d3d12Lut::Value( 17.0f / 31.0f ) < 1.0001f, "1.0 lies on texel 17" );
+	Check( idMath::Fabs( d3d12Lut::Coordinate( d3d12Lut::Value( 0.3f ) ) - 0.3f ) < 1e-5f, "Coordinate inverts Value" );
+}
+
 template <void ( *RULE )( idTestGpu & )>
 void OnWarp() {
 	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
@@ -4357,6 +5890,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Hlsl_BuildAll", Test_HlslBuildAll },
 	{ "Hlsl_TargetMacros", Test_HlslTargetMacros },
 	{ "Hlsl_InternalStages", Test_HlslInternalStages },
+	{ "Hlsl_Compute", Test_HlslCompute },
+	{ "Hlsl_ColorSpace", OnWarp<ColorSpace> },
 	{ "Warp_DxcBindless", OnWarp<DxcBindless> },
 	{ "Warp_PrebuiltStages", OnWarp<PrebuiltStages> },
 	{ "Gpu_DxcBindless", OnGpu<DxcBindless> },
@@ -4368,6 +5903,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Pipeline_Normalize", Test_PipelineNormalize },
 	{ "Pipeline_DepthBiasTable", Test_DepthBiasTable },
 	{ "Pipeline_Journal", Test_PipelineJournal },
+	{ "Pipeline_TargetIds", Test_PipelineTargetIds },
 	{ "Warp_Pipelines", Test_WarpPipelines },
 	{ "Warp_PipelineWarm", OnWarp<PipelineWarm> },
 	{ "Gpu_PipelineWarm", OnGpu<PipelineWarm> },
@@ -4409,6 +5945,22 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_DrawBindless", OnWarp<DrawBindless> },
 	{ "Gpu_DrawBindless", OnGpu<DrawBindless> },
 	{ "Gpu_DrawFrameBuffers", OnGpu<DrawFrameBufferPlacements> },
+	{ "Warp_RenderGraph", OnWarp<RenderGraph> },
+	{ "Gpu_RenderGraph", OnGpu<RenderGraph> },
+	{ "Hdr_Settings", Test_HdrSettings },
+	{ "Warp_HdrScene", OnWarp<HdrScene> },
+	{ "Gpu_HdrScene", OnGpu<HdrScene> },
+	{ "Warp_HdrCopies", OnWarp<HdrCopiesAllSamples> },
+	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },
+	{ "Warp_HdrEncode", OnWarp<HdrEncodeAllSamples> },
+	{ "Gpu_HdrEncode", OnGpu<HdrEncodeAllSamples> },
+	{ "Warp_Exposure", OnWarp<ExposureAllSamples> },
+	{ "Gpu_Exposure", OnGpu<ExposureAllSamples> },
+	{ "Warp_Bloom", OnWarp<BloomAllSamples> },
+	{ "Gpu_Bloom", OnGpu<BloomAllSamples> },
+	{ "Warp_LocalExposure", OnWarp<LocalExposureAllSamples> },
+	{ "Gpu_LocalExposure", OnGpu<LocalExposureAllSamples> },
+	{ "Gpu_CombineLut", OnGpu<CombineLutAllSamples> },
 };
 
 }	// namespace

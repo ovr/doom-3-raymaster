@@ -55,6 +55,7 @@ enum renderLogMainBlock_t {
 	MRB_DRAW_DEBUG_TOOLS,
 	MRB_CAPTURE_COLORBUFFER,
 	MRB_POSTPROCESS,
+	MRB_HDR,						// the resolve of the HDR scene: exposure, bloom, tonemap
 	MRB_GPU_SYNC,
 	MRB_END_FRAME,
 	MRB_BINK_FRAME,

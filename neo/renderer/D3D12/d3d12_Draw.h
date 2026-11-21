@@ -87,6 +87,12 @@ public:
 	// encodes. Copies, the readback and the blit move the stored bytes as they are. Ends the pass.
 	void							SetSrgb( bool enable );
 	[[nodiscard]] bool				Srgb() const { return srgb; }
+	// R13: draws and clears go to the HDR scene, which holds radiance times preExposure. Ends the pass.
+	void							SetHdr( bool enable, float preExposure );
+	[[nodiscard]] bool				Hdr() const { return hdr; }
+	// The gamma composite: the HDR scene holds its sRGB encoding, colours are not decoded. Ends the pass.
+	void							SetHdrGamma( bool enable );
+	[[nodiscard]] bool				HdrGamma() const { return hdr && hdrGamma; }
 	void							EndPass() { bound.passOpen = false; }	// R10: before a copy, a readback, the blit and in EndFrame
 	void							Invalidate() { bound = {}; }			// after an internal pass
 	void							NewList() { bound = {}; drawsInList = 0; }	// the submitter opened a list
@@ -152,4 +158,7 @@ private:
 	int								drawsInList = 0;
 	bool							firstChunk = true;	// the frame has not submitted a full list yet
 	bool							srgb = false;
+	bool							hdr = false;
+	bool							hdrGamma = false;
+	float							preExposure = 1.0f;
 };

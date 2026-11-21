@@ -9,38 +9,43 @@
 #include "d3d12_StateMap.h"
 
 // r_multiSamples → the scene's sample count: the largest of 2, 4, 8 at most requested that the adapter
-// has for RGBA8 and D24S8 together (d3d12Features_t::samples, by log2); 1 below 2 or when none fits.
+// has for RGBA8, RGBA16F and D24S8 together (d3d12Features_t::samples, by log2); 1 below 2 or when none fits.
 [[nodiscard]] UINT					D3D12_SceneSamples( int requested, std::span<const bool, 4> supported );
 
 // The frame every draw, clear, copy and readback works on, in GL row order: memory row 0 is the bottom of
 // the screen, so the rectangles of shared code are used as they are and only the present blit flips rows.
 // Colour and depth are TYPELESS (UNORM + SRGB render target views, an R24 depth shader view); MSAA adds a resolve texture.
+// The HDR scene (R13) is a second colour surface of RGBA16F with the same depth, made at its first phase.
 class idD3D12SceneTarget {
 public:
 	struct surface_t {
 		idComPtr<ID3D12Resource>	resource;
 		d3d12ResourceState_t		state;
-		d3d12Descriptor_t			srv;			// colour: UNORM; depth: R24_UNORM_X8_TYPELESS
+		d3d12Descriptor_t			srv;			// colour: UNORM or RGBA16F; depth: R24_UNORM_X8_TYPELESS
 	};
 
 									idD3D12SceneTarget( const idD3D12Device & device, idD3D12Graveyard & graveyard, idD3D12DescriptorPool & srvPool,
 										idD3D12DescriptorPool & rtvPool, idD3D12DescriptorPool & dsvPool );
 	void							Create( int width, int height, UINT samples );	// Init and Resize; the old resources are buried
-	[[nodiscard]] d3d12TargetId_t	Target( bool srgb ) const { return d3d12TargetId_t::Of( srgb, samples ); }
-	[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE	Rtv( bool srgb ) const { return rtvPool.Cpu( srgb ? rtvSrgb : rtvUnorm ); }
+	// The HDR scene, black, when it is missing: the clear goes into the open list.
+	void							EnsureHdr( idD3D12Barriers & barriers, idD3D12Submitter & submitter );
+	[[nodiscard]] d3d12TargetId_t	Target( bool srgb, bool hdr = false ) const { return d3d12TargetId_t::Of( srgb, samples, hdr ); }
+	[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE	Rtv( bool srgb, bool hdr = false ) const {
+		return rtvPool.Cpu( hdr ? rtvHdr : ( srgb ? rtvSrgb : rtvUnorm ) );
+	}
 	[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE	Dsv() const { return dsvPool.Cpu( dsv ); }
-	[[nodiscard]] surface_t &		Color() { return color; }
+	[[nodiscard]] surface_t &		Color( bool hdr = false ) { return hdr ? hdrColor : color; }
 	[[nodiscard]] surface_t &		Depth() { return depth; }
 	// One sample: Color(). MSAA: the colour resolved into the resolve texture first, only inside region when
 	// there is one (a copy's box), which must lie inside the scene.
 	[[nodiscard]] surface_t &		Resolved( idD3D12Barriers & barriers, idD3D12Submitter & submitter,
-										std::optional<D3D12_RECT> region = std::nullopt );
+										std::optional<D3D12_RECT> region = std::nullopt, bool hdr = false );
 	[[nodiscard]] int				Width() const { return width; }
 	[[nodiscard]] int				Height() const { return height; }
 	[[nodiscard]] UINT				Samples() const { return samples; }
 
 private:
-	void							CreateColor( surface_t & surface, UINT sampleCount, bool renderTarget, const wchar_t * name );
+	void							CreateColor( surface_t & surface, DXGI_FORMAT format, UINT sampleCount, bool renderTarget, const wchar_t * name );
 	void							CreateDepth();
 
 	const idD3D12Device &			device;
@@ -49,7 +54,8 @@ private:
 	idD3D12DescriptorPool &			rtvPool;
 	idD3D12DescriptorPool &			dsvPool;
 	surface_t						color, depth, resolved;
-	d3d12Descriptor_t				rtvUnorm, rtvSrgb, dsv;	// stable: Create rewrites the views, the SRVs are new
+	surface_t						hdrColor, hdrResolved;	// R13: none until EnsureHdr
+	d3d12Descriptor_t				rtvUnorm, rtvSrgb, rtvHdr, dsv;	// stable: Create rewrites the views, the SRVs are new
 	int								width = 0;
 	int								height = 0;
 	UINT							samples = 1;

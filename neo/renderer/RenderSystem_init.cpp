@@ -124,6 +124,76 @@ idCVar r_shadowPolygonOffset( "r_shadowPolygonOffset", "-1", CVAR_RENDERER | CVA
 idCVar r_shadowPolygonFactor( "r_shadowPolygonFactor", "0", CVAR_RENDERER | CVAR_FLOAT, "scale value for stencil shadow drawing" );
 idCVar r_subviewOnly( "r_subviewOnly", "0", CVAR_RENDERER | CVAR_BOOL, "1 = don't render main view, allowing subviews to be debugged" );
 idCVar r_lightScale( "r_lightScale", "3", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_FLOAT, "all light intensities are multiplied by this" );
+
+// PostProcessSettings.h: the front end copies them into every view, the back end resolves the main view's
+idCVar r_hdr( "r_hdr", "1", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_BOOL, "1 = the 3D view is lit in linear HDR and tonemapped (where the render API has it), 0 = the LDR frame" );
+idCVar r_hdrTonemap( "r_hdrTonemap", "1", CVAR_RENDERER | CVAR_INTEGER, "HDR tonemapper: 0 = clamp, 1 = AgX, 2 = a film curve in ACEScg", 0, 2 );
+idCVar r_hdrAgxLook( "r_hdrAgxLook", "1", CVAR_RENDERER | CVAR_INTEGER, "AgX look: 0 = base, 1 = punchy", 0, 1 );
+idCVar r_hdrExposureCompensation( "r_hdrExposureCompensation", "0", CVAR_RENDERER | CVAR_FLOAT, "EV added to the HDR exposure", -8.0f, 8.0f );
+idCVar r_hdrWhiteTemp( "r_hdrWhiteTemp", "6500", CVAR_RENDERER | CVAR_FLOAT, "HDR white balance temperature in kelvin, 6500 = neutral", 1500.0f, 15000.0f );
+idCVar r_hdrWhiteTint( "r_hdrWhiteTint", "0", CVAR_RENDERER | CVAR_FLOAT, "HDR white balance tint, -1 = green .. 1 = magenta", -1.0f, 1.0f );
+idCVar r_hdrSaturation( "r_hdrSaturation", "1", CVAR_RENDERER | CVAR_FLOAT, "HDR colour grading saturation", 0.0f, 2.0f );
+idCVar r_hdrContrast( "r_hdrContrast", "1", CVAR_RENDERER | CVAR_FLOAT, "HDR colour grading contrast around mid grey", 0.0f, 2.0f );
+idCVar r_hdrDither( "r_hdrDither", "1", CVAR_RENDERER | CVAR_BOOL, "dither the tonemapped HDR frame before it is quantized to 8 bits" );
+idCVar r_hdrGammaBlend( "r_hdrGammaBlend", "1", CVAR_RENDERER | CVAR_BOOL, "1 = in HDR, the passes after the lights (unlit stages, translucent surfaces, fog and blend lights) blend in gamma as the content was made for; 0 = in linear" );
+idCVar r_hdrDebug( "r_hdrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = print the eye adaptation once a second, 2 = print the HDR phase of every frame, 3 = print the eye adaptation of every frame", 0, 3 );
+idCVar r_hdrAutoExposure( "r_hdrAutoExposure", "1", CVAR_RENDERER | CVAR_BOOL, "1 = the HDR exposure follows the frame's brightness (eye adaptation), 0 = only r_hdrExposureCompensation" );
+idCVar r_hdrAutoExposureBias( "r_hdrAutoExposureBias", "-2.5", CVAR_RENDERER | CVAR_FLOAT, "EV added to the auto exposure only: where a frame's mean brightness lands", -8.0f, 8.0f );
+idCVar r_hdrMinEV100( "r_hdrMinEV100", "-3.25", CVAR_RENDERER | CVAR_FLOAT, "the darkest frame the eye adapts to, EV100", -16.0f, 16.0f );
+idCVar r_hdrMaxEV100( "r_hdrMaxEV100", "-1.25", CVAR_RENDERER | CVAR_FLOAT, "the brightest frame the eye adapts to, EV100", -16.0f, 16.0f );
+idCVar r_hdrSpeedUp( "r_hdrSpeedUp", "3", CVAR_RENDERER | CVAR_FLOAT, "eye adaptation toward a brighter frame, per second", 0.01f, 100.0f );
+idCVar r_hdrSpeedDown( "r_hdrSpeedDown", "1", CVAR_RENDERER | CVAR_FLOAT, "eye adaptation toward a darker frame, per second", 0.01f, 100.0f );
+idCVar r_hdrLowPercent( "r_hdrLowPercent", "10", CVAR_RENDERER | CVAR_FLOAT, "the eye adaptation averages the histogram from this percent of its weight ..", 0.0f, 99.0f );
+idCVar r_hdrHighPercent( "r_hdrHighPercent", "90", CVAR_RENDERER | CVAR_FLOAT, ".. to this one", 1.0f, 100.0f );
+idCVar r_hdrMeteringMask( "r_hdrMeteringMask", "0.5", CVAR_RENDERER | CVAR_FLOAT, "0 = every pixel counts the same in the eye adaptation, 1 = the corners count exp( -2 ) of the centre", 0.0f, 1.0f );
+idCVar r_hdrHistogramMinEV( "r_hdrHistogramMinEV", "-8", CVAR_RENDERER | CVAR_FLOAT, "EV100 of the start of the exposure histogram; darker pixels do not count", -16.0f, 16.0f );
+idCVar r_hdrHistogramMaxEV( "r_hdrHistogramMaxEV", "8", CVAR_RENDERER | CVAR_FLOAT, "EV100 of the end of the exposure histogram", -16.0f, 16.0f );
+idCVar r_hdrVisualize( "r_hdrVisualize", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = the exposure histogram and EVs over the HDR frame, 2 = false colour in stops around mid grey, 3 = the bloom alone, 4 = the local exposure", 0, 4 );
+idCVar r_hdrBloomQuality( "r_hdrBloomQuality", "5", CVAR_RENDERER | CVAR_INTEGER, "the HDR bloom: 0 = none, 1..5 = 2..6 levels from half the viewport down", 0, 5 );
+idCVar r_hdrBloomIntensity( "r_hdrBloomIntensity", "0.1", CVAR_RENDERER | CVAR_FLOAT, "how far the HDR frame is lerped toward its bloom, which keeps its energy", 0.0f, 1.0f );
+idCVar r_hdrBloomSizeScale( "r_hdrBloomSizeScale", "4", CVAR_RENDERER | CVAR_FLOAT, "scales the reach of every bloom level, in percent of the viewport's width", 0.0f, 32.0f );
+idCVar r_hdrLocalExposure( "r_hdrLocalExposure", "1", CVAR_RENDERER | CVAR_BOOL, "0 turns the HDR local exposure off whatever its contrasts" );
+idCVar r_hdrLocalHighlightContrast( "r_hdrLocalHighlightContrast", "0.8", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the contrast of the base above mid grey, 1 = as it is", 0.0f, 2.0f );
+idCVar r_hdrLocalShadowContrast( "r_hdrLocalShadowContrast", "1", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the contrast of the base below mid grey, 1 = as it is", 0.0f, 2.0f );
+idCVar r_hdrLocalDetail( "r_hdrLocalDetail", "1", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the strength of the detail around the base, 1 = as it is", 0.0f, 4.0f );
+idCVar r_hdrLocalBlurredBlend( "r_hdrLocalBlurredBlend", "0.6", CVAR_RENDERER | CVAR_FLOAT, "local exposure: 0 = the bilateral grid's base, 1 = the blurred luminance's", 0.0f, 1.0f );
+idCVar r_hdrLocalBlurredKernel( "r_hdrLocalBlurredKernel", "50", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the blurred luminance's kernel, percent of the viewport's width", 1.0f, 200.0f );
+
+postProcessSettings_t R_DefaultPostProcessSettings() {
+	postProcessSettings_t settings;
+	settings.hdr = r_hdr.GetBool();
+	settings.exposureCompensation = r_hdrExposureCompensation.GetFloat();
+	settings.autoExposure = r_hdrAutoExposure.GetBool();
+	settings.autoExposureBias = r_hdrAutoExposureBias.GetFloat();
+	settings.minEV100 = r_hdrMinEV100.GetFloat();
+	settings.maxEV100 = r_hdrMaxEV100.GetFloat();
+	settings.speedUp = r_hdrSpeedUp.GetFloat();
+	settings.speedDown = r_hdrSpeedDown.GetFloat();
+	settings.lowPercent = r_hdrLowPercent.GetFloat() * 0.01f;
+	settings.highPercent = r_hdrHighPercent.GetFloat() * 0.01f;
+	settings.meteringMask = r_hdrMeteringMask.GetFloat();
+	settings.histogramMinEV = r_hdrHistogramMinEV.GetFloat();
+	settings.histogramMaxEV = r_hdrHistogramMaxEV.GetFloat();
+	settings.visualize = static_cast<uint8>( r_hdrVisualize.GetInteger() );
+	settings.whiteTemp = r_hdrWhiteTemp.GetFloat();
+	settings.whiteTint = r_hdrWhiteTint.GetFloat();
+	settings.global.saturation.w = r_hdrSaturation.GetFloat();
+	settings.global.contrast.w = r_hdrContrast.GetFloat();
+	settings.tonemapper = static_cast<hdrTonemapper_t>( r_hdrTonemap.GetInteger() );
+	settings.agxLook = static_cast<uint8>( r_hdrAgxLook.GetInteger() );
+	settings.dither = r_hdrDither.GetBool();
+	settings.bloomQuality = static_cast<uint8>( r_hdrBloomQuality.GetInteger() );
+	settings.bloomIntensity = r_hdrBloomIntensity.GetFloat();
+	settings.bloomSizeScale = r_hdrBloomSizeScale.GetFloat();
+	settings.localExposure = r_hdrLocalExposure.GetBool();
+	settings.localHighlightContrast = r_hdrLocalHighlightContrast.GetFloat();
+	settings.localShadowContrast = r_hdrLocalShadowContrast.GetFloat();
+	settings.localDetailStrength = r_hdrLocalDetail.GetFloat();
+	settings.localBlurredBlend = r_hdrLocalBlurredBlend.GetFloat();
+	settings.localBlurredKernel = r_hdrLocalBlurredKernel.GetFloat();
+	return settings;
+}
+
 idCVar r_flareSize( "r_flareSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scale the flare deforms from the material def" ); 
 
 idCVar r_skipPrelightShadows( "r_skipPrelightShadows", "0", CVAR_RENDERER | CVAR_BOOL, "skip the dmap generated static shadow volumes" );

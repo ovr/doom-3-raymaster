@@ -5,6 +5,7 @@
 #pragma once
 
 #include "bindless.hlsli"
+#include "colorspace.hlsli"
 
 /*
 	What every render program shares. The shared code still feeds the conventions of id's renderprogs:

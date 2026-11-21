@@ -8,6 +8,15 @@
 
 using d3d12Bytecode_t = std::vector<byte>;
 
+// The entry point DXC compiles for the stage.
+[[nodiscard]] constexpr const char * D3D12_StageEntry( shaderStageType_t stage ) {
+	switch ( stage ) {
+		case shaderStageType_t::VERTEX:		return "VSMain";
+		case shaderStageType_t::FRAGMENT:	return "PSMain";
+		default:							return "CSMain";
+	}
+}
+
 // One row of a stage's input or output signature.
 struct d3d12SignatureElement_t {
 	idStr							semantic;			// upper case: "TEXCOORD"
@@ -22,8 +31,10 @@ struct d3d12StageReflection_t {
 	uint16							samplerMask = 0;	// PS: the texture slots it reads (texture2D<n>, textureCube<n> of b3)
 	uint16							cubeMask = 0;		// PS: those of them that are cubes
 	uint16							samplerReads = 0;	// PS: the sampler<n> of b3 it reads
+	bool							colorConstants = false;	// colorFlags or preExposure of b3: b3 is set without a sampled slot
 	uint16							attribMask = 0;		// VS: PC_ATTRIB_INDEX_* of the input signature rows
 	bool							usesJoints = false;	// VS: the joint block b2 is bound
+	std::array<uint32, 3>			threadGroup = {};	// CS: numthreads
 	std::vector<d3d12SignatureElement_t>	inputs;		// PS: what it reads from the VS
 	std::vector<d3d12SignatureElement_t>	outputs;	// VS: what it writes for the PS
 };

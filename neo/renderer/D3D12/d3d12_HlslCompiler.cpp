@@ -20,12 +20,12 @@ constexpr UINT VERTEX_PARMS = 0;	// the root signature's CBVs
 constexpr UINT FRAGMENT_PARMS = 1;
 constexpr UINT JOINTS = 2;
 
-[[nodiscard]] const char * Entry( shaderStageType_t stage ) {
-	return ( stage == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain";
-}
-
 [[nodiscard]] const char * Profile( shaderStageType_t stage ) {
-	return ( stage == shaderStageType_t::VERTEX ) ? "vs_6_6" : "ps_6_6";
+	switch ( stage ) {
+		case shaderStageType_t::VERTEX:		return "vs_6_6";
+		case shaderStageType_t::FRAGMENT:	return "ps_6_6";
+		default:							return "cs_6_6";
+	}
 }
 
 [[nodiscard]] std::string_view View( const idStr & text ) {
@@ -64,12 +64,44 @@ constexpr UINT JOINTS = 2;
 		const int slot = static_cast<int>( v % MAX_TEXTURE_SLOTS );
 		const char * expected = ( v < d3d12DrawResources_t::CUBES ) ? va( "texture2D%d", slot )
 			: ( ( v < d3d12DrawResources_t::SAMPLERS ) ? va( "textureCube%d", slot ) : va( "sampler%d", slot ) );
+		D3D_SHADER_VARIABLE_TYPE expectedType = D3D_SVT_UINT;
+		if ( v == d3d12DrawResources_t::FLAGS ) {
+			expected = "colorFlags";
+		} else if ( v == d3d12DrawResources_t::PRE_EXPOSURE ) {
+			expected = "preExposure";
+			expectedType = D3D_SVT_FLOAT;
+		}
 		if ( idStr::Cmp( variableDesc.Name, expected ) != 0 || variableDesc.StartOffset != v * sizeof( uint32 ) || type.Class != D3D_SVC_SCALAR
-				|| type.Type != D3D_SVT_UINT ) {
+				|| type.Type != expectedType ) {
 			return idStr( va( "%s in cbuffer %s at b3: include/bindless.hlsli has %s there", variableDesc.Name, block, expected ) );
 		}
 	}
 	return std::nullopt;
+}
+
+// A compute stage of the compute root signature: cbuffers b0 (a root CBV) and b1 (root constants) only.
+[[nodiscard]] std::expected<shaderStageInfo_t, idStr> ReadComputeBindings( ID3D12ShaderReflection & reflection, const D3D12_SHADER_DESC & desc,
+	const char * name ) {
+	constexpr UINT PARMS = D3D12_ComputeRoot( d3d12ComputeSlot_t::PARMS );
+	constexpr UINT CONSTANTS = D3D12_ComputeRoot( d3d12ComputeSlot_t::CONSTANTS );
+	for ( UINT i = 0; i < desc.BoundResources; i++ ) {
+		D3D12_SHADER_INPUT_BIND_DESC bind = {};
+		if ( FAILED( reflection.GetResourceBindingDesc( i, &bind ) ) ) {
+			continue;
+		}
+		if ( bind.Type != D3D_SIT_CBUFFER || bind.Space != 0 || ( bind.BindPoint != PARMS && bind.BindPoint != CONSTANTS ) ) {
+			return std::unexpected( idStr( va( "%s: CSMain binds %s at register %u space %u: a compute stage has b0 and b1 and takes its "
+				"resources through ResourceDescriptorHeap", name, bind.Name, bind.BindPoint, bind.Space ) ) );
+		}
+		ID3D12ShaderReflectionConstantBuffer * block = reflection.GetConstantBufferByName( bind.Name );
+		D3D12_SHADER_BUFFER_DESC blockDesc = {};
+		if ( bind.BindPoint == CONSTANTS && ( block == nullptr || FAILED( block->GetDesc( &blockDesc ) )
+				|| blockDesc.Size > d3d12ComputeConstants_t::COUNT * sizeof( uint32 ) ) ) {
+			return std::unexpected( idStr( va( "%s: cbuffer %s at b1 is larger than the %u root constants", name, bind.Name,
+				d3d12ComputeConstants_t::COUNT ) ) );
+		}
+	}
+	return shaderStageInfo_t{};
 }
 
 // The members of the stage's cbuffer in offset order; every other binding must be one the root signature has.
@@ -81,6 +113,9 @@ constexpr UINT JOINTS = 2;
 	D3D12_SHADER_DESC desc = {};
 	if ( FAILED( reflection.GetDesc( &desc ) ) ) {
 		return std::unexpected( idStr( va( "%s: no reflection", name ) ) );
+	}
+	if ( stage == shaderStageType_t::COMPUTE ) {
+		return ReadComputeBindings( reflection, desc, name );
 	}
 	for ( UINT i = 0; i < desc.BoundResources; i++ ) {
 		D3D12_SHADER_INPUT_BIND_DESC bind = {};
@@ -179,7 +214,7 @@ std::expected<std::vector<d3d12HlslEntry_t>, idStr> D3D12_HlslEntries( const idD
 	std::vector<d3d12HlslEntry_t> entries;
 	const auto add = [&entries]( const d3d12HlslSource_t & source, const idStr & preprocessed ) {
 		for ( const shaderStageType_t stage : { shaderStageType_t::VERTEX, shaderStageType_t::FRAGMENT } ) {
-			if ( NamesFunction( View( preprocessed ), Entry( stage ) ) ) {
+			if ( NamesFunction( View( preprocessed ), D3D12_StageEntry( stage ) ) ) {
 				entries.push_back( { source, stage } );
 			}
 		}
@@ -210,7 +245,7 @@ d3d12ShaderReader_t D3D12_GameDataReader() {
 
 uint64 idD3D12HlslCompiler::Hash( std::string_view preprocessed, shaderStageType_t stage ) const {
 	const uint64 key[] = { static_cast<uint64>( preprocessed.size() ), library.dxcVersion, static_cast<uint64>( VERSION ) };
-	const idStr target = va( "%s %s", Profile( stage ), Entry( stage ) );
+	const idStr target = va( "%s %s", Profile( stage ), D3D12_StageEntry( stage ) );
 	MD5_CTX context;
 	MD5_Init( &context );
 	MD5_Update( &context, reinterpret_cast<const unsigned char *>( preprocessed.data() ), preprocessed.size() );
@@ -275,7 +310,7 @@ std::vector<d3d12HlslResult_t> idD3D12HlslCompiler::BuildAll( std::span<const d3
 		for ( size_t i; ( i = next.fetch_add( 1 ) ) < runs.size(); ) {
 			dxcRun_t & run = runs[i];
 			try {
-				auto output = D3D12_DxcCompile( library, View( run.preprocessed ), run.first->source->path, Entry( run.first->stage ),
+				auto output = D3D12_DxcCompile( library, View( run.preprocessed ), run.first->source->path, D3D12_StageEntry( run.first->stage ),
 					Profile( run.first->stage ) );
 				if ( output ) {
 					run.code = std::move( output->code );
