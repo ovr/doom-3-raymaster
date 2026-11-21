@@ -133,12 +133,20 @@ If you have questions concerning this license or the applicable additional terms
 		with the text of GL's failed link, which ends the map load. A stage that fails to compile is
 		NONE. A draw with program NONE is illegal: Debug asserts, GL draws with the fixed-function
 		pipeline, a pipeline backend skips it.
+	R13	With caps.hdrScene, the draws, clears and copies between BeginHdrScene and ResolveHdrScene go to a
+		linear float scene: in the render programs an 8-bit colour texture and the colour parms decode
+		from sRGB, the output is pre-exposed, a copy is float. Shared code decodes the colour parms it
+		sets (backEnd.hdrPhase). ResolveHdrScene tonemaps the scene into the output's rectangle, and the
+		draws after it go to the output as without HDR; EndHdrScene ends a phase no resolve ended.
+		SetHdrSceneGamma( true ) turns a view's rectangle of the scene into its sRGB encoding, and the
+		draws until SetHdrSceneGamma( false ) blend there in gamma without decoding (backEnd.hdrGamma).
 
 ===============================================================================
 */
 
 #include "RenderState.h"
 #include "RenderBackendTypes.h"
+#include "PostProcessSettings.h"
 
 #include <expected>
 
@@ -210,6 +218,11 @@ public:
 	// The frame loop brackets the draws of a frame with these: after BeginFrame, before EndFrame.
 	void					BeginDrawStream() { drawStream.BeginFrame(); }
 	void					EndDrawStream() { drawStream.EndFrame(); }
+	// R13, in a frame, with caps.hdrScene: the main view's settings. Each ends the pass of a pipeline backend.
+	virtual void			BeginHdrScene( const postProcessSettings_t & settings ) {}
+	virtual void			ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport ) {}
+	virtual void			EndHdrScene() {}
+	virtual void			SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) {}
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,

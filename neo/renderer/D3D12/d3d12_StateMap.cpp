@@ -182,9 +182,12 @@ pipelineKey_t D3D12_NormalizeKey( const pipelineKey_t & key ) {
 	normal.layout = ( key.layout < NUM_VERTEX_LAYOUTS ) ? key.layout : static_cast<uint8>( LAYOUT_UNKNOWN );
 	// the slot says it all: GLS_POLYGON_OFFSET adds nothing
 	uint64 bits = key.stateBits & GLS_PIPELINE_BITS & ~( UNDEFINED_STATE_BITS | GLS_POLYGON_OFFSET );
-	int raster = key.raster & ( D3D12_KEY_CULL_BITS | D3D12_KEY_LINES | D3D12_KEY_TARGET_BITS | D3D12_KEY_STRICT_DEPTH );
+	int raster = key.raster & ( D3D12_KEY_CULL_BITS | D3D12_KEY_LINES | D3D12_KEY_TARGET_BITS | D3D12_KEY_STRICT_DEPTH | D3D12_KEY_HDR_TARGET );
 	if ( ( raster & D3D12_KEY_CULL_BITS ) == D3D12_KEY_CULL_BITS ) {
 		raster &= ~D3D12_KEY_CULL_BITS;		// no such cull: none
+	}
+	if ( ( raster & D3D12_KEY_HDR_TARGET ) != 0 ) {
+		raster &= ~( 1 << D3D12_KEY_TARGET_SHIFT );		// the HDR scene has no sRGB view
 	}
 	if ( ( raster & D3D12_KEY_STRICT_DEPTH ) != 0 ) {
 		bits &= ~GLS_DEPTHFUNC_BITS;
@@ -219,6 +222,11 @@ d3d12PipelineDesc_t D3D12_PipelineDescFor( const pipelineKey_t & key, uint16 pro
 	target.SrcBlendAlpha = AlphaFactor( target.SrcBlend );
 	target.DestBlendAlpha = AlphaFactor( target.DestBlend );
 	target.BlendOp = target.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+	const d3d12TargetId_t targetId = D3D12_KeyTarget( key.raster );
+	if ( targetId.Hdr() && target.BlendEnable && target.DestBlendAlpha == D3D12_BLEND_ONE ) {
+		target.SrcBlendAlpha = D3D12_BLEND_ONE;
+		target.BlendOpAlpha = D3D12_BLEND_OP_MAX;
+	}
 	target.LogicOp = D3D12_LOGIC_OP_NOOP;
 	target.RenderTargetWriteMask = static_cast<UINT8>( ~Field( bits, GLS_REDMASK | GLS_GREENMASK | GLS_BLUEMASK | GLS_ALPHAMASK ) & 0xF );
 	std::ranges::fill( desc.blend.RenderTarget, target );
@@ -252,7 +260,6 @@ d3d12PipelineDesc_t D3D12_PipelineDescFor( const pipelineKey_t & key, uint16 pro
 	depth.DepthBoundsTestEnable = depthBounds;
 
 	desc.topology = lines ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-	const d3d12TargetId_t targetId = { static_cast<uint8>( ( key.raster & D3D12_KEY_TARGET_BITS ) >> D3D12_KEY_TARGET_SHIFT ) };
 	desc.colorFormat = targetId.ColorView();
 	desc.sample = { targetId.Samples(), 0 };
 	FillInputs( desc, key.layout, programAttribMask );

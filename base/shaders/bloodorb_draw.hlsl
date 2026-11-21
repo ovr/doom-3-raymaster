@@ -45,9 +45,9 @@ VSOutput VSMain( VSInput input ) {
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	const float4 accumSample = accumMap.Sample( accumSampler, input.texcoord0 );
-	const float4 currentRenderSample = currentRenderMap.Sample( currentRenderSampler, input.texcoord0 );
+	const float4 accumSample = SceneColor( accumMap.Sample( accumSampler, input.texcoord0 ), 0 );
+	const float4 currentRenderSample = SceneColor( currentRenderMap.Sample( currentRenderSampler, input.texcoord0 ), 1 );
 	const float4 maskSample = maskMap.Sample( maskSampler, input.texcoord0 );
 
-	return lerp( accumSample, currentRenderSample, maskSample.a );
+	return SceneOutput( lerp( accumSample, currentRenderSample, maskSample.a ) );
 }

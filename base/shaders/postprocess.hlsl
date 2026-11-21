@@ -30,5 +30,5 @@ VSOutput VSMain( VSInput input ) {
 
 float4 PSMain( VSOutput input ) : SV_Target {
 	const float2 tCoords = input.texcoord;
-	return viewColorMap.Sample( viewColorSampler, tCoords );
+	return SceneOutput( SceneColor( viewColorMap.Sample( viewColorSampler, tCoords ), 0 ) );
 }

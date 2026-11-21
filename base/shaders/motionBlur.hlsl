@@ -73,12 +73,12 @@ float4 PSMain( VSOutput input ) : SV_Target {
 
 	for ( float i = 0; i < samples; i = i + 1 ) {
 		const float2 pos = input.texcoord + delta * ( ( i / ( samples - 1 ) ) - 0.5 );
-		const float4 color = viewColorMap.Sample( viewColorSampler, pos );
+		const float4 color = SceneColor( viewColorMap.Sample( viewColorSampler, pos ), 0 );
 		// only the values that are not part of the weapon
 		sum += color.xyz * color.w;
 		goodSamples += color.w;
 	}
 	const float invScale = 1.0 / goodSamples;
 
-	return float4( sum * invScale, 1.0 );
+	return SceneOutput( float4( sum * invScale, 1.0 ) );
 }

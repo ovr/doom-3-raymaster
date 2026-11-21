@@ -136,7 +136,8 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	copies( *this, barriers, scene, textures, passes, rtvPool ),
 	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, constants, samplers ),
 	resourcePool( device, graveyard, srvPool, rtvPool ),
-	graph( device, *this, barriers, resourcePool, srvPool, rtvPool, constants, computeRootSignature ) {
+	graph( device, *this, barriers, resourcePool, srvPool, rtvPool, constants, computeRootSignature ),
+	hdr( device, computeRootSignature, passes, samplers, srvPool ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -170,6 +171,7 @@ std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width,
 void idD3D12Context::CreateDefaults() {
 	textures.CreateDefaults();
 	passes.CreateDefaults();
+	hdr.CreateDefaults();
 	buffers.CreateDefaults();
 	shaders.Prebuild();
 }
@@ -330,7 +332,51 @@ void idD3D12Context::CopyOutputToTexture( textureHandle_t texture, int x, int y,
 		return;
 	}
 	recorder.EndPass();
-	copies.Color( texture, x, y, width, height );
+	copies.Color( texture, x, y, width, height, hdrScene );
+}
+
+// preExposure is the manual exposure until eye adaptation (H3) gives the last frame's.
+void idD3D12Context::BeginHdrScene( const postProcessSettings_t & settings ) {
+	if ( device.IsLost() ) {
+		return;
+	}
+	recorder.EndPass();
+	scene.EnsureHdr( barriers, *this );
+	if ( !scene.Color( true ).resource ) {
+		return;
+	}
+	preExposure = R_ManualExposure( settings );
+	recorder.SetHdr( true, preExposure );
+	hdrScene = true;
+}
+
+void idD3D12Context::SetHdrSceneGamma( bool gamma, const renderRect_t & viewport ) {
+	if ( !hdrScene || recorder.HdrGamma() == gamma || device.IsLost() ) {
+		return;
+	}
+	recorder.SetHdrGamma( gamma );
+	hdr.Encode( graph, scene, gamma, viewport, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	recorder.Invalidate();
+}
+
+void idD3D12Context::ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport ) {
+	if ( !hdrScene ) {
+		return;
+	}
+	SetHdrSceneGamma( false, viewport );
+	EndHdrScene();
+	if ( device.IsLost() ) {
+		return;
+	}
+	hdr.Resolve( graph, scene, settings, viewport, preExposure, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	recorder.Invalidate();
+}
+
+void idD3D12Context::EndHdrScene() {
+	if ( hdrScene ) {
+		recorder.SetHdr( false, preExposure );
+		hdrScene = false;
+	}
 }
 
 void idD3D12Context::CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) {

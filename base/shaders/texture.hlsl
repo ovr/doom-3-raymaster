@@ -56,5 +56,5 @@ VSOutput VSMain( VSInput input ) {
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	return textureMap.Sample( textureSampler, input.texcoord ) * rpColor;
+	return SceneOutput( SceneColor( textureMap.Sample( textureSampler, input.texcoord ), 0 ) * rpColor );
 }

@@ -23,6 +23,7 @@
 #include <wrl/client.h>
 
 #include <array>
+#include <bit>
 #include <deque>
 #include <expected>
 #include <memory>
@@ -55,17 +56,34 @@ struct d3d12ComputeConstants_t {
 	static constexpr UINT			COUNT = 8;		// 32-bit values at b1: what changes between dispatches of one pass
 };
 
+// colorFlags of b3 (include/colorspace.hlsli): which slots hold a float copy of the HDR scene, the HDR phase
+// (R13), and whether the draw's output is radiance that the blend adds, not a factor it multiplies by.
+namespace d3d12ColorFlags {
+constexpr uint32					FLOAT_SLOTS = 0xFF;
+constexpr uint32					HDR_PHASE = 1u << 8;
+constexpr uint32					RADIANCE = 1u << 9;
+constexpr uint32					GAMMA_PHASE = 1u << 10;
+}
+
 // The root constants b3 of base/shaders/include/bindless.hlsli, in its member order: the heap index of each
-// texture slot's 2D view, then of its cube view, then of its sampler. A slot the program does not read stays 0.
+// texture slot's 2D view, then of its cube view, then of its sampler; then colorFlags and preExposure. A slot
+// the program does not read stays 0.
 struct d3d12DrawResources_t {
 	static constexpr UINT			REGISTER = 3;
 	static constexpr uint32			CUBES = MAX_TEXTURE_SLOTS;			// textureCube0
 	static constexpr uint32			SAMPLERS = 2 * MAX_TEXTURE_SLOTS;	// sampler0
-	static constexpr uint32			COUNT = 3 * MAX_TEXTURE_SLOTS;
+	static constexpr uint32			SLOTS = 3 * MAX_TEXTURE_SLOTS;		// the views and samplers of the slots
+	static constexpr uint32			FLAGS = SLOTS;						// colorFlags
+	static constexpr uint32			PRE_EXPOSURE = SLOTS + 1;			// float
+	static constexpr uint32			COUNT = SLOTS + 2;
 	std::array<uint32, COUNT>		indices = {};
 	constexpr bool					operator==( const d3d12DrawResources_t & ) const = default;
 	void							SetTexture( int slot, bool cube, uint32 view ) { indices[( cube ? CUBES : 0 ) + slot] = view; }
 	void							SetSampler( int slot, uint32 sampler ) { indices[SAMPLERS + slot] = sampler; }
+	void							SetColor( uint32 flags, float preExposure ) {
+		indices[FLAGS] = flags;
+		indices[PRE_EXPOSURE] = std::bit_cast<uint32>( preExposure );
+	}
 };
 
 // "0x887A0005 DXGI_ERROR_DEVICE_REMOVED", or the bare value for a code without a name here.

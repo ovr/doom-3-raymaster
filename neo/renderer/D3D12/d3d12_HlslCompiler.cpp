@@ -64,8 +64,15 @@ constexpr UINT JOINTS = 2;
 		const int slot = static_cast<int>( v % MAX_TEXTURE_SLOTS );
 		const char * expected = ( v < d3d12DrawResources_t::CUBES ) ? va( "texture2D%d", slot )
 			: ( ( v < d3d12DrawResources_t::SAMPLERS ) ? va( "textureCube%d", slot ) : va( "sampler%d", slot ) );
+		D3D_SHADER_VARIABLE_TYPE expectedType = D3D_SVT_UINT;
+		if ( v == d3d12DrawResources_t::FLAGS ) {
+			expected = "colorFlags";
+		} else if ( v == d3d12DrawResources_t::PRE_EXPOSURE ) {
+			expected = "preExposure";
+			expectedType = D3D_SVT_FLOAT;
+		}
 		if ( idStr::Cmp( variableDesc.Name, expected ) != 0 || variableDesc.StartOffset != v * sizeof( uint32 ) || type.Class != D3D_SVC_SCALAR
-				|| type.Type != D3D_SVT_UINT ) {
+				|| type.Type != expectedType ) {
 			return idStr( va( "%s in cbuffer %s at b3: include/bindless.hlsli has %s there", variableDesc.Name, block, expected ) );
 		}
 	}

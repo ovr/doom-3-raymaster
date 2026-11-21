@@ -31,6 +31,6 @@ VSOutput VSMain( VSInput input ) {
 PSOutput PSMain( VSOutput input ) {
 	PSOutput output;
 	output.depth = 1;
-	output.color = float4( 0.0, 0.0, 0.0, 0.0 );
+	output.color = SceneOutput( float4( 0.0, 0.0, 0.0, 0.0 ) );
 	return output;
 }

@@ -69,6 +69,11 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "showImage", shaderStageType_t::FRAGMENT, "internal_showImage_cube", "CUBE=1" },
 	{ "depthCopy", shaderStageType_t::FRAGMENT, "internal_depthCopy", nullptr },
 	{ "depthCopy", shaderStageType_t::FRAGMENT, "internal_depthCopy_msaa", "MULTISAMPLED=1" },
+	{ "tonemap", shaderStageType_t::FRAGMENT, "internal_tonemap", nullptr },
+	{ "combineLut", shaderStageType_t::COMPUTE, "internal_combineLut", nullptr },
+	{ "hdrResolve", shaderStageType_t::COMPUTE, "internal_hdrResolve", nullptr },
+	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode", nullptr },
+	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode_msaa", "MULTISAMPLED=1" },
 };
 
 }	// namespace
@@ -90,9 +95,9 @@ void idD3D12InternalPasses::CreateDefaults() {
 	// held for the context's life
 	showSamplers[0] = samplers.Acquire( D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::CLAMP, 1.0f, 0.0f } ) );
 	showSamplers[1] = samplers.Acquire( D3D12_PackSampler( { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } ) );
-	// in the order of INTERNAL_STAGES
+	// in the order of INTERNAL_STAGES; the stages after them are for Stage()
 	d3d12Bytecode_t * const codes[] = { &triangleVs, &blitPs, &blitGammaPs, &clearPs, &show2DPs, &showCubePs, &depthCopyPs[0], &depthCopyPs[1] };
-	static_assert( std::size( codes ) == std::size( INTERNAL_STAGES ) );
+	static_assert( std::size( codes ) <= std::size( INTERNAL_STAGES ) );
 	std::vector<d3d12HlslSource_t> sources;
 	for ( const d3d12InternalStage_t & stage : INTERNAL_STAGES ) {
 		std::optional<d3d12HlslSource_t> source = D3D12_InternalSource( stage, compiler.Reader() );
@@ -106,13 +111,28 @@ void idD3D12InternalPasses::CreateDefaults() {
 		requests.push_back( { &sources[i], INTERNAL_STAGES[i].type, hlslParms_t::ANY } );
 	}
 	std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
+	stages.clear();
 	for ( size_t i = 0; i < built.size(); i++ ) {
 		if ( !built[i] ) {
 			common->FatalError( "d3d12: %s", built[i].error().c_str() );
 		}
-		*codes[i] = std::move( built[i]->code );
+		if ( i < std::size( codes ) ) {
+			*codes[i] = built[i]->code;
+		}
+		stages.push_back( std::move( *built[i] ) );
 	}
 	blit = CreatePipeline( blitPs, idD3D12SwapChain::FORMAT, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ), L"doom3 present blit" );
+}
+
+const d3d12HlslStage_t & idD3D12InternalPasses::Stage( const char * name ) const {
+	for ( size_t i = 0; i < stages.size(); i++ ) {
+		if ( idStr::Cmp( INTERNAL_STAGES[i].name, name ) == 0 ) {
+			return stages[i];
+		}
+	}
+	common->FatalError( "d3d12: no internal stage %s", name );
+	static const d3d12HlslStage_t none;
+	return none;
 }
 
 idComPtr<ID3D12PipelineState> idD3D12InternalPasses::CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,

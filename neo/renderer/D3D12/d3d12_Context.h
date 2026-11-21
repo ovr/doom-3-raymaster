@@ -43,7 +43,8 @@
 	      ├── idD3D12ScreenCopies             CopyOutputToTexture, CopyDepthToTexture: scene boxes into textures
 	      ├── idD3D12DrawRecorder             clears and draws into the open pass: Prepare, Reserve, Record
 	      ├── idD3D12ResourcePool             the render graph's transient textures and buffers, kept 30 frames unused
-	      └── idD3D12RenderGraph              the post-process passes: culling, transient resources, barriers
+	      ├── idD3D12RenderGraph              the post-process passes: culling, transient resources, barriers
+	      └── idD3D12HdrPipeline              R13: the HDR scene's resolve on the graph, the combine LUT, the tonemap
 
 	Sync points: every wait is explicit, and everything that frees or reuses memory reads
 	idD3D12Queue::Waited(), never the fence, so two runs record the same commands.
@@ -65,6 +66,7 @@
 #include "d3d12_Buffers.h"
 #include "d3d12_Copies.h"
 #include "d3d12_Draw.h"
+#include "d3d12_Hdr.h"
 #include "d3d12_Programs.h"
 #include "d3d12_RenderGraph.h"
 #include "d3d12_Textures.h"
@@ -101,6 +103,12 @@ public:
 	// glCopyTexImage2D of a scene box, in a frame; the next draw opens the pass again.
 	void							CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height );
 	void							CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height );
+	// R13, in a frame: draws, clears and colour copies go to the HDR scene until its resolve or its end.
+	void							BeginHdrScene( const postProcessSettings_t & settings );
+	void							ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport );
+	void							EndHdrScene();
+	// The gamma composite of the view inside viewport: to the scene's sRGB encoding or back.
+	void							SetHdrSceneGamma( bool gamma, const renderRect_t & viewport );
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	void							PushGroup( const char * name );			// r_pix 2, in a frame
@@ -141,6 +149,7 @@ public:
 	idD3D12DrawRecorder				recorder;
 	idD3D12ResourcePool				resourcePool;
 	idD3D12RenderGraph				graph;
+	idD3D12HdrPipeline				hdr;
 
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );
@@ -154,4 +163,6 @@ private:
 
 	d3d12FrameStats_t				frame;
 	d3d12FrameStats_t				lastFrame;
+	bool							hdrScene = false;	// between BeginHdrScene and its resolve or end
+	float							preExposure = 1.0f;
 };

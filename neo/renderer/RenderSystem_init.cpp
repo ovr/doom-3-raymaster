@@ -124,6 +124,34 @@ idCVar r_shadowPolygonOffset( "r_shadowPolygonOffset", "-1", CVAR_RENDERER | CVA
 idCVar r_shadowPolygonFactor( "r_shadowPolygonFactor", "0", CVAR_RENDERER | CVAR_FLOAT, "scale value for stencil shadow drawing" );
 idCVar r_subviewOnly( "r_subviewOnly", "0", CVAR_RENDERER | CVAR_BOOL, "1 = don't render main view, allowing subviews to be debugged" );
 idCVar r_lightScale( "r_lightScale", "3", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_FLOAT, "all light intensities are multiplied by this" );
+
+// PostProcessSettings.h: the front end copies them into every view, the back end resolves the main view's
+idCVar r_hdr( "r_hdr", "1", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_BOOL, "1 = the 3D view is lit in linear HDR and tonemapped (where the render API has it), 0 = the LDR frame" );
+idCVar r_hdrTonemap( "r_hdrTonemap", "1", CVAR_RENDERER | CVAR_INTEGER, "HDR tonemapper: 0 = clamp, 1 = AgX, 2 = a film curve in ACEScg", 0, 2 );
+idCVar r_hdrAgxLook( "r_hdrAgxLook", "0", CVAR_RENDERER | CVAR_INTEGER, "AgX look: 0 = base, 1 = punchy", 0, 1 );
+idCVar r_hdrExposureCompensation( "r_hdrExposureCompensation", "0", CVAR_RENDERER | CVAR_FLOAT, "EV added to the HDR exposure", -8.0f, 8.0f );
+idCVar r_hdrWhiteTemp( "r_hdrWhiteTemp", "6500", CVAR_RENDERER | CVAR_FLOAT, "HDR white balance temperature in kelvin, 6500 = neutral", 1500.0f, 15000.0f );
+idCVar r_hdrWhiteTint( "r_hdrWhiteTint", "0", CVAR_RENDERER | CVAR_FLOAT, "HDR white balance tint, -1 = green .. 1 = magenta", -1.0f, 1.0f );
+idCVar r_hdrSaturation( "r_hdrSaturation", "1", CVAR_RENDERER | CVAR_FLOAT, "HDR colour grading saturation", 0.0f, 2.0f );
+idCVar r_hdrContrast( "r_hdrContrast", "1", CVAR_RENDERER | CVAR_FLOAT, "HDR colour grading contrast around mid grey", 0.0f, 2.0f );
+idCVar r_hdrDither( "r_hdrDither", "1", CVAR_RENDERER | CVAR_BOOL, "dither the tonemapped HDR frame before it is quantized to 8 bits" );
+idCVar r_hdrGammaBlend( "r_hdrGammaBlend", "1", CVAR_RENDERER | CVAR_BOOL, "1 = in HDR, the passes after the lights (unlit stages, translucent surfaces, fog and blend lights) blend in gamma as the content was made for; 0 = in linear" );
+idCVar r_hdrDebug( "r_hdrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "2 = print the HDR phase of every frame", 0, 2 );
+
+postProcessSettings_t R_DefaultPostProcessSettings() {
+	postProcessSettings_t settings;
+	settings.hdr = r_hdr.GetBool();
+	settings.exposureCompensation = r_hdrExposureCompensation.GetFloat();
+	settings.whiteTemp = r_hdrWhiteTemp.GetFloat();
+	settings.whiteTint = r_hdrWhiteTint.GetFloat();
+	settings.global.saturation.w = r_hdrSaturation.GetFloat();
+	settings.global.contrast.w = r_hdrContrast.GetFloat();
+	settings.tonemapper = static_cast<hdrTonemapper_t>( r_hdrTonemap.GetInteger() );
+	settings.agxLook = static_cast<uint8>( r_hdrAgxLook.GetInteger() );
+	settings.dither = r_hdrDither.GetBool();
+	return settings;
+}
+
 idCVar r_flareSize( "r_flareSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scale the flare deforms from the material def" ); 
 
 idCVar r_skipPrelightShadows( "r_skipPrelightShadows", "0", CVAR_RENDERER | CVAR_BOOL, "skip the dmap generated static shadow volumes" );

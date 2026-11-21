@@ -165,7 +165,7 @@ static_assert( sizeof( d3d12LibraryHeader_t ) == 32 && sizeof( d3d12PipelineName
 }
 
 [[nodiscard]] UINT TargetSamples( const pipelineKey_t & key ) {
-	return d3d12TargetId_t{ static_cast<uint8>( ( key.raster & D3D12_KEY_TARGET_BITS ) >> D3D12_KEY_TARGET_SHIFT ) }.Samples();
+	return D3D12_KeyTarget( key.raster ).Samples();
 }
 
 // The container's digest of the whole blob (bytes 4-19, the hash dxil.dll signs); zeros for no stage.
@@ -355,7 +355,7 @@ bool idD3D12PipelineJournal::Read( std::span<const byte> file ) {
 	if ( !reader.Get( magic ) || !reader.Get( version ) || !reader.Get( programs ) || magic != JOURNAL_MAGIC || version != VERSION ) {
 		return false;
 	}
-	constexpr uint8 RASTER_BITS = D3D12_KEY_CULL_BITS | D3D12_KEY_LINES | D3D12_KEY_TARGET_BITS | D3D12_KEY_STRICT_DEPTH;
+	constexpr uint8 RASTER_BITS = D3D12_KEY_CULL_BITS | D3D12_KEY_LINES | D3D12_KEY_TARGET_BITS | D3D12_KEY_STRICT_DEPTH | D3D12_KEY_HDR_TARGET;
 	bool valid = true;
 	for ( uint32 i = 0; i < programs && valid; i++ ) {
 		uint32 nameLength = 0;

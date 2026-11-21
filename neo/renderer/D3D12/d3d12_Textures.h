@@ -20,8 +20,10 @@
 	subresource back and hashes it again: d3d12_checkImages and r_d3d12CheckImages.
 
 	A copy (CopyOutputToTexture, CopyDepthToTexture) redefines level 0 at the size of its box, as
-	glCopyTexImage2D does. The texture keeps the surfaces of its last two sizes: the current one and a
-	spare, swapped back in when a copy has its size again, so resolution scaling never recreates one.
+	glCopyTexImage2D does; a colour copy of the HDR scene (R13) is an RGBA16F surface, which marks its
+	contents linear. The texture keeps the surfaces of its last two sizes and formats: the current one and
+	a spare, swapped back in when a copy has them again, so resolution scaling and a frame that copies the
+	HDR scene and then the output (heat haze, then RB_PostProcess) never recreate one.
 	A third size buries the spare after the open list (R5). Levels 1 and up of GL's texture keep the
 	size of its creation, so after a copy at another size GL sees an incomplete texture under a mipmap
 	filter and samples (0,0,0,1): SampledView gives the black fallback then (T6).
@@ -49,6 +51,7 @@ struct d3d12TextureSurface_t {
 	int								levels = 0;
 	int								faces = 0;
 	uint64							bytes = 0;		// GPU memory of the resource
+	bool							linear = false;	// a float copy of the HDR scene: radiance times PreExposure
 };
 
 // What a copy writes into its target.
@@ -94,7 +97,11 @@ public:
 	[[nodiscard]] textureHandle_t	FindByName( const char * name );	// case-insensitive; NONE when there is none
 	// The surface a copy of a width x height box writes: the current one, the spare, or a new one-level surface.
 	// A colour copy sets LINEAR and CLAMP, as GL's copy does. nullptr for a dead handle or a texture of another kind.
-	[[nodiscard]] d3d12TextureSurface_t *	PrepareCopyTarget( textureHandle_t texture, d3d12CopyKind_t kind, int width, int height );
+	// hdr: a colour copy of the HDR scene, into an RGBA16F surface.
+	[[nodiscard]] d3d12TextureSurface_t *	PrepareCopyTarget( textureHandle_t texture, d3d12CopyKind_t kind, int width, int height,
+										bool hdr = false );
+	// The texture's level 0 is a float copy of the HDR scene; false for NONE and a dead handle.
+	[[nodiscard]] bool				IsLinear( textureHandle_t texture ) const;
 	// The view a slot of this kind samples: the texture's, or the black fallback for NONE, a dead handle, the
 	// other kind or an incomplete copy.
 	[[nodiscard]] d3d12Descriptor_t	SampledView( textureHandle_t texture, textureKind_t kind );

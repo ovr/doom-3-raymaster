@@ -5,7 +5,7 @@
 #pragma once
 
 /*
-	The render graph of the post-process chain, after UE5's RDG (FRDGBuilder). Passes declare what they read
+	The render graph of the post-process chain. Passes declare what they read
 	and write; the graph culls the passes nothing needs, takes transient resources from the pool for the
 	passes that use them and transitions every subresource before the pass that needs it.
 
@@ -38,6 +38,7 @@ struct d3d12PoolDesc_t {
 	uint16							mips = 1;
 	bool							renderTarget = false;	// TEXTURE_2D only
 	bool							unorderedAccess = false;
+	uint8							samples = 1;		// TEXTURE_2D of one mip and no UAV above 1
 	constexpr bool					operator==( const d3d12PoolDesc_t & ) const = default;
 	[[nodiscard]] constexpr uint32	MipWidth( int mip ) const { return std::max( 1u, width >> mip ); }
 	[[nodiscard]] constexpr uint32	MipHeight( int mip ) const { return std::max( 1u, height >> mip ); }
@@ -59,7 +60,7 @@ struct d3d12PooledResource_t {
 	[[nodiscard]] UINT				Subresource( int mip ) const { return ( states.size() == 1 ) ? D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES : static_cast<UINT>( mip ); }
 };
 
-// Committed resources kept between frames by description, as UE's render target pool keeps them. A resource
+// Committed resources kept between frames by description. A resource
 // no graph took for UNUSED_FRAMES frames goes through the graveyard with its views.
 class idD3D12ResourcePool {
 public:

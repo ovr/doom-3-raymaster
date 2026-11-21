@@ -214,8 +214,13 @@ void idD3D12TextureStore::ChangeSampler( d3d12Texture_t & texture, uint64 packed
 	samplers.Release( old );
 }
 
+bool idD3D12TextureStore::IsLinear( textureHandle_t handle ) const {
+	const d3d12Texture_t * texture = table.Find( handle );
+	return texture != nullptr && texture->surface.linear;
+}
+
 // Swapping surfaces moves their states, which a batched barrier points at: the batch goes into the list first.
-d3d12TextureSurface_t * idD3D12TextureStore::PrepareCopyTarget( textureHandle_t handle, d3d12CopyKind_t copy, int width, int height ) {
+d3d12TextureSurface_t * idD3D12TextureStore::PrepareCopyTarget( textureHandle_t handle, d3d12CopyKind_t copy, int width, int height, bool hdr ) {
 	d3d12Texture_t * texture = table.Find( handle );
 	if ( texture == nullptr || width <= 0 || height <= 0 ) {
 		return nullptr;
@@ -226,17 +231,28 @@ d3d12TextureSurface_t * idD3D12TextureStore::PrepareCopyTarget( textureHandle_t 
 		common->Warning( "d3d12: '%s' is no target of a %s copy", texture->name.c_str(), ( copy == d3d12CopyKind_t::COLOR ) ? "colour" : "depth" );
 		return nullptr;
 	}
-	if ( texture->surface.width != width || texture->surface.height != height ) {
+	const bool linear = hdr && copy == d3d12CopyKind_t::COLOR;
+	const auto matches = [&]( const d3d12TextureSurface_t & surface ) {
+		return surface.width == width && surface.height == height && surface.linear == linear;
+	};
+	if ( !matches( texture->surface ) ) {
 		if ( texture->surface.state.pending >= 0 || texture->spare.state.pending >= 0 ) {
 			barriers.Flush();
 		}
-		if ( texture->spare.resource && texture->spare.width == width && texture->spare.height == height ) {
+		if ( texture->spare.resource && matches( texture->spare ) ) {
 			std::swap( texture->surface, texture->spare );
 		} else {
 			d3d12TextureSurface_t created;
-			if ( !CreateSurface( created, texture->format, textureKind_t::TEX_2D, width, height, 1, texture->name.c_str() ) ) {
+			d3d12FormatInfo_t format = texture->format;
+			if ( linear ) {
+				format.resource = format.srv = d3d12TargetId_t::HDR_FORMAT;
+				format.mapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+				format.blockBytes = 8;
+			}
+			if ( !CreateSurface( created, format, textureKind_t::TEX_2D, width, height, 1, texture->name.c_str() ) ) {
 				return nullptr;
 			}
+			created.linear = linear;
 			bytes += created.bytes;
 			copySurfaces++;
 			BurySurface( texture->spare );
@@ -263,8 +279,8 @@ void idD3D12TextureStore::Upload( textureHandle_t handle, int mipLevel, int face
 		return;
 	}
 	d3d12TextureSurface_t & surface = texture->surface;
-	if ( mipLevel < 0 || mipLevel >= surface.levels || face < 0 || face >= surface.faces ) {
-		return;
+	if ( mipLevel < 0 || mipLevel >= surface.levels || face < 0 || face >= surface.faces || surface.linear ) {
+		return;		// a float copy of the HDR scene has no level of the texture's format
 	}
 	const d3d12FormatInfo_t & format = texture->format;
 	const int levelWidth = Max( 1, surface.width >> mipLevel );

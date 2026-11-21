@@ -57,6 +57,6 @@ VSOutput VSMain( VSInput input ) {
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	return SampleProjected( lightProjectionMap, lightProjectionSampler, input.lightProjection )
-		* lightFalloffMap.Sample( lightFalloffSampler, input.lightFalloff ) * rpColor;
+	return SceneOutput( DecodeColor( SampleProjected( lightProjectionMap, lightProjectionSampler, input.lightProjection ) )
+		* DecodeColor( lightFalloffMap.Sample( lightFalloffSampler, input.lightFalloff ) ) * rpColor );
 }

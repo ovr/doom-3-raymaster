@@ -55,5 +55,5 @@ float4 PSMain( VSOutput input ) : SV_Target {
 	screenTexCoord *= warpFactor.xy;
 	screenTexCoord += float2( 0.5, 0.5 );
 
-	return currentRenderMap.Sample( currentRenderSampler, screenTexCoord );
+	return SceneOutput( SceneColor( currentRenderMap.Sample( currentRenderSampler, screenTexCoord ), 0 ) );
 }

@@ -48,5 +48,5 @@ VSOutput VSMain( VSInput input ) {
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	return float4( 0.0, 0.0, 0.0, 1.0 );
+	return SceneOutput( float4( 0.0, 0.0, 0.0, 1.0 ) );
 }

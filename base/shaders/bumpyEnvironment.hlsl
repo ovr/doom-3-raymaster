@@ -103,7 +103,7 @@ float4 PSMain( VSOutput input ) : SV_Target {
 	float3 reflectionVector = globalNormal * dot3( globalEye, globalNormal );
 	reflectionVector = ( reflectionVector * 2.0 ) - globalEye;
 
-	const float4 envMap = environmentMap.Sample( environmentSampler, reflectionVector );
+	const float4 envMap = DecodeColor( environmentMap.Sample( environmentSampler, reflectionVector ) );
 
-	return float4( envMap.xyz, 1.0 ) * input.color;
+	return SceneOutput( float4( envMap.xyz, 1.0 ) * input.color );
 }

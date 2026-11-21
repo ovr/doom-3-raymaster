@@ -29,7 +29,7 @@ constexpr uint64 PARM_ALIGN = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 	resource.DepthOrArraySize = 1;
 	resource.MipLevels = desc.mips;
 	resource.Format = desc.format;
-	resource.SampleDesc.Count = 1;
+	resource.SampleDesc.Count = desc.samples;
 	resource.Flags = ( desc.renderTarget ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE )
 		| ( desc.unorderedAccess ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE );
 	switch ( desc.kind ) {
@@ -59,6 +59,10 @@ constexpr uint64 PARM_ALIGN = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 	view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	switch ( desc.kind ) {
 		case d3d12PoolDesc_t::kind_t::TEXTURE_2D:
+			if ( desc.samples > 1 ) {
+				view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+				break;
+			}
 			view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 			view.Texture2D.MostDetailedMip = all ? 0 : mip;
 			view.Texture2D.MipLevels = all ? desc.mips : 1;
@@ -164,6 +168,7 @@ d3d12PooledResource_t * idD3D12ResourcePool::Acquire( const d3d12PoolDesc_t & de
 std::unique_ptr<d3d12PooledResource_t> idD3D12ResourcePool::Create( const d3d12PoolDesc_t & desc ) {
 	assert( desc.mips >= 1 && ( desc.kind != d3d12PoolDesc_t::kind_t::BUFFER || ( desc.mips == 1 && desc.width % 4 == 0 ) ) );
 	assert( !desc.renderTarget || desc.kind == d3d12PoolDesc_t::kind_t::TEXTURE_2D );
+	assert( desc.samples == 1 || ( desc.kind == d3d12PoolDesc_t::kind_t::TEXTURE_2D && desc.mips == 1 && !desc.unorderedAccess ) );
 	auto pooled = std::make_unique<d3d12PooledResource_t>();
 	pooled->desc = desc;
 	const D3D12_RESOURCE_DESC resourceDesc = ResourceDesc( desc );
@@ -198,7 +203,7 @@ void idD3D12ResourcePool::CreateViews( d3d12PooledResource_t & pooled ) {
 		if ( desc.renderTarget ) {
 			D3D12_RENDER_TARGET_VIEW_DESC view = {};
 			view.Format = desc.format;
-			view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+			view.ViewDimension = ( desc.samples > 1 ) ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
 			view.Texture2D.MipSlice = mip;
 			pooled.rtvs.push_back( rtvPool.Allocate() );
 			device.Get().CreateRenderTargetView( &resource, &view, rtvPool.Cpu( pooled.rtvs.back() ) );

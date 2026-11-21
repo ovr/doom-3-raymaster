@@ -168,6 +168,7 @@ struct renderCaps_t {
 	bool			gpuTimer;				// GetFrameGpuMicroseconds returns a measurement
 	bool			timestamps;				// WriteTimestamp works
 	bool			debugGroups;
+	bool			hdrScene;				// BeginHdrScene .. ResolveHdrScene draw into a linear float scene
 };
 
 struct renderBackendInit_t {

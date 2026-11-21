@@ -46,6 +46,9 @@ VSOutput VSMain( VSInput input ) {
 }
 
 float4 PSMain( VSOutput input ) : SV_Target {
-	const float4 color = ( guiMap.Sample( guiSampler, input.texcoord ) * input.color ) + input.add;
-	return float4( color.xyz * color.w, color.w );
+	float4 color = ( SceneColorGamma( guiMap.Sample( guiSampler, input.texcoord ), 0 ) * input.color ) + input.add;
+	if ( HdrPhase() ) {
+		color = float4( SRGBToLinear( saturate( color.xyz ) ), saturate( color.w ) );	// the GUI formula is in gamma
+	}
+	return SceneOutput( float4( color.xyz * color.w, color.w ) );
 }

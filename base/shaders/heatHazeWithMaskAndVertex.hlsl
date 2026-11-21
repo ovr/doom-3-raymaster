@@ -99,5 +99,5 @@ float4 PSMain( VSOutput input ) : SV_Target {
 	screenTexCoord += ( localNormal * input.texcoord2.xy );
 	screenTexCoord = saturate( screenTexCoord );
 
-	return currentRenderMap.Sample( currentRenderSampler, screenTexCoord );
+	return SceneOutput( SceneColor( currentRenderMap.Sample( currentRenderSampler, screenTexCoord ), 0 ) );
 }

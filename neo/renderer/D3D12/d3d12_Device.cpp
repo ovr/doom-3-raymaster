@@ -406,7 +406,7 @@ void idD3D12Device::ReadFeatures() {
 
 	for ( size_t i = 0; i < features.samples.size(); i++ ) {
 		bool supported = true;
-		for ( DXGI_FORMAT format : { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_D24_UNORM_S8_UINT } ) {
+		for ( DXGI_FORMAT format : { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_D24_UNORM_S8_UINT } ) {
 			D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS levels = {};
 			levels.Format = format;
 			levels.SampleCount = 1u << i;

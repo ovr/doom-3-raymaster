@@ -44,8 +44,8 @@ VSOutput VSMain( VSInput input ) {
 float4 PSMain( VSOutput input ) : SV_Target {
 	// the texcoords run from 0 to 1 across the entire screen
 	if ( frac( FragCoord( input.position ).y * 0.5 ) < 0.5 ) {
-		return leftEyeMap.Sample( leftEyeSampler, input.texcoord );
+		return SceneOutput( leftEyeMap.Sample( leftEyeSampler, input.texcoord ) );
 	} else {
-		return rightEyeMap.Sample( rightEyeSampler, input.texcoord );
+		return SceneOutput( rightEyeMap.Sample( rightEyeSampler, input.texcoord ) );
 	}
 }

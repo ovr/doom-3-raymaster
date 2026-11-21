@@ -89,7 +89,8 @@ namespace {
 	return element;
 }
 
-// The members of b3 the code reads: texture2D<n> and textureCube<n> are GL's active sampler uniforms.
+// The members of b3 the code reads: texture2D<n> and textureCube<n> are GL's active sampler uniforms; colorFlags and
+// preExposure are no slot.
 void ReadDrawResources( ID3D12ShaderReflection & reflection, const char * name, d3d12StageReflection_t & result ) {
 	ID3D12ShaderReflectionConstantBuffer * block = reflection.GetConstantBufferByName( name );
 	D3D12_SHADER_BUFFER_DESC desc = {};
@@ -108,8 +109,10 @@ void ReadDrawResources( ID3D12ShaderReflection & reflection, const char * name, 
 			if ( index >= d3d12DrawResources_t::CUBES ) {
 				result.cubeMask = static_cast<uint16>( result.cubeMask | ( 1u << slot ) );
 			}
-		} else if ( index < d3d12DrawResources_t::COUNT ) {
+		} else if ( index < d3d12DrawResources_t::SLOTS ) {
 			result.samplerReads = static_cast<uint16>( result.samplerReads | ( 1u << ( index - d3d12DrawResources_t::SAMPLERS ) ) );
+		} else {
+			result.colorConstants = true;
 		}
 	}
 }
