@@ -8,8 +8,10 @@
 	The resolve of the HDR scene (R13) into the output, on the render graph:
 
 	  SceneColor (RGBA16F, radiance x preExposure) ──[MSAA: Karis resolve, compute]──┬──────────────────────────┐
-	    ┌─[Exposure histogram, compute: 64 bins of EV100, a value per 2 x 2]──────────┘                          │
-	    └─[Eye adaptation, one thread]─→ EyeAdaptation ─[copy]─→ readback: the next frame's preExposure          │
+	    ├─[Exposure histogram, compute: 64 bins of EV100, a value per 2 x 2]──────────┘                          │
+	    │   └─[Eye adaptation, one thread]─→ EyeAdaptation ─[copy]─→ readback: the next frame's preExposure      │
+	    └─[Bloom downsample: 13 taps, Karis on the first]─→ chain (RGBA16F, mips 1/2 .. 1/64 of the viewport)    │
+	        └─ per level, smallest first: [blur X]─→[blur Y, x tint, + the smaller level's sum]─→ Bloom ───────┤
 	  Combine LUT (32^3 RGBA16F, rebuilt when its parms change, compute) ──────────────────────────────────────┤
 	  EyeAdaptation (the exposure) ────────────────────────────────────────────────────────────────────────────┤
 	                                                                                  [Tonemap, raster]─→ output (RGBA8, the viewport)
@@ -39,6 +41,21 @@ constexpr float						K = 0.016f;
 [[nodiscard]] float					Range();					// L = log2( 1 / K + 1 ) * 31 / 17
 [[nodiscard]] float					Coordinate( float c );		// t of c, 0..1
 [[nodiscard]] float					Value( float t );			// c of t
+}
+
+// The bloom (internal/bloomDownsample.hlsl, bloomBlur.hlsl, PostProcessSettings.h): level 0 is half the viewport,
+// each next one half the last; the tonemap lerps the scene toward level 0's sum.
+namespace d3d12Bloom {
+constexpr uint32					MAX_LEVELS = 6;
+constexpr DXGI_FORMAT				FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;	// R11G11B10 stores round toward zero: -2.4 % over three
+constexpr uint32					MAX_RADIUS = 64;			// taps on each side, internal/bloomBlur.hlsl
+// The levels a viewport of width x height gets: 0 when nothing shows the bloom.
+[[nodiscard]] uint32				Levels( const postProcessSettings_t & settings, int width, int height );
+// Level's Gaussian in its texels, 3 sigma = its size times sizeScale percent of viewportWidth: weights[0..radius],
+// which with the mirrored taps sum to 1.
+[[nodiscard]] std::vector<float>	Weights( const postProcessSettings_t & settings, uint32 level, int viewportWidth );
+// The tints of the levels in use, scaled so that their lumas sum to 1; all 0 when they sum to nothing.
+[[nodiscard]] std::array<idVec3, MAX_LEVELS>	Tints( const postProcessSettings_t & settings, uint32 levels );
 }
 
 namespace d3d12Exposure {
@@ -96,6 +113,9 @@ private:
 	// on first use per sample count
 	[[nodiscard]] ID3D12PipelineState *	Tonemap( UINT samples );
 	[[nodiscard]] ID3D12PipelineState *	EncodePipeline( UINT samples );
+	// The bloom chain's passes from input's viewport rect; returns the resource whose mip 0 holds the sum.
+	[[nodiscard]] d3d12GraphResource_t	AddBloom( idD3D12RenderGraph & graph, const postProcessSettings_t & settings, d3d12GraphResource_t input,
+										uint32 inputWidth, uint32 inputHeight, const renderRect_t & rect, uint32 levels );
 
 	const idD3D12Device &			device;
 	idD3D12Submitter &				submitter;
@@ -107,6 +127,8 @@ private:
 	d3d12ComputePipeline_t			msaaResolve;
 	d3d12ComputePipeline_t			exposureHistogram;
 	d3d12ComputePipeline_t			exposureAdapt;
+	d3d12ComputePipeline_t			bloomDownsample;
+	d3d12ComputePipeline_t			bloomBlur;
 	std::array<idComPtr<ID3D12PipelineState>, 4>	tonemap;	// by log2 of the sample count
 	std::array<idComPtr<ID3D12PipelineState>, 4>	encode;
 	idComPtr<ID3D12Resource>		lut;

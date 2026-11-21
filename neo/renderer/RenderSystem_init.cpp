@@ -148,7 +148,10 @@ idCVar r_hdrHighPercent( "r_hdrHighPercent", "90", CVAR_RENDERER | CVAR_FLOAT, "
 idCVar r_hdrMeteringMask( "r_hdrMeteringMask", "0.5", CVAR_RENDERER | CVAR_FLOAT, "0 = every pixel counts the same in the eye adaptation, 1 = the corners count exp( -2 ) of the centre", 0.0f, 1.0f );
 idCVar r_hdrHistogramMinEV( "r_hdrHistogramMinEV", "-8", CVAR_RENDERER | CVAR_FLOAT, "EV100 of the start of the exposure histogram; darker pixels do not count", -16.0f, 16.0f );
 idCVar r_hdrHistogramMaxEV( "r_hdrHistogramMaxEV", "8", CVAR_RENDERER | CVAR_FLOAT, "EV100 of the end of the exposure histogram", -16.0f, 16.0f );
-idCVar r_hdrVisualize( "r_hdrVisualize", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = the exposure histogram and EVs over the HDR frame, 2 = false colour in stops around mid grey", 0, 2 );
+idCVar r_hdrVisualize( "r_hdrVisualize", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = the exposure histogram and EVs over the HDR frame, 2 = false colour in stops around mid grey, 3 = the bloom alone", 0, 3 );
+idCVar r_hdrBloomQuality( "r_hdrBloomQuality", "5", CVAR_RENDERER | CVAR_INTEGER, "the HDR bloom: 0 = none, 1..5 = 2..6 levels from half the viewport down", 0, 5 );
+idCVar r_hdrBloomIntensity( "r_hdrBloomIntensity", "0.1", CVAR_RENDERER | CVAR_FLOAT, "how far the HDR frame is lerped toward its bloom, which keeps its energy", 0.0f, 1.0f );
+idCVar r_hdrBloomSizeScale( "r_hdrBloomSizeScale", "4", CVAR_RENDERER | CVAR_FLOAT, "scales the reach of every bloom level, in percent of the viewport's width", 0.0f, 32.0f );
 
 postProcessSettings_t R_DefaultPostProcessSettings() {
 	postProcessSettings_t settings;
@@ -173,6 +176,9 @@ postProcessSettings_t R_DefaultPostProcessSettings() {
 	settings.tonemapper = static_cast<hdrTonemapper_t>( r_hdrTonemap.GetInteger() );
 	settings.agxLook = static_cast<uint8>( r_hdrAgxLook.GetInteger() );
 	settings.dither = r_hdrDither.GetBool();
+	settings.bloomQuality = static_cast<uint8>( r_hdrBloomQuality.GetInteger() );
+	settings.bloomIntensity = r_hdrBloomIntensity.GetFloat();
+	settings.bloomSizeScale = r_hdrBloomSizeScale.GetFloat();
 	return settings;
 }
 

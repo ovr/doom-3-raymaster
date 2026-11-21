@@ -5116,6 +5116,7 @@ void CombineLut( idTestGpu & gpu, UINT samples ) {
 	const renderRect_t whole = { 0, 0, SIZE, SIZE };
 	postProcessSettings_t settings;
 	settings.autoExposure = false;
+	settings.bloomQuality = 0;
 	settings.dither = false;
 	settings.tonemapper = hdrTonemapper_t::CLAMP;
 	compare( run( settings, whole ), "clamp", BLOCKS * BLOCKS, []( const idVec3 & c ) {
@@ -5364,6 +5365,7 @@ void Exposure( idTestGpu & gpu, UINT samples ) {
 
 	const renderRect_t whole = { 0, 0, SIZE, SIZE };
 	postProcessSettings_t base;
+	base.bloomQuality = 0;
 	base.dither = false;
 	base.tonemapper = hdrTonemapper_t::CLAMP;
 	base.meteringMask = 0.0f;
@@ -5453,6 +5455,207 @@ void Exposure( idTestGpu & gpu, UINT samples ) {
 void ExposureAllSamples( idTestGpu & gpu ) {
 	Exposure( gpu, 1 );
 	Exposure( gpu, 4 );
+}
+
+// The 13-tap downsample of internal/bloomDownsample.hlsl without the Karis weights: ( w + 1 ) / 2 x ( h + 1 ) / 2
+// texels from the w x h rect at x0, y0 of source (stride texels a row), the taps clamped to the rect's texel centres.
+[[nodiscard]] std::vector<double> BloomDownsampleRef( const std::vector<double> & source, int stride, int x0, int y0, int w, int h ) {
+	const auto tap = [&]( double x, double y ) {
+		x = std::clamp( x, x0 + 0.5, x0 + w - 0.5 ) - 0.5;
+		y = std::clamp( y, y0 + 0.5, y0 + h - 0.5 ) - 0.5;
+		const int i = static_cast<int>( std::floor( x ) );
+		const int j = static_cast<int>( std::floor( y ) );
+		const double a = x - i;
+		const double b = y - j;
+		const auto at = [&]( int u, int v ) { return source[static_cast<size_t>( Min( v, y0 + h - 1 ) ) * stride + Min( u, x0 + w - 1 )]; };
+		return ( at( i, j ) * ( 1.0 - a ) + at( i + 1, j ) * a ) * ( 1.0 - b ) + ( at( i, j + 1 ) * ( 1.0 - a ) + at( i + 1, j + 1 ) * a ) * b;
+	};
+	const int width = ( w + 1 ) / 2;
+	const int height = ( h + 1 ) / 2;
+	std::vector<double> target( static_cast<size_t>( width ) * height );
+	for ( int v = 0; v < height; v++ ) {
+		for ( int u = 0; u < width; u++ ) {
+			const double x = x0 + ( u + 0.5 ) * 2.0;
+			const double y = y0 + ( v + 0.5 ) * 2.0;
+			const double corners = tap( x - 2, y - 2 ) + tap( x + 2, y - 2 ) + tap( x - 2, y + 2 ) + tap( x + 2, y + 2 );
+			const double edges = tap( x, y - 2 ) + tap( x - 2, y ) + tap( x + 2, y ) + tap( x, y + 2 );
+			const double inner = tap( x - 1, y - 1 ) + tap( x + 1, y - 1 ) + tap( x - 1, y + 1 ) + tap( x + 1, y + 1 );
+			target[static_cast<size_t>( v ) * width + u] = tap( x, y ) * 0.125 + corners * 0.03125 + edges * 0.0625 + inner * 0.125;
+		}
+	}
+	return target;
+}
+
+/*
+	The bloom on a 64 x 64 scene (levels 32 x 32 down to 1 x 1), with and without MSAA, through the clamp curve at
+	exposure 4; the blocks are dim, so the first level's Karis weights stay within 0.5 % of even:
+
+	  flat       a flat field stays as it is with the bloom at intensity 1
+	  block      the bloom alone of a centred 16 x 16 block is mirror-symmetric and spreads beyond the block; with
+	             three levels, which stay off the edges, it keeps the block's energy (dithered, decoded) within 2 %
+	  tints      only the last level's tint: one flat value, the 1 x 1 level of BloomDownsampleRef (from 4 x 4 on
+	             the taps clamped at the edges lose a centred field's mean); only the first: nearly all of it
+	             within 8 pixels of the block
+	  viewport   a bright scene outside the viewport does not reach the bloom inside it
+	  off        quality 0 and intensity 0 give the same bytes as no bloom; visualize 3 without levels the frame
+*/
+void Bloom( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	hdr.CreateDefaults();
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( computeRoot.Get() && fixture.scene.Color( true ).resource, "the compute root signature and the HDR scene" ) ) {
+		return;
+	}
+	idD3D12SceneTarget::surface_t & output = fixture.scene.Color();
+	struct block_t {
+		D3D12_RECT rect;
+		float radiance;
+	};
+	// the scene: background, then the blocks; the output grey
+	const auto run = [&]( const postProcessSettings_t & settings, const renderRect_t & viewport, float background, std::initializer_list<block_t> blocks ) {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & scene = fixture.scene.Color( true );
+		gpu.barriers.Transition( *scene.resource.Get(), scene.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float back[4] = { background, background, background, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), back, 0, nullptr );
+		for ( const block_t & block : blocks ) {
+			const float rgba[4] = { block.radiance, block.radiance, block.radiance, 1.0f };
+			gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), rgba, 1, &block.rect );
+		}
+		gpu.barriers.Transition( *output.resource.Get(), output.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false ), grey, 0, nullptr );
+		hdr.Resolve( graph, fixture.scene, settings, viewport, 1.0f, hdrExposureStep_t(), nullptr );
+		gpu.WaitIdle();
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		return fixture.Read( *resolved.resource.Get(), resolved.state );
+	};
+	const auto channel = []( const std::vector<uint32> & texels, int x, int y, int c ) {
+		return static_cast<int>( ( texels[static_cast<size_t>( y ) * SIZE + x] >> ( c * 8 ) ) & 0xFF );
+	};
+	const auto energy = [&]( const std::vector<uint32> & texels, int x0, int y0, int x1, int y1 ) {
+		double sum = 0.0;
+		for ( int y = y0; y < y1; y++ ) {
+			for ( int x = x0; x < x1; x++ ) {
+				sum += SrgbDecodeRef( channel( texels, x, y, 0 ) / 255.0 );
+			}
+		}
+		return sum;
+	};
+
+	constexpr float RADIANCE = 0.05f;
+	constexpr float EXPOSURE = 4.0f;
+	const renderRect_t whole = { 0, 0, SIZE, SIZE };
+	postProcessSettings_t base;
+	base.autoExposure = false;
+	base.exposureCompensation = 2.0f;
+	base.tonemapper = hdrTonemapper_t::CLAMP;
+	base.dither = false;
+	base.bloomIntensity = 1.0f;
+	Check( d3d12Bloom::Levels( base, SIZE, SIZE ) == 6 && d3d12Bloom::Levels( base, 3, 3 ) == 2 && d3d12Bloom::Levels( base, 2, 2 ) == 1,
+		"six levels for 64 x 64, as many as the mips of a small viewport" );
+
+	postProcessSettings_t none = base;
+	none.bloomQuality = 0;
+	const std::vector<uint32> flatPlain = run( none, whole, RADIANCE, {} );
+	const std::vector<uint32> flatBloom = run( base, whole, RADIANCE, {} );
+	int worst = 0;
+	for ( size_t i = 0; i < flatPlain.size() && flatPlain.size() == flatBloom.size(); i++ ) {
+		for ( int c = 0; c < 3; c++ ) {
+			worst = Max( worst, std::abs( static_cast<int>( ( flatPlain[i] >> ( c * 8 ) ) & 0xFF ) - static_cast<int>( ( flatBloom[i] >> ( c * 8 ) ) & 0xFF ) ) );
+		}
+	}
+	Check( !flatBloom.empty() && worst <= 2, va( "%u sample(s): a flat field under a full bloom moves by %d of 255", samples, worst ) );
+
+	const D3D12_RECT square = { 24, 24, 40, 40 };
+	postProcessSettings_t alone = base;
+	alone.visualize = 3;
+	const std::vector<uint32> block = run( alone, whole, 0.0f, { { square, RADIANCE } } );
+	int asymmetry = 0;
+	for ( int y = 0; y < SIZE && !block.empty(); y++ ) {
+		for ( int x = 0; x < SIZE; x++ ) {
+			asymmetry = Max( asymmetry, std::abs( channel( block, x, y, 0 ) - channel( block, SIZE - 1 - x, y, 0 ) ) );
+			asymmetry = Max( asymmetry, std::abs( channel( block, x, y, 0 ) - channel( block, x, SIZE - 1 - y, 0 ) ) );
+		}
+	}
+	Check( !block.empty() && asymmetry <= 1, va( "%u sample(s): the bloom of a centred block is symmetric within %d of 255", samples, asymmetry ) );
+	Check( !block.empty() && channel( block, 0, 0, 0 ) > 0 && channel( block, 20, 32, 0 ) > channel( block, 10, 32, 0 ), "the bloom spreads beyond the block" );
+	postProcessSettings_t dithered = alone;
+	dithered.dither = true;
+	dithered.bloomQuality = 2;
+	const std::vector<uint32> spread = run( dithered, whole, 0.0f, { { square, RADIANCE } } );
+	const double blockEnergy = 16.0 * 16.0 * RADIANCE * EXPOSURE;
+	const double spreadEnergy = spread.empty() ? 0.0 : energy( spread, 0, 0, SIZE, SIZE );
+	Check( std::abs( spreadEnergy / blockEnergy - 1.0 ) <= 0.02, va( "%u sample(s): the bloom keeps %.4f of the block's energy", samples, spreadEnergy / blockEnergy ) );
+
+	postProcessSettings_t last = alone;
+	last.bloomTints.fill( vec3_zero );
+	last.bloomTints[5] = idVec3( 1.0f, 1.0f, 1.0f );
+	const std::vector<uint32> flat = run( last, whole, 0.0f, { { square, RADIANCE } } );
+	int lowest = 255;
+	int highest = 0;
+	for ( int y = 0; y < SIZE && !flat.empty(); y++ ) {
+		for ( int x = 0; x < SIZE; x++ ) {
+			lowest = Min( lowest, channel( flat, x, y, 0 ) );
+			highest = Max( highest, channel( flat, x, y, 0 ) );
+		}
+	}
+	std::vector<double> level( static_cast<size_t>( SIZE ) * SIZE, 0.0 );
+	for ( int y = square.top; y < square.bottom; y++ ) {
+		for ( int x = square.left; x < square.right; x++ ) {
+			level[static_cast<size_t>( y ) * SIZE + x] = RADIANCE;
+		}
+	}
+	for ( int size = SIZE; size > 1; size /= 2 ) {
+		level = BloomDownsampleRef( level, size, 0, 0, size, size );
+	}
+	const int smallest = ToByte( SrgbEncodeRef( level[0] * EXPOSURE ) );
+	Check( !flat.empty() && highest - lowest <= 0 && std::abs( highest - smallest ) <= 1, va( "only the last level: one value %d .. %d, the CPU's %d (the mean %.5f, "
+		"the 1 x 1 level %.5f)", lowest, highest, smallest, blockEnergy / EXPOSURE / ( SIZE * SIZE ), level[0] ) );
+	postProcessSettings_t first = alone;
+	first.bloomTints.fill( vec3_zero );
+	first.bloomTints[0] = idVec3( 1.0f, 1.0f, 1.0f );
+	first.dither = true;
+	const std::vector<uint32> narrow = run( first, whole, 0.0f, { { square, RADIANCE } } );
+	const double close = narrow.empty() ? 0.0 : energy( narrow, 16, 16, 48, 48 ) / Max( energy( narrow, 0, 0, SIZE, SIZE ), 1e-9 );
+	Check( close >= 0.97, va( "only the first level: %.4f of the energy within 8 pixels of the block", close ) );
+
+	const renderRect_t inner = { 16, 16, 32, 32 };
+	const std::vector<uint32> confined = run( alone, inner, 4.0f, { { { 16, 16, 48, 48 }, 0.0f } } );
+	int leaked = 0;
+	for ( int y = inner.y; y < inner.y + inner.height && !confined.empty(); y++ ) {
+		for ( int x = inner.x; x < inner.x + inner.width; x++ ) {
+			leaked = Max( leaked, channel( confined, x, y, 0 ) );
+		}
+	}
+	Check( !confined.empty() && leaked == 0, va( "%u sample(s): the scene outside the viewport stays out of its bloom (%d)",
+		samples, leaked ) );
+
+	postProcessSettings_t zero = base;
+	zero.bloomIntensity = 0.0f;
+	postProcessSettings_t noLevels = alone;
+	noLevels.bloomQuality = 0;
+	const std::vector<uint32> plain = run( none, whole, 0.0f, { { square, RADIANCE } } );
+	Check( !plain.empty() && run( zero, whole, 0.0f, { { square, RADIANCE } } ) == plain && run( noLevels, whole, 0.0f, { { square, RADIANCE } } ) == plain,
+		"intensity 0, and visualize 3 without levels, give the frame without bloom" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void BloomAllSamples( idTestGpu & gpu ) {
+	Bloom( gpu, 1 );
+	Bloom( gpu, 4 );
 }
 
 void CombineLutAllSamples( idTestGpu & gpu ) {
@@ -5614,6 +5817,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_HdrEncode", OnGpu<HdrEncodeAllSamples> },
 	{ "Warp_Exposure", OnWarp<ExposureAllSamples> },
 	{ "Gpu_Exposure", OnGpu<ExposureAllSamples> },
+	{ "Warp_Bloom", OnWarp<BloomAllSamples> },
+	{ "Gpu_Bloom", OnGpu<BloomAllSamples> },
 	{ "Gpu_CombineLut", OnGpu<CombineLutAllSamples> },
 };
 

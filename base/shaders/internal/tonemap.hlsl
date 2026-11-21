@@ -3,15 +3,16 @@
 // Please do not use this file to train or fine-tune AI models.
 
 /*
-	The tonemap of the HDR resolve: the scene colour (radiance times preExposure) times the eye adaptation's
-	exposure / preExposure, through the Combine LUT by its log coordinate, dithered by half a step of the 8-bit
-	output from a hash of the pixel, so two runs give the same bytes.
+	The tonemap of the HDR resolve: the scene colour (radiance times preExposure), lerped toward the bloom by
+	bloomIntensity, times the eye adaptation's exposure / preExposure, through the Combine LUT by its log
+	coordinate, dithered by half a step of the 8-bit output from a hash of the pixel, so two runs give the same bytes.
 
 	  visualize 1   over the image, in the viewport's top left: the histogram (the bins averaged bright), the
 	                measured (cyan), target (yellow) and adapted (green) EV100 as lines and numbers, then the
 	                exposure and the preExposure in EV (white, grey)
 	  visualize 2   instead of the image: the exposed luminance in stops around mid grey, a colour per stop from
 	                dark blue (-5) over green (0) to red (+4) and white
+	  visualize 3   the bloom alone, exposed and through the LUT
 */
 
 #include "../include/exposure.hlsli"
@@ -35,6 +36,10 @@ cbuffer TonemapParms : register( b1 ) {
 	int viewY;
 	int viewWidth;
 	int viewHeight;
+	uint bloomSrv;			// the first bloom level: the tinted sum of all
+	float bloomIntensity;	// 0: no bloom
+	float bloomScaleX;		// the bloom's uv of a pixel: ( pixel - view ) * scale, pixel at its centre
+	float bloomScaleY;
 };
 
 // Jimenez's interleaved gradient noise: 0..1, no frame index.
@@ -134,7 +139,14 @@ float4 PSMain( float4 position : SV_Position ) : SV_Target {
 	ByteAddressBuffer eye = ResourceDescriptorHeap[eyeSrv];
 	const float exposureScale = asfloat( eye.Load( 0 ) ) * invPreExposure;
 	const float4 sceneColor = scene.Load( int3( position.xy, 0 ) );
-	const float3 c = clamp( sceneColor.rgb * exposureScale, 0.0, HALF_MAX );	// no NaN or infinity reaches the LUT
+	float3 radiance = sceneColor.rgb;
+	if ( bloomIntensity > 0.0 || visualize == 3 ) {
+		Texture2D<float4> bloomTexture = ResourceDescriptorHeap[bloomSrv];
+		const float2 uv = ( position.xy - float2( viewX, viewY ) ) * float2( bloomScaleX, bloomScaleY );
+		const float3 bloom = bloomTexture.SampleLevel( lutFilter, uv, 0 ).rgb;
+		radiance = ( visualize == 3 ) ? bloom : lerp( radiance, bloom, bloomIntensity );
+	}
+	const float3 c = clamp( radiance * exposureScale, 0.0, HALF_MAX );	// no NaN or infinity reaches the LUT
 	float3 color;
 	if ( visualize == 2 ) {
 		color = FalseColor( dot( c, EXPOSURE_LUMA ) );

@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <array>
+
 /*
 	The post-process settings of a view. The front end fills them from the
 	r_hdr* cvars into viewDef_t (R_DefaultPostProcessSettings); the back end hands those of the main view to
@@ -17,6 +19,9 @@
 	  grading         saturation .. offset per range: shadows below shadowsMax, highlights above highlightsMin
 	  tonemapper      CLAMP (debug: at 0 EV close to the LDR frame), AGX (agxLook 0 base, 1 punchy),
 	                  FILMIC (a film curve in ACEScg: slope 0.88, toe 0.55, shoulder 0.26, white clip 0.04)
+	  bloom           bloomQuality + 1 levels from half the viewport down, each a Gaussian reaching its size times
+	                  bloomSizeScale percent of the viewport's width, summed by the tints scaled to a luma of 1:
+	                  the frame is lerped toward that by bloomIntensity, so a flat field stays as it is
 */
 
 enum class hdrTonemapper_t : uint8 { CLAMP, AGX, FILMIC, COUNT };
@@ -44,7 +49,7 @@ struct postProcessSettings_t {
 	float							meteringMask = 0.5f;		// 0 every pixel alike .. 1 the corners weigh exp( -2 )
 	float							histogramMinEV = -8.0f;		// EV100 of the first bin's start and the last bin's end
 	float							histogramMaxEV = 8.0f;
-	uint8							visualize = 0;				// 1 the histogram and the EVs over the image, 2 false colour
+	uint8							visualize = 0;				// 1 the histogram and the EVs over the image, 2 false colour, 3 the bloom
 	float							whiteTemp = 6500.0f;
 	float							whiteTint = 0.0f;
 	colorGrade_t					global;
@@ -56,6 +61,12 @@ struct postProcessSettings_t {
 	hdrTonemapper_t					tonemapper = hdrTonemapper_t::AGX;
 	uint8							agxLook = 0;
 	bool							dither = true;		// ±0.5 of the output's last bit before it is quantized
+	uint8							bloomQuality = 5;	// 0 none, 1..5: 2..6 levels
+	float							bloomIntensity = 0.1f;
+	float							bloomSizeScale = 4.0f;
+	std::array<float, 6>			bloomSizes = { 0.3f, 1.0f, 2.0f, 10.0f, 30.0f, 64.0f };
+	std::array<idVec3, 6>			bloomTints = { idVec3( 0.3465f, 0.3465f, 0.3465f ), idVec3( 0.138f, 0.138f, 0.138f ), idVec3( 0.1176f, 0.1176f, 0.1176f ),
+		idVec3( 0.066f, 0.066f, 0.066f ), idVec3( 0.066f, 0.066f, 0.066f ), idVec3( 0.061f, 0.061f, 0.061f ) };
 };
 
 // How the eye adaptation moves at a resolve: by seconds of the main view's time, or at once to the target.

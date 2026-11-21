@@ -190,6 +190,10 @@ struct tonemapParms_t {
 	int32							viewY;
 	int32							viewWidth;
 	int32							viewHeight;
+	uint32							bloomSrv;
+	float							bloomIntensity;
+	float							bloomScaleX;
+	float							bloomScaleY;
 };
 
 // b0 of internal/exposureHistogram.hlsl.
@@ -226,6 +230,36 @@ struct adaptParms_t {
 	float							manualExposure;
 };
 
+// b0 of internal/bloomDownsample.hlsl.
+struct bloomDownsampleParms_t {
+	uint32							sourceSrv;
+	uint32							targetUav;
+	uint32							linearSampler;
+	uint32							karis;
+	float							sourceOrigin[2];
+	float							invSourceSize[2];
+	float							sourceMin[2];
+	float							sourceMax[2];
+	uint32							targetSize[2];
+};
+
+// b0 of internal/bloomBlur.hlsl.
+struct bloomBlurParms_t {
+	static constexpr uint32			NO_SMALLER = 0xFFFFFFFF;
+	uint32							sourceSrv;
+	uint32							targetUav;
+	uint32							smallerSrv;
+	uint32							linearSampler;
+	uint32							size[2];
+	uint32							vertical;
+	uint32							radius;
+	float							tint[3];
+	float							smallerScaleX;
+	float							smallerScaleY;
+	float							unused[3];
+	float							weights[( d3d12Bloom::MAX_RADIUS + 4 ) / 4][4];
+};
+
 // A raw view of a buffer of bytes.
 template<typename VIEW> [[nodiscard]] VIEW RawView( uint32 bytes ) {
 	VIEW view = {};
@@ -243,6 +277,52 @@ template<typename VIEW> [[nodiscard]] VIEW RawView( uint32 bytes ) {
 }
 
 }	// namespace
+
+uint32 d3d12Bloom::Levels( const postProcessSettings_t & settings, int width, int height ) {
+	const uint32 wanted = ( settings.bloomQuality == 0 ) ? 0 : Min( settings.bloomQuality + 1u, MAX_LEVELS );
+	const bool shown = settings.bloomIntensity > 0.0f || settings.visualize == 3;
+	float luma = 0.0f;
+	for ( uint32 level = 0; level < wanted; level++ ) {
+		luma += settings.bloomTints[level] * idVec3( 0.2126f, 0.7152f, 0.0722f );
+	}
+	if ( !shown || !( luma > 0.0f ) || width <= 0 || height <= 0 ) {
+		return 0;
+	}
+	const uint32 largest = static_cast<uint32>( Max( width + 1, height + 1 ) / 2 );
+	return Min( wanted, static_cast<uint32>( std::bit_width( largest ) ) );		// mips down to 1 x 1
+}
+
+std::vector<float> d3d12Bloom::Weights( const postProcessSettings_t & settings, uint32 level, int viewportWidth ) {
+	const float reach = settings.bloomSizes[level] * settings.bloomSizeScale * 0.01f * static_cast<float>( viewportWidth );
+	const float sigma = reach / ( 3.0f * static_cast<float>( 2u << level ) );
+	if ( !( sigma > 0.01f ) ) {
+		return { 1.0f };
+	}
+	const uint32 radius = Min( static_cast<uint32>( std::ceil( 3.0f * sigma ) ), MAX_RADIUS );
+	std::vector<float> weights( radius + 1 );
+	double sum = 0.0;
+	for ( uint32 t = 0; t <= radius; t++ ) {
+		weights[t] = std::exp( -static_cast<float>( t * t ) / ( 2.0f * sigma * sigma ) );
+		sum += ( t == 0 ) ? weights[t] : 2.0 * weights[t];
+	}
+	for ( float & weight : weights ) {
+		weight = static_cast<float>( weight / sum );
+	}
+	return weights;
+}
+
+std::array<idVec3, d3d12Bloom::MAX_LEVELS> d3d12Bloom::Tints( const postProcessSettings_t & settings, uint32 levels ) {
+	std::array<idVec3, MAX_LEVELS> tints;
+	float luma = 0.0f;
+	for ( uint32 level = 0; level < MAX_LEVELS; level++ ) {
+		tints[level] = ( level < levels ) ? settings.bloomTints[level] : vec3_zero;
+		luma += tints[level] * idVec3( 0.2126f, 0.7152f, 0.0722f );
+	}
+	for ( idVec3 & tint : tints ) {
+		tint = ( luma > 0.0f ) ? tint / luma : vec3_zero;
+	}
+	return tints;
+}
 
 idD3D12HdrPipeline::idD3D12HdrPipeline( const idD3D12Device & owner, idD3D12Submitter & submit, const idD3D12ComputeRootSignature & root,
 	const idD3D12InternalPasses & internalPasses, idD3D12SamplerHeap & samplerHeap, idD3D12DescriptorPool & srvs ) :
@@ -264,6 +344,10 @@ void idD3D12HdrPipeline::CreateDefaults() {
 	exposureHistogram = D3D12_CreateComputePipeline( device, computeRoot, histogramStage.code, histogramStage.reflection, L"doom3 exposure histogram" );
 	const d3d12HlslStage_t & adaptStage = passes.Stage( "internal_exposureAdapt" );
 	exposureAdapt = D3D12_CreateComputePipeline( device, computeRoot, adaptStage.code, adaptStage.reflection, L"doom3 eye adaptation" );
+	const d3d12HlslStage_t & downsampleStage = passes.Stage( "internal_bloomDownsample" );
+	bloomDownsample = D3D12_CreateComputePipeline( device, computeRoot, downsampleStage.code, downsampleStage.reflection, L"doom3 bloom downsample" );
+	const d3d12HlslStage_t & blurStage = passes.Stage( "internal_bloomBlur" );
+	bloomBlur = D3D12_CreateComputePipeline( device, computeRoot, blurStage.code, blurStage.reflection, L"doom3 bloom blur" );
 
 	// committed buffers start zeroed: the histogram empty; EyeAdaptation is set by the first resolve's reset
 	histogram = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, d3d12Exposure::BINS * 4, D3D12_RESOURCE_STATE_COMMON, L"doom3 exposure histogram",
@@ -461,23 +545,144 @@ void idD3D12HdrPipeline::Resolve( idD3D12RenderGraph & graph, idD3D12SceneTarget
 		context.List().CopyBufferRegion( eyeReadback.Get(), 0, &context.Resource( eye ), 0, d3d12Exposure::EYE_BYTES );
 	}, true );
 
+	const uint32 bloomLevels = ( bloomDownsample && bloomBlur ) ? d3d12Bloom::Levels( settings, rect.width, rect.height ) : 0;
+	const d3d12GraphResource_t bloom = ( bloomLevels > 0 ) ? AddBloom( graph, settings, input, width, height, rect, bloomLevels ) : d3d12GraphResource_t();
+	const uint32 visualize = ( settings.visualize == 3 && bloomLevels == 0 ) ? 0u : Min( static_cast<uint32>( settings.visualize ), 3u );
+	const float bloomIntensity = ( bloomLevels > 0 ) ? idMath::ClampFloat( 0.0f, 1.0f, settings.bloomIntensity ) : 0.0f;
 	const tonemapParms_t tonemapBase = { 0, 0, lutSampler, settings.dither ? 1u : 0u, invPreExposure, d3d12Lut::K, 1.0f / d3d12Lut::Range(), 0,
-		Min( static_cast<uint32>( settings.visualize ), 2u ), settings.histogramMinEV, binWidth, lowPercent, highPercent, rect.x, rect.y, rect.width,
-		rect.height };
-	graph.AddPass( "Tonemap", d3d12GraphPass_t::RASTER, { { input, d3d12GraphAccess_t::SRV }, { lutTexture, d3d12GraphAccess_t::SRV },
-		{ eye, d3d12GraphAccess_t::SRV }, { target, d3d12GraphAccess_t::RTV, 0 } },
-		[tonemapPso, tonemapBase, input, lutTexture, eye, target, rect]( idD3D12GraphContext & context ) {
-			tonemapParms_t tonemapParms = tonemapBase;
-			tonemapParms.sceneSrv = context.Srv( input );
-			tonemapParms.lutSrv = context.Srv( lutTexture );
-			tonemapParms.eyeSrv = context.Srv( eye );
-			const d3d12UploadSpan_t span = context.Parms( tonemapParms );
-			context.Draw( *tonemapPso, target, 0, rect, span );
-		} );
+		visualize, settings.histogramMinEV, binWidth, lowPercent, highPercent, rect.x, rect.y, rect.width, rect.height, 0, bloomIntensity,
+		1.0f / static_cast<float>( rect.width + ( rect.width & 1 ) ), 1.0f / static_cast<float>( rect.height + ( rect.height & 1 ) ) };
+	const auto record = [tonemapPso, tonemapBase, input, lutTexture, eye, target, bloom, rect]( idD3D12GraphContext & context ) {
+		tonemapParms_t tonemapParms = tonemapBase;
+		tonemapParms.sceneSrv = context.Srv( input );
+		tonemapParms.lutSrv = context.Srv( lutTexture );
+		tonemapParms.eyeSrv = context.Srv( eye );
+		tonemapParms.bloomSrv = bloom.IsValid() ? context.Srv( bloom, 0 ) : 0;
+		const d3d12UploadSpan_t span = context.Parms( tonemapParms );
+		context.Draw( *tonemapPso, target, 0, rect, span );
+	};
+	if ( bloom.IsValid() ) {
+		graph.AddPass( "Tonemap", d3d12GraphPass_t::RASTER, { { input, d3d12GraphAccess_t::SRV }, { lutTexture, d3d12GraphAccess_t::SRV },
+			{ eye, d3d12GraphAccess_t::SRV }, { bloom, d3d12GraphAccess_t::SRV, 0 }, { target, d3d12GraphAccess_t::RTV, 0 } }, record );
+	} else {
+		graph.AddPass( "Tonemap", d3d12GraphPass_t::RASTER, { { input, d3d12GraphAccess_t::SRV }, { lutTexture, d3d12GraphAccess_t::SRV },
+			{ eye, d3d12GraphAccess_t::SRV }, { target, d3d12GraphAccess_t::RTV, 0 } }, record );
+	}
 	graph.Execute( groups );
 	// after Execute: a submit inside it closed the copy's list with an older fence, so this one is late, never early
 	readbackFence = submitter.PendingFence();
 	readbackPreExposure = preExposure;
+}
+
+d3d12GraphResource_t idD3D12HdrPipeline::AddBloom( idD3D12RenderGraph & graph, const postProcessSettings_t & settings, d3d12GraphResource_t input,
+	uint32 inputWidth, uint32 inputHeight, const renderRect_t & rect, uint32 levels ) {
+	static constexpr std::array<const char *, d3d12Bloom::MAX_LEVELS> DOWNSAMPLE = { "Bloom downsample 1", "Bloom downsample 2", "Bloom downsample 3",
+		"Bloom downsample 4", "Bloom downsample 5", "Bloom downsample 6" };
+	static constexpr std::array<const char *, d3d12Bloom::MAX_LEVELS> BLUR_X = { "Bloom blur X 1", "Bloom blur X 2", "Bloom blur X 3", "Bloom blur X 4",
+		"Bloom blur X 5", "Bloom blur X 6" };
+	static constexpr std::array<const char *, d3d12Bloom::MAX_LEVELS> BLUR_Y = { "Bloom blur Y 1", "Bloom blur Y 2", "Bloom blur Y 3", "Bloom blur Y 4",
+		"Bloom blur Y 5", "Bloom blur Y 6" };
+	d3d12PoolDesc_t desc;
+	desc.format = d3d12Bloom::FORMAT;
+	desc.width = static_cast<uint32>( rect.width + 1 ) / 2;
+	desc.height = static_cast<uint32>( rect.height + 1 ) / 2;
+	desc.mips = static_cast<uint16>( levels );
+	desc.unorderedAccess = true;
+	const d3d12GraphResource_t chain = graph.Create( "Bloom chain", desc );
+	const d3d12GraphResource_t blurred = graph.Create( "Bloom blurred", desc );
+	const d3d12GraphResource_t sum = graph.Create( "Bloom", desc );
+
+	for ( uint32 level = 0; level < levels; level++ ) {
+		const uint16 mip = static_cast<uint16>( level );
+		bloomDownsampleParms_t parms = {};
+		parms.linearSampler = lutSampler;
+		parms.targetSize[0] = desc.MipWidth( mip );
+		parms.targetSize[1] = desc.MipHeight( mip );
+		if ( level == 0 ) {
+			parms.karis = 1;
+			parms.sourceOrigin[0] = static_cast<float>( rect.x );
+			parms.sourceOrigin[1] = static_cast<float>( rect.y );
+			parms.invSourceSize[0] = 1.0f / static_cast<float>( inputWidth );
+			parms.invSourceSize[1] = 1.0f / static_cast<float>( inputHeight );
+			parms.sourceMin[0] = static_cast<float>( rect.x ) + 0.5f;
+			parms.sourceMin[1] = static_cast<float>( rect.y ) + 0.5f;
+			parms.sourceMax[0] = static_cast<float>( rect.x + rect.width ) - 0.5f;
+			parms.sourceMax[1] = static_cast<float>( rect.y + rect.height ) - 0.5f;
+			graph.AddPass( DOWNSAMPLE[level], d3d12GraphPass_t::COMPUTE, { { input, d3d12GraphAccess_t::SRV }, { chain, d3d12GraphAccess_t::UAV, mip } },
+				[this, parms, input, chain]( idD3D12GraphContext & context ) {
+					bloomDownsampleParms_t bound = parms;
+					bound.sourceSrv = context.Srv( input );
+					bound.targetUav = context.Uav( chain, 0 );
+					const d3d12UploadSpan_t span = context.Parms( bound );
+					context.Dispatch( bloomDownsample, &span, bound.targetSize[0], bound.targetSize[1] );
+				} );
+			continue;
+		}
+		const float sourceWidth = static_cast<float>( desc.MipWidth( mip - 1 ) );
+		const float sourceHeight = static_cast<float>( desc.MipHeight( mip - 1 ) );
+		parms.invSourceSize[0] = 1.0f / sourceWidth;
+		parms.invSourceSize[1] = 1.0f / sourceHeight;
+		parms.sourceMin[0] = 0.5f;
+		parms.sourceMin[1] = 0.5f;
+		parms.sourceMax[0] = sourceWidth - 0.5f;
+		parms.sourceMax[1] = sourceHeight - 0.5f;
+		graph.AddPass( DOWNSAMPLE[level], d3d12GraphPass_t::COMPUTE, { { chain, d3d12GraphAccess_t::SRV, static_cast<uint16>( mip - 1 ) },
+			{ chain, d3d12GraphAccess_t::UAV, mip } }, [this, parms, chain, mip]( idD3D12GraphContext & context ) {
+				bloomDownsampleParms_t bound = parms;
+				bound.sourceSrv = context.Srv( chain, static_cast<uint16>( mip - 1 ) );
+				bound.targetUav = context.Uav( chain, mip );
+				const d3d12UploadSpan_t span = context.Parms( bound );
+				context.Dispatch( bloomDownsample, &span, bound.targetSize[0], bound.targetSize[1] );
+			} );
+	}
+
+	const std::array<idVec3, d3d12Bloom::MAX_LEVELS> tints = d3d12Bloom::Tints( settings, levels );
+	for ( uint32 level = levels; level-- > 0; ) {
+		const uint16 mip = static_cast<uint16>( level );
+		const bool smaller = level + 1 < levels;
+		const std::vector<float> weights = d3d12Bloom::Weights( settings, level, rect.width );
+		bloomBlurParms_t parms = {};
+		parms.smallerSrv = bloomBlurParms_t::NO_SMALLER;
+		parms.linearSampler = lutSampler;
+		parms.size[0] = desc.MipWidth( mip );
+		parms.size[1] = desc.MipHeight( mip );
+		parms.radius = static_cast<uint32>( weights.size() - 1 );
+		for ( size_t t = 0; t < weights.size(); t++ ) {
+			parms.weights[t / 4][t % 4] = weights[t];
+		}
+		parms.tint[0] = tints[level].x;
+		parms.tint[1] = tints[level].y;
+		parms.tint[2] = tints[level].z;
+		if ( smaller ) {
+			parms.smallerScaleX = 0.5f / static_cast<float>( desc.MipWidth( mip + 1 ) );
+			parms.smallerScaleY = 0.5f / static_cast<float>( desc.MipHeight( mip + 1 ) );
+		}
+		graph.AddPass( BLUR_X[level], d3d12GraphPass_t::COMPUTE, { { chain, d3d12GraphAccess_t::SRV, mip }, { blurred, d3d12GraphAccess_t::UAV, mip } },
+			[this, parms, chain, blurred, mip]( idD3D12GraphContext & context ) {
+				bloomBlurParms_t bound = parms;
+				bound.sourceSrv = context.Srv( chain, mip );
+				bound.targetUav = context.Uav( blurred, mip );
+				const d3d12UploadSpan_t span = context.Parms( bound );
+				context.Dispatch( bloomBlur, &span, bound.size[0], bound.size[1] );
+			} );
+		const auto vertical = [this, parms, blurred, sum, mip, smaller]( idD3D12GraphContext & context ) {
+			bloomBlurParms_t bound = parms;
+			bound.vertical = 1;
+			bound.sourceSrv = context.Srv( blurred, mip );
+			bound.targetUav = context.Uav( sum, mip );
+			bound.smallerSrv = smaller ? context.Srv( sum, static_cast<uint16>( mip + 1 ) ) : bloomBlurParms_t::NO_SMALLER;
+			const d3d12UploadSpan_t span = context.Parms( bound );
+			context.Dispatch( bloomBlur, &span, bound.size[1], bound.size[0] );
+		};
+		if ( smaller ) {
+			graph.AddPass( BLUR_Y[level], d3d12GraphPass_t::COMPUTE, { { blurred, d3d12GraphAccess_t::SRV, mip },
+				{ sum, d3d12GraphAccess_t::SRV, static_cast<uint16>( mip + 1 ) }, { sum, d3d12GraphAccess_t::UAV, mip } }, vertical );
+		} else {
+			graph.AddPass( BLUR_Y[level], d3d12GraphPass_t::COMPUTE, { { blurred, d3d12GraphAccess_t::SRV, mip }, { sum, d3d12GraphAccess_t::UAV, mip } },
+				vertical );
+		}
+	}
+	return sum;
 }
 
 void idD3D12HdrPipeline::Poll() {
