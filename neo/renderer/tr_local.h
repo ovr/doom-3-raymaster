@@ -114,6 +114,7 @@ struct drawSurf_t {
 	drawSurf_t **			linkChain;			// defer linking to lights to a serial section to avoid a mutex
 	idScreenRect			scissorRect;		// for scissor clipping, local inside renderView viewport
 	int						renderZFail;
+	float					particleSize;		// frontEndGeo's, which the back end must not read
 	volatile shadowVolumeState_t shadowVolumeState;
 };
 
@@ -680,6 +681,7 @@ struct backEndState_t {
 	bool				currentRenderCopied;	// true if any material has already referenced _currentRender
 	bool				hdrPhase;				// BeginHdrScene .. ResolveHdrScene: the colour parms decode from sRGB (R13)
 	bool				hdrGamma;				// in hdrPhase, the gamma composite: they do not
+	bool				softParticleDepth;		// the view's depth is copied for the soft particles
 	hdrLastResolve_t	hdrLastResolve;
 
 	idRenderMatrix		prevMVP[2];				// world MVP from previous frame for motion blur, per-eye

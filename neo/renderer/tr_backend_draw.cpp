@@ -33,6 +33,8 @@ If you have questions concerning this license or the applicable additional terms
 
 idCVar r_drawEyeColor( "r_drawEyeColor", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a colored box, red = left eye, blue = right eye, grey = non-stereo" );
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 - 5, log2 of the number of motion blur samples" );
+idCVar r_softParticles( "r_softParticles", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "fade particles out where they meet the scene behind them, instead of cutting them at a line" );
+idCVar r_softParticleScale( "r_softParticleScale", "0.1", CVAR_RENDERER | CVAR_FLOAT, "the depth a particle fades over, times its stage's largest size; more thins the big glows set into walls" );
 idCVar r_forceZPassStencilShadows( "r_forceZPassStencilShadows", "0", CVAR_RENDERER | CVAR_BOOL, "force Z-pass rendering for performance testing" );
 idCVar r_useStencilShadowPreload( "r_useStencilShadowPreload", "1", CVAR_RENDERER | CVAR_BOOL, "use stencil shadow preload algorithm instead of Z-fail" );
 idCVar r_skipShaderPasses( "r_skipShaderPasses", "0", CVAR_RENDERER | CVAR_BOOL, "" );
@@ -1696,6 +1698,33 @@ NON-INTERACTION SHADER PASSES
 =============================================================================================
 */
 
+// The fade of a particle stage (GLS_SoftParticleMode), NONE where it keeps the hard line: a stage that writes or ignores
+// depth, the weapon's (its depth range is squeezed), or a blend that cannot fade.
+static softParticleMode_t RB_SoftParticleMode( const drawSurf_t * surf, uint64 stateBits ) {
+	if ( surf->particleSize <= 0.0f || !r_softParticles.GetBool() || r_softParticleScale.GetFloat() <= 0.0f || surf->jointCache != 0
+		|| surf->space->weaponDepthHack || ( stateBits & GLS_DEPTHMASK ) == 0 || ( stateBits & GLS_DEPTHFUNC_BITS ) != GLS_DEPTHFUNC_LESS ) {
+		return softParticleMode_t::NONE;
+	}
+	return GLS_SoftParticleMode( stateBits );
+}
+
+// texture_color_soft over the view's depth, copied at the first soft particle: the copy ends the pass, so it comes
+// before the stage binds anything.
+static void RB_BindSoftParticle( const drawSurf_t * surf, softParticleMode_t mode ) {
+	const idScreenRect & viewport = backEnd.viewDef->viewport;
+	if ( !backEnd.softParticleDepth ) {
+		renderLog.OpenBlock( "RB_SoftParticleDepth" );
+		globalImages->currentDepthImage->CopyDepthbuffer( viewport.x1, viewport.y1, viewport.GetWidth(), viewport.GetHeight() );
+		renderLog.CloseBlock();
+		backEnd.softParticleDepth = true;
+	}
+	renderProgManager.BindShader_TextureVertexColorSoft();
+	const float parm[4] = { 1.0f / ( r_softParticleScale.GetFloat() * surf->particleSize ), static_cast<float>( mode ),
+		static_cast<float>( viewport.x1 ), static_cast<float>( viewport.y1 ) };
+	SetFragmentParm( RENDERPARM_SOFTPARTICLE, parm );
+	globalImages->currentDepthImage->Bind( 1 );
+}
+
 /*
 =====================
 RB_DrawShaderPasses
@@ -1961,6 +1990,8 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 				renderProgManager.BindShader_TextureTexGenVertexColor();
 			} else if ( pStage->texture.cinematic ) {
 				renderProgManager.BindShader_Bink();
+			} else if ( const softParticleMode_t softMode = RB_SoftParticleMode( surf, stageGLState ); softMode != softParticleMode_t::NONE ) {
+				RB_BindSoftParticle( surf, softMode );
 			} else {
 				if ( surf->jointCache ) {
 					renderProgManager.BindShader_TextureVertexColorSkinned();
@@ -2326,6 +2357,7 @@ static void RB_SetHdrGamma( bool gamma ) {
 
 void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool debugTools ) {
 	renderLog.OpenBlock( "RB_DrawViewInternal" );
+	backEnd.softParticleDepth = false;
 
 	//-------------------------------------------------
 	// guis can wind up referencing purged images that need to be loaded.

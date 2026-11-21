@@ -154,6 +154,28 @@ static const uint64 GLS_PIPELINE_BITS					= ~( GLS_STENCIL_FUNC_REF_BITS | GLS_O
 
 static const uint64 GLS_DEFAULT = 0;
 
+// How texture_color_soft fades a particle where it meets the scene behind it (rpSoftParticle.y), so that a fade of 0
+// leaves the target as it was: by the stage's blend. NONE: a blend that cannot fade.
+enum class softParticleMode_t : int { NONE = -1, COLOR = 0, ALPHA = 1, PREMULTIPLIED = 2, FILTER = 3 };
+
+constexpr softParticleMode_t GLS_SoftParticleMode( uint64 stateBits ) {
+	const uint64 src = stateBits & GLS_SRCBLEND_BITS;
+	const uint64 dst = stateBits & GLS_DSTBLEND_BITS;
+	if ( dst == GLS_DSTBLEND_ONE || ( src == GLS_SRCBLEND_ZERO && dst == GLS_DSTBLEND_ONE_MINUS_SRC_COLOR ) ) {
+		return softParticleMode_t::COLOR;			// an add, or a darkening one minus src
+	}
+	if ( src == GLS_SRCBLEND_SRC_ALPHA && dst == GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA ) {
+		return softParticleMode_t::ALPHA;
+	}
+	if ( src == GLS_SRCBLEND_ONE && dst == GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA ) {
+		return softParticleMode_t::PREMULTIPLIED;
+	}
+	if ( ( src == GLS_SRCBLEND_DST_COLOR && dst == GLS_DSTBLEND_ZERO ) || ( src == GLS_SRCBLEND_ZERO && dst == GLS_DSTBLEND_SRC_COLOR ) ) {
+		return softParticleMode_t::FILTER;			// a multiply: the colour goes toward white
+	}
+	return softParticleMode_t::NONE;
+}
+
 #define STENCIL_SHADOW_TEST_VALUE		128
 #define STENCIL_SHADOW_MASK_VALUE		255
 

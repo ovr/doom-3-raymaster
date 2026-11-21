@@ -710,6 +710,7 @@ drawSurf_t * idRenderModelOverlay::CreateOverlayDrawSurf( const viewEntity_t *sp
 	drawSurf->scissorRect = space->scissorRect;
 	drawSurf->extraGLState = 0;
 	drawSurf->renderZFail = 0;
+	drawSurf->particleSize = 0.0f;
 
 	R_SetupDrawSurfShader( drawSurf, material, &space->entityDef->parms );
 	R_SetupDrawSurfJoints( drawSurf, newTri, NULL );

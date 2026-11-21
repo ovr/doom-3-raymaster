@@ -1241,6 +1241,21 @@ void idParticleStage::ParticleOrigin( particleGen_t *g, idVec3 &origin ) const {
 	}
 }
 
+float idParticleStage::SoftParticleSize() const {
+	if ( orientation == POR_X || orientation == POR_Y || orientation == POR_Z ) {
+		return 0.0f;
+	}
+	if ( size.table == nullptr ) {
+		return Max( size.from, size.to );	// Eval is linear in frac
+	}
+	idRandom unused;
+	float largest = 0.0f;
+	for ( int i = 0; i <= 16; i++ ) {
+		largest = Max( largest, size.Eval( i / 16.0f, unused ) );
+	}
+	return largest;
+}
+
 /*
 ==================
 idParticleStage::ParticleVerts

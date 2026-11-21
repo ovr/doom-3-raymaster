@@ -112,6 +112,9 @@ public:
 	int						NumQuadsPerParticle() const;	// includes trails and cross faded animations
 	// returns the number of verts created, which will range from 0 to 4*NumQuadsPerParticle()
 	int						CreateParticle( particleGen_t *g, idDrawVert *verts ) const;
+	// the largest quad half-width over a particle's life, which scales its soft fade; 0 for a stage laid along an
+	// axis, whose quads lie on the surfaces they decorate (rings, ripples) and meet them at no line
+	[[nodiscard]] float		SoftParticleSize() const;
 
 	void					ParticleOrigin( particleGen_t *g, idVec3 &origin ) const;
 	int						ParticleVerts( particleGen_t *g, const idVec3 origin, idDrawVert *verts ) const;

@@ -978,6 +978,7 @@ static drawSurf_t * R_ParticleDeform( drawSurf_t *surf, bool useArea ) {
 		newTri->numIndexes = numIndexes;
 		newTri->ambientCache = vertexCache.AllocVertex( newVerts, ALIGN( numVerts * sizeof( idDrawVert ), VERTEX_CACHE_ALIGN ) );
 		newTri->indexCache = vertexCache.AllocIndex( newIndexes, ALIGN( numIndexes * sizeof( triIndex_t ), INDEX_CACHE_ALIGN ) );
+		newTri->particleSize = stage->SoftParticleSize();
 
 		drawSurf_t * drawSurf = (drawSurf_t *)R_FrameAlloc( sizeof( *drawSurf ), FRAME_ALLOC_DRAW_SURFACE );
 		drawSurf->frontEndGeo = newTri;
@@ -990,6 +991,7 @@ static drawSurf_t * R_ParticleDeform( drawSurf_t *surf, bool useArea ) {
 		drawSurf->scissorRect = surf->scissorRect;
 		drawSurf->extraGLState = 0;
 		drawSurf->renderZFail = 0;
+		drawSurf->particleSize = newTri->particleSize;
 
 		R_SetupDrawSurfShader( drawSurf, stage->material, renderEntity );
 

@@ -103,6 +103,8 @@ struct srfTriangles_t {
 	idShadowVert *				preLightShadowVertexes;	// shadow vertices in CPU memory for pre-light shadow volumes
 	idShadowVert *				staticShadowVertexes;	// shadow vertices in CPU memory for static shadow volumes
 
+	float						particleSize;			// a particle stage's largest quad half-width, for the soft fade; 0: none
+
 	srfTriangles_t *			ambientSurface;			// for light interactions, point back at the original surface that generated
 														// the interaction, which we will get the ambientCache from
 

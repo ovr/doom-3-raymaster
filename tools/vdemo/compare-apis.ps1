@@ -21,9 +21,9 @@ The summary is printed and written to <OutRoot>\d3d12-<Stage>-summary.md.
 -ExtraArgs go to every run. The OpenGL backend is gone: research\vdemo\gl-ref holds its last frames,
 and research\vdemo\gl-ref-clear those of _x4_gui with +set r_clear 2 (give the same -ExtraArgs).
 
-The runs get "+set r_hdr 0": OpenGL had no HDR scene, so only those frames can be held to its bars.
--Hdr keeps the HDR scene and holds the frames to research\vdemo\d3d12-hdr-ref instead (made by an
-earlier -Hdr gate).
+The runs get "+set r_hdr 0" and "+set r_softParticles 0": OpenGL had no HDR scene and no soft
+particles, so only those frames can be held to its bars. -Hdr keeps both and holds the frames to
+research\vdemo\d3d12-hdr-ref instead (made by an earlier -Hdr gate).
 
 Exit code 0 when every check passed, 1 otherwise.
 
@@ -60,7 +60,7 @@ $cmpFrames = Join-Path $PSScriptRoot 'cmp-frames.py'
 $analyze = Join-Path $PSScriptRoot 'analyze.py'
 $prefix = Join-Path $OutRoot "d3d12-$Stage"
 if ( -not $Hdr ) {
-	$ExtraArgs = @( '+set', 'r_hdr', '0' ) + $ExtraArgs
+	$ExtraArgs = @( '+set', 'r_hdr', '0', '+set', 'r_softParticles', '0' ) + $ExtraArgs
 }
 
 $results = New-Object System.Collections.Generic.List[object]
