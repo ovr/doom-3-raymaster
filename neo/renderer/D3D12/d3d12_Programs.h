@@ -44,6 +44,8 @@ struct d3d12Program_t {
 class idD3D12ShaderLibrary {
 public:
 									idD3D12ShaderLibrary( idD3D12HlslCompiler & dxc, idD3D12Graveyard & graves ) : compiler( dxc ), graveyard( graves ) {}
+	// Every stage of the program table in one BuildAll, kept until CreateStage asks for it (Init, a level load).
+	void							Prebuild();
 	// A stage the game data lacks gets a missing record, as GL does; one without a base/shaders file or with
 	// a compile error returns NONE.
 	[[nodiscard]] shaderHandle_t	CreateStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info );
@@ -71,4 +73,5 @@ private:
 	idD3D12HandleTable<d3d12Program_t, programHandle_t>		programs;
 	std::vector<uint16>				freeDense;		// a min-heap of the dense indexes below nextDense
 	uint16							nextDense = 0;
+	std::vector<std::optional<d3d12HlslResult_t>>	prebuilt;	// by PrebuiltIndex, taken by CreateStage
 };

@@ -62,28 +62,45 @@ idD3D12InternalPasses::idD3D12InternalPasses( const idD3D12Device & owner, const
 void idD3D12InternalPasses::CreateDefaults() {
 	showSamplers[0] = samplers.Slot( D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::CLAMP, 1.0f, 0.0f } ) );
 	showSamplers[1] = samplers.Slot( D3D12_PackSampler( { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } ) );
-	const auto compile = [this]( const char * file, shaderStageType_t stage, const char * name, const char * define = nullptr ) {
-		std::optional<d3d12HlslSource_t> source = D3D12_LoadHlslFile( va( "shaders/internal/%s.hlsl", file ), name, compiler.Reader() );
-		if ( !source ) {
-			common->FatalError( "d3d12: shaders/internal/%s.hlsl is missing: copy base/shaders into the game folder", file );
-		}
-		if ( define != nullptr ) {
-			source->defines.Append( define );
-		}
-		auto built = compiler.Build( *source, stage, hlslParms_t::ANY );
-		if ( !built ) {
-			common->FatalError( "d3d12: %s", built.error().c_str() );
-		}
-		return std::move( built->code );
+	struct internalStage_t {
+		const char *					file;
+		shaderStageType_t				type;
+		const char *					name;
+		const char *					define;
+		d3d12Bytecode_t &				code;
 	};
-	triangleVs = compile( "triangle", shaderStageType_t::VERTEX, "internal_triangle" );
-	blitPs = compile( "blit", shaderStageType_t::FRAGMENT, "internal_blit" );
-	blitGammaPs = compile( "blit", shaderStageType_t::FRAGMENT, "internal_blit_gamma", "GAMMA=1" );
-	clearPs = compile( "clear", shaderStageType_t::FRAGMENT, "internal_clear" );
-	show2DPs = compile( "showImage", shaderStageType_t::FRAGMENT, "internal_showImage" );
-	showCubePs = compile( "showImage", shaderStageType_t::FRAGMENT, "internal_showImage_cube", "CUBE=1" );
-	depthCopyPs[0] = compile( "depthCopy", shaderStageType_t::FRAGMENT, "internal_depthCopy" );
-	depthCopyPs[1] = compile( "depthCopy", shaderStageType_t::FRAGMENT, "internal_depthCopy_msaa", "MULTISAMPLED=1" );
+	const internalStage_t internalStages[] = {
+		{ "triangle", shaderStageType_t::VERTEX, "internal_triangle", nullptr, triangleVs },
+		{ "blit", shaderStageType_t::FRAGMENT, "internal_blit", nullptr, blitPs },
+		{ "blit", shaderStageType_t::FRAGMENT, "internal_blit_gamma", "GAMMA=1", blitGammaPs },
+		{ "clear", shaderStageType_t::FRAGMENT, "internal_clear", nullptr, clearPs },
+		{ "showImage", shaderStageType_t::FRAGMENT, "internal_showImage", nullptr, show2DPs },
+		{ "showImage", shaderStageType_t::FRAGMENT, "internal_showImage_cube", "CUBE=1", showCubePs },
+		{ "depthCopy", shaderStageType_t::FRAGMENT, "internal_depthCopy", nullptr, depthCopyPs[0] },
+		{ "depthCopy", shaderStageType_t::FRAGMENT, "internal_depthCopy_msaa", "MULTISAMPLED=1", depthCopyPs[1] },
+	};
+	std::vector<d3d12HlslSource_t> sources;
+	for ( const internalStage_t & stage : internalStages ) {
+		std::optional<d3d12HlslSource_t> source = D3D12_LoadHlslFile( va( "shaders/internal/%s.hlsl", stage.file ), stage.name, compiler.Reader() );
+		if ( !source ) {
+			common->FatalError( "d3d12: shaders/internal/%s.hlsl is missing: copy base/shaders into the game folder", stage.file );
+		}
+		if ( stage.define != nullptr ) {
+			source->defines.Append( stage.define );
+		}
+		sources.push_back( std::move( *source ) );
+	}
+	std::vector<d3d12HlslRequest_t> requests;
+	for ( size_t i = 0; i < sources.size(); i++ ) {
+		requests.push_back( { &sources[i], internalStages[i].type, hlslParms_t::ANY } );
+	}
+	std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
+	for ( size_t i = 0; i < built.size(); i++ ) {
+		if ( !built[i] ) {
+			common->FatalError( "d3d12: %s", built[i].error().c_str() );
+		}
+		internalStages[i].code = std::move( built[i]->code );
+	}
 	blit = CreatePipeline( blitPs, idD3D12SwapChain::FORMAT, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ), L"doom3 present blit" );
 }
 

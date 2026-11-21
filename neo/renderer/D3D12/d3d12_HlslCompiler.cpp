@@ -9,6 +9,10 @@
 #include "../RenderProgTable.h"
 #include "d3d12_HlslCompiler.h"
 
+#include <atomic>
+#include <thread>
+#include <unordered_map>
+
 namespace {
 
 constexpr UINT VERTEX_PARMS = 0;	// the root signature's CBVs
@@ -218,46 +222,118 @@ uint64 idD3D12HlslCompiler::Hash( std::string_view preprocessed, shaderStageType
 	return halves[0] ^ halves[1];
 }
 
-std::expected<d3d12HlslStage_t, idStr> idD3D12HlslCompiler::Build( const d3d12HlslSource_t & source, shaderStageType_t stage, hlslParms_t parms ) {
-	std::vector<const char *> defines;
-	for ( int i = 0; i < source.defines.Num(); i++ ) {
-		defines.push_back( source.defines[i].c_str() );
-	}
-	// the hash covers every include: the text is preprocessed first, and that text is what DXC compiles
-	const auto preprocessed = D3D12_DxcPreprocess( library, View( source.text ), source.path, defines, reader );
-	if ( !preprocessed ) {
-		return std::unexpected( preprocessed.error() );
-	}
-	const uint64 hash = Hash( View( *preprocessed ), stage );
-	d3d12HlslStage_t result;
-	if ( std::optional<d3d12Bytecode_t> cached = cache.Find( source.name, stage, hash ); cached && D3D12_DxilSigned( *cached ) ) {
-		hits++;
-		result.code = std::move( *cached );
-	} else {
-		auto output = D3D12_DxcCompile( library, View( *preprocessed ), source.path, Entry( stage ), Profile( stage ) );
-		if ( !output ) {
-			return std::unexpected( output.error() );
+d3d12HlslResult_t idD3D12HlslCompiler::Build( const d3d12HlslSource_t & source, shaderStageType_t stage, hlslParms_t parms ) {
+	const d3d12HlslRequest_t request = { &source, stage, parms };
+	return std::move( BuildAll( std::span( &request, 1 ) ).front() );
+}
+
+std::vector<d3d12HlslResult_t> idD3D12HlslCompiler::BuildAll( std::span<const d3d12HlslRequest_t> requests ) {
+	const uint64 start = Sys_Microseconds();
+	std::vector<d3d12HlslResult_t> results( requests.size() );
+	std::vector<uint64> hashes( requests.size() );
+	struct dxcRun_t {
+		idStr								preprocessed;
+		const d3d12HlslRequest_t *			first;
+		std::vector<size_t>					requests;
+		d3d12Bytecode_t						code;
+		idStr								warnings;
+		std::optional<idStr>				error;
+	};
+	std::vector<dxcRun_t> runs;
+	std::unordered_map<uint64, size_t> runOfHash;
+	for ( size_t i = 0; i < requests.size(); i++ ) {
+		const d3d12HlslSource_t & source = *requests[i].source;
+		std::vector<const char *> defines;
+		for ( int j = 0; j < source.defines.Num(); j++ ) {
+			defines.push_back( source.defines[j].c_str() );
 		}
-		// the pipeline library names a PSO by the container digests, and the runtime refuses unsigned DXIL
-		if ( !D3D12_DxilSigned( output->code ) ) {
-			return std::unexpected( idStr( va( "%s: dxil.dll did not sign the DXIL", source.name.c_str() ) ) );
+		// the hash covers every include: the text is preprocessed first, and that text is what DXC compiles
+		auto preprocessed = D3D12_DxcPreprocess( library, View( source.text ), source.path, defines, reader );
+		if ( !preprocessed ) {
+			results[i] = std::unexpected( preprocessed.error() );
+			continue;
 		}
-		if ( !output->warnings.IsEmpty() ) {
-			common->DPrintf( "d3d12: %s: %s\n", source.name.c_str(), output->warnings.c_str() );
+		hashes[i] = Hash( View( *preprocessed ), requests[i].stage );
+		if ( std::optional<d3d12Bytecode_t> cached = cache.Find( source.name, requests[i].stage, hashes[i] ); cached && D3D12_DxilSigned( *cached ) ) {
+			hits++;
+			results[i]->code = std::move( *cached );
+			continue;
 		}
-		compiled++;
-		result.code = std::move( output->code );
-		cache.Store( source.name, stage, hash, result.code );
+		const auto [run, added] = runOfHash.try_emplace( hashes[i], runs.size() );
+		if ( added ) {
+			runs.push_back( { std::move( *preprocessed ), &requests[i] } );
+		}
+		runs[run->second].requests.push_back( i );
 	}
-	const auto reflection = D3D12_DxcReflect( library, result.code );
-	if ( !reflection ) {
-		return std::unexpected( idStr( va( "%s: %s", source.name.c_str(), reflection.error().c_str() ) ) );
+
+	// IDxcCompiler3 is made per run and the text holds no #include, so the runs share nothing
+	const size_t hardware = std::max( 1u, std::thread::hardware_concurrency() );
+	const size_t numThreads = std::min( runs.size(), ( maxThreads > 0 ) ? static_cast<size_t>( maxThreads ) : hardware );
+	std::atomic<size_t> next = 0;
+	const auto work = [this, &runs, &next]() {
+		for ( size_t i; ( i = next.fetch_add( 1 ) ) < runs.size(); ) {
+			dxcRun_t & run = runs[i];
+			try {
+				auto output = D3D12_DxcCompile( library, View( run.preprocessed ), run.first->source->path, Entry( run.first->stage ),
+					Profile( run.first->stage ) );
+				if ( output ) {
+					run.code = std::move( output->code );
+					run.warnings = output->warnings;
+				} else {
+					run.error = output.error();
+				}
+			} catch ( const std::exception & e ) {
+				run.error = idStr( e.what() );
+			}
+		}
+	};
+	{
+		std::vector<std::jthread> workers;
+		for ( size_t i = 1; i < numThreads; i++ ) {
+			workers.emplace_back( work );
+		}
+		work();
 	}
-	auto info = ReadParms( *reflection->Get(), stage, source.name, parms );
-	if ( !info ) {
-		return std::unexpected( info.error() );
+
+	for ( dxcRun_t & run : runs ) {
+		const char * name = run.first->source->name.c_str();
+		if ( !run.error ) {
+			compiled++;
+			// the pipeline library names a PSO by the container digests, and the runtime refuses unsigned DXIL
+			if ( !D3D12_DxilSigned( run.code ) ) {
+				run.error = idStr( va( "%s: dxil.dll did not sign the DXIL", name ) );
+			} else if ( !run.warnings.IsEmpty() ) {
+				common->DPrintf( "d3d12: %s: %s\n", name, run.warnings.c_str() );
+			}
+		}
+		for ( const size_t i : run.requests ) {
+			if ( run.error ) {
+				results[i] = std::unexpected( *run.error );
+				continue;
+			}
+			results[i]->code = run.code;
+			cache.Store( requests[i].source->name, requests[i].stage, hashes[i], results[i]->code );
+		}
 	}
-	result.info = *info;
-	result.reflection = D3D12_ReflectStage( *reflection->Get(), stage );
-	return result;
+
+	for ( size_t i = 0; i < requests.size(); i++ ) {
+		if ( !results[i] ) {
+			continue;
+		}
+		const char * name = requests[i].source->name.c_str();
+		const auto reflection = D3D12_DxcReflect( library, results[i]->code );
+		if ( !reflection ) {
+			results[i] = std::unexpected( idStr( va( "%s: %s", name, reflection.error().c_str() ) ) );
+			continue;
+		}
+		auto info = ReadParms( *reflection->Get(), requests[i].stage, name, requests[i].parms );
+		if ( !info ) {
+			results[i] = std::unexpected( info.error() );
+			continue;
+		}
+		results[i]->info = *info;
+		results[i]->reflection = D3D12_ReflectStage( *reflection->Get(), requests[i].stage );
+	}
+	microseconds += Sys_Microseconds() - start;
+	return results;
 }

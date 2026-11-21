@@ -14,6 +14,14 @@
 
 namespace {
 
+// va's buffers are shared, and D3D12_DxcCompile runs on several threads at once.
+template <typename... Args>
+[[nodiscard]] idStr Text( const char * format, Args... args ) {
+	idStr text;
+	text.Format( format, args... );
+	return text;
+}
+
 // names, entry points, profiles and defines are ASCII
 std::wstring Widen( std::string_view text ) {
 	return std::wstring( text.begin(), text.end() );
@@ -86,7 +94,7 @@ std::expected<idComPtr<IDxcUtils>, idStr> CreateUtils( const idD3D12Library & li
 	idComPtr<IDxcUtils> utils;
 	const HRESULT hr = library.dxcCreateInstance( CLSID_DxcUtils, IID_PPV_ARGS( &utils ) );
 	if ( FAILED( hr ) ) {
-		return std::unexpected( idStr( va( "DxcCreateInstance (IDxcUtils) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
+		return std::unexpected( Text( "DxcCreateInstance (IDxcUtils) failed: %s", D3D12_ErrorText( hr ).c_str() ) );
 	}
 	return utils;
 }
@@ -107,7 +115,7 @@ std::expected<idComPtr<IDxcResult>, idStr> Run( const idD3D12Library & library, 
 	idComPtr<IDxcCompiler3> compiler;
 	HRESULT hr = library.dxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( &compiler ) );
 	if ( FAILED( hr ) ) {
-		return std::unexpected( idStr( va( "DxcCreateInstance (IDxcCompiler3) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
+		return std::unexpected( Text( "DxcCreateInstance (IDxcCompiler3) failed: %s", D3D12_ErrorText( hr ).c_str() ) );
 	}
 	idComPtr<IDxcUtils> utils;
 	std::optional<idDxcIncludeHandler> handler;
@@ -127,7 +135,7 @@ std::expected<idComPtr<IDxcResult>, idStr> Run( const idD3D12Library & library, 
 	idComPtr<IDxcResult> result;
 	hr = compiler->Compile( &buffer, argv.data(), static_cast<UINT32>( argv.size() ), handler ? &*handler : nullptr, IID_PPV_ARGS( &result ) );
 	if ( FAILED( hr ) ) {
-		return std::unexpected( idStr( va( "IDxcCompiler3::Compile( %s ) failed: %s", name, D3D12_ErrorText( hr ).c_str() ) ) );
+		return std::unexpected( Text( "IDxcCompiler3::Compile( %s ) failed: %s", name, D3D12_ErrorText( hr ).c_str() ) );
 	}
 	idComPtr<IDxcBlobUtf8> errors;
 	result->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( &errors ), nullptr );
@@ -139,7 +147,7 @@ std::expected<idComPtr<IDxcResult>, idStr> Run( const idD3D12Library & library, 
 	HRESULT status = E_FAIL;
 	result->GetStatus( &status );
 	if ( FAILED( status ) ) {
-		return std::unexpected( messages.IsEmpty() ? idStr( va( "%s: DXC failed with %s", name, D3D12_ErrorText( status ).c_str() ) ) : messages );
+		return std::unexpected( messages.IsEmpty() ? Text( "%s: DXC failed with %s", name, D3D12_ErrorText( status ).c_str() ) : messages );
 	}
 	warnings = messages;
 	return result;
@@ -159,7 +167,7 @@ std::expected<d3d12DxcOutput_t, idStr> D3D12_DxcCompile( const idD3D12Library & 
 	idComPtr<IDxcBlob> object;
 	( *result )->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &object ), nullptr );
 	if ( !object || object->GetBufferSize() == 0 ) {
-		return std::unexpected( idStr( va( "%s: DXC returned no DXIL", name ) ) );
+		return std::unexpected( Text( "%s: DXC returned no DXIL", name ) );
 	}
 	d3d12DxcOutput_t output;
 	const byte * code = static_cast<const byte *>( object->GetBufferPointer() );
@@ -180,7 +188,7 @@ std::expected<idStr, idStr> D3D12_DxcPreprocess( const idD3D12Library & library,
 	idComPtr<IDxcBlobUtf8> text;
 	( *result )->GetOutput( DXC_OUT_HLSL, IID_PPV_ARGS( &text ), nullptr );
 	if ( !text ) {
-		return std::unexpected( idStr( va( "%s: DXC returned no preprocessed text", name ) ) );
+		return std::unexpected( Text( "%s: DXC returned no preprocessed text", name ) );
 	}
 	idStr preprocessed;
 	preprocessed.Append( text->GetStringPointer(), static_cast<int>( text->GetStringLength() ) );
@@ -196,7 +204,7 @@ std::expected<idComPtr<ID3D12ShaderReflection>, idStr> D3D12_DxcReflect( const i
 	idComPtr<ID3D12ShaderReflection> reflection;
 	const HRESULT hr = ( *utils )->CreateReflection( &buffer, IID_PPV_ARGS( &reflection ) );
 	if ( FAILED( hr ) ) {
-		return std::unexpected( idStr( va( "IDxcUtils::CreateReflection failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
+		return std::unexpected( Text( "IDxcUtils::CreateReflection failed: %s", D3D12_ErrorText( hr ).c_str() ) );
 	}
 	return reflection;
 }

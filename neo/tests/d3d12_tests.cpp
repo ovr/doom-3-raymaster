@@ -1710,6 +1710,103 @@ void Test_HlslProgramTable() {
 	printf( "  %d programs in the table, the stages of GL's %d in it\n", static_cast<int>( R_RenderProgs().size() ), glPrograms );
 }
 
+[[nodiscard]] bool SameStageInfo( const shaderStageInfo_t & a, const shaderStageInfo_t & b ) {
+	return a.numParms == b.numParms && memcmp( a.parms, b.parms, static_cast<size_t>( a.numParms ) ) == 0;
+}
+
+// BuildAll is Build one stage after another: every stage of base/shaders gives the same DXIL, parms and
+// masks on all threads as on one; a text asked twice is one DXC run, and a broken stage fails alone.
+void Test_HlslBuildAll() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	std::vector<d3d12HlslEntry_t> entries;
+	for ( const std::filesystem::directory_entry & entry : std::filesystem::directory_iterator( RepoPath( "base/shaders" ).c_str() ) ) {
+		if ( entry.is_regular_file() && entry.path().extension() == ".hlsl" ) {
+			std::ranges::move( HlslStages( *library, entry.path().filename().string().c_str() ), std::back_inserter( entries ) );
+		}
+	}
+	if ( !Check( entries.size() > 2, "the stages of base/shaders" ) ) {
+		return;
+	}
+	d3d12HlslSource_t broken;
+	broken.name = "test_broken";
+	broken.path = "shaders/test_broken.hlsl";
+	broken.text = "float4 PSMain() : SV_Target { return undefinedName; }\n";
+	std::vector<d3d12HlslRequest_t> requests;
+	for ( const d3d12HlslEntry_t & entry : entries ) {
+		requests.push_back( { &entry.source, entry.stage } );
+	}
+	const size_t brokenIndex = requests.size() / 2;
+	requests.insert( requests.begin() + static_cast<std::ptrdiff_t>( brokenIndex ), { &broken, shaderStageType_t::FRAGMENT } );
+	requests.push_back( requests.front() );
+
+	idD3D12HlslCompiler parallel( *library, RepoReader(), false );
+	const std::vector<d3d12HlslResult_t> all = parallel.BuildAll( requests );
+	idD3D12HlslCompiler serial( *library, RepoReader(), false, 1 );
+	Check( all.size() == requests.size(), "a result per request" );
+	for ( size_t i = 0; i < requests.size() && i < all.size(); i++ ) {
+		const char * name = requests[i].source->name.c_str();
+		if ( i == brokenIndex ) {
+			Check( !all[i] && all[i].error().Find( "undefinedName" ) >= 0, "the broken stage fails with DXC's error" );
+			continue;
+		}
+		const d3d12HlslResult_t one = serial.Build( *requests[i].source, requests[i].stage );
+		if ( !Check( all[i].has_value() && one.has_value(), va( "%s: %s", name, !all[i] ? all[i].error().c_str() : !one ? one.error().c_str() : "" ) ) ) {
+			continue;
+		}
+		Check( all[i]->code == one->code, va( "%s: the same DXIL", name ) );
+		Check( SameStageInfo( all[i]->info, one->info ), va( "%s: the same parms", name ) );
+		Check( all[i]->reflection.samplerMask == one->reflection.samplerMask && all[i]->reflection.attribMask == one->reflection.attribMask
+			&& all[i]->reflection.usesJoints == one->reflection.usesJoints && all[i]->reflection.outputs.size() == one->reflection.outputs.size(),
+			va( "%s: the same reflection", name ) );
+	}
+	Check( parallel.Compiled() < serial.Compiled(), va( "one DXC run per distinct text: %d runs for %d stages", parallel.Compiled(), serial.Compiled() ) );
+	printf( "  %zu stages: %d DXC runs in %.0f ms, one after another %d in %.0f ms\n", requests.size(), parallel.Compiled(), parallel.Milliseconds(),
+		serial.Compiled(), serial.Milliseconds() );
+}
+
+// Prebuild compiles every stage of the program table; CreateStage then takes it without DXC, with the parms
+// a library without Prebuild gets, and compiles a stage asked for again.
+void PrebuiltStages( idTestGpu & gpu ) {
+	idD3D12HlslCompiler prebuiltCompiler( gpu.library, RepoReader(), false );
+	idD3D12HlslCompiler plainCompiler( gpu.library, RepoReader(), false );
+	idD3D12ShaderLibrary prebuilt( prebuiltCompiler, gpu.graveyard );
+	idD3D12ShaderLibrary plain( plainCompiler, gpu.graveyard );
+	prebuilt.Prebuild();
+	const int runs = prebuiltCompiler.Compiled();
+	int numStages = 0;
+	for ( const renderProgDef_t & program : R_RenderProgs() ) {
+		for ( const bool skinned : { false, true } ) {
+			if ( skinned && program.skinned == renderProgBuiltin_t::NONE ) {
+				continue;
+			}
+			const idStr name = R_RenderProgStageName( program, skinned );
+			for ( const shaderStageType_t type : { shaderStageType_t::VERTEX, shaderStageType_t::FRAGMENT } ) {
+				if ( type == shaderStageType_t::FRAGMENT && !program.fragment ) {
+					continue;
+				}
+				numStages++;
+				shaderStageInfo_t a = {}, b = {};
+				const shaderHandle_t ha = prebuilt.CreateStage( type, name.c_str(), a );
+				const shaderHandle_t hb = plain.CreateStage( type, name.c_str(), b );
+				Check( ha != shaderHandle_t::NONE && hb != shaderHandle_t::NONE && SameStageInfo( a, b ), va( "%s %d: the parms", name.c_str(),
+					static_cast<int>( type ) ) );
+			}
+		}
+	}
+	Check( prebuiltCompiler.Compiled() == runs, va( "%d stages without DXC after Prebuild: %d runs more", numStages, prebuiltCompiler.Compiled() - runs ) );
+	Check( runs <= plainCompiler.Compiled(), va( "Prebuild: %d DXC runs, one stage at a time %d", runs, plainCompiler.Compiled() ) );
+	shaderStageInfo_t again = {};
+	Check( prebuilt.CreateStage( shaderStageType_t::VERTEX, "interaction.vfp", again ) != shaderHandle_t::NONE && again.numParms > 0
+		&& prebuiltCompiler.Compiled() == runs + 1, "a stage asked for again is compiled" );
+	printf( "  %d stages, %d DXC runs in %.0f ms; one at a time %d in %.0f ms\n", numStages, runs, prebuiltCompiler.Milliseconds(),
+		plainCompiler.Compiled(), plainCompiler.Milliseconds() );
+	prebuilt.DestroyAll();
+	plain.DestroyAll();
+}
+
 // ---- pipeline state: pipelineKey_t → the PSO description ---------------------------------------------------
 
 constexpr uint16 GUI_ATTRIBS = ( 1 << PC_ATTRIB_INDEX_VERTEX ) | ( 1 << PC_ATTRIB_INDEX_ST ) | ( 1 << PC_ATTRIB_INDEX_COLOR );
@@ -4148,7 +4245,9 @@ constexpr testCase_t TESTS[] = {
 	{ "Hlsl_SourcesCompile", Test_HlslSourcesCompile },
 	{ "Hlsl_ProgramsMatchGl", Test_HlslProgramsMatchGl },
 	{ "Hlsl_ProgramTable", Test_HlslProgramTable },
+	{ "Hlsl_BuildAll", Test_HlslBuildAll },
 	{ "Warp_DxcBindless", OnWarp<DxcBindless> },
+	{ "Warp_PrebuiltStages", OnWarp<PrebuiltStages> },
 	{ "Gpu_DxcBindless", OnGpu<DxcBindless> },
 	{ "Pipeline_Blend", Test_PipelineBlend },
 	{ "Pipeline_Depth", Test_PipelineDepth },
