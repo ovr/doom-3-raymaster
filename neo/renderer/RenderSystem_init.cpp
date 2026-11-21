@@ -128,7 +128,7 @@ idCVar r_lightScale( "r_lightScale", "3", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_FL
 // PostProcessSettings.h: the front end copies them into every view, the back end resolves the main view's
 idCVar r_hdr( "r_hdr", "1", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_BOOL, "1 = the 3D view is lit in linear HDR and tonemapped (where the render API has it), 0 = the LDR frame" );
 idCVar r_hdrTonemap( "r_hdrTonemap", "1", CVAR_RENDERER | CVAR_INTEGER, "HDR tonemapper: 0 = clamp, 1 = AgX, 2 = a film curve in ACEScg", 0, 2 );
-idCVar r_hdrAgxLook( "r_hdrAgxLook", "0", CVAR_RENDERER | CVAR_INTEGER, "AgX look: 0 = base, 1 = punchy", 0, 1 );
+idCVar r_hdrAgxLook( "r_hdrAgxLook", "1", CVAR_RENDERER | CVAR_INTEGER, "AgX look: 0 = base, 1 = punchy", 0, 1 );
 idCVar r_hdrExposureCompensation( "r_hdrExposureCompensation", "0", CVAR_RENDERER | CVAR_FLOAT, "EV added to the HDR exposure", -8.0f, 8.0f );
 idCVar r_hdrWhiteTemp( "r_hdrWhiteTemp", "6500", CVAR_RENDERER | CVAR_FLOAT, "HDR white balance temperature in kelvin, 6500 = neutral", 1500.0f, 15000.0f );
 idCVar r_hdrWhiteTint( "r_hdrWhiteTint", "0", CVAR_RENDERER | CVAR_FLOAT, "HDR white balance tint, -1 = green .. 1 = magenta", -1.0f, 1.0f );
@@ -139,7 +139,7 @@ idCVar r_hdrGammaBlend( "r_hdrGammaBlend", "1", CVAR_RENDERER | CVAR_BOOL, "1 = 
 idCVar r_hdrDebug( "r_hdrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = print the eye adaptation once a second, 2 = print the HDR phase of every frame, 3 = print the eye adaptation of every frame", 0, 3 );
 idCVar r_hdrAutoExposure( "r_hdrAutoExposure", "1", CVAR_RENDERER | CVAR_BOOL, "1 = the HDR exposure follows the frame's brightness (eye adaptation), 0 = only r_hdrExposureCompensation" );
 idCVar r_hdrAutoExposureBias( "r_hdrAutoExposureBias", "-2.5", CVAR_RENDERER | CVAR_FLOAT, "EV added to the auto exposure only: where a frame's mean brightness lands", -8.0f, 8.0f );
-idCVar r_hdrMinEV100( "r_hdrMinEV100", "-4.25", CVAR_RENDERER | CVAR_FLOAT, "the darkest frame the eye adapts to, EV100", -16.0f, 16.0f );
+idCVar r_hdrMinEV100( "r_hdrMinEV100", "-3.25", CVAR_RENDERER | CVAR_FLOAT, "the darkest frame the eye adapts to, EV100", -16.0f, 16.0f );
 idCVar r_hdrMaxEV100( "r_hdrMaxEV100", "-1.25", CVAR_RENDERER | CVAR_FLOAT, "the brightest frame the eye adapts to, EV100", -16.0f, 16.0f );
 idCVar r_hdrSpeedUp( "r_hdrSpeedUp", "3", CVAR_RENDERER | CVAR_FLOAT, "eye adaptation toward a brighter frame, per second", 0.01f, 100.0f );
 idCVar r_hdrSpeedDown( "r_hdrSpeedDown", "1", CVAR_RENDERER | CVAR_FLOAT, "eye adaptation toward a darker frame, per second", 0.01f, 100.0f );
@@ -153,7 +153,7 @@ idCVar r_hdrBloomQuality( "r_hdrBloomQuality", "5", CVAR_RENDERER | CVAR_INTEGER
 idCVar r_hdrBloomIntensity( "r_hdrBloomIntensity", "0.1", CVAR_RENDERER | CVAR_FLOAT, "how far the HDR frame is lerped toward its bloom, which keeps its energy", 0.0f, 1.0f );
 idCVar r_hdrBloomSizeScale( "r_hdrBloomSizeScale", "4", CVAR_RENDERER | CVAR_FLOAT, "scales the reach of every bloom level, in percent of the viewport's width", 0.0f, 32.0f );
 idCVar r_hdrLocalExposure( "r_hdrLocalExposure", "1", CVAR_RENDERER | CVAR_BOOL, "0 turns the HDR local exposure off whatever its contrasts" );
-idCVar r_hdrLocalHighlightContrast( "r_hdrLocalHighlightContrast", "1", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the contrast of the base above mid grey, 1 = as it is", 0.0f, 2.0f );
+idCVar r_hdrLocalHighlightContrast( "r_hdrLocalHighlightContrast", "0.8", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the contrast of the base above mid grey, 1 = as it is", 0.0f, 2.0f );
 idCVar r_hdrLocalShadowContrast( "r_hdrLocalShadowContrast", "1", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the contrast of the base below mid grey, 1 = as it is", 0.0f, 2.0f );
 idCVar r_hdrLocalDetail( "r_hdrLocalDetail", "1", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the strength of the detail around the base, 1 = as it is", 0.0f, 4.0f );
 idCVar r_hdrLocalBlurredBlend( "r_hdrLocalBlurredBlend", "0.6", CVAR_RENDERER | CVAR_FLOAT, "local exposure: 0 = the bilateral grid's base, 1 = the blurred luminance's", 0.0f, 1.0f );

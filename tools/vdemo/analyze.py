@@ -425,6 +425,41 @@ def compare(run_frames, base_frames, ssim_threshold, heat_dir, heat_count, demo,
     }
 
 
+def luma_rows(run_frames, base_frames):
+    # (tic, run luma, baseline luma): the mean display luma of each tic frame both runs have
+    rows = []
+    for name, frame in sorted(run_frames.items()):
+        base = base_frames.get(name)
+        if base is not None and frame.on_tic:
+            rows.append((frame.tic, float(luma(load_rgb(frame.path)).mean()), float(luma(load_rgb(base.path)).mean())))
+    return rows
+
+
+def luma_report(args, demos, out):
+    report, ratios = {}, []
+    print(f"{'demo':<20} {'frames':>6} {'run':>7} {'base':>7} {'ratio':>6} {'p10':>6} {'p90':>6}")
+    for demo in demos:
+        run_dir, base_dir = args.run / demo, args.baseline / demo
+        if not run_dir.is_dir() or not base_dir.is_dir():
+            continue
+        rows = luma_rows(list_frames(run_dir), list_frames(base_dir))
+        if not rows:
+            continue
+        frame_ratios = np.array([r / max(b, 0.5) for _, r, b in rows])
+        ratios += list(frame_ratios)
+        run_mean, base_mean = np.mean([r for _, r, _ in rows]), np.mean([b for _, _, b in rows])
+        p10, p90 = np.percentile(frame_ratios, [10, 90])
+        report[demo] = {"frames": len(rows), "run": run_mean, "baseline": base_mean, "ratio": run_mean / max(base_mean, 0.5),
+                        "p10": p10, "p90": p90, "tics": [[t, r, b] for t, r, b in rows]}
+        print(f"{demo:<20} {len(rows):>6} {run_mean:7.1f} {base_mean:7.1f} {report[demo]['ratio']:6.3f} {p10:6.3f} {p90:6.3f}")
+    if ratios:
+        p10, p50, p90 = np.percentile(ratios, [10, 50, 90])
+        print(f"all frames: median ratio {p50:.3f}, p10 {p10:.3f}, p90 {p90:.3f}")
+        report["all"] = {"frames": len(ratios), "median": p50, "p10": p10, "p90": p90}
+    (out / "luma.json").write_text(json.dumps(report, indent=1))
+    return 0
+
+
 def fmt(value, digits=4):
     if value is None:
         return "-"
@@ -461,6 +496,8 @@ def main():
     parser.add_argument("--bars", type=Path,
                         help="per-demo bars (tools/vdemo/bars-d3d12.json); they replace --ssim-threshold")
     parser.add_argument("--layer", help="take the bars of this layer of the bars file where it has them")
+    parser.add_argument("--luma", action="store_true",
+                        help="only the mean display luma of the run against the baseline, per demo (luma.json)")
     args = parser.parse_args()
     if args.hold:
         args.all_steps = True
@@ -495,6 +532,11 @@ def main():
     if args.demos:
         wanted = set(args.demos.split(","))
         demos = [d for d in demos if d in wanted]
+    if args.luma:
+        if args.baseline is None:
+            print("--luma needs --baseline", file=sys.stderr)
+            return 2
+        return luma_report(args, demos, out)
 
     report = {"run": str(args.run), "baseline": str(args.baseline) if args.baseline else None,
               "ssimThreshold": args.ssim_threshold, "offsetTics": args.offset_tics, "hold": args.hold,

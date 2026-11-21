@@ -18,7 +18,8 @@
 	  white balance   temperature and tint, a Bradford adaptation to the white of 6500 K; 6500 K and 0 are neutral
 	  grading         saturation .. offset per range: shadows below shadowsMax, highlights above highlightsMin
 	  tonemapper      CLAMP (debug: at 0 EV close to the LDR frame), AGX (agxLook 0 base, 1 punchy),
-	                  FILMIC (a film curve in ACEScg: slope 0.88, toe 0.55, shoulder 0.26, white clip 0.04)
+	                  FILMIC (a film curve in ACEScg: slope 0.88, toe 0.55, shoulder 0.26, white clip 0.04);
+	                  each scaled so that the demos keep the LDR frames' mean brightness
 	  bloom           bloomQuality + 1 levels from half the viewport down, each a Gaussian reaching its size times
 	                  bloomSizeScale percent of the viewport's width, summed by the tints scaled to a luma of 1:
 	                  the frame is lerped toward that by bloomIntensity, so a flat field stays as it is
@@ -45,7 +46,7 @@ struct postProcessSettings_t {
 	float							exposureCompensation = 0.0f;	// EV
 	bool							autoExposure = true;
 	float							autoExposureBias = -2.5f;	// EV of the auto exposure only: where the frame's mean lands
-	float							minEV100 = -4.25f;			// the range of the target: the demos' median -2.73 EV100 +- 1.5
+	float							minEV100 = -3.25f;			// the range of the target: dark scenes brighten by 0.5 EV at most
 	float							maxEV100 = -1.25f;
 	float							lowPercent = 0.1f;			// the part of the histogram's weight averaged, 0..1
 	float							highPercent = 0.9f;
@@ -64,7 +65,7 @@ struct postProcessSettings_t {
 	float							shadowsMax = 0.09f;
 	float							highlightsMin = 0.5f;
 	hdrTonemapper_t					tonemapper = hdrTonemapper_t::AGX;
-	uint8							agxLook = 0;
+	uint8							agxLook = 1;
 	bool							dither = true;		// ±0.5 of the output's last bit before it is quantized
 	uint8							bloomQuality = 5;	// 0 none, 1..5: 2..6 levels
 	float							bloomIntensity = 0.1f;
@@ -73,7 +74,7 @@ struct postProcessSettings_t {
 	std::array<idVec3, 6>			bloomTints = { idVec3( 0.3465f, 0.3465f, 0.3465f ), idVec3( 0.138f, 0.138f, 0.138f ), idVec3( 0.1176f, 0.1176f, 0.1176f ),
 		idVec3( 0.066f, 0.066f, 0.066f ), idVec3( 0.066f, 0.066f, 0.066f ), idVec3( 0.061f, 0.061f, 0.061f ) };
 	bool							localExposure = true;
-	float							localHighlightContrast = 1.0f;	// 1 neutral, below 1 compresses the highlights' range
+	float							localHighlightContrast = 0.8f;	// 1 neutral, below 1 compresses the highlights' range
 	float							localShadowContrast = 1.0f;
 	float							localDetailStrength = 1.0f;
 	float							localBlurredBlend = 0.6f;		// 0 the grid alone, 1 the Gaussian alone

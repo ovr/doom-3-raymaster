@@ -10,7 +10,8 @@
 	  white bal.   a 3 x 3 Bradford adaptation from the white of r_hdrWhiteTemp / Tint to the white of 6500 K
 	  grade        saturation, contrast, gamma, gain and offset for shadows, midtones and
 	               highlights, the global values folded in on the CPU, weighted by luma
-	  curve        0 clamp, 1 AgX (minimal AgX, base or punchy look), 2 a film curve in ACEScg
+	  curve        times the curve's scale (d3d12Lut::CurveScale), then 0 clamp, 1 AgX (minimal AgX, base or
+	               punchy look), 2 a film curve in ACEScg
 	  output       sRGB: AgX's curve is display-encoded already, the others go through the sRGB OETF
 */
 
@@ -23,6 +24,7 @@ cbuffer LutParms : register( b0 ) {
 	float4 grade[15];		// [region * 5 + n]: saturation, contrast, gamma, gain, offset; shadows, midtones, highlights
 	float4 options;			// x shadowsMax, y highlightsMin, z tonemapper, w AgX look
 	float4 encoding;		// x k, y L, z white balance on, w grade on
+	float4 curve;			// x the scale before the curve
 };
 
 cbuffer LutTarget : register( b1 ) {
@@ -141,6 +143,7 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 	if ( encoding.w != 0.0 ) {
 		c = max( 0.0, ColorCorrectAll( c ) );
 	}
+	c *= curve.x;
 	float3 output;
 	const uint tonemapper = uint( options.z );
 	if ( tonemapper == 1 ) {

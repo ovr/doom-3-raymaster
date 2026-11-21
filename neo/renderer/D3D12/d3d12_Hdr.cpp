@@ -21,6 +21,14 @@ float d3d12Lut::Coordinate( float c ) {
 	return idMath::ClampFloat( 0.0f, 1.0f, std::log2( Max( c, 0.0f ) / K + 1.0f ) / Range() );
 }
 
+float d3d12Lut::CurveScale( hdrTonemapper_t tonemapper, uint8 look ) {
+	switch ( tonemapper ) {
+		case hdrTonemapper_t::AGX:		return std::exp2( ( look != 0 ) ? 1.27f : -0.31f );
+		case hdrTonemapper_t::FILMIC:	return std::exp2( 0.75f );
+		default:						return 1.0f;
+	}
+}
+
 float d3d12Lut::Value( float t ) {
 	return K * ( std::exp2( t * Range() ) - 1.0f );
 }
@@ -166,6 +174,7 @@ d3d12LutParms_t D3D12_LutParms( const postProcessSettings_t & settings ) {
 	parms.encoding[1] = d3d12Lut::Range();
 	parms.encoding[2] = whiteBalance ? 1.0f : 0.0f;
 	parms.encoding[3] = grade ? 1.0f : 0.0f;
+	parms.curve[0] = d3d12Lut::CurveScale( tonemapper, settings.agxLook );
 	return parms;
 }
 

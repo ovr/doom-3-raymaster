@@ -43,6 +43,9 @@ constexpr float						K = 0.016f;
 [[nodiscard]] float					Range();					// L = log2( 1 / K + 1 ) * 31 / 17
 [[nodiscard]] float					Coordinate( float c );		// t of c, 0..1
 [[nodiscard]] float					Value( float t );			// c of t
+// The exposed colour's scale before the curve: under every curve the demos keep the mean brightness of
+// the LDR frames (analyze.py --luma). Doom 3's pixels sit far below mid grey, where the curves' toes differ.
+[[nodiscard]] float					CurveScale( hdrTonemapper_t tonemapper, uint8 look );
 }
 
 // The bloom (internal/bloomDownsample.hlsl, bloomBlur.hlsl, PostProcessSettings.h): level 0 is half the viewport,
@@ -90,6 +93,7 @@ struct d3d12LutParms_t {
 	float							grade[15][4] = {};			// shadows, midtones, highlights x saturation .. offset
 	float							options[4] = {};			// shadowsMax, highlightsMin, tonemapper, AgX look
 	float							encoding[4] = {};			// K, L, white balance on, grade on
+	float							curve[4] = {};				// CurveScale; yzw unused
 	constexpr bool					operator==( const d3d12LutParms_t & ) const = default;
 };
 [[nodiscard]] d3d12LutParms_t		D3D12_LutParms( const postProcessSettings_t & settings );

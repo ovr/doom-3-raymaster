@@ -5117,6 +5117,8 @@ void CombineLut( idTestGpu & gpu, UINT samples ) {
 	postProcessSettings_t settings;
 	settings.autoExposure = false;
 	settings.bloomQuality = 0;
+	settings.localExposure = false;
+	settings.agxLook = 0;
 	settings.dither = false;
 	settings.tonemapper = hdrTonemapper_t::CLAMP;
 	compare( run( settings, whole ), "clamp", BLOCKS * BLOCKS, []( const idVec3 & c ) {
@@ -5126,13 +5128,13 @@ void CombineLut( idTestGpu & gpu, UINT samples ) {
 	static_cast<void>( run( settings, whole ) );
 	Check( hdr.LutBuilds() == 1, va( "the same parms build the LUT once (%d)", hdr.LutBuilds() ) );
 	settings.tonemapper = hdrTonemapper_t::AGX;
-	compare( run( settings, whole ), "AgX", 32, []( const idVec3 & c ) { return AgxRef( c, false ); } );
+	compare( run( settings, whole ), "AgX", 32, []( const idVec3 & c ) { return AgxRef( c * d3d12Lut::CurveScale( hdrTonemapper_t::AGX, 0 ), false ); } );
 	settings.agxLook = 1;
-	compare( run( settings, whole ), "AgX punchy", 32, []( const idVec3 & c ) { return AgxRef( c, true ); } );
+	compare( run( settings, whole ), "AgX punchy", 32, []( const idVec3 & c ) { return AgxRef( c * d3d12Lut::CurveScale( hdrTonemapper_t::AGX, 1 ), true ); } );
 	settings.agxLook = 0;
 	settings.tonemapper = hdrTonemapper_t::FILMIC;
 	compare( run( settings, whole ), "filmic", 32, []( const idVec3 & c ) {
-		const idVec3 toned = FilmicRef( c );
+		const idVec3 toned = FilmicRef( c * d3d12Lut::CurveScale( hdrTonemapper_t::FILMIC, 0 ) );
 		return idVec3( static_cast<float>( SrgbEncodeRef( std::clamp( toned.x, 0.0f, 1.0f ) ) ), static_cast<float>( SrgbEncodeRef( std::clamp( toned.y, 0.0f, 1.0f ) ) ),
 			static_cast<float>( SrgbEncodeRef( std::clamp( toned.z, 0.0f, 1.0f ) ) ) );
 	} );
@@ -5369,6 +5371,7 @@ void Exposure( idTestGpu & gpu, UINT samples ) {
 	base.dither = false;
 	base.tonemapper = hdrTonemapper_t::CLAMP;
 	base.meteringMask = 0.0f;
+	base.localExposure = false;
 	base.autoExposureBias = 0.0f;
 	base.minEV100 = -8.0f;
 	base.maxEV100 = 8.0f;
@@ -5562,6 +5565,7 @@ void Bloom( idTestGpu & gpu, UINT samples ) {
 	base.exposureCompensation = 2.0f;
 	base.tonemapper = hdrTonemapper_t::CLAMP;
 	base.dither = false;
+	base.localExposure = false;
 	base.bloomIntensity = 1.0f;
 	Check( d3d12Bloom::Levels( base, SIZE, SIZE ) == 6 && d3d12Bloom::Levels( base, 3, 3 ) == 2 && d3d12Bloom::Levels( base, 2, 2 ) == 1,
 		"six levels for 64 x 64, as many as the mips of a small viewport" );
@@ -5732,6 +5736,7 @@ void LocalExposure( idTestGpu & gpu, UINT samples ) {
 	base.tonemapper = hdrTonemapper_t::CLAMP;
 	base.dither = false;
 	base.bloomQuality = 0;
+	base.localHighlightContrast = 1.0f;
 	base.localBlurredBlend = 0.0f;
 
 	postProcessSettings_t step = base;
