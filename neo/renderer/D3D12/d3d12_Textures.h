@@ -66,6 +66,7 @@ struct d3d12Texture_t {
 	d3d12TextureSurface_t			surface;		// what draws sample
 	d3d12TextureSurface_t			spare;			// copy targets: the surface of the other recent size
 	uint64							sampler = 0;	// D3D12_PackSampler of the last SetSampler; a colour copy makes it LINEAR + CLAMP
+	uint32							samplerSlot = 0;	// sampler's slot in the shader-visible sampler heap
 	bool							copiedResized = false;	// the last copy had another size than the creation (T6)
 	idStr							name;
 	std::vector<d3d12UploadRecord_t>	uploads;	// by subresource of surface, while uploads are recorded
@@ -78,7 +79,8 @@ class idD3D12TextureStore {
 public:
 	// unalignedBlocks: OPTIONS8 (the device's, or false to test the decoding path).
 									idD3D12TextureStore( const idD3D12Device & device, idD3D12Graveyard & graveyard, idD3D12DescriptorPool & srvPool,
-										idD3D12DescriptorPool & rtvPool, idD3D12Uploader & uploader, idD3D12Barriers & barriers, bool unalignedBlocks );
+										idD3D12DescriptorPool & rtvPool, idD3D12SamplerHeap & samplers, idD3D12Uploader & uploader,
+										idD3D12Barriers & barriers, bool unalignedBlocks );
 	void							CreateDefaults();	// R11: the opaque black 2D and cube an unbound slot samples
 	// Every level of opts; contents undefined until uploaded. NONE for FMT_NONE, a lost device or a full table.
 	[[nodiscard]] textureHandle_t	Create( const idImageOpts & opts, textureRole_t role, const samplerDesc_t & sampler, const char * name );
@@ -111,6 +113,7 @@ private:
 	[[nodiscard]] bool				CreateSurface( d3d12TextureSurface_t & surface, const d3d12FormatInfo_t & format, textureKind_t kind,
 										int width, int height, int levels, const char * name );
 	void							BurySurface( d3d12TextureSurface_t & surface );	// after the open list; its bytes leave the total
+	void							ChangeSampler( d3d12Texture_t & texture, uint64 packed );	// the new slot first, then the old one released
 	// The rows of one region, converted, into staging and the copy; returns what the check compares.
 	[[nodiscard]] d3d12UploadRecord_t	CopyRegion( d3d12TextureSurface_t & surface, const d3d12FormatInfo_t & format, UINT subresource,
 										bool wholeLevel, int width, int height, const byte * source, size_t sourcePitch, bool record );
@@ -119,6 +122,7 @@ private:
 	idD3D12Graveyard &				graveyard;
 	idD3D12DescriptorPool &			srvPool;
 	idD3D12DescriptorPool &			rtvPool;
+	idD3D12SamplerHeap &			samplers;
 	idD3D12Uploader &				uploader;
 	idD3D12Barriers &				barriers;
 	bool							unalignedBlocks;

@@ -11,11 +11,11 @@ shared code: there the script looks, outside comments and string literals, for
   - GL_* constants and GL* types (GLuint, GLenum, ...),
   - #include lines of qgl.h, glext.h, wglext.h and gl/gl.h.
 
-Direct3D 12, DXGI and the HLSL compiler belong to neo/renderer/D3D12/ and to the tests named
-neo/tests/d3d12_*. Every other file is checked for
+Direct3D 12, DXGI and DXC belong to neo/renderer/D3D12/ and to the tests named neo/tests/d3d12_*, and
+so would D3DCompiler, which no code uses any more. Every other file is checked for
 
-  - ID3D12* and IDXGI* interfaces, D3D12_*, DXGI_* and D3D_* names, D3DCompile*,
-  - #include lines of d3d12*.h, dxgi*.h and d3dcompiler.h.
+  - ID3D12*, IDXGI* and IDxc* interfaces, D3D12_*, DXGI_*, D3D_* and DXC_* names, D3DCompile*, Dxc*,
+  - #include lines of d3d12*.h, dxgi*.h, d3dcompiler.h and dxcapi.h.
 
 The D3D12 folder itself is shared code for the OpenGL rule: it must not name OpenGL either.
 
@@ -65,12 +65,13 @@ $apis = @(
 		AllowedDirs = @( 'neo/renderer/D3D12/' )
 		AllowedFiles = @()
 		AllowedPrefixes = @( 'neo/tests/d3d12_' )
-		Hint = 'd3d|dxgi'
-		Includes = ( New-Object regex '(?im)^[ \t]*#[ \t]*include[ \t]*[<"][^>"\n]*\b(d3d12\w*\.h|dxgi\w*\.h|d3dcompiler\.h)[>"]', $none )
+		Hint = 'd3d|dxgi|dxc'
+		Includes = ( New-Object regex '(?im)^[ \t]*#[ \t]*include[ \t]*[<"][^>"\n]*\b(d3d12\w*\.h|dxgi\w*\.h|d3dcompiler\.h|dxcapi\.h)[>"]', $none )
 		Names = @(
-			( New-Object regex '\b(ID3D12|IDXGI)\w+', $none ),
-			( New-Object regex '\b(D3D12|DXGI|D3D)_[A-Z0-9_]+\b', $none ),
-			( New-Object regex '\bD3DCompile\w*', $none )
+			( New-Object regex '\b(ID3D12|IDXGI|IDxc)\w+', $none ),
+			( New-Object regex '\b(D3D12|DXGI|D3D|DXC)_[A-Z0-9_]+\b', $none ),
+			( New-Object regex '\bD3DCompile\w*', $none ),
+			( New-Object regex '\bDxc[A-Z]\w*', $none )
 		)
 	}
 )

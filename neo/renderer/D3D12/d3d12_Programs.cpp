@@ -6,97 +6,152 @@
 #include "../../idlib/precompiled.h"
 
 #include "../tr_local.h"
+#include "../RenderProgTable.h"
 #include "d3d12_Programs.h"
+#include "d3d12_InternalPasses.h"
 
 #include <algorithm>
 #include <functional>
+#include <iterator>
 
 namespace {
 
-// "gui.vfp" → "gui": the compiler's name for messages and cache files.
-[[nodiscard]] idStr BaseName( const char * name ) {
-	idStr base = name;
-	base.StripFileExtension();
-	return base;
+// D3D12 links the stages by register: what the PS reads (but the system values) the VS writes in the same place.
+[[nodiscard]] std::optional<idStr> SignatureMismatch( const d3d12StageReflection_t & vertex, const d3d12StageReflection_t & fragment ) {
+	for ( const d3d12SignatureElement_t & input : fragment.inputs ) {
+		if ( input.systemValue != D3D_NAME_UNDEFINED ) {
+			continue;
+		}
+		const auto output = std::ranges::find_if( vertex.outputs, [&input]( const d3d12SignatureElement_t & element ) {
+			return element.index == input.index && element.semantic == input.semantic;
+		} );
+		if ( output == vertex.outputs.end() ) {
+			return idStr( va( "the PS reads %s%u, which the VS does not write", input.semantic.c_str(), input.index ) );
+		}
+		if ( output->reg != input.reg || ( output->mask & input.mask ) != input.mask ) {
+			return idStr( va( "%s%u is register %u mask 0x%x in the VS, %u mask 0x%x in the PS: declare the same struct", input.semantic.c_str(),
+				input.index, output->reg, output->mask, input.reg, input.mask ) );
+		}
+	}
+	return std::nullopt;
 }
 
-[[nodiscard]] std::string_view View( const idStr & text ) {
-	return std::string_view( text.c_str(), static_cast<size_t>( text.Length() ) );
+[[nodiscard]] std::expected<d3d12ShaderStage_t, idStr> StageOf( shaderStageType_t type, const char * name, d3d12HlslResult_t && built ) {
+	if ( !built ) {
+		return std::unexpected( built.error() );
+	}
+	d3d12ShaderStage_t stage;
+	stage.type = type;
+	stage.name = name;
+	stage.info = built->info;
+	stage.code = std::move( built->code );
+	stage.reflection = std::move( built->reflection );
+	return stage;
+}
+
+[[nodiscard]] size_t PrebuiltIndex( const renderProgStage_t & found, shaderStageType_t type ) {
+	const size_t program = static_cast<size_t>( found.program - R_RenderProgs().data() );
+	return ( program * 2 + ( found.skinned ? 1 : 0 ) ) * 2 + ( ( type == shaderStageType_t::VERTEX ) ? 0 : 1 );
 }
 
 }	// namespace
 
-std::expected<d3d12ShaderStage_t, idStr> D3D12_BuildStage( idD3D12ShaderCompiler & compiler, shaderStageType_t type, const char * name,
-	const renderProgSource_t & source ) {
-	d3d12ShaderStage_t stage;
-	stage.type = type;
-	stage.name = name;
-	auto emitted = idD3D12HlslEmitter::Emit( type, source, R_RenderProgPath( name, type ) );
-	if ( !emitted ) {
-		return std::unexpected( emitted.error() );
-	}
-	stage.emitted = std::move( *emitted );
-	const idStr hlsl = idD3D12HlslEmitter::WithEntry( type, stage.emitted, stage.emitted.varyings );
-	auto code = compiler.Compile( View( hlsl ), type, BaseName( name ) );
-	if ( !code ) {
-		return std::unexpected( code.error() );
-	}
-	stage.code = std::move( *code );
-	stage.reflection = compiler.Reflect( stage.code, type );
-	return stage;
+std::expected<d3d12ShaderStage_t, idStr> D3D12_BuildHlslStage( idD3D12HlslCompiler & compiler, shaderStageType_t type, const char * name,
+	const d3d12HlslSource_t & source ) {
+	return StageOf( type, name, compiler.Build( source, type ) );
 }
 
 // GL reflects the linked program: the masks of the PS, the inputs and the joints of the VS of the pair.
-std::expected<d3d12Program_t, idStr> D3D12_LinkProgram( idD3D12ShaderCompiler & compiler, const d3d12ShaderStage_t & vertex,
-	const d3d12ShaderStage_t * fragment ) {
+std::expected<d3d12Program_t, idStr> D3D12_LinkProgram( const d3d12ShaderStage_t & vertex, const d3d12ShaderStage_t * fragment ) {
 	d3d12Program_t program;
-	program.vertexInfo = vertex.emitted.info;
-	d3d12StageReflection_t vertexReflection = vertex.reflection;
-	if ( fragment == nullptr || fragment->emitted.varyings == vertex.emitted.varyings ) {
-		program.vertexCode = vertex.code;
-	} else {
-		const idStr hlsl = idD3D12HlslEmitter::WithEntry( shaderStageType_t::VERTEX, vertex.emitted, fragment->emitted.varyings );
-		const idStr name = BaseName( vertex.name ) + "." + BaseName( fragment->name );
-		auto code = compiler.Compile( View( hlsl ), shaderStageType_t::VERTEX, name );
-		if ( !code ) {
-			return std::unexpected( code.error() );
-		}
-		program.vertexCode = std::move( *code );
-		vertexReflection = compiler.Reflect( program.vertexCode, shaderStageType_t::VERTEX );
-	}
+	program.vertexCode = vertex.code;
+	program.vertexInfo = vertex.info;
 	if ( fragment != nullptr ) {
+		if ( const std::optional<idStr> mismatch = SignatureMismatch( vertex.reflection, fragment->reflection ) ) {
+			return std::unexpected( *mismatch );
+		}
 		program.fragmentCode = fragment->code;
-		program.fragmentInfo = fragment->emitted.info;
+		program.fragmentInfo = fragment->info;
 		program.info.samplerMask = fragment->reflection.samplerMask;
 		program.info.cubeMask = fragment->reflection.cubeMask;
 	}
-	program.info.attribMask = vertexReflection.attribMask;
-	program.info.usesJoints = vertexReflection.usesJoints;
+	program.info.attribMask = vertex.reflection.attribMask;
+	program.info.usesJoints = vertex.reflection.usesJoints;
 	program.journalName = vertex.name + "|" + ( ( fragment != nullptr ) ? fragment->name.c_str() : "-" );
 	return program;
 }
 
-// The source is read only for a stage GL's probe finds; D3D12 compiles the loose sources GL had converted into the packs.
+void idD3D12ShaderLibrary::Prebuild() {
+	const std::span<const renderProgDef_t> table = R_RenderProgs();
+	struct stage_t {
+		size_t							index;
+		size_t							source;
+		shaderStageType_t				type;
+	};
+	std::vector<d3d12HlslSource_t> sources;
+	std::vector<stage_t> wanted;
+	for ( const renderProgDef_t & program : table ) {
+		for ( const bool skinned : { false, true } ) {
+			if ( skinned && program.skinned == renderProgBuiltin_t::NONE ) {
+				continue;
+			}
+			// a program without a file is left to CreateStage, which warns
+			std::optional<d3d12HlslSource_t> source = D3D12_FindHlslSource( R_RenderProgStageName( program, skinned ), compiler.Reader() );
+			if ( !source ) {
+				continue;
+			}
+			sources.push_back( std::move( *source ) );
+			for ( const shaderStageType_t type : { shaderStageType_t::VERTEX, shaderStageType_t::FRAGMENT } ) {
+				if ( type == shaderStageType_t::VERTEX || program.fragment ) {
+					wanted.push_back( { PrebuiltIndex( { &program, skinned }, type ), sources.size() - 1, type } );
+				}
+			}
+		}
+	}
+	std::vector<d3d12HlslRequest_t> requests;
+	for ( const stage_t & stage : wanted ) {
+		requests.push_back( { &sources[stage.source], stage.type } );
+	}
+	std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
+	prebuilt.clear();
+	prebuilt.resize( table.size() * 4 );
+	for ( size_t i = 0; i < wanted.size(); i++ ) {
+		prebuilt[wanted[i].index] = std::move( built[i] );
+	}
+}
+
+void idD3D12ShaderLibrary::DropPrebuilt() {
+	prebuilt.clear();
+}
+
+// The program table decides which stages exist; a stage it lists is compiled from its file in base/shaders.
 shaderHandle_t idD3D12ShaderLibrary::CreateStage( shaderStageType_t type, const char * name, shaderStageInfo_t & info ) {
 	info.numParms = 0;
-	if ( !R_RenderProgStageExists( name, type ) ) {
+	const std::optional<renderProgStage_t> found = R_FindRenderProg( name );
+	if ( !found || ( type == shaderStageType_t::FRAGMENT && !found->program->fragment ) ) {
 		d3d12ShaderStage_t missing;
 		missing.type = type;
 		missing.name = name;
 		missing.missing = true;
 		return stages.Add( std::move( missing ) );
 	}
-	const std::optional<renderProgSource_t> source = R_LoadRenderProgSource( name, type );
-	if ( !source ) {
-		common->Warning( "d3d12: %s: no source to compile", R_RenderProgPath( name, type ).c_str() );
-		return shaderHandle_t::NONE;
-	}
-	auto stage = D3D12_BuildStage( compiler, type, name, *source );
+	auto stage = [&]() -> std::expected<d3d12ShaderStage_t, idStr> {
+		if ( const size_t index = PrebuiltIndex( *found, type ); index < prebuilt.size() && prebuilt[index] ) {
+			d3d12HlslResult_t built = std::move( *prebuilt[index] );
+			prebuilt[index].reset();
+			return StageOf( type, name, std::move( built ) );
+		}
+		const std::optional<d3d12HlslSource_t> source = D3D12_FindHlslSource( name, compiler.Reader() );
+		if ( !source ) {
+			return std::unexpected( idStr( va( "%s has no file in base/shaders", name ) ) );
+		}
+		return D3D12_BuildHlslStage( compiler, type, name, *source );
+	}();
 	if ( !stage ) {
 		common->Warning( "d3d12: %s", stage.error().c_str() );
 		return shaderHandle_t::NONE;
 	}
-	info = stage->emitted.info;
+	info = stage->info;
 	return stages.Add( std::move( *stage ) );
 }
 
@@ -113,7 +168,7 @@ programHandle_t idD3D12ShaderLibrary::CreateProgram( shaderHandle_t vertex, shad
 		common->Warning( "d3d12: program %s has no vertex stage", name );
 		return programHandle_t::NONE;
 	}
-	auto program = D3D12_LinkProgram( compiler, *vertexStage, fragmentStage );
+	auto program = D3D12_LinkProgram( *vertexStage, fragmentStage );
 	if ( !program ) {
 		common->Warning( "d3d12: program %s: %s", name, program.error().c_str() );
 		return programHandle_t::NONE;
@@ -163,6 +218,7 @@ void idD3D12ShaderLibrary::DestroyAll() {
 	stages.Clear();
 	freeDense.clear();
 	nextDense = 0;
+	prebuilt.clear();
 }
 
 uint16 idD3D12ShaderLibrary::NewDense() {
@@ -180,37 +236,59 @@ void idD3D12ShaderLibrary::FreeDense( uint16 dense ) {
 	std::ranges::push_heap( freeDense, std::greater<>() );
 }
 
-// Through the cache like a map load, so a later load finds what this compiled.
+// Every stage of every shaders/*.hlsl, its SKINNED variant included, through the cache like a map load,
+// so a later load finds what this compiled.
 int idD3D12ShaderLibrary::CompileAll( bool verbose ) {
-	int sources = 0;
 	idStrList failures;
-	for ( const shaderStageType_t type : { shaderStageType_t::VERTEX, shaderStageType_t::FRAGMENT } ) {
-		idFileList * files = fileSystem->ListFiles( "renderprogs", ( type == shaderStageType_t::VERTEX ) ? ".vertex" : ".pixel", true );
-		for ( int i = 0; i < files->GetNumFiles(); i++ ) {
-			const char * file = files->GetFile( i );
-			sources++;
-			const std::optional<renderProgSource_t> source = R_LoadRenderProgSource( file, type );
-			if ( !source ) {
-				common->Printf( "d3d12_compileAll: %s: unreadable, or a uniform no parm names\n", file );
-				failures.Append( file );
-				continue;
-			}
-			auto stage = D3D12_BuildStage( compiler, type, file, *source );
-			if ( !stage ) {
-				common->Printf( "d3d12_compileAll: %s\n", stage.error().c_str() );
-				failures.Append( file );
-			} else if ( verbose ) {
-				common->Printf( "d3d12_compileAll: %s: %d parms, varyings 0x%03x, attribs 0x%04x, samplers 0x%04x\n", file, stage->emitted.info.numParms,
-					stage->emitted.varyings, stage->emitted.attribs, stage->reflection.samplerMask );
-			}
+	std::vector<d3d12HlslEntry_t> entries;
+	idFileList * files = fileSystem->ListFiles( "shaders", ".hlsl", true );
+	for ( int i = 0; i < files->GetNumFiles(); i++ ) {
+		const idStr file = files->GetFile( i );
+		const std::optional<d3d12HlslSource_t> plain = D3D12_FindHlslSource( file, compiler.Reader() );
+		if ( !plain ) {
+			continue;
 		}
-		fileSystem->FreeFileList( files );
+		auto fileEntries = D3D12_HlslEntries( compiler.Library(), *plain, compiler.Reader() );
+		if ( !fileEntries ) {
+			common->Printf( "d3d12_compileAll: %s\n", fileEntries.error().c_str() );
+			failures.Append( file );
+			continue;
+		}
+		std::ranges::move( *fileEntries, std::back_inserter( entries ) );
 	}
+	fileSystem->FreeFileList( files );
+	const size_t numPrograms = entries.size();
+	for ( const d3d12InternalStage_t & stage : D3D12_InternalStages() ) {
+		std::optional<d3d12HlslSource_t> source = D3D12_InternalSource( stage, compiler.Reader() );
+		if ( !source ) {
+			common->Printf( "d3d12_compileAll: shaders/internal/%s.hlsl is missing\n", stage.file );
+			failures.Append( stage.name );
+			continue;
+		}
+		entries.push_back( { std::move( *source ), stage.type } );
+	}
+	std::vector<d3d12HlslRequest_t> requests;
+	for ( size_t i = 0; i < entries.size(); i++ ) {
+		requests.push_back( { &entries[i].source, entries[i].stage, ( i < numPrograms ) ? hlslParms_t::RENDER_PARMS : hlslParms_t::ANY } );
+	}
+	std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
+	for ( size_t i = 0; i < entries.size(); i++ ) {
+		const char * name = entries[i].source.name.c_str();
+		const char * suffix = ( entries[i].stage == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain";
+		if ( !built[i] ) {
+			common->Printf( "d3d12_compileAll: %s\n", built[i].error().c_str() );
+			failures.Append( va( "%s %s", name, suffix ) );
+		} else if ( verbose ) {
+			common->Printf( "d3d12_compileAll: %s %s: %d parms, attribs 0x%04x, samplers 0x%04x\n", name, suffix,
+				built[i]->info.numParms, built[i]->reflection.attribMask, built[i]->reflection.samplerMask );
+		}
+	}
+	const int numStages = static_cast<int>( entries.size() );
 	idStr list;
 	for ( int i = 0; i < failures.Num(); i++ ) {
 		list += ( i == 0 ) ? ": " : ", ";
 		list += failures[i];
 	}
-	common->Printf( "d3d12_compileAll: %d sources, %d errors%s\n", sources, failures.Num(), list.c_str() );
+	common->Printf( "d3d12_compileAll: %d stages, %d errors%s\n", numStages, failures.Num(), list.c_str() );
 	return failures.Num();
 }

@@ -79,7 +79,7 @@ If you have questions concerning this license or the applicable additional terms
 
 	Where the APIs live. Only the files of renderer/OpenGL/ and sys/win32/win_glimp.cpp and
 	win_qgl.cpp include the GL headers, and only renderer/D3D12/ (and its tests, neo/tests/d3d12_*)
-	includes the Direct3D 12, DXGI and D3DCompiler headers. The precompiled header includes neither,
+	includes the Direct3D 12, DXGI and DXC headers. The precompiled header includes neither,
 	so an API type or call in shared code does not compile. The D3D12 backend loads its DLLs from
 	System32 in its Init, so an OpenGL run never loads the HLSL compiler. The script
 	tools/check-render-api-leaks.ps1 finds the rest (gl* functions that windows.h declares, API
@@ -140,6 +140,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderState.h"
 #include "RenderBackendTypes.h"
 
+#include <expected>
+
 class idImageOpts;
 
 // r_debugMaxDraws and r_hashDrawStream for every backend. The cvars are read once a frame, so with
@@ -166,8 +168,9 @@ public:
 	virtual					~idRenderBackend() = default;
 
 	// ---- device: main thread, outside a frame ------------------------------------------------
-	// Attaches to the window, creates the device and the output, fills caps. False = this API cannot run here.
-	virtual bool			Init( const renderBackendInit_t & init ) = 0;
+	// Attaches to the window, creates the device and the output, fills caps. The error says why this API
+	// cannot run here with these parms; nothing is left behind and Init may be called again.
+	[[nodiscard]] virtual std::expected<void, idStr>	Init( const renderBackendInit_t & init ) = 0;
 	// Destroys everything still alive; every handle is invalid afterwards.
 	virtual void			Shutdown() = 0;
 	// What this device can do; constant between Init and Shutdown.
@@ -268,8 +271,8 @@ public:
 	virtual void			UnmapBuffer( bufferHandle_t buffer, int dirtyOffset, int dirtyBytes ) = 0;
 
 	// ---- programs ---------------------------------------------------------------------------------------
-	// Loads one stage of base/renderprogs/<name> in the backend's own form. A stage the game data lacks
-	// gets a handle all the same (R12); NONE when it fails to compile.
+	// Loads one stage <name> in the backend's own form (GL: the GLSL baked into the resource files, D3D12:
+	// base/shaders; RenderProgTable.h). A stage it lacks gets a handle all the same (R12); NONE when it fails to compile.
 	virtual shaderHandle_t	CreateShaderStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info ) = 0;
 	// Pairs two stages; fragment NONE = a program without a fragment stage. A stage the game data lacks
 	// raises idLib::Error (R12), any other failure returns NONE.

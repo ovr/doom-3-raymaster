@@ -11,9 +11,10 @@
 /*
 	A draw in three steps, so nothing submits once recording has begun:
 
-	  Prepare   the normalized key and its PSO, the views and samplers of the slots: no ring room, no command
-	  Reserve   the room the open list lacks: the parms in "constants", an SRV table, a sampler table; a full
-	            ring submits, waits for its oldest chunk and tries again in the new list
+	  Prepare   the normalized key and its PSO, the heap indices of the slots' views and samplers (the b3
+	            root constants): no ring room, no command
+	  Reserve   the parms in "constants"; a full ring submits, waits for its oldest chunk and tries again in
+	            the new list
 	  Record    the barriers of what the draw reads and the pass, then the PSO, the dynamic state, the root
 	            parameters and DrawIndexedInstanced, each sent only when it differs from d3d12BoundState_t
 
@@ -25,7 +26,7 @@ struct d3d12DrawStats_t {
 	int								draws = 0;
 	int								skipped = 0;		// program NONE or dead, a dead buffer, a lost device, no scissor left
 	int								psoBinds = 0;
-	int								tableCopies = 0;	// SRV tables copied into the ring
+	int								resourceBinds = 0;	// b3 root constants set
 	int								unboundSlots = 0;	// draws with a sampled slot without a texture of its kind (R11)
 	int								incompleteBinds = 0;	// draws sampling a copy GL sees as incomplete, black (T6)
 	int								chunkSubmits = 0;	// lists submitted because they had their draws
@@ -43,19 +44,13 @@ struct d3d12FrameStats_t {
 	int								barriers = 0;		// transitions that reached a list
 	uint64							uploadBytes = 0;	// copied through the staging ring
 	uint64							inPlaceBytes = 0;	// written into FRAME buffers the GPU reads in place
-	int								samplerTables = 0;	// sampler tables built
+	int								samplersMade = 0;	// sampler heap slots written
 	int								debugGroups = 0;	// pushed
 	int								timestamps = 0;		// r_pix slots written
 	uint64							gpuMicroseconds = 0;	// the frame timer: BeginFrame to EndFrame on the GPU
 	int								colorCopies = 0;	// CopyOutputToTexture
 	int								depthCopies = 0;	// CopyDepthToTexture
 	int								copySurfaces = 0;	// copy targets created for a new size
-};
-
-// The SRV pool slots and the packed samplers of the 8 slots of a draw.
-struct d3d12TextureSignature_t {
-	std::array<uint32, MAX_TEXTURE_SLOTS>	srvs = {};
-	d3d12SamplerTableKey_t			samplers;
 };
 
 // What the open list has bound. Empty means unknown: a new list and every internal pass clear it.
@@ -70,8 +65,7 @@ struct d3d12BoundState_t {
 	std::optional<std::array<D3D12_GPU_VIRTUAL_ADDRESS, 2>>	parms;	// b0, b1
 	programHandle_t					parmsProgram = programHandle_t::NONE;
 	std::optional<D3D12_GPU_VIRTUAL_ADDRESS>	joints;		// b2: a joint buffer + jointOffset, or the zero block
-	std::optional<std::array<uint32, MAX_TEXTURE_SLOTS>>	srvs;
-	std::optional<d3d12SamplerTableKey_t>	samplers;
+	std::optional<d3d12DrawResources_t>	resources;	// b3
 	std::optional<std::pair<bufferHandle_t, uint8>>	vertexBuffer;	// and its layout, which gives the stride
 	std::optional<bufferHandle_t>	indexBuffer;
 	bool							defaultAttribs = false;	// slot 1
@@ -83,8 +77,7 @@ public:
 									idD3D12DrawRecorder( const idD3D12Device & device, idD3D12Submitter & submitter, idD3D12Barriers & barriers,
 										idD3D12SceneTarget & scene, idD3D12InternalPasses & passes, idD3D12PipelineFactory & pipelines,
 										idD3D12ShaderLibrary & shaders, idD3D12BufferStore & buffers, idD3D12TextureStore & textures,
-										idD3D12DescriptorPool & srvPool, idD3D12UploadRing & constants, idD3D12DescriptorRing & descriptors,
-										idD3D12SamplerHeap & samplers );
+										idD3D12UploadRing & constants, idD3D12SamplerHeap & samplers );
 	// As glClear: inside the latched scissor, through the latched write masks; a partial colour mask is a pass.
 	void							Clear( const renderLatch_t & latch, const clearDesc_t & clear );
 	// key: idRenderBackend::PipelineKey; the target and the depth bias slot are added here.
@@ -106,8 +99,7 @@ private:
 	struct prepared_t {
 		pipelineKey_t				key = {};
 		ID3D12PipelineState *		pso = nullptr;
-		d3d12TextureSignature_t		signature;
-		std::array<D3D12_CPU_DESCRIPTOR_HANDLE, MAX_TEXTURE_SLOTS>	sources = {};
+		d3d12DrawResources_t		resources;
 		std::array<textureHandle_t, MAX_TEXTURE_SLOTS>	textures = {};	// the sampled ones; NONE reads a fallback
 		uint32						vertexParmBytes = 0;
 		uint32						fragmentParmBytes = 0;
@@ -117,8 +109,6 @@ private:
 		bool						parms = false;		// new parms: the spans of the stages that have any
 		std::optional<d3d12UploadSpan_t>	vertexParms;
 		std::optional<d3d12UploadSpan_t>	fragmentParms;
-		std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	table;
-		std::optional<D3D12_GPU_DESCRIPTOR_HANDLE>	samplerTable;
 	};
 	struct used_t {								// what the draw reads, its transitions queued
 		const d3d12Buffer_t *		vertex = nullptr;
@@ -142,7 +132,7 @@ private:
 	// CBV's buffer when SetGraphicsRootConstantBufferView is recorded, so a barrier after it mismatches (#527).
 	[[nodiscard]] used_t			Use( const prepared_t & prepared, const drawCall_t & dc, const d3d12Program_t & program );
 	void							BindJoints( ID3D12GraphicsCommandList1 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints );
-	void							BindTextures( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved );
+	void							BindResources( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const d3d12Program_t & program );
 	void							BindGeometry( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const drawCall_t & dc, const used_t & used );
 	[[nodiscard]] int				ChunkLimit() const;	// the draws the open list takes before it is submitted
 
@@ -155,9 +145,7 @@ private:
 	idD3D12ShaderLibrary &			shaders;
 	idD3D12BufferStore &			buffers;
 	idD3D12TextureStore &			textures;
-	idD3D12DescriptorPool &			srvPool;
 	idD3D12UploadRing &				constants;
-	idD3D12DescriptorRing &			descriptors;
 	idD3D12SamplerHeap &			samplers;
 	d3d12BoundState_t				bound;
 	d3d12DrawStats_t				stats;

@@ -14,18 +14,15 @@ idRenderBackendD3D12::idRenderBackendD3D12() {
 	ownerThread = Sys_GetCurrentThreadID();
 }
 
-// False = no device or no output with these parms; nothing is left behind and R_SetNewMode may try again.
-bool idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
+std::expected<void, idStr> idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 	assert( !context );
 	ownerThread = Sys_GetCurrentThreadID();
 	if ( init.stereoPixelFormat ) {
-		common->Printf( "d3d12: no quad-buffer stereo\n" );
-		return false;
+		return std::unexpected( idStr( "Direct3D 12 has no quad-buffer stereo" ) );
 	}
 	auto created = idD3D12Context::Create( init );
 	if ( !created ) {
-		common->Warning( "d3d12: Init failed: %s", created.error().c_str() );
-		return false;
+		return std::unexpected( created.error() );
 	}
 	context = std::move( *created );
 	context->device.FillCaps( caps );
@@ -42,14 +39,15 @@ bool idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 	common->Printf( "d3d12: adapter %s, %llu MB, %s, debug level %d, %u sample(s)\n", features.adapterName.c_str(),
 		static_cast<unsigned long long>( features.dedicatedVideoMemory >> 20 ), features.versionString.c_str(), context->device.DebugLevel(),
 		context->scene.Samples() );
-	return true;
+	return {};
 }
 
 void idRenderBackendD3D12::Shutdown() {
 	if ( context ) {
 		const idD3D12PipelineFactory::stats_t & made = context->pipelines.TotalStats();
-		common->Printf( "d3d12 shaders: compiled %d, %d from the cache; PSOs: %d warmed from the journal in %.1f ms, %d made by draws in %.1f ms, "
-			"%d of both from the library\n", context->compiler.Compiled(), context->compiler.CacheHits(), made.warmed,
+		common->Printf( "d3d12 shaders: compiled %d, %d from the cache in %.1f ms; PSOs: %d warmed from the journal in %.1f ms, %d made by draws "
+			"in %.1f ms, %d of both from the library\n", context->hlslCompiler.Compiled(), context->hlslCompiler.CacheHits(),
+			context->hlslCompiler.Milliseconds(), made.warmed,
 			static_cast<double>( made.warmMicroseconds ) / 1000.0, made.drawn, static_cast<double>( made.drawnMicroseconds ) / 1000.0, made.loaded );
 		D3D12_SetActiveContext( nullptr );
 		context.reset();
@@ -108,6 +106,7 @@ void idRenderBackendD3D12::PrintInfo() const {
 
 void idRenderBackendD3D12::BeginFrame() {
 	assert( !inFrame );
+	context->shaders.DropPrebuilt();
 	inFrame = true;
 	context->textures.RecordUploads( r_d3d12CheckImages.GetBool() );
 	context->BeginFrame( renderSystem->GetWidth(), renderSystem->GetHeight() );

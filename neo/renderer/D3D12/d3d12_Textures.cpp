@@ -74,11 +74,12 @@ uint64 D3D12_HashBytes( uint64 hash, std::span<const byte> bytes ) {
 }
 
 idD3D12TextureStore::idD3D12TextureStore( const idD3D12Device & owner, idD3D12Graveyard & graves, idD3D12DescriptorPool & srvs,
-	idD3D12DescriptorPool & rtvs, idD3D12Uploader & copies, idD3D12Barriers & batch, bool unaligned ) :
+	idD3D12DescriptorPool & rtvs, idD3D12SamplerHeap & samplerHeap, idD3D12Uploader & copies, idD3D12Barriers & batch, bool unaligned ) :
 	device( owner ),
 	graveyard( graves ),
 	srvPool( srvs ),
 	rtvPool( rtvs ),
+	samplers( samplerHeap ),
 	uploader( copies ),
 	barriers( batch ),
 	unalignedBlocks( unaligned ) {
@@ -139,7 +140,7 @@ bool idD3D12TextureStore::CreateSurface( d3d12TextureSurface_t & surface, const 
 		view.Texture2D.MipLevels = static_cast<UINT>( levels );
 	}
 	surface.srv = srvPool.Allocate();
-	device.Get().CreateShaderResourceView( surface.resource.Get(), &view, srvPool.Cpu( surface.srv ) );
+	srvPool.CreateSrv( surface.srv, *surface.resource.Get(), view );
 	if ( format.rtv != DXGI_FORMAT_UNKNOWN ) {
 		D3D12_RENDER_TARGET_VIEW_DESC target = {};
 		target.Format = format.rtv;
@@ -171,11 +172,14 @@ textureHandle_t idD3D12TextureStore::Create( const idImageOpts & opts, textureRo
 	if ( !CreateSurface( texture.surface, format, kind, width, height, levels, debugName ) ) {
 		return textureHandle_t::NONE;
 	}
+	texture.samplerSlot = samplers.Acquire( texture.sampler );
 	bytes += texture.surface.bytes;
+	// a full table leaves the record untouched
 	const textureHandle_t handle = table.Add( std::move( texture ) );
 	if ( handle == textureHandle_t::NONE ) {
 		common->Warning( "d3d12: no room for texture '%s' in the handle table", debugName );
 		BurySurface( texture.surface );
+		samplers.Release( texture.samplerSlot );
 	}
 	return handle;
 }
@@ -200,6 +204,14 @@ void idD3D12TextureStore::Destroy( textureHandle_t handle ) {
 	d3d12Texture_t dead = table.Remove( handle );
 	BurySurface( dead.surface );
 	BurySurface( dead.spare );
+	samplers.Release( dead.samplerSlot );
+}
+
+void idD3D12TextureStore::ChangeSampler( d3d12Texture_t & texture, uint64 packed ) {
+	const uint32 old = texture.samplerSlot;
+	texture.sampler = packed;
+	texture.samplerSlot = samplers.Acquire( packed );
+	samplers.Release( old );
 }
 
 // Swapping surfaces moves their states, which a batched barrier points at: the batch goes into the list first.
@@ -238,7 +250,7 @@ d3d12TextureSurface_t * idD3D12TextureStore::PrepareCopyTarget( textureHandle_t 
 		samplerDesc_t sampler = D3D12_UnpackSampler( texture->sampler );
 		sampler.filter = samplerFilter_t::LINEAR;
 		sampler.address = samplerAddress_t::CLAMP;
-		texture->sampler = D3D12_PackSampler( sampler );
+		ChangeSampler( *texture, D3D12_PackSampler( sampler ) );
 	}
 	return &texture->surface;
 }
@@ -348,7 +360,7 @@ d3d12UploadRecord_t idD3D12TextureStore::CopyRegion( d3d12TextureSurface_t & sur
 
 void idD3D12TextureStore::SetSampler( textureHandle_t handle, const samplerDesc_t & sampler ) {
 	if ( d3d12Texture_t * texture = table.Find( handle ) ) {
-		texture->sampler = D3D12_PackSampler( sampler );
+		ChangeSampler( *texture, D3D12_PackSampler( sampler ) );
 	}
 }
 
@@ -387,6 +399,7 @@ void idD3D12TextureStore::DestroyAll() {
 	if ( table.Num() > 0 ) {
 		common->DPrintf( "d3d12: %d textures still alive at shutdown\n", table.Num() );
 	}
+	table.ForEach( [this]( textureHandle_t, const d3d12Texture_t & texture ) { samplers.Release( texture.samplerSlot ); } );
 	table.Clear();
 	fallbacks = {};
 	bytes = 0;

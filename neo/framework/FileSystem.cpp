@@ -142,6 +142,7 @@ public:
 	virtual void			CreateOSPath( const char *OSPath );
 	virtual int				ReadFile( const char *relativePath, void **buffer, ID_TIME_T *timestamp );
 	virtual void			FreeFile( void *buffer );
+	virtual std::optional<idStr>	ReadResourceText( const char * relativePath );
 	virtual int				WriteFile( const char *relativePath, const void *buffer, int size, const char *basePath = "fs_savepath" );
 	virtual void			RemoveFile( const char *relativePath );	
 	virtual	bool			RemoveDir( const char * relativePath );
@@ -1749,6 +1750,24 @@ void idFileSystemLocal::FreeFile( void *buffer ) {
 	loadStack--;
 
 	Mem_Free( buffer );
+}
+
+std::optional<idStr> idFileSystemLocal::ReadResourceText( const char * relativePath ) {
+	if ( !IsInitialized() ) {
+		common->FatalError( "Filesystem call made without initialization\n" );
+	}
+	idFile * const file = ( resourceFiles.Num() > 0 ) ? GetResourceFile( relativePath, false ) : nullptr;
+	if ( file == nullptr ) {
+		return std::nullopt;
+	}
+	idStr text;
+	const int length = file->Length();
+	if ( length > 0 ) {
+		text.Fill( ' ', length );
+		file->Read( &text[0], length );
+	}
+	CloseFile( file );
+	return text;
 }
 
 /*

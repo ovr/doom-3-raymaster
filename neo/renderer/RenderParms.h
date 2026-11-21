@@ -32,8 +32,8 @@ If you have questions concerning this license or the applicable additional terms
 /*
 ===============================================================================
 
-	What the renderprogs read: the vertex attribute indexes of the PC layout and the render
-	parms, the vec4 constants every stage picks from (renderprogs/global.inc declares them).
+	What the render programs read: the vertex attribute indexes of the PC layout and the render
+	parms, the vec4 constants every stage picks from by name (R_RenderParmName: "rpColor").
 	Base types only, so a test includes it without the renderer.
 
 ===============================================================================

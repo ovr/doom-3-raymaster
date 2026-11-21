@@ -6,10 +6,10 @@
 Runs the visual demos (base/vdemos/*.vdemo) in a retail install and collects their frames.
 
 .DESCRIPTION
-Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs) from a build dir and base/vdemos into the game dir
-(with -Api d3d12 also base/renderprogs, the sources D3D12 compiles), starts the game in a 1280x720
-window with an isolated fs_savepath (the real config in Saved Games is never read or written), runs
-"vdemo <demos> quit" and copies into -OutDir: the frames and vdemo.json of every demo, run.json,
+Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir and base/vdemos into the game dir
+(with -Api d3d12 also base/shaders, the HLSL that DXC compiles), starts the game in a 1280x720 window with an isolated fs_savepath (the
+real config in Saved Games is never read or written), runs "vdemo <demos> quit" and copies into
+-OutDir: the frames and vdemo.json of every demo, run.json,
 qconsole.log, the screenshots the demos took (screenshots/) and modules.txt, every module the game
 had loaded (polled every 5 s).
 
@@ -18,9 +18,10 @@ run.json gets two more fields: "validation", the debug layer messages of qconsol
 "exitCode", the game's own. The game writes "api", the backend that really ran.
 
 -Api opengl|d3d12 sets r_renderApi. -DebugLevel N sets r_debugContext (only when given). The save
-path is wiped every run; -KeepShaderCache keeps its renderprogs/dxbc (the D3D12 shader cache) across
-the wipe. -TimeoutScale N stretches the game's load and stall timeouts (vdemo_timeoutScale) and
--TimeoutMinutes, for slow runs such as GPU-based validation.
+path is wiped every run; -KeepShaderCache keeps its D3D12 caches (shaders/cache, the DXIL, and
+renderprogs/dxbc, the PSO journal and pipeline library) across the wipe. -TimeoutScale N stretches
+the game's load and stall timeouts (vdemo_timeoutScale) and -TimeoutMinutes, for slow runs such as
+GPU-based validation.
 
 Refuses to run while any Doom3BFG.exe runs. Exit code: 0 when every demo ended "ok" with all its
 frames on disk and no layer message, 1 when a demo failed, lost a frame or the layer reported
@@ -97,10 +98,14 @@ if ( -not ( Test-Path ( Join-Path $GameDir 'base\_common.resources' ) ) ) {
 }
 
 if ( -not $NoDeploy ) {
-	foreach ( $file in 'Doom3BFG.exe', 'Doom3BFG.pdb', 'avformat-61.dll', 'avcodec-61.dll', 'avutil-59.dll' ) {
+	# never d3d10warp.dll: the WARP package may be used for testing only, not shipped with the game
+	foreach ( $file in 'Doom3BFG.exe', 'Doom3BFG.pdb', 'avformat-61.dll', 'avcodec-61.dll', 'avutil-59.dll', 'dxcompiler.dll', 'dxil.dll',
+		'D3D12\D3D12Core.dll', 'D3D12\d3d12SDKLayers.dll' ) {
 		$source = Join-Path $BuildDir $file
 		if ( Test-Path $source ) {
-			Copy-Item $source $GameDir -Force
+			$destination = Split-Path ( Join-Path $GameDir $file ) -Parent
+			New-Item -ItemType Directory -Force $destination | Out-Null
+			Copy-Item $source $destination -Force
 		} elseif ( $file -eq 'Doom3BFG.exe' ) {
 			Write-Error "no Doom3BFG.exe in $BuildDir"
 			exit 2
@@ -110,36 +115,43 @@ if ( -not $NoDeploy ) {
 	New-Item -ItemType Directory -Force $vdemoTarget | Out-Null
 	Get-ChildItem $vdemoTarget -Filter '*.vdemo' | Remove-Item -Force
 	Copy-Item ( Join-Path $repoRoot 'base\vdemos\*.vdemo' ) $vdemoTarget -Force
-	# GL compiles the GLSL baked into the packs and never reads the sources
+	# GL compiles the GLSL baked into the packs and reads no loose file
 	if ( $Api -eq 'd3d12' ) {
-		$progTarget = Join-Path $GameDir 'base\renderprogs'
-		New-Item -ItemType Directory -Force $progTarget | Out-Null
-		Get-ChildItem ( Join-Path $repoRoot 'base\renderprogs' ) -File | Copy-Item -Destination $progTarget -Force
+		# the HLSL DXC compiles, with its include folder; a file an older deploy left is removed
+		$shaderTarget = Join-Path $GameDir 'base\shaders'
+		if ( Test-Path $shaderTarget ) { Remove-Item -Recurse -Force $shaderTarget }
+		Copy-Item ( Join-Path $repoRoot 'base\shaders' ) $shaderTarget -Recurse -Force
 	}
 	Write-Host "deployed $BuildDir and base\vdemos to $GameDir"
 }
 
 # the save path is ours only: a marker file guards against wiping anything else
 $marker = Join-Path $SavePath '.vdemo-save'
-$shaderCache = Join-Path $SavePath 'base\renderprogs\dxbc'
-$keptCache = "$SavePath-dxbc"
-if ( Test-Path $keptCache ) { Remove-Item -Recurse -Force $keptCache }
+$caches = @( @{ Path = ( Join-Path $SavePath 'base\renderprogs\dxbc' ); Kept = "$SavePath-dxbc" },
+	@{ Path = ( Join-Path $SavePath 'base\shaders\cache' ); Kept = "$SavePath-dxil" } )
+foreach ( $cache in $caches ) {
+	if ( Test-Path $cache.Kept ) { Remove-Item -Recurse -Force $cache.Kept }
+}
 if ( Test-Path $SavePath ) {
 	if ( -not ( Test-Path $marker ) ) {
 		Write-Error "$SavePath exists but was not made by this script (no .vdemo-save marker); pick another -SavePath."
 		exit 2
 	}
-	if ( $KeepShaderCache -and ( Test-Path $shaderCache ) ) {
-		Move-Item $shaderCache $keptCache
+	foreach ( $cache in $caches ) {
+		if ( $KeepShaderCache -and ( Test-Path $cache.Path ) ) {
+			Move-Item $cache.Path $cache.Kept
+		}
 	}
 	Remove-Item -Recurse -Force $SavePath
 }
 New-Item -ItemType Directory -Force $SavePath | Out-Null
 New-Item -ItemType File -Force $marker | Out-Null
-if ( Test-Path $keptCache ) {
-	New-Item -ItemType Directory -Force ( Split-Path -Parent $shaderCache ) | Out-Null
-	Move-Item $keptCache $shaderCache
-	Write-Host "kept the shader cache: $( @( Get-ChildItem $shaderCache -File -Recurse ).Count ) files"
+foreach ( $cache in $caches ) {
+	if ( Test-Path $cache.Kept ) {
+		New-Item -ItemType Directory -Force ( Split-Path -Parent $cache.Path ) | Out-Null
+		Move-Item $cache.Kept $cache.Path
+		Write-Host "kept the shader cache $( $cache.Path ): $( @( Get-ChildItem $cache.Path -File -Recurse ).Count ) files"
+	}
 }
 
 # a failed run must not leave the files of an earlier one in place

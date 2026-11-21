@@ -33,7 +33,7 @@ D3D12_RESOURCE_DESC TextureDesc( DXGI_FORMAT format, int width, int height, UINT
 	return desc;
 }
 
-void CreateShaderView( const idD3D12Device & device, ID3D12Resource & resource, DXGI_FORMAT format, UINT samples, D3D12_CPU_DESCRIPTOR_HANDLE slot ) {
+[[nodiscard]] D3D12_SHADER_RESOURCE_VIEW_DESC ShaderView( DXGI_FORMAT format, UINT samples ) {
 	D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
 	desc.Format = format;
 	desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -43,7 +43,7 @@ void CreateShaderView( const idD3D12Device & device, ID3D12Resource & resource, 
 		desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 		desc.Texture2D.MipLevels = 1;
 	}
-	device.Get().CreateShaderResourceView( &resource, &desc, slot );
+	return desc;
 }
 
 constexpr uint32 AlignUp( uint32 value, uint32 align ) {
@@ -69,18 +69,20 @@ idD3D12SceneTarget::idD3D12SceneTarget( const idD3D12Device & owner, idD3D12Grav
 	srvPool( srvs ),
 	rtvPool( rtvs ),
 	dsvPool( dsvs ) {
-	color.srv = srvPool.Allocate();
-	depth.srv = srvPool.Allocate();
-	resolved.srv = srvPool.Allocate();
 	rtvUnorm = rtvPool.Allocate();
 	rtvSrgb = rtvPool.Allocate();
 	dsv = dsvPool.Allocate();
 }
 
-// The views are rewritten in their slots: a recorded list keeps the descriptors it was given.
+// The RTVs and the DSV are rewritten in their slots, a recorded list keeps what it was given. A submitted list
+// reads the SRVs from the shader-visible heap when it runs: each new resource takes new SRV slots.
 void idD3D12SceneTarget::Create( int newWidth, int newHeight, UINT sampleCount ) {
 	for ( surface_t * surface : { &color, &depth, &resolved } ) {
 		graveyard.Bury( std::move( surface->resource ) );
+		if ( surface->srv.IsValid() ) {
+			graveyard.Bury( srvPool, surface->srv );
+			surface->srv = {};
+		}
 		surface->state = {};
 	}
 	width = Max( newWidth, 1 );
@@ -110,7 +112,8 @@ void idD3D12SceneTarget::CreateColor( surface_t & surface, UINT sampleCount, boo
 	if ( device.Check( device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, surface.state.current,
 			renderTarget ? &clear : nullptr, IID_PPV_ARGS( &surface.resource ) ), "CreateCommittedResource (scene colour)" ) ) {
 		surface.resource->SetName( name );
-		CreateShaderView( device, *surface.resource.Get(), COLOR_UNORM, sampleCount, srvPool.Cpu( surface.srv ) );
+		surface.srv = srvPool.Allocate();
+		srvPool.CreateSrv( surface.srv, *surface.resource.Get(), ShaderView( COLOR_UNORM, sampleCount ) );
 	}
 }
 
@@ -129,7 +132,8 @@ void idD3D12SceneTarget::CreateDepth() {
 	view.Format = d3d12TargetId_t::DEPTH;
 	view.ViewDimension = ( samples > 1 ) ? D3D12_DSV_DIMENSION_TEXTURE2DMS : D3D12_DSV_DIMENSION_TEXTURE2D;
 	device.Get().CreateDepthStencilView( depth.resource.Get(), &view, Dsv() );
-	CreateShaderView( device, *depth.resource.Get(), DEPTH_SHADER_VIEW, samples, srvPool.Cpu( depth.srv ) );
+	depth.srv = srvPool.Allocate();
+	srvPool.CreateSrv( depth.srv, *depth.resource.Get(), ShaderView( DEPTH_SHADER_VIEW, samples ) );
 }
 
 idD3D12SceneTarget::surface_t & idD3D12SceneTarget::Resolved( idD3D12Barriers & barriers, idD3D12Submitter & submitter,

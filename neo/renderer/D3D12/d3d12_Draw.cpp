@@ -27,8 +27,7 @@ constexpr int FIRST_CHUNK_DRAWS = 64;
 
 idD3D12DrawRecorder::idD3D12DrawRecorder( const idD3D12Device & owner, idD3D12Submitter & submit, idD3D12Barriers & batch,
 	idD3D12SceneTarget & target, idD3D12InternalPasses & internalPasses, idD3D12PipelineFactory & factory, idD3D12ShaderLibrary & library,
-	idD3D12BufferStore & bufferStore, idD3D12TextureStore & textureStore, idD3D12DescriptorPool & srvs, idD3D12UploadRing & constantRing,
-	idD3D12DescriptorRing & descriptorRing, idD3D12SamplerHeap & samplerHeap ) :
+	idD3D12BufferStore & bufferStore, idD3D12TextureStore & textureStore, idD3D12UploadRing & constantRing, idD3D12SamplerHeap & samplerHeap ) :
 	device( owner ),
 	submitter( submit ),
 	barriers( batch ),
@@ -38,9 +37,7 @@ idD3D12DrawRecorder::idD3D12DrawRecorder( const idD3D12Device & owner, idD3D12Su
 	shaders( library ),
 	buffers( bufferStore ),
 	textures( textureStore ),
-	srvPool( srvs ),
 	constants( constantRing ),
-	descriptors( descriptorRing ),
 	samplers( samplerHeap ) {
 }
 
@@ -166,23 +163,25 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 	bool incomplete = false;
 	for ( int slot = 0; slot < MAX_TEXTURE_SLOTS; slot++ ) {
 		const int bit = 1 << slot;
-		const textureKind_t kind = ( program.info.cubeMask & bit ) != 0 ? textureKind_t::TEX_CUBE : textureKind_t::TEX_2D;
-		textureHandle_t handle = textureHandle_t::NONE;
-		if ( ( program.info.samplerMask & bit ) != 0 ) {
-			handle = latch.textures[slot][static_cast<size_t>( kind )];
-			const d3d12Texture_t * texture = textures.Find( handle );
-			if ( texture != nullptr && texture->kind == kind ) {
-				prepared.signature.samplers.samplers[slot] = texture->sampler;
-				incomplete |= texture->IncompleteCopy();
-			} else {
-				handle = textureHandle_t::NONE;
-				unbound = true;
-			}
+		if ( ( program.info.samplerMask & bit ) == 0 ) {
+			continue;
+		}
+		const bool cube = ( program.info.cubeMask & bit ) != 0;
+		const textureKind_t kind = cube ? textureKind_t::TEX_CUBE : textureKind_t::TEX_2D;
+		textureHandle_t handle = latch.textures[slot][static_cast<size_t>( kind )];
+		const d3d12Texture_t * texture = textures.Find( handle );
+		uint32 sampler = 0;
+		if ( texture != nullptr && texture->kind == kind ) {
+			sampler = texture->samplerSlot;
+			incomplete |= texture->IncompleteCopy();
+		} else {
+			handle = textureHandle_t::NONE;
+			sampler = samplers.FallbackSlot();
+			unbound = true;
 		}
 		prepared.textures[slot] = handle;
-		const d3d12Descriptor_t view = textures.SampledView( handle, kind );
-		prepared.signature.srvs[slot] = view.index;
-		prepared.sources[slot] = srvPool.Cpu( view );
+		prepared.resources.SetTexture( slot, cube, textures.SampledView( handle, kind ).index );
+		prepared.resources.SetSampler( slot, sampler );
 	}
 	stats.unboundSlots += unbound ? 1 : 0;
 	stats.incompleteBinds += incomplete ? 1 : 0;
@@ -209,32 +208,17 @@ std::optional<idD3D12DrawRecorder::reserved_t> idD3D12DrawRecorder::TryReserve( 
 			}
 		}
 	}
-	if ( bound.srvs != prepared.signature.srvs ) {
-		reserved.table = descriptors.TryCopyTable( prepared.sources );
-		if ( !reserved.table ) {
-			return std::nullopt;
-		}
-	}
-	if ( bound.samplers != prepared.signature.samplers ) {
-		reserved.samplerTable = samplers.TryTable( prepared.signature.samplers, submitter.PendingFence(), submitter.WaitedFence() );
-		if ( !reserved.samplerTable ) {
-			return std::nullopt;
-		}
-	}
 	return reserved;
 }
 
-// Full rings: submit, wait for the oldest chunk, and take again in the new list, whose bound state is empty.
+// A full ring: submit, wait for the oldest chunk, and take again in the new list, whose bound state is empty.
 idD3D12DrawRecorder::reserved_t idD3D12DrawRecorder::Reserve( const prepared_t & prepared, const renderLatch_t & latch, const drawCall_t & dc ) {
 	std::optional<reserved_t> reserved = TryReserve( prepared, latch, dc );
 	while ( !reserved ) {
 		submitter.SubmitChunk();
-		uint64 oldest = Max( constants.OldestFence(), descriptors.OldestFence() );
-		if ( samplers.Used() == static_cast<int>( idD3D12SamplerHeap::TABLES ) ) {
-			oldest = Max( oldest, samplers.OldestUse() );
-		}
+		const uint64 oldest = constants.OldestFence();
 		if ( oldest == 0 ) {
-			common->FatalError( "d3d12: a draw does not fit into empty rings" );
+			common->FatalError( "d3d12: a draw does not fit into an empty ring" );
 		}
 		submitter.WaitFor( oldest );
 		stats.reserveWaits++;
@@ -260,7 +244,7 @@ void idD3D12DrawRecorder::Record( ID3D12GraphicsCommandList1 & list, const prepa
 	BindDynamicState( list, latch, dc.topology );
 	BindParms( list, reserved, latch, dc, program );
 	BindJoints( list, used.joints );
-	BindTextures( list, prepared, reserved );
+	BindResources( list, prepared, program );
 	BindGeometry( list, prepared, dc, used );
 	list.DrawIndexedInstanced( static_cast<UINT>( dc.numIndexes ), 1, static_cast<UINT>( dc.indexOffset / static_cast<int>( sizeof( triIndex_t ) ) ),
 		dc.baseVertex, 0 );
@@ -364,15 +348,13 @@ void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList1 & list, std::op
 	}
 }
 
-void idD3D12DrawRecorder::BindTextures( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved ) {
-	if ( reserved.table ) {
-		list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::TEXTURES ), *reserved.table );
-		bound.srvs = prepared.signature.srvs;
-		stats.tableCopies++;
-	}
-	if ( reserved.samplerTable ) {
-		list.SetGraphicsRootDescriptorTable( D3D12_Root( d3d12RootSlot_t::SAMPLERS ), *reserved.samplerTable );
-		bound.samplers = prepared.signature.samplers;
+// A program that samples nothing does not read b3, so it keeps what the last one set.
+void idD3D12DrawRecorder::BindResources( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const d3d12Program_t & program ) {
+	if ( program.info.samplerMask != 0 && bound.resources != prepared.resources ) {
+		list.SetGraphicsRoot32BitConstants( D3D12_Root( d3d12RootSlot_t::DRAW_RESOURCES ), d3d12DrawResources_t::COUNT,
+			prepared.resources.indices.data(), 0 );
+		bound.resources = prepared.resources;
+		stats.resourceBinds++;
 	}
 }
 

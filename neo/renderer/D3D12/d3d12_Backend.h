@@ -51,7 +51,7 @@ public:
 									idRenderBackendD3D12();
 									~idRenderBackendD3D12() override { Shutdown(); }
 
-	bool							Init( const renderBackendInit_t & init ) override;	// false with the reason printed; Init again is legal
+	std::expected<void, idStr>		Init( const renderBackendInit_t & init ) override;
 	void							Shutdown() override;				// idempotent, safe after device loss and a mid-frame error
 	void							ResizeOutput( int width, int height ) override;
 	void							SetOption( renderOption_t option, bool enable ) override;

@@ -13,7 +13,9 @@ idCVar r_d3d12Adapter( "r_d3d12Adapter", "", CVAR_RENDERER | CVAR_INIT,
 idCVar r_d3d12CaptureBackBuffer( "r_d3d12CaptureBackBuffer", "0", CVAR_RENDERER | CVAR_BOOL,
 	"1 = ReadOutputPixels reads the back buffer after the present blit instead of the scene target (checks the blit)" );
 idCVar r_d3d12ShaderCache( "r_d3d12ShaderCache", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT,
-	"1 = Direct3D 12 keeps the DXBC of every shader in fs_savepath/renderprogs/dxbc and compiles only a text it has not seen" );
+	"1 = Direct3D 12 keeps the DXIL of every shader in fs_savepath/shaders/cache and compiles only a text it has not seen" );
+idCVar r_d3d12ShaderThreads( "r_d3d12ShaderThreads", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_INIT,
+	"the most DXC runs at once when Direct3D 12 compiles its shaders: 0 = one per hardware thread, 1 = one after another", 0, 64 );
 idCVar r_d3d12PipelineLibrary( "r_d3d12PipelineLibrary", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT,
 	"1 = Direct3D 12 keeps its PSOs in fs_savepath/renderprogs/dxbc/pipelines.bin, so the next run loads them instead of compiling" );
 idCVar r_d3d12FrameBuffers( "r_d3d12FrameBuffers", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_INIT,
@@ -23,6 +25,7 @@ idCVar r_d3d12FrameBuffers( "r_d3d12FrameBuffers", "0", CVAR_RENDERER | CVAR_INT
 namespace {
 
 constexpr uint64 CONSTANTS_RING_SIZE = 16 << 20;
+constexpr uint32 SHADER_VISIBLE_SRVS = 1 << 17;	// every texture view and scene surface at once; ~4 MB of descriptors
 constexpr uint64 STAGING_RING_SIZE = 64 << 20;	// four uploader pieces: the GPU copies one while the CPU fills the next
 constexpr const char * JOURNAL_FILE = "renderprogs/dxbc/pipelines.journal";
 constexpr const char * LIBRARY_FILE = "renderprogs/dxbc/pipelines.bin";
@@ -111,27 +114,26 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	commands( device, queue ),
 	timers( device, queue ),
 	barriers( *this ),
-	srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ),
+	srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SHADER_VISIBLE_SRVS ),
 	rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
 	dsvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
-	descriptors( device ),
-	samplers( device ),
+	samplers( device, graveyard ),
 	constants( device, CONSTANTS_RING_SIZE, L"doom3 constants ring" ),
 	staging( device, STAGING_RING_SIZE, L"doom3 staging ring" ),
 	uploader( device, *this, staging, barriers, graveyard ),
 	buffers( device, graveyard, uploader, barriers, FramePlacement( device ) ),
-	textures( device, graveyard, srvPool, rtvPool, uploader, barriers, device.Features().unalignedBlocks ),
-	compiler( library, r_d3d12ShaderCache.GetBool() ),
-	shaders( compiler, graveyard ),
+	textures( device, graveyard, srvPool, rtvPool, samplers, uploader, barriers, device.Features().unalignedBlocks ),
+	hlslCompiler( library, D3D12_GameDataReader(), r_d3d12ShaderCache.GetBool(), r_d3d12ShaderThreads.GetInteger() ),
+	shaders( hlslCompiler, graveyard ),
 	rootSignature( device, library ),
 	journal( LoadJournal() ),
 	pipelineLibrary( OpenPipelineLibrary( device ) ),
 	pipelines( device, rootSignature, &journal, pipelineLibrary ? &*pipelineLibrary : nullptr ),
 	scene( device, graveyard, srvPool, rtvPool, dsvPool ),
-	passes( device, rootSignature, compiler, *this, barriers, uploader, constants, descriptors, samplers, srvPool ),
+	passes( device, rootSignature, hlslCompiler, *this, barriers, uploader, constants, samplers, srvPool ),
 	readback( device, *this, barriers, graveyard ),
 	copies( *this, barriers, scene, textures, passes, rtvPool ),
-	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, srvPool, constants, descriptors, samplers ) {
+	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, constants, samplers ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -163,8 +165,9 @@ std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width,
 
 void idD3D12Context::CreateDefaults() {
 	textures.CreateDefaults();
-	passes.CreateDefaults( textures.Fallback( textureKind_t::TEX_2D ), textures.Fallback( textureKind_t::TEX_CUBE ) );
+	passes.CreateDefaults();
 	buffers.CreateDefaults();
+	shaders.Prebuild();
 }
 
 ID3D12GraphicsCommandList1 & idD3D12Context::List() {
@@ -172,7 +175,8 @@ ID3D12GraphicsCommandList1 & idD3D12Context::List() {
 		return commands.List();
 	}
 	ID3D12GraphicsCommandList1 & list = commands.Open();
-	ID3D12DescriptorHeap * heaps[] = { descriptors.Heap(), samplers.Heap() };
+	// the directly indexed heaps come before the root signature
+	ID3D12DescriptorHeap * heaps[] = { srvPool.ShaderVisibleHeap(), samplers.Heap() };
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( rootSignature.Get() );
 	recorder.NewList();
@@ -189,7 +193,6 @@ uint64 idD3D12Context::SubmitChunk() {
 	const uint64 fence = commands.CloseAndExecute();
 	constants.CloseChunk( fence );
 	staging.CloseChunk( fence );
-	descriptors.CloseChunk( fence );
 	frame.submits++;
 	return fence;
 }
@@ -211,7 +214,6 @@ void idD3D12Context::WaitIdle() {
 void idD3D12Context::Retire( uint64 waitedFence ) {
 	constants.Retire( waitedFence );
 	staging.Retire( waitedFence );
-	descriptors.Retire( waitedFence );
 	graveyard.Collect();
 }
 
@@ -275,7 +277,7 @@ void idD3D12Context::EndFrameStats() {
 	frame.barriers = barriers.IssuedThisFrame();
 	frame.uploadBytes = uploader.BytesThisFrame();
 	frame.inPlaceBytes = buffers.InPlaceBytesThisFrame();
-	frame.samplerTables = samplers.BuiltThisFrame();
+	frame.samplersMade = samplers.BuiltThisFrame();
 	frame.debugGroups = groups.PushedThisFrame();
 	frame.timestamps = timers.WrittenThisFrame();
 	frame.gpuMicroseconds = timers.FrameMicroseconds();
@@ -415,10 +417,13 @@ void idD3D12Context::SavePipelines( bool withLibrary ) {
 
 void idD3D12Context::PrintInfo() const {
 	device.PrintInfo();
-	const uint64 version = library.compilerVersion;
-	common->Printf( "D3D12 shader compiler: d3dcompiler_47.dll %u.%u.%u.%u, compiled %d, %d from the cache; %d stages, %d programs\n",
-		static_cast<unsigned>( version >> 48 ), static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ), static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ),
-		static_cast<unsigned>( version & 0xFFFF ), compiler.Compiled(), compiler.CacheHits(), shaders.NumStages(), shaders.NumPrograms() );
+	const auto Version = []( uint64 version ) {
+		return idStr( va( "%u.%u.%u.%u", static_cast<unsigned>( version >> 48 ), static_cast<unsigned>( ( version >> 32 ) & 0xFFFF ),
+			static_cast<unsigned>( ( version >> 16 ) & 0xFFFF ), static_cast<unsigned>( version & 0xFFFF ) ) );
+	};
+	common->Printf( "D3D12 shader compiler: dxcompiler.dll %s compiled %d, %d from the cache in %.1f ms; %d stages, %d programs\n",
+		Version( library.dxcVersion ).c_str(), hlslCompiler.Compiled(), hlslCompiler.CacheHits(), hlslCompiler.Milliseconds(), shaders.NumStages(),
+		shaders.NumPrograms() );
 	const idD3D12PipelineFactory::stats_t & made = pipelines.TotalStats();
 	common->Printf( "D3D12 pipelines: %d PSOs, %d warmed from the journal and %d made by draws, %d from the library; %d depth biases; depth bounds %s\n",
 		pipelines.Num(), made.warmed, made.drawn, made.loaded, pipelines.Bias().Num(), device.Features().depthBounds ? "in every PSO" : "unsupported" );
@@ -435,7 +440,8 @@ void idD3D12Context::PrintInfo() const {
 	common->Printf( "D3D12 buffers: %d, FRAME %.1f MB in %s, STATIC %.1f MB in DEFAULT heaps; %.1f MB CPU mirrors\n", buffers.Num(),
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), D3D12_PlacementName( buffers.FramePlacement() ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ),
 		Megabytes( buffers.MirrorBytes() ) );
-	common->Printf( "D3D12 textures: %d, %.1f MB; sampler tables %d of %u; unaligned BC %s, anisotropic point mips %s\n", textures.Num(),
-		textures.Bytes() / ( 1024.0 * 1024.0 ), samplers.Used(), idD3D12SamplerHeap::TABLES, device.Features().unalignedBlocks ? "yes" : "decoded",
+	common->Printf( "D3D12 textures: %d, %.1f MB; shader-visible SRVs %d of %u, samplers %d of %u; unaligned BC %s, anisotropic point mips %s\n",
+		textures.Num(), textures.Bytes() / ( 1024.0 * 1024.0 ), srvPool.Used(), SHADER_VISIBLE_SRVS, samplers.Used(), idD3D12SamplerHeap::SIZE,
+		device.Features().unalignedBlocks ? "yes" : "decoded",
 		device.Features().anisoPointMip ? "yes" : "no" );
 }
