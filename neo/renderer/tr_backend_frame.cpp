@@ -137,7 +137,33 @@ static const drawSurfsCommand_t * RB_FindHdrMainView( const emptyCommand_t * cmd
 	return found;
 }
 
+// r_hdrDebug 1: what the eye adaptation of the last read-back resolve chose, once a second; 3: every frame, exactly
+// and with the view's time, so two runs can be compared line by line.
+static void RB_PrintHdrExposure( const viewDef_t & viewDef ) {
+	static int lastPrint;
+	const int now = Sys_Milliseconds();
+	const std::optional<hdrExposure_t> exposure = renderBackend->LastHdrExposure();
+	if ( !exposure ) {
+		return;
+	}
+	if ( r_hdrDebug.GetInteger() == 3 ) {
+		common->Printf( "hdr %d: EV100 measured %.6f, target %.6f, adapted %.6f; exposure %.6g, preExposure %.6g\n", viewDef.renderView.time[0],
+			exposure->measuredEV100, exposure->targetEV100, exposure->adaptedEV100, exposure->exposure, exposure->preExposure );
+		return;
+	}
+	if ( now - lastPrint < 1000 ) {
+		return;
+	}
+	lastPrint = now;
+	common->Printf( "hdr: EV100 measured %.2f, target %.2f, adapted %.2f; exposure %.3f (%+.2f EV), preExposure %.3f\n", exposure->measuredEV100,
+		exposure->targetEV100, exposure->adaptedEV100, exposure->exposure, idMath::Log( Max( exposure->exposure, 1e-30f ) ) / idMath::Log( 2.0f ),
+		exposure->preExposure );
+}
+
 static void RB_BeginHdrScene( const drawSurfsCommand_t * mainView ) {
+	if ( mainView != nullptr && ( r_hdrDebug.GetInteger() == 1 || r_hdrDebug.GetInteger() == 3 ) ) {
+		RB_PrintHdrExposure( *mainView->viewDef );
+	}
 	if ( mainView != nullptr ) {
 		renderBackend->BeginHdrScene( mainView->viewDef->postProcess );
 		backEnd.hdrPhase = true;

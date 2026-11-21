@@ -179,8 +179,8 @@ void idRenderBackendD3D12::BeginHdrScene( const postProcessSettings_t & settings
 	context->BeginHdrScene( settings );
 }
 
-void idRenderBackendD3D12::ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport ) {
-	context->ResolveHdrScene( settings, viewport );
+void idRenderBackendD3D12::ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport, const hdrExposureStep_t & step ) {
+	context->ResolveHdrScene( settings, viewport, step );
 }
 
 void idRenderBackendD3D12::EndHdrScene() {
@@ -189,6 +189,10 @@ void idRenderBackendD3D12::EndHdrScene() {
 
 void idRenderBackendD3D12::SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) {
 	context->SetHdrSceneGamma( encoded, viewport );
+}
+
+std::optional<hdrExposure_t> idRenderBackendD3D12::LastHdrExposure() const {
+	return context ? context->LastHdrExposure() : std::nullopt;
 }
 
 void idRenderBackendD3D12::CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) {

@@ -16,7 +16,7 @@ constexpr uint64 BUFFER_COPY_ALIGN = 16;
 }	// namespace
 
 idComPtr<ID3D12Resource> D3D12_CreateBuffer( const idD3D12Device & device, D3D12_HEAP_TYPE heap, uint64 bytes,
-	D3D12_RESOURCE_STATES state, const wchar_t * name ) {
+	D3D12_RESOURCE_STATES state, const wchar_t * name, D3D12_RESOURCE_FLAGS flags ) {
 	D3D12_HEAP_PROPERTIES properties = {};
 	properties.Type = heap;
 	D3D12_RESOURCE_DESC desc = {};
@@ -27,6 +27,7 @@ idComPtr<ID3D12Resource> D3D12_CreateBuffer( const idD3D12Device & device, D3D12
 	desc.MipLevels = 1;
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	desc.Flags = flags;
 	idComPtr<ID3D12Resource> buffer;
 	if ( device.Check( device.Get().CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS( &buffer ) ),
 			"CreateCommittedResource (buffer)" ) ) {

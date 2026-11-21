@@ -177,17 +177,77 @@ struct tonemapParms_t {
 	uint32							lutSrv;
 	uint32							lutSampler;
 	uint32							dither;
-	float							exposureScale;
+	float							invPreExposure;
 	float							lutK;
 	float							lutInvRange;
-	float							unused;
+	uint32							eyeSrv;
+	uint32							visualize;
+	float							histogramMinEV;
+	float							binWidth;
+	float							lowPercent;
+	float							highPercent;
+	int32							viewX;
+	int32							viewY;
+	int32							viewWidth;
+	int32							viewHeight;
 };
+
+// b0 of internal/exposureHistogram.hlsl.
+struct histogramParms_t {
+	uint32							sceneSrv;
+	uint32							histogramUav;
+	uint32							x0;
+	uint32							y0;
+	uint32							width;
+	uint32							height;
+	float							invPreExposure;
+	float							meteringMask;
+	float							minEV;
+	float							binsPerEV;
+};
+
+// b0 of internal/exposureAdapt.hlsl.
+struct adaptParms_t {
+	uint32							histogramUav;
+	uint32							eyeUav;
+	float							histogramMinEV;
+	float							binWidth;
+	float							lowPercent;
+	float							highPercent;
+	float							minEV100;
+	float							maxEV100;
+	float							speedUp;
+	float							speedDown;
+	float							seconds;
+	uint32							reset;
+	uint32							autoExposure;
+	float							compensation;
+	float							bias;
+	float							manualExposure;
+};
+
+// A raw view of a buffer of bytes.
+template<typename VIEW> [[nodiscard]] VIEW RawView( uint32 bytes ) {
+	VIEW view = {};
+	view.Format = DXGI_FORMAT_R32_TYPELESS;
+	view.Buffer.NumElements = bytes / 4;
+	if constexpr ( std::is_same_v<VIEW, D3D12_SHADER_RESOURCE_VIEW_DESC> ) {
+		view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		view.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+	} else {
+		view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		view.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+	}
+	return view;
+}
 
 }	// namespace
 
-idD3D12HdrPipeline::idD3D12HdrPipeline( const idD3D12Device & owner, const idD3D12ComputeRootSignature & root,
+idD3D12HdrPipeline::idD3D12HdrPipeline( const idD3D12Device & owner, idD3D12Submitter & submit, const idD3D12ComputeRootSignature & root,
 	const idD3D12InternalPasses & internalPasses, idD3D12SamplerHeap & samplerHeap, idD3D12DescriptorPool & srvs ) :
 	device( owner ),
+	submitter( submit ),
 	computeRoot( root ),
 	passes( internalPasses ),
 	samplers( samplerHeap ),
@@ -200,6 +260,28 @@ void idD3D12HdrPipeline::CreateDefaults() {
 	combineLut = D3D12_CreateComputePipeline( device, computeRoot, lutStage.code, lutStage.reflection, L"doom3 combine LUT" );
 	const d3d12HlslStage_t & resolveStage = passes.Stage( "internal_hdrResolve" );
 	msaaResolve = D3D12_CreateComputePipeline( device, computeRoot, resolveStage.code, resolveStage.reflection, L"doom3 HDR MSAA resolve" );
+	const d3d12HlslStage_t & histogramStage = passes.Stage( "internal_exposureHistogram" );
+	exposureHistogram = D3D12_CreateComputePipeline( device, computeRoot, histogramStage.code, histogramStage.reflection, L"doom3 exposure histogram" );
+	const d3d12HlslStage_t & adaptStage = passes.Stage( "internal_exposureAdapt" );
+	exposureAdapt = D3D12_CreateComputePipeline( device, computeRoot, adaptStage.code, adaptStage.reflection, L"doom3 eye adaptation" );
+
+	// committed buffers start zeroed: the histogram empty; EyeAdaptation is set by the first resolve's reset
+	histogram = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, d3d12Exposure::BINS * 4, D3D12_RESOURCE_STATE_COMMON, L"doom3 exposure histogram",
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	eyeAdaptation = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, d3d12Exposure::EYE_BYTES, D3D12_RESOURCE_STATE_COMMON, L"doom3 eye adaptation",
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	eyeReadback = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_READBACK, d3d12Exposure::EYE_BYTES, D3D12_RESOURCE_STATE_COPY_DEST,
+		L"doom3 eye adaptation readback" );
+	if ( histogram && eyeAdaptation && eyeReadback ) {
+		histogramState.decays = true;
+		eyeState.decays = true;
+		histogramUav = srvPool.Allocate();
+		srvPool.CreateUav( histogramUav, *histogram.Get(), RawView<D3D12_UNORDERED_ACCESS_VIEW_DESC>( d3d12Exposure::BINS * 4 ) );
+		eyeSrv = srvPool.Allocate();
+		srvPool.CreateSrv( eyeSrv, *eyeAdaptation.Get(), RawView<D3D12_SHADER_RESOURCE_VIEW_DESC>( d3d12Exposure::EYE_BYTES ) );
+		eyeUav = srvPool.Allocate();
+		srvPool.CreateUav( eyeUav, *eyeAdaptation.Get(), RawView<D3D12_UNORDERED_ACCESS_VIEW_DESC>( d3d12Exposure::EYE_BYTES ) );
+	}
 
 	D3D12_RESOURCE_DESC desc = {};
 	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
@@ -299,21 +381,27 @@ void idD3D12HdrPipeline::Encode( idD3D12RenderGraph & graph, idD3D12SceneTarget 
 }
 
 void idD3D12HdrPipeline::Resolve( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const postProcessSettings_t & settings,
-	const renderRect_t & viewport, float preExposure, idD3D12DebugGroups * groups ) {
+	const renderRect_t & viewport, float preExposure, const hdrExposureStep_t & step, idD3D12DebugGroups * groups ) {
 	idD3D12SceneTarget::surface_t & hdrColor = scene.Color( true );
 	idD3D12SceneTarget::surface_t & output = scene.Color( false );
 	ID3D12PipelineState * tonemapPso = Tonemap( scene.Samples() );
 	const renderRect_t rect = SceneRect( scene, viewport );
-	if ( !hdrColor.resource || !output.resource || !lut || !combineLut || !msaaResolve || tonemapPso == nullptr || rect.width == 0 || rect.height == 0 ) {
+	if ( !hdrColor.resource || !output.resource || !lut || !combineLut || !msaaResolve || !exposureHistogram || !exposureAdapt || !eyeReadback
+		|| tonemapPso == nullptr || rect.width == 0 || rect.height == 0 ) {
 		return;
 	}
 	const uint32 width = static_cast<uint32>( scene.Width() );
 	const uint32 height = static_cast<uint32>( scene.Height() );
-	const float exposureScale = R_ManualExposure( settings ) / Max( preExposure, 1e-20f );
+	const float invPreExposure = 1.0f / Max( preExposure, 1e-20f );
+	// the Karis weights see about what the tonemapper will: the scene is drawn with the last exposure
+	const float lumaScale = settings.autoExposure ? 1.0f : R_ManualExposure( settings ) / Max( preExposure, 1e-20f );
 
 	const d3d12GraphResource_t sceneColor = graph.Import( "SceneColor", { hdrColor.resource.Get(), &hdrColor.state, hdrColor.srv, {}, {}, width, height } );
 	const d3d12GraphResource_t target = graph.Import( "Output", { output.resource.Get(), &output.state, output.srv, {}, scene.Rtv( false ), width, height } );
 	const d3d12GraphResource_t lutTexture = graph.Import( "CombineLUT", { lut.Get(), &lutState, lutSrv, lutUav, {}, d3d12Lut::SIZE, d3d12Lut::SIZE } );
+	const d3d12GraphResource_t histogramBuffer = graph.Import( "Exposure histogram", { histogram.Get(), &histogramState, {}, histogramUav, {},
+		d3d12Exposure::BINS * 4, 1 } );
+	const d3d12GraphResource_t eye = graph.Import( "EyeAdaptation", { eyeAdaptation.Get(), &eyeState, eyeSrv, eyeUav, {}, d3d12Exposure::EYE_BYTES, 1 } );
 
 	const d3d12LutParms_t parms = D3D12_LutParms( settings );
 	if ( !lutParms || *lutParms != parms ) {
@@ -336,22 +424,78 @@ void idD3D12HdrPipeline::Resolve( idD3D12RenderGraph & graph, idD3D12SceneTarget
 		desc.unorderedAccess = true;
 		input = graph.Create( "SceneColor resolved", desc );
 		graph.AddPass( "MSAA resolve", d3d12GraphPass_t::COMPUTE, { { sceneColor, d3d12GraphAccess_t::SRV }, { input, d3d12GraphAccess_t::UAV, 0 } },
-			[this, sceneColor, input, samples, exposureScale, rect]( idD3D12GraphContext & context ) {
-				const std::array<uint32, 8> constants = { context.Srv( sceneColor ), context.Uav( input ), samples, std::bit_cast<uint32>( exposureScale ),
+			[this, sceneColor, input, samples, lumaScale, rect]( idD3D12GraphContext & context ) {
+				const std::array<uint32, 8> constants = { context.Srv( sceneColor ), context.Uav( input ), samples, std::bit_cast<uint32>( lumaScale ),
 					static_cast<uint32>( rect.x ), static_cast<uint32>( rect.y ), static_cast<uint32>( rect.width ), static_cast<uint32>( rect.height ) };
 				context.Dispatch( msaaResolve, nullptr, static_cast<uint32>( rect.width ), static_cast<uint32>( rect.height ), 1, constants );
 			} );
 	}
 
-	const tonemapParms_t tonemapBase = { 0, 0, lutSampler, settings.dither ? 1u : 0u, exposureScale, d3d12Lut::K, 1.0f / d3d12Lut::Range(), 0.0f };
-	graph.AddPass( "Tonemap", d3d12GraphPass_t::RASTER,
-		{ { input, d3d12GraphAccess_t::SRV }, { lutTexture, d3d12GraphAccess_t::SRV }, { target, d3d12GraphAccess_t::RTV, 0 } },
-		[tonemapPso, tonemapBase, input, lutTexture, target, rect]( idD3D12GraphContext & context ) {
+	const float binWidth = Max( settings.histogramMaxEV - settings.histogramMinEV, 1.0f ) / static_cast<float>( d3d12Exposure::BINS );
+	const histogramParms_t histogramBase = { 0, 0, static_cast<uint32>( rect.x ), static_cast<uint32>( rect.y ), static_cast<uint32>( rect.width ),
+		static_cast<uint32>( rect.height ), invPreExposure, idMath::ClampFloat( 0.0f, 1.0f, settings.meteringMask ), settings.histogramMinEV, 1.0f / binWidth };
+	graph.AddPass( "Exposure histogram", d3d12GraphPass_t::COMPUTE, { { input, d3d12GraphAccess_t::SRV }, { histogramBuffer, d3d12GraphAccess_t::UAV } },
+		[this, histogramBase, input, histogramBuffer]( idD3D12GraphContext & context ) {
+			histogramParms_t histogramParms = histogramBase;
+			histogramParms.sceneSrv = context.Srv( input );
+			histogramParms.histogramUav = context.Uav( histogramBuffer );
+			const d3d12UploadSpan_t span = context.Parms( histogramParms );
+			context.Dispatch( exposureHistogram, &span, ( histogramParms.width + 1 ) / 2, ( histogramParms.height + 1 ) / 2 );
+		} );
+	const float lowPercent = idMath::ClampFloat( 0.0f, 0.99f, settings.lowPercent );
+	const float highPercent = idMath::ClampFloat( lowPercent + 0.01f, 1.0f, settings.highPercent );
+	const adaptParms_t adaptBase = { 0, 0, settings.histogramMinEV, binWidth, lowPercent, highPercent, settings.minEV100,
+		Max( settings.maxEV100, settings.minEV100 ), Max( settings.speedUp, 0.0f ), Max( settings.speedDown, 0.0f ), Max( step.seconds, 0.0f ),
+		( exposureReset || step.reset ) ? 1u : 0u, settings.autoExposure ? 1u : 0u, settings.exposureCompensation, settings.autoExposureBias,
+		R_ManualExposure( settings ) };
+	exposureReset = false;
+	graph.AddPass( "Eye adaptation", d3d12GraphPass_t::COMPUTE, { { histogramBuffer, d3d12GraphAccess_t::UAV }, { eye, d3d12GraphAccess_t::UAV } },
+		[this, adaptBase, histogramBuffer, eye]( idD3D12GraphContext & context ) {
+			adaptParms_t adaptParms = adaptBase;
+			adaptParms.histogramUav = context.Uav( histogramBuffer );
+			adaptParms.eyeUav = context.Uav( eye );
+			const d3d12UploadSpan_t span = context.Parms( adaptParms );
+			context.Dispatch( exposureAdapt, &span, 1 );
+		} );
+	graph.AddPass( "EyeAdaptation readback", d3d12GraphPass_t::COPY, { { eye, d3d12GraphAccess_t::COPY_SOURCE } }, [this, eye]( idD3D12GraphContext & context ) {
+		context.List().CopyBufferRegion( eyeReadback.Get(), 0, &context.Resource( eye ), 0, d3d12Exposure::EYE_BYTES );
+	}, true );
+
+	const tonemapParms_t tonemapBase = { 0, 0, lutSampler, settings.dither ? 1u : 0u, invPreExposure, d3d12Lut::K, 1.0f / d3d12Lut::Range(), 0,
+		Min( static_cast<uint32>( settings.visualize ), 2u ), settings.histogramMinEV, binWidth, lowPercent, highPercent, rect.x, rect.y, rect.width,
+		rect.height };
+	graph.AddPass( "Tonemap", d3d12GraphPass_t::RASTER, { { input, d3d12GraphAccess_t::SRV }, { lutTexture, d3d12GraphAccess_t::SRV },
+		{ eye, d3d12GraphAccess_t::SRV }, { target, d3d12GraphAccess_t::RTV, 0 } },
+		[tonemapPso, tonemapBase, input, lutTexture, eye, target, rect]( idD3D12GraphContext & context ) {
 			tonemapParms_t tonemapParms = tonemapBase;
 			tonemapParms.sceneSrv = context.Srv( input );
 			tonemapParms.lutSrv = context.Srv( lutTexture );
+			tonemapParms.eyeSrv = context.Srv( eye );
 			const d3d12UploadSpan_t span = context.Parms( tonemapParms );
 			context.Draw( *tonemapPso, target, 0, rect, span );
 		} );
 	graph.Execute( groups );
+	// after Execute: a submit inside it closed the copy's list with an older fence, so this one is late, never early
+	readbackFence = submitter.PendingFence();
+	readbackPreExposure = preExposure;
+}
+
+void idD3D12HdrPipeline::Poll() {
+	if ( readbackFence == 0 || submitter.WaitedFence() < readbackFence || device.IsLost() ) {
+		return;
+	}
+	readbackFence = 0;
+	const D3D12_RANGE read = { 0, d3d12Exposure::EYE_BYTES };
+	void * mapped = nullptr;
+	if ( !device.Check( eyeReadback->Map( 0, &read, &mapped ), "Map (eye adaptation readback)" ) ) {
+		return;
+	}
+	float values[4];
+	d3d12ExposureReadback_t result;
+	memcpy( values, mapped, sizeof( values ) );
+	memcpy( result.histogram.data(), static_cast<const byte *>( mapped ) + d3d12Exposure::HISTOGRAM_OFFSET, sizeof( result.histogram ) );
+	const D3D12_RANGE written = { 0, 0 };
+	eyeReadback->Unmap( 0, &written );
+	result.exposure = { values[0], values[1], values[2], values[3], readbackPreExposure };
+	lastExposure = result;
 }

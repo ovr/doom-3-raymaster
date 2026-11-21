@@ -140,6 +140,8 @@ If you have questions concerning this license or the applicable additional terms
 		draws after it go to the output as without HDR; EndHdrScene ends a phase no resolve ended.
 		SetHdrSceneGamma( true ) turns a view's rectangle of the scene into its sRGB encoding, and the
 		draws until SetHdrSceneGamma( false ) blend there in gamma without decoding (backEnd.hdrGamma).
+		A resolve moves the eye adaptation by its step; LastHdrExposure is what a resolve the CPU has
+		read back chose (a frame or more late).
 
 ===============================================================================
 */
@@ -220,9 +222,11 @@ public:
 	void					EndDrawStream() { drawStream.EndFrame(); }
 	// R13, in a frame, with caps.hdrScene: the main view's settings. Each ends the pass of a pipeline backend.
 	virtual void			BeginHdrScene( const postProcessSettings_t & settings ) {}
-	virtual void			ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport ) {}
+	virtual void			ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport,
+								const hdrExposureStep_t & step ) {}
 	virtual void			EndHdrScene() {}
 	virtual void			SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) {}
+	[[nodiscard]] virtual std::optional<hdrExposure_t>	LastHdrExposure() const { return std::nullopt; }
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,

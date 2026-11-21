@@ -661,6 +661,15 @@ const int MAX_DEBUG_BATCHES	= 64;
 
 // all state modified by the back end is separated
 // from the front end state
+// The main view at its last HDR resolve, for the eye adaptation's step (R13).
+struct hdrLastResolve_t {
+	int					time;					// renderView.time[0], ms
+	int					viewID;
+	int					width;
+	int					height;
+	bool				valid;
+};
+
 struct backEndState_t {
 	const viewDef_t	*	viewDef;
 	backEndCounters_t	pc;
@@ -671,6 +680,7 @@ struct backEndState_t {
 	bool				currentRenderCopied;	// true if any material has already referenced _currentRender
 	bool				hdrPhase;				// BeginHdrScene .. ResolveHdrScene: the colour parms decode from sRGB (R13)
 	bool				hdrGamma;				// in hdrPhase, the gamma composite: they do not
+	hdrLastResolve_t	hdrLastResolve;
 
 	idRenderMatrix		prevMVP[2];				// world MVP from previous frame for motion blur, per-eye
 

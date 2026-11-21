@@ -2662,6 +2662,24 @@ bool RB_ViewDraws( const viewDef_t * viewDef ) {
 	return viewDef->numDrawSurfs != 0 && !( r_skipRender.GetBool() && viewDef->viewEntitys );
 }
 
+// The eye adaptation's step at the main view's resolve: its time since the last resolve; at once to the target
+// for a new view, viewport size or a time that went back; none while a screenshot is taken or for the second eye.
+static hdrExposureStep_t RB_HdrExposureStep( const viewDef_t & viewDef, int stereoEye ) {
+	hdrExposureStep_t step;
+	if ( tr.takingScreenshot || stereoEye == -1 ) {
+		step.reset = false;
+		return step;
+	}
+	hdrLastResolve_t & last = backEnd.hdrLastResolve;
+	const int time = viewDef.renderView.time[0];
+	const int width = viewDef.viewport.GetWidth();
+	const int height = viewDef.viewport.GetHeight();
+	step.reset = !last.valid || viewDef.renderView.viewID != last.viewID || width != last.width || height != last.height || time < last.time;
+	step.seconds = step.reset ? 0.0f : static_cast<float>( time - last.time ) * 0.001f;
+	last = { time, viewDef.renderView.viewID, width, height, true };
+	return step;
+}
+
 void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	const drawSurfsCommand_t * cmd = (const drawSurfsCommand_t *)data;
 
@@ -2686,7 +2704,8 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	if ( hdrMainView ) {
 		const idScreenRect & v = backEnd.viewDef->viewport;
 		renderLog.OpenMainBlock( MRB_HDR );
-		renderBackend->ResolveHdrScene( backEnd.viewDef->postProcess, { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
+		renderBackend->ResolveHdrScene( backEnd.viewDef->postProcess, { v.x1, v.y1, v.GetWidth(), v.GetHeight() },
+			RB_HdrExposureStep( *backEnd.viewDef, stereoEye ) );
 		renderLog.CloseMainBlock();
 		backEnd.hdrPhase = false;
 		backEnd.hdrGamma = false;

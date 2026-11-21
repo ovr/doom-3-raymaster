@@ -136,12 +136,36 @@ idCVar r_hdrSaturation( "r_hdrSaturation", "1", CVAR_RENDERER | CVAR_FLOAT, "HDR
 idCVar r_hdrContrast( "r_hdrContrast", "1", CVAR_RENDERER | CVAR_FLOAT, "HDR colour grading contrast around mid grey", 0.0f, 2.0f );
 idCVar r_hdrDither( "r_hdrDither", "1", CVAR_RENDERER | CVAR_BOOL, "dither the tonemapped HDR frame before it is quantized to 8 bits" );
 idCVar r_hdrGammaBlend( "r_hdrGammaBlend", "1", CVAR_RENDERER | CVAR_BOOL, "1 = in HDR, the passes after the lights (unlit stages, translucent surfaces, fog and blend lights) blend in gamma as the content was made for; 0 = in linear" );
-idCVar r_hdrDebug( "r_hdrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "2 = print the HDR phase of every frame", 0, 2 );
+idCVar r_hdrDebug( "r_hdrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = print the eye adaptation once a second, 2 = print the HDR phase of every frame, 3 = print the eye adaptation of every frame", 0, 3 );
+idCVar r_hdrAutoExposure( "r_hdrAutoExposure", "1", CVAR_RENDERER | CVAR_BOOL, "1 = the HDR exposure follows the frame's brightness (eye adaptation), 0 = only r_hdrExposureCompensation" );
+idCVar r_hdrAutoExposureBias( "r_hdrAutoExposureBias", "-2.5", CVAR_RENDERER | CVAR_FLOAT, "EV added to the auto exposure only: where a frame's mean brightness lands", -8.0f, 8.0f );
+idCVar r_hdrMinEV100( "r_hdrMinEV100", "-4.25", CVAR_RENDERER | CVAR_FLOAT, "the darkest frame the eye adapts to, EV100", -16.0f, 16.0f );
+idCVar r_hdrMaxEV100( "r_hdrMaxEV100", "-1.25", CVAR_RENDERER | CVAR_FLOAT, "the brightest frame the eye adapts to, EV100", -16.0f, 16.0f );
+idCVar r_hdrSpeedUp( "r_hdrSpeedUp", "3", CVAR_RENDERER | CVAR_FLOAT, "eye adaptation toward a brighter frame, per second", 0.01f, 100.0f );
+idCVar r_hdrSpeedDown( "r_hdrSpeedDown", "1", CVAR_RENDERER | CVAR_FLOAT, "eye adaptation toward a darker frame, per second", 0.01f, 100.0f );
+idCVar r_hdrLowPercent( "r_hdrLowPercent", "10", CVAR_RENDERER | CVAR_FLOAT, "the eye adaptation averages the histogram from this percent of its weight ..", 0.0f, 99.0f );
+idCVar r_hdrHighPercent( "r_hdrHighPercent", "90", CVAR_RENDERER | CVAR_FLOAT, ".. to this one", 1.0f, 100.0f );
+idCVar r_hdrMeteringMask( "r_hdrMeteringMask", "0.5", CVAR_RENDERER | CVAR_FLOAT, "0 = every pixel counts the same in the eye adaptation, 1 = the corners count exp( -2 ) of the centre", 0.0f, 1.0f );
+idCVar r_hdrHistogramMinEV( "r_hdrHistogramMinEV", "-8", CVAR_RENDERER | CVAR_FLOAT, "EV100 of the start of the exposure histogram; darker pixels do not count", -16.0f, 16.0f );
+idCVar r_hdrHistogramMaxEV( "r_hdrHistogramMaxEV", "8", CVAR_RENDERER | CVAR_FLOAT, "EV100 of the end of the exposure histogram", -16.0f, 16.0f );
+idCVar r_hdrVisualize( "r_hdrVisualize", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = the exposure histogram and EVs over the HDR frame, 2 = false colour in stops around mid grey", 0, 2 );
 
 postProcessSettings_t R_DefaultPostProcessSettings() {
 	postProcessSettings_t settings;
 	settings.hdr = r_hdr.GetBool();
 	settings.exposureCompensation = r_hdrExposureCompensation.GetFloat();
+	settings.autoExposure = r_hdrAutoExposure.GetBool();
+	settings.autoExposureBias = r_hdrAutoExposureBias.GetFloat();
+	settings.minEV100 = r_hdrMinEV100.GetFloat();
+	settings.maxEV100 = r_hdrMaxEV100.GetFloat();
+	settings.speedUp = r_hdrSpeedUp.GetFloat();
+	settings.speedDown = r_hdrSpeedDown.GetFloat();
+	settings.lowPercent = r_hdrLowPercent.GetFloat() * 0.01f;
+	settings.highPercent = r_hdrHighPercent.GetFloat() * 0.01f;
+	settings.meteringMask = r_hdrMeteringMask.GetFloat();
+	settings.histogramMinEV = r_hdrHistogramMinEV.GetFloat();
+	settings.histogramMaxEV = r_hdrHistogramMaxEV.GetFloat();
+	settings.visualize = static_cast<uint8>( r_hdrVisualize.GetInteger() );
 	settings.whiteTemp = r_hdrWhiteTemp.GetFloat();
 	settings.whiteTint = r_hdrWhiteTint.GetFloat();
 	settings.global.saturation.w = r_hdrSaturation.GetFloat();

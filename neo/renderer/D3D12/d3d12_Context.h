@@ -105,10 +105,11 @@ public:
 	void							CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height );
 	// R13, in a frame: draws, clears and colour copies go to the HDR scene until its resolve or its end.
 	void							BeginHdrScene( const postProcessSettings_t & settings );
-	void							ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport );
+	void							ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport, const hdrExposureStep_t & step );
 	void							EndHdrScene();
 	// The gamma composite of the view inside viewport: to the scene's sRGB encoding or back.
 	void							SetHdrSceneGamma( bool gamma, const renderRect_t & viewport );
+	[[nodiscard]] std::optional<hdrExposure_t>	LastHdrExposure() const;
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	void							PushGroup( const char * name );			// r_pix 2, in a frame

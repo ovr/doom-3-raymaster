@@ -5046,7 +5046,7 @@ void CombineLut( idTestGpu & gpu, UINT samples ) {
 	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
 	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
 	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
-	idD3D12HdrPipeline hdr( gpu.device, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
 	hdr.CreateDefaults();
 	fixture.Bind();
 	fixture.scene.EnsureHdr( gpu.barriers, gpu );
@@ -5087,7 +5087,7 @@ void CombineLut( idTestGpu & gpu, UINT samples ) {
 	};
 	const auto run = [&]( const postProcessSettings_t & settings, const renderRect_t & viewport ) {
 		fill();
-		hdr.Resolve( graph, fixture.scene, settings, viewport, 1.0f, nullptr );
+		hdr.Resolve( graph, fixture.scene, settings, viewport, 1.0f, hdrExposureStep_t(), nullptr );
 		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
 		return fixture.Read( *resolved.resource.Get(), resolved.state );
 	};
@@ -5115,6 +5115,7 @@ void CombineLut( idTestGpu & gpu, UINT samples ) {
 	};
 	const renderRect_t whole = { 0, 0, SIZE, SIZE };
 	postProcessSettings_t settings;
+	settings.autoExposure = false;
 	settings.dither = false;
 	settings.tonemapper = hdrTonemapper_t::CLAMP;
 	compare( run( settings, whole ), "clamp", BLOCKS * BLOCKS, []( const idVec3 & c ) {
@@ -5176,7 +5177,7 @@ void HdrEncode( idTestGpu & gpu, UINT samples ) {
 	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
 	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
 	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
-	idD3D12HdrPipeline hdr( gpu.device, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
 	hdr.CreateDefaults();
 	fixture.Bind();
 	fixture.scene.EnsureHdr( gpu.barriers, gpu );
@@ -5244,6 +5245,214 @@ void HdrEncode( idTestGpu & gpu, UINT samples ) {
 void HdrEncodeAllSamples( idTestGpu & gpu ) {
 	HdrEncode( gpu, 1 );
 	HdrEncode( gpu, 4 );
+}
+
+// The mean EV100 of counts between low and high of their weight, as internal/exposureAdapt.hlsl takes it, for a
+// histogram from EV100 -8 to 8.
+[[nodiscard]] double ExposureMeanRef( const std::array<double, d3d12Exposure::BINS> & counts, double low, double high ) {
+	double total = 0.0;
+	for ( const double count : counts ) {
+		total += count;
+	}
+	double below = 0.0;
+	double sum = 0.0;
+	double weight = 0.0;
+	for ( uint32 bin = 0; bin < d3d12Exposure::BINS; bin++ ) {
+		const double inside = Max( 0.0, Min( below + counts[bin], total * high ) - Max( below, total * low ) );
+		sum += inside * ( -8.0 + ( bin + 0.5 ) * 0.25 );
+		weight += inside;
+		below += counts[bin];
+	}
+	return sum / weight;
+}
+
+/*
+	The eye adaptation on a scene of 8 x 8 blocks, each a grey at the centre of a histogram bin (EV100 -8 to 8, a
+	quarter EV a bin), drawn with preExposure 2, with and without MSAA:
+
+	  histogram   the read-back counts are the CPU's: 32 per 2 x 2 pixels, black and darker than the range none,
+	              brighter in the last bin, only inside the viewport
+	  measured    the mean between the percents within 1e-3 EV of the CPU's; with a centre-weighted mask too
+	  adapted     a reset is the target (measured, clamped), a step moves by 1 - 2^( -seconds * speed ) up and down
+	  exposure    auto 2^( compensation + bias - adapted ) / 1.2, manual the CPU's; the tonemap shows radiance times it
+	  visualize   1 and 2 change the output, without a layer message
+*/
+void Exposure( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	constexpr int BLOCK = 8;
+	constexpr int BLOCKS = SIZE / BLOCK;
+	constexpr float PRE_EXPOSURE = 2.0f;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	hdr.CreateDefaults();
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( computeRoot.Get() && fixture.scene.Color( true ).resource, "the compute root signature and the HDR scene" ) ) {
+		return;
+	}
+	// every bin once (37 is odd), then black, darker and brighter than the range
+	std::array<float, BLOCKS * BLOCKS> radiance;
+	for ( int i = 0; i < BLOCKS * BLOCKS; i++ ) {
+		radiance[i] = std::exp2( -8.0f + ( static_cast<float>( ( i * 37 ) % 64 ) + 0.5f ) * 0.25f - 3.0f );
+	}
+	radiance[5] = 0.0f;
+	radiance[17] = std::exp2( -9.0f - 3.0f );
+	radiance[42] = std::exp2( 10.0f - 3.0f );
+	const auto radianceAt = [&]( int column, int row ) { return radiance[( row / BLOCK ) * BLOCKS + column / BLOCK]; };
+	idD3D12SceneTarget::surface_t & output = fixture.scene.Color();
+	const auto fill = [&]() {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & scene = fixture.scene.Color( true );
+		gpu.barriers.Transition( *scene.resource.Get(), scene.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		for ( int row = 0; row < SIZE; row += BLOCK ) {
+			for ( int column = 0; column < SIZE; column += BLOCK ) {
+				const D3D12_RECT rect = { column, row, column + BLOCK, row + BLOCK };
+				const float c = radianceAt( column, row ) * PRE_EXPOSURE;
+				const float rgba[4] = { c, c, c, 1.0f };
+				gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), rgba, 1, &rect );
+			}
+		}
+		gpu.barriers.Transition( *output.resource.Get(), output.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false ), grey, 0, nullptr );
+	};
+	const auto expectedCounts = [&]( const renderRect_t & rect, float mask ) {
+		std::array<double, d3d12Exposure::BINS> counts = {};
+		const int blocksX = ( rect.width + 1 ) / 2;
+		const int blocksY = ( rect.height + 1 ) / 2;
+		for ( int y = 0; y < blocksY; y++ ) {
+			for ( int x = 0; x < blocksX; x++ ) {
+				const float ev = std::log2( radianceAt( rect.x + x * 2, rect.y + y * 2 ) ) + 3.0f;
+				if ( !( ev >= -8.0f ) ) {
+					continue;
+				}
+				const float dx = ( static_cast<float>( x ) + 0.5f ) / static_cast<float>( blocksX ) * 2.0f - 1.0f;
+				const float dy = ( static_cast<float>( y ) + 0.5f ) / static_cast<float>( blocksY ) * 2.0f - 1.0f;
+				const float weight = 1.0f + ( std::exp( -( dx * dx + dy * dy ) ) - 1.0f ) * mask;
+				counts[Min( static_cast<int>( ( ev + 8.0f ) * 4.0f ), 63 )] += static_cast<double>( static_cast<uint32>( weight * 32.0f + 0.5f ) );
+			}
+		}
+		return counts;
+	};
+	const auto run = [&]( const postProcessSettings_t & settings, const renderRect_t & viewport, const hdrExposureStep_t & step ) {
+		fill();
+		hdr.Resolve( graph, fixture.scene, settings, viewport, PRE_EXPOSURE, step, nullptr );
+		gpu.WaitIdle();
+		hdr.Poll();
+		return hdr.LastExposure().value_or( d3d12ExposureReadback_t() );
+	};
+	const auto readOutput = [&]() {
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		return fixture.Read( *resolved.resource.Get(), resolved.state );
+	};
+	const auto within = []( double value, double want, double tolerance ) { return std::abs( value - want ) <= tolerance * Max( 1.0, std::abs( want ) ); };
+	const auto wrongBins = []( const d3d12ExposureReadback_t & read, const std::array<double, d3d12Exposure::BINS> & counts ) {
+		int wrong = 0;
+		for ( uint32 bin = 0; bin < d3d12Exposure::BINS; bin++ ) {
+			wrong += ( static_cast<double>( read.histogram[bin] ) != counts[bin] ) ? 1 : 0;
+		}
+		return wrong;
+	};
+
+	const renderRect_t whole = { 0, 0, SIZE, SIZE };
+	postProcessSettings_t base;
+	base.dither = false;
+	base.tonemapper = hdrTonemapper_t::CLAMP;
+	base.meteringMask = 0.0f;
+	base.autoExposureBias = 0.0f;
+	base.minEV100 = -8.0f;
+	base.maxEV100 = 8.0f;
+	base.lowPercent = 0.0f;
+	base.highPercent = 1.0f;
+	const hdrExposureStep_t reset;
+	postProcessSettings_t settings = base;
+	d3d12ExposureReadback_t read = run( settings, whole, reset );
+	Check( hdr.LastExposure().has_value() && read.exposure.preExposure == PRE_EXPOSURE, "the EyeAdaptation is read back with its preExposure" );
+	const std::array<double, d3d12Exposure::BINS> counts = expectedCounts( whole, 0.0f );
+	Check( wrongBins( read, counts ) == 0, va( "%u sample(s): %d bins differ from the CPU's (the last %u, want %.0f)", samples, wrongBins( read, counts ),
+		read.histogram[63], counts[63] ) );
+	const double mean = ExposureMeanRef( counts, 0.0, 1.0 );
+	Check( within( read.exposure.measuredEV100, mean, 1e-3 ), va( "%u sample(s): measured %.4f EV100, the CPU's %.4f", samples, read.exposure.measuredEV100, mean ) );
+	const float stepped = std::nearbyint( read.exposure.measuredEV100 * d3d12Exposure::TARGET_STEPS ) / d3d12Exposure::TARGET_STEPS;
+	Check( read.exposure.targetEV100 == stepped && read.exposure.adaptedEV100 == stepped, va( "a reset adapts at once to the target in steps: %.5f, want %.5f",
+		read.exposure.adaptedEV100, stepped ) );
+	const float autoExposure = std::exp2( -read.exposure.adaptedEV100 ) / 1.2f;
+	Check( within( read.exposure.exposure, autoExposure, 1e-4 ), va( "exposure %g, want %g", read.exposure.exposure, autoExposure ) );
+	const std::vector<uint32> plain = readOutput();
+	int worst = 0;
+	for ( int row = 0; row < SIZE && !plain.empty(); row++ ) {
+		for ( int column = 0; column < SIZE; column++ ) {
+			const double shown = SrgbEncodeRef( std::clamp( static_cast<double>( radianceAt( column, row ) * read.exposure.exposure ), 0.0, 1.0 ) );
+			worst = Max( worst, std::abs( static_cast<int>( plain[static_cast<size_t>( row ) * SIZE + column] & 0xFF ) - ToByte( shown ) ) );
+		}
+	}
+	Check( !plain.empty() && worst <= 1, va( "%u sample(s): the tonemap shows radiance times the exposure within %d of 255", samples, worst ) );
+
+	settings.lowPercent = 0.25f;
+	settings.highPercent = 0.75f;
+	read = run( settings, whole, reset );
+	const double middle = ExposureMeanRef( counts, 0.25, 0.75 );
+	Check( within( read.exposure.measuredEV100, middle, 1e-3 ), va( "between 25 and 75 %%: %.4f EV100, the CPU's %.4f", read.exposure.measuredEV100, middle ) );
+	settings.maxEV100 = read.exposure.measuredEV100 - 1.0f;
+	read = run( settings, whole, reset );
+	Check( read.exposure.targetEV100 == settings.maxEV100 && read.exposure.adaptedEV100 == settings.maxEV100, "the target stays at most maxEV100" );
+
+	const float start = read.exposure.adaptedEV100;
+	settings.minEV100 = settings.maxEV100 = start + 2.0f;
+	settings.speedUp = 3.0f;
+	settings.speedDown = 1.0f;
+	read = run( settings, whole, { 0.25f, false } );
+	const float up = start + 2.0f * ( 1.0f - std::exp2( -0.25f * 3.0f ) );
+	Check( within( read.exposure.adaptedEV100, up, 1e-5 ), va( "toward a brighter target: %.5f, want %.5f", read.exposure.adaptedEV100, up ) );
+	settings.minEV100 = settings.maxEV100 = start - 2.0f;
+	read = run( settings, whole, { 0.25f, false } );
+	const float down = up + ( start - 2.0f - up ) * ( 1.0f - std::exp2( -0.25f ) );
+	Check( within( read.exposure.adaptedEV100, down, 1e-5 ), va( "toward a darker target: %.5f, want %.5f", read.exposure.adaptedEV100, down ) );
+	read = run( settings, whole, { 0.0f, false } );
+	Check( read.exposure.adaptedEV100 == down, "no time, no step" );
+	settings.exposureCompensation = 1.0f;
+	settings.autoExposureBias = -0.5f;
+	read = run( settings, whole, reset );
+	const float biased = std::exp2( 0.5f - read.exposure.adaptedEV100 ) / 1.2f;
+	Check( read.exposure.adaptedEV100 == start - 2.0f && within( read.exposure.exposure, biased, 1e-4 ), "the compensation and the bias add to the auto exposure" );
+	settings.autoExposure = false;
+	settings.exposureCompensation = 1.5f;
+	read = run( settings, whole, reset );
+	Check( read.exposure.exposure == R_ManualExposure( settings ), "manual: the CPU's exposure" );
+
+	settings = base;
+	settings.meteringMask = 1.0f;
+	read = run( settings, whole, reset );
+	const double masked = ExposureMeanRef( expectedCounts( whole, 1.0f ), 0.0, 1.0 );
+	Check( within( read.exposure.measuredEV100, masked, 0.01 ), va( "a centre-weighted mask: %.4f EV100, the CPU's %.4f (%.4f without)", read.exposure.measuredEV100,
+		masked, mean ) );
+	settings.meteringMask = 0.0f;
+	const renderRect_t inner = { 16, 8, 32, 40 };
+	read = run( settings, inner, reset );
+	Check( wrongBins( read, expectedCounts( inner, 0.0f ) ) == 0, va( "%u sample(s): only the viewport counts", samples ) );
+
+	settings.visualize = 1;
+	static_cast<void>( run( settings, whole, reset ) );
+	const std::vector<uint32> overlay = readOutput();
+	settings.visualize = 2;
+	static_cast<void>( run( settings, whole, reset ) );
+	const std::vector<uint32> falseColor = readOutput();
+	Check( !overlay.empty() && overlay != plain && !falseColor.empty() && falseColor != plain, "visualize 1 and 2 draw" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void ExposureAllSamples( idTestGpu & gpu ) {
+	Exposure( gpu, 1 );
+	Exposure( gpu, 4 );
 }
 
 void CombineLutAllSamples( idTestGpu & gpu ) {
@@ -5403,6 +5612,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },
 	{ "Warp_HdrEncode", OnWarp<HdrEncodeAllSamples> },
 	{ "Gpu_HdrEncode", OnGpu<HdrEncodeAllSamples> },
+	{ "Warp_Exposure", OnWarp<ExposureAllSamples> },
+	{ "Gpu_Exposure", OnGpu<ExposureAllSamples> },
 	{ "Gpu_CombineLut", OnGpu<CombineLutAllSamples> },
 };
 

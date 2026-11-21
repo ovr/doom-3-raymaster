@@ -9,7 +9,7 @@
 
 // A committed buffer of one heap type, named for the debug tools; nullptr only when the device is lost.
 [[nodiscard]] idComPtr<ID3D12Resource>	D3D12_CreateBuffer( const idD3D12Device & device, D3D12_HEAP_TYPE heap, uint64 bytes,
-											D3D12_RESOURCE_STATES state, const wchar_t * name );
+											D3D12_RESOURCE_STATES state, const wchar_t * name, D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE );
 
 // CPU-written memory the GPU reads once; write-combined: write it sequentially, never read it.
 struct d3d12UploadSpan_t {

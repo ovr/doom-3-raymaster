@@ -137,7 +137,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, constants, samplers ),
 	resourcePool( device, graveyard, srvPool, rtvPool ),
 	graph( device, *this, barriers, resourcePool, srvPool, rtvPool, constants, computeRootSignature ),
-	hdr( device, computeRootSignature, passes, samplers, srvPool ) {
+	hdr( device, *this, computeRootSignature, passes, samplers, srvPool ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -335,7 +335,8 @@ void idD3D12Context::CopyOutputToTexture( textureHandle_t texture, int x, int y,
 	copies.Color( texture, x, y, width, height, hdrScene );
 }
 
-// preExposure is the manual exposure until eye adaptation (H3) gives the last frame's.
+// preExposure: the manual exposure, or the auto exposure of the last resolve read back (Present waits for its
+// frame, so that is the last frame's); a finite one, else the manual exposure.
 void idD3D12Context::BeginHdrScene( const postProcessSettings_t & settings ) {
 	if ( device.IsLost() ) {
 		return;
@@ -345,7 +346,12 @@ void idD3D12Context::BeginHdrScene( const postProcessSettings_t & settings ) {
 	if ( !scene.Color( true ).resource ) {
 		return;
 	}
+	hdr.Poll();
 	preExposure = R_ManualExposure( settings );
+	if ( settings.autoExposure && hdr.LastExposure() ) {
+		const float last = hdr.LastExposure()->exposure.exposure;
+		preExposure = ( last > 1e-6f && last < 1e6f ) ? last : preExposure;
+	}
 	recorder.SetHdr( true, preExposure );
 	hdrScene = true;
 }
@@ -359,7 +365,7 @@ void idD3D12Context::SetHdrSceneGamma( bool gamma, const renderRect_t & viewport
 	recorder.Invalidate();
 }
 
-void idD3D12Context::ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport ) {
+void idD3D12Context::ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport, const hdrExposureStep_t & step ) {
 	if ( !hdrScene ) {
 		return;
 	}
@@ -368,8 +374,12 @@ void idD3D12Context::ResolveHdrScene( const postProcessSettings_t & settings, co
 	if ( device.IsLost() ) {
 		return;
 	}
-	hdr.Resolve( graph, scene, settings, viewport, preExposure, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	hdr.Resolve( graph, scene, settings, viewport, preExposure, step, ( groups.Depth() > 0 ) ? &groups : nullptr );
 	recorder.Invalidate();
+}
+
+std::optional<hdrExposure_t> idD3D12Context::LastHdrExposure() const {
+	return hdr.LastExposure() ? std::optional( hdr.LastExposure()->exposure ) : std::nullopt;
 }
 
 void idD3D12Context::EndHdrScene() {
@@ -419,6 +429,7 @@ void idD3D12Context::Resize( int width, int height ) {
 	swapChain->Resize( width, height );
 	scene.Create( swapChain->Width(), swapChain->Height(), scene.Samples() );
 	recorder.Invalidate();
+	hdr.ResetExposure();
 	// the old scene target dies after the next wait: a leak shows as memory that grows from resize to resize
 	const d3d12VideoMemory_t memory = device.VideoMemory();
 	common->DPrintf( "d3d12: output resized to %d x %d; %d graves, %.1f MB of video memory in use\n", width, height, graveyard.Pending(),
@@ -451,6 +462,7 @@ void idD3D12Context::EndLevelLoad() {
 		level.warmed, static_cast<double>( level.warmMicroseconds ) / 1000.0, level.drawn, static_cast<double>( level.drawnMicroseconds ) / 1000.0,
 		level.loaded );
 	SavePipelines( false );
+	hdr.ResetExposure();
 }
 
 // The file system outlives the renderer (common's Shutdown), but not a failed Init.

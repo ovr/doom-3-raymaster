@@ -73,9 +73,11 @@ public:
 	void							CopyOutputToTexture( textureHandle_t texture, int x, int y, int width, int height ) override;
 	void							CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) override;
 	void							BeginHdrScene( const postProcessSettings_t & settings ) override;
-	void							ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport ) override;
+	void							ResolveHdrScene( const postProcessSettings_t & settings, const renderRect_t & viewport,
+										const hdrExposureStep_t & step ) override;
 	void							EndHdrScene() override;
 	void							SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) override;
+	[[nodiscard]] std::optional<hdrExposure_t>	LastHdrExposure() const override;
 	void							EndLevelLoad() override;			// r_d3d12CheckImages 1: d3d12_checkImages
 
 	bufferHandle_t					CreateBuffer( bufferType_t type, bufferUsage_t usage, int size, const void * data ) override;

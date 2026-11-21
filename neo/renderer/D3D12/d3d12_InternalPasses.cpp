@@ -72,6 +72,8 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "tonemap", shaderStageType_t::FRAGMENT, "internal_tonemap", nullptr },
 	{ "combineLut", shaderStageType_t::COMPUTE, "internal_combineLut", nullptr },
 	{ "hdrResolve", shaderStageType_t::COMPUTE, "internal_hdrResolve", nullptr },
+	{ "exposureHistogram", shaderStageType_t::COMPUTE, "internal_exposureHistogram", nullptr },
+	{ "exposureAdapt", shaderStageType_t::COMPUTE, "internal_exposureAdapt", nullptr },
 	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode", nullptr },
 	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode_msaa", "MULTISAMPLED=1" },
 };
