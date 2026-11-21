@@ -42,7 +42,7 @@ $packages = @(
 		Url = 'https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip'
 		Sha256 = 'AD31B1FC8443175D204F77A611FDB3EF2EC42759BDC2F1167368DE24A4A7E7F1'
 		Copy = @( @( 'bin\x64\dxc.exe', 'bin\x64' ), @( 'bin\x64\dxcompiler.dll', 'bin\x64' ), @( 'bin\x64\dxil.dll', 'bin\x64' ),
-			@( 'inc\*', 'inc' ), @( 'LICENSE-*.txt', '.' ), @( 'LICENCE-*.txt', '.' ) )
+			@( 'inc\*', 'inc' ), @( 'LICENSE-*.txt', '.', 'optional' ), @( 'LICENCE-*.txt', '.', 'optional' ) )
 		Signed = @( 'bin\x64\dxc.exe', 'bin\x64\dxcompiler.dll', 'bin\x64\dxil.dll' )
 	},
 	@{
@@ -50,24 +50,33 @@ $packages = @(
 		Url = 'https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.d3d12/1.620.2/microsoft.direct3d.d3d12.1.620.2.nupkg'
 		Sha256 = '70489669C2BBEAF318B62D72B0AC3E753D521387BFC848C9763791C4E920BFCC'
 		Copy = @( @( 'build\native\include\*', 'include' ), @( 'build\native\bin\x64\D3D12Core.dll', 'bin\x64' ),
-			@( 'build\native\bin\x64\d3d12SDKLayers.dll', 'bin\x64' ), @( 'LICENSE*.txt', '.' ), @( 'distributable files.txt', '.' ) )
+			@( 'build\native\bin\x64\d3d12SDKLayers.dll', 'bin\x64' ), @( 'LICENSE*.txt', '.', 'optional' ),
+			@( 'distributable files.txt', '.', 'optional' ) )
 		Signed = @( 'bin\x64\D3D12Core.dll', 'bin\x64\d3d12SDKLayers.dll' )
 	},
 	@{
 		Name = 'warp'; Version = '1.0.22'
 		Url = 'https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.warp/1.0.22/microsoft.direct3d.warp.1.0.22.nupkg'
 		Sha256 = 'AFC058F4D1066EDC4231A38F3AB3592B1930F7287D4AC700E6A056E0874BB0BE'
-		Copy = @( @( 'build\native\bin\x64\d3d10warp.dll', 'bin\x64' ), @( 'LICENSE.TXT', '.' ) )
+		Copy = @( @( 'build\native\bin\x64\d3d10warp.dll', 'bin\x64' ), @( 'LICENSE.TXT', '.', 'optional' ) )
 		Signed = @( 'bin\x64\d3d10warp.dll' )
 	}
 )
 
 $stampFile = Join-Path $OutDir 'versions.txt'
 $stamp = ( $packages | ForEach-Object { "$( $_.Name ) $( $_.Version )" } ) -join "`r`n"
-if ( ( Test-Path $stampFile ) -and ( ( Get-Content $stampFile -Raw ).Trim() -eq $stamp ) ) {
+# the stamp alone does not do: a deleted or quarantined DLL is installed again
+$missing = @( foreach ( $package in $packages ) {
+	foreach ( $file in $package.Signed ) {
+		$path = Join-Path ( Join-Path $OutDir $package.Name ) $file
+		if ( -not ( Test-Path $path ) ) { $path }
+	}
+} )
+if ( ( Test-Path $stampFile ) -and ( ( Get-Content $stampFile -Raw ).Trim() -eq $stamp ) -and $missing.Count -eq 0 ) {
 	Write-Host "The D3D12 SDK pieces are already in $OutDir"
 	exit 0
 }
+foreach ( $path in $missing ) { Write-Host "missing: $path" }
 
 $downloads = Join-Path $OutDir '.download'
 foreach ( $package in $packages ) {
@@ -89,9 +98,15 @@ foreach ( $package in $packages ) {
 	$target = Join-Path $OutDir $package.Name
 	if ( Test-Path $target ) { Remove-Item -Recurse -Force $target }
 	foreach ( $copy in $package.Copy ) {
+		$source = Join-Path $unpacked $copy[0]
+		# a license or a list of files a release lacks does not stop the install
+		if ( $copy.Count -gt 2 -and -not ( Test-Path $source ) ) {
+			Write-Host "$( $package.Name ): the package has no $( $copy[0] )"
+			continue
+		}
 		$destination = Join-Path $target $copy[1]
 		New-Item -ItemType Directory -Force $destination | Out-Null
-		Copy-Item -Recurse -Path ( Join-Path $unpacked $copy[0] ) -Destination $destination
+		Copy-Item -Recurse -Path $source -Destination $destination
 	}
 	foreach ( $file in $package.Signed ) {
 		$signature = Get-AuthenticodeSignature ( Join-Path $target $file )

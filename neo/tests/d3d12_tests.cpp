@@ -262,7 +262,7 @@ public:
 		barriers( *this ),
 		srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SHADER_VISIBLE_SRVS ),
 		rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
-		samplers( device ),
+		samplers( device, graveyard ),
 		staging( device, stagingSize, L"test staging ring" ),
 		uploader( device, *this, staging, barriers, graveyard ),
 		buffers( device, graveyard, uploader, barriers, framePlacement ),
@@ -713,24 +713,27 @@ void Test_SamplerMap() {
 		"the bias" );
 }
 
-// A slot per packed sampler in the order of first use, made once and kept; the views of an SRV pool reach its
+// A slot per packed sampler that something holds, the fallback's first; the views of an SRV pool reach its
 // shader-visible heap at their slots.
 void Test_WarpDescriptorSlots() {
 	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
 	if ( !gpu ) {
 		return;
 	}
-	idD3D12SamplerHeap heap( gpu->device );
-	const uint64 linear = D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 1.0f, 0.0f } );
-	const uint64 point = D3D12_PackSampler( { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } );
-	const uint32 first = heap.Slot( linear );
-	const uint32 second = heap.Slot( point );
-	Check( first == 0 && second == 1 && heap.Slot( linear ) == 0 && heap.Used() == 2 && heap.BuiltThisFrame() == 2,
-		"two samplers, two slots, each made once" );
-	heap.ResetFrameCounters();
-	Check( heap.Slot( point ) == 1 && heap.BuiltThisFrame() == 0, "a kept sampler is not made again" );
-	Check( heap.Heap() != nullptr && heap.Heap()->GetDesc().NumDescriptors == idD3D12SamplerHeap::SIZE
-		&& ( heap.Heap()->GetDesc().Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE ) != 0, "one shader-visible heap of 2048" );
+	{
+		idD3D12SamplerHeap heap( gpu->device, gpu->graveyard );
+		const uint64 linear = D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 1.0f, 0.0f } );
+		const uint64 point = D3D12_PackSampler( { samplerFilter_t::NEAREST, samplerAddress_t::CLAMP, 1.0f, 0.0f } );
+		heap.ResetFrameCounters();
+		const uint32 first = heap.Acquire( linear );
+		const uint32 second = heap.Acquire( point );
+		Check( heap.FallbackSlot() == 0 && first == 1 && second == 2 && heap.Acquire( linear ) == 1 && heap.Used() == 3 && heap.BuiltThisFrame() == 2,
+			"the fallback and two samplers, three slots, each made once" );
+		heap.ResetFrameCounters();
+		Check( heap.Acquire( point ) == 2 && heap.BuiltThisFrame() == 0, "a held sampler is not made again" );
+		Check( heap.Heap() != nullptr && heap.Heap()->GetDesc().NumDescriptors == idD3D12SamplerHeap::SIZE
+			&& ( heap.Heap()->GetDesc().Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE ) != 0, "one shader-visible heap of 2048" );
+	}
 
 	idD3D12DescriptorPool pool( gpu->device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 8 );
 	const d3d12Descriptor_t slot = pool.Allocate();
@@ -1376,7 +1379,7 @@ void Test_WarpTextureGraves() {
 	gpu->textures.Destroy( first );
 	gpu->textures.Destroy( depth );
 	Check( gpu->textures.Find( first ) == nullptr && gpu->textures.Num() == 0 && gpu->textures.Bytes() == 0, "the handles die at once" );
-	Check( gpu->graveyard.Pending() == 5, va( "%d graves: two resources, two views and an RTV", gpu->graveyard.Pending() ) );
+	Check( gpu->graveyard.Pending() == 6, va( "%d graves: two resources, two views, an RTV and the sampler they held", gpu->graveyard.Pending() ) );
 	const textureHandle_t early = gpu->textures.Create( Opts( FMT_RGBA8, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test early" );
 	Check( gpu->textures.Get( early ).surface.srv != slot, "the slot is not reused before the wait" );
 	gpu->textures.Destroy( early );
@@ -1511,6 +1514,66 @@ void Test_HlslBindless() {
 		"float4 PSMain( float4 position : SV_Position ) : SV_Target { return map.Sample( mapSampler, position.xy ); }\n" ),
 		shaderStageType_t::FRAGMENT, hlslParms_t::ANY );
 	Check( !bound && bound.error().Find( "bindless.hlsli" ) >= 0, bound ? "a texture at t0 compiled" : bound.error().c_str() );
+	// a draw fills sampler<n> from the texture at n: a program reading another slot's sampler is refused
+	const auto lone = compiler.Build( source(
+		"#include \"include/bindless.hlsli\"\n"
+		"TEXTURE2D( Texture2D, map, 1 );\n"
+		"SAMPLER( mapSampler, 0 );\n"
+		"float4 PSMain( float4 position : SV_Position ) : SV_Target { return map.Sample( mapSampler, position.xy ); }\n" ),
+		shaderStageType_t::FRAGMENT );
+	Check( !lone && lone.error().Find( "SAMPLER( ..., 0 )" ) >= 0, lone ? "sampler 0 with texture 1 compiled" : lone.error().c_str() );
+}
+
+// The preprocess sees the stage's profile: a file that parts its stages by __SHADER_TARGET_STAGE builds both.
+void Test_HlslTargetMacros() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
+	d3d12HlslSource_t source;
+	source.name = "test_target";
+	source.path = "shaders/test_target.hlsl";
+	source.text =
+		"#if __SHADER_TARGET_STAGE == __SHADER_STAGE_VERTEX\n"
+		"float4 VSMain() : SV_Position { return 0; }\n"
+		"#elif __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL\n"
+		"float4 PSMain() : SV_Target { return 1; }\n"
+		"#else\n"
+		"#error no stage\n"
+		"#endif\n";
+	for ( const shaderStageType_t stage : { shaderStageType_t::VERTEX, shaderStageType_t::FRAGMENT } ) {
+		const auto built = compiler.Build( source, stage, hlslParms_t::ANY );
+		Check( built.has_value(), va( "%s: %s", ( stage == shaderStageType_t::VERTEX ) ? "VSMain" : "PSMain", built ? "" : built.error().c_str() ) );
+	}
+	Check( compiler.Compiled() == 2, va( "two texts, two DXC runs: %d", compiler.Compiled() ) );
+}
+
+// Every stage of the backend's own passes builds from base/shaders/internal.
+void Test_HlslInternalStages() {
+	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
+	if ( !library ) {
+		return;
+	}
+	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
+	std::vector<d3d12HlslSource_t> sources;
+	for ( const d3d12InternalStage_t & stage : D3D12_InternalStages() ) {
+		std::optional<d3d12HlslSource_t> source = D3D12_InternalSource( stage, RepoReader() );
+		if ( Check( source.has_value(), va( "shaders/internal/%s.hlsl", stage.file ) ) ) {
+			sources.push_back( std::move( *source ) );
+		}
+	}
+	if ( sources.size() != D3D12_InternalStages().size() ) {
+		return;
+	}
+	std::vector<d3d12HlslRequest_t> requests;
+	for ( size_t i = 0; i < sources.size(); i++ ) {
+		requests.push_back( { &sources[i], D3D12_InternalStages()[i].type, hlslParms_t::ANY } );
+	}
+	const std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
+	for ( size_t i = 0; i < built.size(); i++ ) {
+		Check( built[i].has_value(), va( "%s: %s", sources[i].name.c_str(), built[i] ? "" : built[i].error().c_str() ) );
+	}
 }
 
 // Stages from the preprocessed text: names in comments, and a SKINNED that changes nothing, add none.
@@ -1803,8 +1866,53 @@ void PrebuiltStages( idTestGpu & gpu ) {
 		&& prebuiltCompiler.Compiled() == runs + 1, "a stage asked for again is compiled" );
 	printf( "  %d stages, %d DXC runs in %.0f ms; one at a time %d in %.0f ms\n", numStages, runs, prebuiltCompiler.Milliseconds(),
 		plainCompiler.Compiled(), plainCompiler.Milliseconds() );
+	prebuilt.Prebuild();
+	prebuilt.DropPrebuilt();
+	const int dropped = prebuiltCompiler.Compiled();
+	shaderStageInfo_t late = {};
+	Check( prebuilt.CreateStage( shaderStageType_t::VERTEX, "heatHaze.vfp", late ) != shaderHandle_t::NONE && prebuiltCompiler.Compiled() == dropped + 1,
+		"after DropPrebuilt a stage is built again" );
 	prebuilt.DestroyAll();
 	plain.DestroyAll();
+}
+
+// A sampler slot lives while something holds it; the last Release buries it, and only the GPU passing the open
+// list's fence lets another sampler have it. Many more samplers than slots, each held a while, fit.
+void Test_WarpSamplerSlots() {
+	const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 );
+	if ( !gpu ) {
+		return;
+	}
+	{
+		idD3D12SamplerHeap heap( gpu->device, gpu->graveyard );
+		const auto Packed = []( int i ) {
+			return D3D12_PackSampler( { samplerFilter_t::LINEAR, samplerAddress_t::REPEAT, 1.0f, static_cast<float>( i ) / 256.0f } );
+		};
+		const uint32 slot = heap.Acquire( Packed( 1 ) );
+		Check( heap.Acquire( Packed( 1 ) ) == slot && heap.Used() == 2, "the same sampler, the same slot" );
+		heap.Release( slot );
+		Check( heap.Used() == 2 && heap.Acquire( Packed( 1 ) ) == slot, "held once more, the slot stays" );
+		heap.Release( slot );
+		heap.Release( slot );
+		Check( heap.Used() == 1 && heap.Acquire( Packed( 2 ) ) != slot, "released, it waits in the graveyard" );
+		gpu->WaitIdle();
+		gpu->graveyard.Collect();
+		const uint32 reused = heap.Acquire( Packed( 3 ) );
+		Check( reused == slot, va( "after the GPU, another sampler gets it: %u, not %u", reused, slot ) );
+
+		int most = 0;
+		for ( int i = 0; i < 3 * static_cast<int>( idD3D12SamplerHeap::SIZE ); i++ ) {
+			heap.Release( heap.Acquire( Packed( 100 + i ) ) );
+			most = Max( most, heap.Used() );
+			if ( i % 500 == 499 ) {
+				gpu->WaitIdle();
+			}
+		}
+		Check( most <= 4, va( "%d samplers, at most %d held at once", 3 * static_cast<int>( idD3D12SamplerHeap::SIZE ), most ) );
+		gpu->WaitIdle();
+		gpu->graveyard.Collect();
+	}
+	CheckNoLayerErrors( *gpu );
 }
 
 // ---- pipeline state: pipelineKey_t → the PSO description ---------------------------------------------------
@@ -4230,6 +4338,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Sampler_Packing", Test_SamplerPacking },
 	{ "Sampler_Map", Test_SamplerMap },
 	{ "Warp_DescriptorSlots", Test_WarpDescriptorSlots },
+	{ "Warp_SamplerSlots", Test_WarpSamplerSlots },
 	{ "Warp_TextureFormats", Test_WarpTextureFormats },
 	{ "Gpu_TextureFormats", Test_GpuTextureFormats },
 	{ "Warp_Borders", Test_WarpBorders },
@@ -4246,6 +4355,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Hlsl_ProgramsMatchGl", Test_HlslProgramsMatchGl },
 	{ "Hlsl_ProgramTable", Test_HlslProgramTable },
 	{ "Hlsl_BuildAll", Test_HlslBuildAll },
+	{ "Hlsl_TargetMacros", Test_HlslTargetMacros },
+	{ "Hlsl_InternalStages", Test_HlslInternalStages },
 	{ "Warp_DxcBindless", OnWarp<DxcBindless> },
 	{ "Warp_PrebuiltStages", OnWarp<PrebuiltStages> },
 	{ "Gpu_DxcBindless", OnGpu<DxcBindless> },

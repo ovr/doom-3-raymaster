@@ -175,7 +175,7 @@ class idRenderBackendGL final : public idRenderBackend {
 public:
 						idRenderBackendGL();
 
-	bool				Init( const renderBackendInit_t & init ) override;
+	std::expected<void, idStr>	Init( const renderBackendInit_t & init ) override;
 	void				Shutdown() override;
 	void				ResizeOutput( int width, int height ) override;
 	void				SetOption( renderOption_t option, bool enable ) override;

@@ -177,8 +177,11 @@ std::expected<d3d12DxcOutput_t, idStr> D3D12_DxcCompile( const idD3D12Library & 
 }
 
 std::expected<idStr, idStr> D3D12_DxcPreprocess( const idD3D12Library & library, std::string_view source, const char * name,
-	std::span<const char * const> defines, const d3d12ShaderReader_t & include ) {
+	std::span<const char * const> defines, const d3d12ShaderReader_t & include, const char * profile ) {
 	std::vector<std::wstring> args = Arguments( name, defines );
+	if ( profile != nullptr ) {
+		args.insert( args.end(), { L"-T", Widen( profile ) } );
+	}
 	args.push_back( L"-P" );
 	idStr warnings;
 	const auto result = Run( library, source, name, args, &include, warnings );

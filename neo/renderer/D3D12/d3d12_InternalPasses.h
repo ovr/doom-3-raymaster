@@ -22,6 +22,17 @@ struct d3d12GammaRamp_t {
 
 // The backend's own draws, with the one root signature and a triangle over the viewport. Each takes its
 // parms first (and may submit), then records; the caller invalidates the recorder afterwards.
+// The backend's own stages, shaders/internal/<file>.hlsl: CreateDefaults builds them, d3d12_compileAll too.
+struct d3d12InternalStage_t {
+	const char *					file;
+	shaderStageType_t				type;
+	const char *					name;
+	const char *					define;		// nullptr or "NAME=VALUE"
+};
+[[nodiscard]] std::span<const d3d12InternalStage_t>	D3D12_InternalStages();
+// The stage's file with its define; nullopt when the file is missing.
+[[nodiscard]] std::optional<d3d12HlslSource_t>		D3D12_InternalSource( const d3d12InternalStage_t & stage, const d3d12ShaderReader_t & reader );
+
 class idD3D12InternalPasses {
 public:
 									idD3D12InternalPasses( const idD3D12Device & device, const idD3D12RootSignature & root, idD3D12HlslCompiler & compiler,

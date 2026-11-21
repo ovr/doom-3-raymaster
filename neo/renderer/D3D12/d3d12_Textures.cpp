@@ -167,17 +167,19 @@ textureHandle_t idD3D12TextureStore::Create( const idImageOpts & opts, textureRo
 	texture.kind = kind;
 	texture.format = format;
 	texture.sampler = D3D12_PackSampler( sampler );
-	texture.samplerSlot = samplers.Slot( texture.sampler );
 	texture.name = debugName;
 	const int levels = idMath::ClampInt( 1, MaxLevels( width, height ), opts.numLevels );
 	if ( !CreateSurface( texture.surface, format, kind, width, height, levels, debugName ) ) {
 		return textureHandle_t::NONE;
 	}
+	texture.samplerSlot = samplers.Acquire( texture.sampler );
 	bytes += texture.surface.bytes;
+	// a full table leaves the record untouched
 	const textureHandle_t handle = table.Add( std::move( texture ) );
 	if ( handle == textureHandle_t::NONE ) {
 		common->Warning( "d3d12: no room for texture '%s' in the handle table", debugName );
 		BurySurface( texture.surface );
+		samplers.Release( texture.samplerSlot );
 	}
 	return handle;
 }
@@ -202,6 +204,14 @@ void idD3D12TextureStore::Destroy( textureHandle_t handle ) {
 	d3d12Texture_t dead = table.Remove( handle );
 	BurySurface( dead.surface );
 	BurySurface( dead.spare );
+	samplers.Release( dead.samplerSlot );
+}
+
+void idD3D12TextureStore::ChangeSampler( d3d12Texture_t & texture, uint64 packed ) {
+	const uint32 old = texture.samplerSlot;
+	texture.sampler = packed;
+	texture.samplerSlot = samplers.Acquire( packed );
+	samplers.Release( old );
 }
 
 // Swapping surfaces moves their states, which a batched barrier points at: the batch goes into the list first.
@@ -240,8 +250,7 @@ d3d12TextureSurface_t * idD3D12TextureStore::PrepareCopyTarget( textureHandle_t 
 		samplerDesc_t sampler = D3D12_UnpackSampler( texture->sampler );
 		sampler.filter = samplerFilter_t::LINEAR;
 		sampler.address = samplerAddress_t::CLAMP;
-		texture->sampler = D3D12_PackSampler( sampler );
-		texture->samplerSlot = samplers.Slot( texture->sampler );
+		ChangeSampler( *texture, D3D12_PackSampler( sampler ) );
 	}
 	return &texture->surface;
 }
@@ -351,8 +360,7 @@ d3d12UploadRecord_t idD3D12TextureStore::CopyRegion( d3d12TextureSurface_t & sur
 
 void idD3D12TextureStore::SetSampler( textureHandle_t handle, const samplerDesc_t & sampler ) {
 	if ( d3d12Texture_t * texture = table.Find( handle ) ) {
-		texture->sampler = D3D12_PackSampler( sampler );
-		texture->samplerSlot = samplers.Slot( texture->sampler );
+		ChangeSampler( *texture, D3D12_PackSampler( sampler ) );
 	}
 }
 
@@ -391,6 +399,7 @@ void idD3D12TextureStore::DestroyAll() {
 	if ( table.Num() > 0 ) {
 		common->DPrintf( "d3d12: %d textures still alive at shutdown\n", table.Num() );
 	}
+	table.ForEach( [this]( textureHandle_t, const d3d12Texture_t & texture ) { samplers.Release( texture.samplerSlot ); } );
 	table.Clear();
 	fallbacks = {};
 	bytes = 0;

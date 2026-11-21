@@ -104,6 +104,8 @@ void ReadDrawResources( ID3D12ShaderReflection & reflection, const char * name, 
 			if ( index >= d3d12DrawResources_t::CUBES ) {
 				result.cubeMask = static_cast<uint16>( result.cubeMask | ( 1u << slot ) );
 			}
+		} else if ( index < d3d12DrawResources_t::COUNT ) {
+			result.samplerReads = static_cast<uint16>( result.samplerReads | ( 1u << ( index - d3d12DrawResources_t::SAMPLERS ) ) );
 		}
 	}
 }

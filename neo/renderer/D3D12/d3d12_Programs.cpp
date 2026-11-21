@@ -8,6 +8,7 @@
 #include "../tr_local.h"
 #include "../RenderProgTable.h"
 #include "d3d12_Programs.h"
+#include "d3d12_InternalPasses.h"
 
 #include <algorithm>
 #include <functional>
@@ -117,6 +118,10 @@ void idD3D12ShaderLibrary::Prebuild() {
 	for ( size_t i = 0; i < wanted.size(); i++ ) {
 		prebuilt[wanted[i].index] = std::move( built[i] );
 	}
+}
+
+void idD3D12ShaderLibrary::DropPrebuilt() {
+	prebuilt.clear();
 }
 
 // The program table decides which stages exist; a stage it lists is compiled from its file in base/shaders.
@@ -252,9 +257,19 @@ int idD3D12ShaderLibrary::CompileAll( bool verbose ) {
 		std::ranges::move( *fileEntries, std::back_inserter( entries ) );
 	}
 	fileSystem->FreeFileList( files );
+	const size_t numPrograms = entries.size();
+	for ( const d3d12InternalStage_t & stage : D3D12_InternalStages() ) {
+		std::optional<d3d12HlslSource_t> source = D3D12_InternalSource( stage, compiler.Reader() );
+		if ( !source ) {
+			common->Printf( "d3d12_compileAll: shaders/internal/%s.hlsl is missing\n", stage.file );
+			failures.Append( stage.name );
+			continue;
+		}
+		entries.push_back( { std::move( *source ), stage.type } );
+	}
 	std::vector<d3d12HlslRequest_t> requests;
-	for ( const d3d12HlslEntry_t & entry : entries ) {
-		requests.push_back( { &entry.source, entry.stage } );
+	for ( size_t i = 0; i < entries.size(); i++ ) {
+		requests.push_back( { &entries[i].source, entries[i].stage, ( i < numPrograms ) ? hlslParms_t::RENDER_PARMS : hlslParms_t::ANY } );
 	}
 	std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
 	for ( size_t i = 0; i < entries.size(); i++ ) {

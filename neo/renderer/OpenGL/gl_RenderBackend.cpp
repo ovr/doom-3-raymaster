@@ -61,7 +61,7 @@ Creates the context on the window and finds out what it can do. False = no conte
 parms, nothing is left behind and the caller may try other parms.
 ========================
 */
-bool idRenderBackendGL::Init( const renderBackendInit_t & init ) {
+std::expected<void, idStr> idRenderBackendGL::Init( const renderBackendInit_t & init ) {
 	glContextParms_t contextParms;
 	contextParms.nativeWindow = init.nativeWindow;
 	contextParms.multiSamples = init.multiSamples;
@@ -69,7 +69,7 @@ bool idRenderBackendGL::Init( const renderBackendInit_t & init ) {
 
 	glContextInfo_t contextInfo = {};
 	if ( !GLimp_CreateContext( contextParms, contextInfo ) ) {
-		return false;
+		return std::unexpected( idStr( "no OpenGL context with these settings (the console says why)" ) );
 	}
 
 	glContext = {};
@@ -153,7 +153,7 @@ bool idRenderBackendGL::Init( const renderBackendInit_t & init ) {
 
 	outputWidth = init.width;
 	outputHeight = init.height;
-	return true;
+	return {};
 }
 
 /*

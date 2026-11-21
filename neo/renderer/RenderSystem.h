@@ -158,6 +158,8 @@ public:
 	virtual void			ShutdownOpenGL() = 0;
 
 	virtual bool			IsOpenGLRunning() const = 0;
+	// The r_renderApi the running backend was made from ("d3d12", "opengl"); "" before the first InitOpenGL.
+	[[nodiscard]] virtual const char *	GetRenderApi() const = 0;
 
 	virtual bool			IsFullScreen() const = 0;
 	virtual int				GetWidth() const = 0;

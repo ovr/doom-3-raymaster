@@ -74,8 +74,8 @@ const char * VendorName( uint32 vendorId ) {
 // DX12 Ultimate. Bindless (ResourceDescriptorHeap) needs shader model 6.6 and resource binding tier 3.
 constexpr D3D_FEATURE_LEVEL REQUIRED_LEVEL = D3D_FEATURE_LEVEL_12_2;
 constexpr D3D_SHADER_MODEL REQUIRED_SHADER_MODEL = D3D_SHADER_MODEL_6_6;
-constexpr const char * REQUIREMENT = "DX12 Ultimate, feature level 12_2 and shader model 6.6 (Radeon RX 6000, GeForce RTX 20, Intel Arc or newer)";
-constexpr const char * OPENGL_HINT = "+set r_renderApi opengl starts the old renderer";
+constexpr const char * REQUIREMENT = "This GPU is too old for Direct3D 12: it needs DX12 Ultimate, feature level 12_2 and shader model 6.6 "
+	"(Radeon RX 6000, GeForce RTX 20, Intel Arc or newer)";
 
 idStr LevelText( D3D_FEATURE_LEVEL level ) {
 	return va( "%d_%d", ( level >> 12 ) & 0xF, ( level >> 8 ) & 0xF );
@@ -159,8 +159,7 @@ std::expected<idComPtr<IDXGIAdapter1>, idStr> FindAdapter( const idD3D12Library 
 		}
 		adapter.Reset();
 	}
-	return std::unexpected( idStr( va( "Direct3D 12 needs %s; %s. %s", REQUIREMENT, rejected.IsEmpty() ? "there is no GPU" : rejected.c_str(),
-		OPENGL_HINT ) ) );
+	return std::unexpected( idStr( va( "%s; %s.", REQUIREMENT, rejected.IsEmpty() ? "there is no GPU" : rejected.c_str() ) ) );
 }
 
 // Before the device exists: the layer, GPU-based validation and DRED are process settings read at creation.
@@ -343,8 +342,8 @@ std::expected<idD3D12Device, idStr> idD3D12Device::Create( const idD3D12Library 
 	if ( FAILED( hr ) ) {
 		if ( MaxFeatureLevel( library, *created.adapter.Get() ) < REQUIRED_LEVEL ) {
 			const bool warp = idStr::Icmp( adapterName, "warp" ) == 0;
-			return std::unexpected( idStr( va( "Direct3D 12 needs %s; %s%s. %s", REQUIREMENT, LevelOf( library, *created.adapter.Get() ).c_str(),
-				warp ? " (the system's WARP: d3d10warp.dll of the WARP package next to the exe has 12_2)" : "", OPENGL_HINT ) ) );
+			return std::unexpected( idStr( va( "%s; %s%s.", REQUIREMENT, LevelOf( library, *created.adapter.Get() ).c_str(),
+				warp ? " (the system's WARP: d3d10warp.dll of the WARP package next to the exe has 12_2)" : "" ) ) );
 		}
 		return std::unexpected( idStr( va( "D3D12CreateDevice (ID3D12Device2, feature level 12_2) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
 	}
@@ -354,9 +353,9 @@ std::expected<idD3D12Device, idStr> idD3D12Device::Create( const idD3D12Library 
 	const bool bindingTier3 = Feature( created.Get(), D3D12_FEATURE_D3D12_OPTIONS, options )
 		&& options.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3;
 	if ( created.features.shaderModel < REQUIRED_SHADER_MODEL || !bindingTier3 ) {
-		return std::unexpected( idStr( va( "Direct3D 12 needs %s; %s has shader model %s%s (a newer driver may have it). %s", REQUIREMENT,
+		return std::unexpected( idStr( va( "%s; %s has shader model %s%s (a newer driver may have it).", REQUIREMENT,
 			created.features.adapterName.c_str(), ShaderModelText( created.features.shaderModel ).c_str(),
-			bindingTier3 ? "" : " and resource binding below tier 3", OPENGL_HINT ) ) );
+			bindingTier3 ? "" : " and resource binding below tier 3" ) ) );
 	}
 
 	if ( created.debugLevel > 0 && SUCCEEDED( created.device.As( &created.infoQueue ) ) ) {
@@ -696,10 +695,18 @@ void idD3D12Graveyard::Bury( idD3D12DescriptorPool & pool, d3d12Descriptor_t slo
 	}
 }
 
+void idD3D12Graveyard::Bury( idD3D12SamplerHeap & heap, uint32 slot ) {
+	graves.push_back( { queue.LastSignaled() + 1, nullptr, nullptr, {}, &heap, slot } );
+}
+
 void idD3D12Graveyard::Release( grave_t & grave ) {
 	if ( grave.pool != nullptr ) {
 		grave.pool->Free( grave.slot );
 		grave.pool = nullptr;
+	}
+	if ( grave.samplers != nullptr ) {
+		grave.samplers->Free( grave.samplerSlot );
+		grave.samplers = nullptr;
 	}
 }
 

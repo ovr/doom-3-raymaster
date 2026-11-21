@@ -189,6 +189,8 @@ bool R_IsInitialized() {
 	return r_initialized;
 }
 
+static idStr renderApiInUse;	// r_renderApi when the backend was made: the cvar may change for the next start
+
 /*
 =============================
 R_SetNewMode
@@ -213,7 +215,7 @@ r_displayRefresh 70	specify 70 hz, etc
 */
 void R_SetNewMode( const bool fullInit ) {
 	// try up to three different configurations
-
+	idStr failure = "no window with these settings";
 	for ( int i = 0 ; i < 3 ; i++ ) {
 		if ( i == 0 && stereoRender_enable.GetInteger() != STEREO3D_QUAD_BUFFER ) {
 			continue;		// don't even try for a stereo mode
@@ -278,10 +280,12 @@ void R_SetNewMode( const bool fullInit ) {
 				init.height = screenConfig.nativeScreenHeight;
 				init.multiSamples = r_multiSamples.GetInteger();
 				init.stereoPixelFormat = ( i == 0 );	// pass 0 only runs for STEREO3D_QUAD_BUFFER
-				if ( renderBackend->Init( init ) ) {
-					// it worked
+				const std::expected<void, idStr> started = renderBackend->Init( init );
+				if ( started ) {
 					break;
 				}
+				failure = started.error();
+				common->Warning( "%s: %s", r_renderApi.GetString(), failure.c_str() );
 				Sys_DestroyWindow();
 			}
 		} else {
@@ -294,7 +298,10 @@ void R_SetNewMode( const bool fullInit ) {
 		}
 
 		if ( i == 2 ) {
-			common->FatalError( "Unable to initialize the render backend (r_renderApi \"%s\")", r_renderApi.GetString() );
+			// a backend other than OpenGL needs a newer GPU than the game did
+			const bool openGL = idStr::Icmp( r_renderApi.GetString(), "opengl" ) == 0;
+			common->FatalError( "Unable to initialize the render backend (r_renderApi \"%s\"): %s%s", r_renderApi.GetString(), failure.c_str(),
+				openGL ? "" : "\n\nTo play with OpenGL instead, start the game with +set r_renderApi opengl" );
 		}
 
 		if ( i == 0 ) {
@@ -336,6 +343,7 @@ void R_InitOpenGL() {
 
 	if ( renderBackend == nullptr ) {
 		// one backend per run
+		renderApiInUse = r_renderApi.GetString();
 		renderBackend = idRenderBackendFactory::Create( r_renderApi.GetString() );
 		if ( renderBackend == nullptr ) {
 			idStrList apis;
@@ -1688,6 +1696,10 @@ void idRenderSystemLocal::ShutdownOpenGL() {
 idRenderSystemLocal::IsOpenGLRunning
 ========================
 */
+const char * idRenderSystemLocal::GetRenderApi() const {
+	return renderApiInUse.c_str();
+}
+
 bool idRenderSystemLocal::IsOpenGLRunning() const {
 	return R_IsInitialized();
 }

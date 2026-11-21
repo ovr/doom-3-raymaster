@@ -10,6 +10,7 @@
 #include "d3d12_HlslCompiler.h"
 
 #include <atomic>
+#include <bit>
 #include <thread>
 #include <unordered_map>
 
@@ -248,7 +249,7 @@ std::vector<d3d12HlslResult_t> idD3D12HlslCompiler::BuildAll( std::span<const d3
 			defines.push_back( source.defines[j].c_str() );
 		}
 		// the hash covers every include: the text is preprocessed first, and that text is what DXC compiles
-		auto preprocessed = D3D12_DxcPreprocess( library, View( source.text ), source.path, defines, reader );
+		auto preprocessed = D3D12_DxcPreprocess( library, View( source.text ), source.path, defines, reader, Profile( requests[i].stage ) );
 		if ( !preprocessed ) {
 			results[i] = std::unexpected( preprocessed.error() );
 			continue;
@@ -333,6 +334,13 @@ std::vector<d3d12HlslResult_t> idD3D12HlslCompiler::BuildAll( std::span<const d3
 		}
 		results[i]->info = *info;
 		results[i]->reflection = D3D12_ReflectStage( *reflection->Get(), requests[i].stage );
+		// a draw fills sampler<n> from the texture at n, as GL samples a unit with its own sampler; the backend's
+		// own passes fill b3 themselves
+		const uint16 lone = results[i]->reflection.samplerReads & static_cast<uint16>( ~results[i]->reflection.samplerMask );
+		if ( requests[i].parms == hlslParms_t::RENDER_PARMS && lone != 0 ) {
+			const int slot = std::countr_zero( lone );
+			results[i] = std::unexpected( idStr( va( "%s: SAMPLER( ..., %d ) is read without a TEXTURE2D or TEXTURECUBE of slot %d", name, slot, slot ) ) );
+		}
 	}
 	microseconds += Sys_Microseconds() - start;
 	return results;

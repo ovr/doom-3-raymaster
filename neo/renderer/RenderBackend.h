@@ -140,6 +140,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderState.h"
 #include "RenderBackendTypes.h"
 
+#include <expected>
+
 class idImageOpts;
 
 // r_debugMaxDraws and r_hashDrawStream for every backend. The cvars are read once a frame, so with
@@ -166,8 +168,9 @@ public:
 	virtual					~idRenderBackend() = default;
 
 	// ---- device: main thread, outside a frame ------------------------------------------------
-	// Attaches to the window, creates the device and the output, fills caps. False = this API cannot run here.
-	virtual bool			Init( const renderBackendInit_t & init ) = 0;
+	// Attaches to the window, creates the device and the output, fills caps. The error says why this API
+	// cannot run here with these parms; nothing is left behind and Init may be called again.
+	[[nodiscard]] virtual std::expected<void, idStr>	Init( const renderBackendInit_t & init ) = 0;
 	// Destroys everything still alive; every handle is invalid afterwards.
 	virtual void			Shutdown() = 0;
 	// What this device can do; constant between Init and Shutdown.

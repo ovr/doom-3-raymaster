@@ -26,9 +26,10 @@ struct d3d12DxcOutput_t {
 															std::span<const char * const> defines = {},
 															const d3d12ShaderReader_t * include = nullptr );
 // The source with its #include files expanded and the defines applied, as DXC's -P writes it (with #line).
+// With a profile ("ps_6_6") the stage's macros (__SHADER_TARGET_STAGE, ...) are set as in the compile.
 [[nodiscard]] std::expected<idStr, idStr>				D3D12_DxcPreprocess( const idD3D12Library & library, std::string_view source,
 															const char * name, std::span<const char * const> defines,
-															const d3d12ShaderReader_t & include );
+															const d3d12ShaderReader_t & include, const char * profile = nullptr );
 // The reflection of a DXIL container (IDxcUtils::CreateReflection).
 [[nodiscard]] std::expected<idComPtr<ID3D12ShaderReflection>, idStr>	D3D12_DxcReflect( const idD3D12Library & library,
 															std::span<const byte> container );

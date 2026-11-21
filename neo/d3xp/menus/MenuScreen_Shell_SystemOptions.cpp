@@ -305,6 +305,10 @@ void idMenuScreen_Shell_SystemOptions::HideScreen( const mainMenuTransition_t tr
 					if ( cmdLine.Find( "com_skipIntroVideos" ) < 0 ) {
 						cmdLine.Append( " +set com_skipIntroVideos 1" );
 					}
+					// a +set r_renderApi of the old command line would win over the choice just archived
+					if ( cmdLine.Find( "r_renderApi", false ) >= 0 ) {
+						cmdLine.Append( va( " +set r_renderApi %s", cvarSystem->GetCVarString( "r_renderApi" ) ) );
+					}
 					Sys_ReLaunch( (void*)cmdLine.c_str(), cmdLine.Length() );
 				}
 				return idSWFScriptVar();
@@ -453,7 +457,7 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadData
 	originalVolume = s_volume_dB.GetFloat();
 	originalFullscreen = r_fullscreen.GetInteger();
 	originalBorderless = r_borderless.GetBool();
-	originalRenderApi = cvarSystem->GetCVarString( "r_renderApi" );
+	originalRenderApi = renderSystem->GetRenderApi();
 
 	LoadModeList();
 }

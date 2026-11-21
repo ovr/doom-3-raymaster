@@ -702,6 +702,7 @@ public:
 	virtual void			InitOpenGL();
 	virtual void			ShutdownOpenGL();
 	virtual bool			IsOpenGLRunning() const;
+	const char *			GetRenderApi() const override;
 	virtual bool			IsFullScreen() const;
 	virtual stereo3DMode_t	GetStereo3DMode() const;
 	virtual bool			HasQuadBufferSupport() const;

@@ -117,7 +117,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SHADER_VISIBLE_SRVS ),
 	rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
 	dsvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ),
-	samplers( device ),
+	samplers( device, graveyard ),
 	constants( device, CONSTANTS_RING_SIZE, L"doom3 constants ring" ),
 	staging( device, STAGING_RING_SIZE, L"doom3 staging ring" ),
 	uploader( device, *this, staging, barriers, graveyard ),

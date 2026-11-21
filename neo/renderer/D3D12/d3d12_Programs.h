@@ -44,8 +44,10 @@ struct d3d12Program_t {
 class idD3D12ShaderLibrary {
 public:
 									idD3D12ShaderLibrary( idD3D12HlslCompiler & dxc, idD3D12Graveyard & graves ) : compiler( dxc ), graveyard( graves ) {}
-	// Every stage of the program table in one BuildAll, kept until CreateStage asks for it (Init, a level load).
+	// Every stage of the program table in one BuildAll, kept until CreateStage asks for it. The first frame drops
+	// what Init did not ask for: a stage made later is built again, so an edited file counts (its DXIL is cached).
 	void							Prebuild();
+	void							DropPrebuilt();
 	// A stage the game data lacks gets a missing record, as GL does; one without a base/shaders file or with
 	// a compile error returns NONE.
 	[[nodiscard]] shaderHandle_t	CreateStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info );

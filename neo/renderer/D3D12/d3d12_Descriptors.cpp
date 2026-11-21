@@ -91,22 +91,31 @@ void idD3D12DescriptorPool::CreateSrv( d3d12Descriptor_t slot, ID3D12Resource & 
 	}
 }
 
-idD3D12SamplerHeap::idD3D12SamplerHeap( const idD3D12Device & owner ) :
+idD3D12SamplerHeap::idD3D12SamplerHeap( const idD3D12Device & owner, idD3D12Graveyard & graves ) :
 	device( owner ),
+	graveyard( graves ),
 	heap( CreateHeap( owner, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, L"doom3 shader-visible samplers" ) ),
 	increment( owner.Get().GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ) ) {
 	if ( heap ) {
 		cpuStart = heap->GetCPUDescriptorHandleForHeapStart();
 	}
+	fallback = Acquire( 0 );
 }
 
-uint32 idD3D12SamplerHeap::Slot( uint64 packed ) {
+uint32 idD3D12SamplerHeap::Acquire( uint64 packed ) {
 	if ( const auto found = lookup.find( packed ); found != lookup.end() ) {
+		slots[found->second].references++;
 		return found->second;
 	}
-	const uint32 slot = static_cast<uint32>( lookup.size() );
-	if ( slot == SIZE ) {
-		common->FatalError( "d3d12: more than %u distinct samplers", SIZE );
+	uint32 slot = 0;
+	if ( !freeSlots.empty() ) {
+		slot = freeSlots.back();
+		freeSlots.pop_back();
+	} else if ( slots.size() < SIZE ) {
+		slot = static_cast<uint32>( slots.size() );
+		slots.emplace_back();
+	} else {
+		common->FatalError( "d3d12: more than %u samplers held at once", SIZE );
 	}
 	if ( heap ) {
 		D3D12_CPU_DESCRIPTOR_HANDLE handle = cpuStart;
@@ -114,7 +123,17 @@ uint32 idD3D12SamplerHeap::Slot( uint64 packed ) {
 		const D3D12_SAMPLER_DESC desc = D3D12_SamplerFor( packed, device.Features().anisoPointMip );
 		device.Get().CreateSampler( &desc, handle );
 	}
+	slots[slot] = { packed, 1 };
 	lookup.emplace( packed, slot );
 	built++;
 	return slot;
+}
+
+// The open list may have read the slot: it waits in the graveyard for that list's fence.
+void idD3D12SamplerHeap::Release( uint32 slot ) {
+	assert( slot < slots.size() && slots[slot].references > 0 );
+	if ( --slots[slot].references == 0 ) {
+		lookup.erase( slots[slot].packed );
+		graveyard.Bury( *this, slot );
+	}
 }

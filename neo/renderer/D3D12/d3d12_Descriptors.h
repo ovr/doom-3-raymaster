@@ -38,22 +38,34 @@ private:
 };
 
 // The one shader-visible sampler heap, the SamplerDescriptorHeap of every draw: a slot per packed sampler
-// (D3D12_PackSampler), made at its first use and never written again, so no list waits for a sampler.
+// (D3D12_PackSampler) that something holds. A slot nobody holds goes through the graveyard and is written
+// again only when no list can read it, so no list waits for a sampler.
 class idD3D12SamplerHeap {
 public:
 	static constexpr uint32			SIZE = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
-	explicit						idD3D12SamplerHeap( const idD3D12Device & device );
+									idD3D12SamplerHeap( const idD3D12Device & device, idD3D12Graveyard & graveyard );
 	[[nodiscard]] ID3D12DescriptorHeap *	Heap() const { return heap.Get(); }
-	[[nodiscard]] uint32			Slot( uint64 packed );	// a fatal error past SIZE distinct samplers
+	[[nodiscard]] uint32			Acquire( uint64 packed );	// a fatal error past SIZE samplers held at once
+	void							Release( uint32 slot );		// once per Acquire
+	[[nodiscard]] uint32			FallbackSlot() const { return fallback; }	// packed 0, held for the heap's life
 	[[nodiscard]] int				Used() const { return static_cast<int>( lookup.size() ); }
 	[[nodiscard]] int				BuiltThisFrame() const { return built; }
 	void							ResetFrameCounters() { built = 0; }
+	void							Free( uint32 slot ) { freeSlots.push_back( slot ); }	// the graveyard, once the GPU is past it
 
 private:
+	struct held_t {
+		uint64						packed = 0;
+		int							references = 0;
+	};
 	const idD3D12Device &			device;
+	idD3D12Graveyard &				graveyard;
 	idComPtr<ID3D12DescriptorHeap>	heap;
 	D3D12_CPU_DESCRIPTOR_HANDLE		cpuStart = {};
 	uint32							increment;
 	std::unordered_map<uint64, uint32>	lookup;
+	std::vector<held_t>				slots;
+	std::vector<uint32>				freeSlots;
+	uint32							fallback = 0;
 	int								built = 0;
 };

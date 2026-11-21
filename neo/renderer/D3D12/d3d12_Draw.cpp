@@ -176,7 +176,7 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 			incomplete |= texture->IncompleteCopy();
 		} else {
 			handle = textureHandle_t::NONE;
-			sampler = samplers.Slot( 0 );
+			sampler = samplers.FallbackSlot();
 			unbound = true;
 		}
 		prepared.textures[slot] = handle;

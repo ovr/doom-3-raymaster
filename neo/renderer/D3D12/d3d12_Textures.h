@@ -113,6 +113,7 @@ private:
 	[[nodiscard]] bool				CreateSurface( d3d12TextureSurface_t & surface, const d3d12FormatInfo_t & format, textureKind_t kind,
 										int width, int height, int levels, const char * name );
 	void							BurySurface( d3d12TextureSurface_t & surface );	// after the open list; its bytes leave the total
+	void							ChangeSampler( d3d12Texture_t & texture, uint64 packed );	// the new slot first, then the old one released
 	// The rows of one region, converted, into staging and the copy; returns what the check compares.
 	[[nodiscard]] d3d12UploadRecord_t	CopyRegion( d3d12TextureSurface_t & surface, const d3d12FormatInfo_t & format, UINT subresource,
 										bool wholeLevel, int width, int height, const byte * source, size_t sourcePitch, bool record );
