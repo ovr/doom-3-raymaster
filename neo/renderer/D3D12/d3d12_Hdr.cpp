@@ -194,6 +194,17 @@ struct tonemapParms_t {
 	float							bloomIntensity;
 	float							bloomScaleX;
 	float							bloomScaleY;
+	uint32							localExposure;
+	uint32							gridSrv;
+	uint32							blurredSrv;
+	float							highlightContrast;
+	float							shadowContrast;
+	float							detailStrength;
+	float							blurredBlend;
+	float							gridMinLog;
+	float							gridInvLogRange;
+	float							gridScaleX;
+	float							gridScaleY;
 };
 
 // b0 of internal/exposureHistogram.hlsl.
@@ -260,6 +271,42 @@ struct bloomBlurParms_t {
 	float							weights[( d3d12Bloom::MAX_RADIUS + 4 ) / 4][4];
 };
 
+// b0 of internal/localExposureGrid.hlsl.
+struct localGridParms_t {
+	uint32							sceneSrv;
+	uint32							gridUav;
+	uint32							totalsUav;
+	uint32							x0;
+	uint32							y0;
+	uint32							width;
+	uint32							height;
+	float							invPreExposure;
+	float							minLog;
+	float							binsPerLog;
+	float							logRange;
+};
+
+// b0 of internal/localExposureBlur.hlsl.
+struct localBlurParms_t {
+	uint32							gridSrv;
+	uint32							totalsSrv;
+	uint32							gridUav;
+	uint32							blurredUav;
+	uint32							tilesX;
+	uint32							tilesY;
+	float							invTwoSigmaSquared;
+	int32							radius;
+};
+
+// The grid's log2 luminance range: the histogram's EV100 less 3.
+[[nodiscard]] float GridMinLog( const postProcessSettings_t & settings ) {
+	return settings.histogramMinEV - 3.0f;
+}
+
+[[nodiscard]] float GridLogRange( const postProcessSettings_t & settings ) {
+	return Max( settings.histogramMaxEV - settings.histogramMinEV, 1.0f );
+}
+
 // A raw view of a buffer of bytes.
 template<typename VIEW> [[nodiscard]] VIEW RawView( uint32 bytes ) {
 	VIEW view = {};
@@ -324,6 +371,12 @@ std::array<idVec3, d3d12Bloom::MAX_LEVELS> d3d12Bloom::Tints( const postProcessS
 	return tints;
 }
 
+bool d3d12LocalExposure::Active( const postProcessSettings_t & settings ) {
+	const auto changes = []( float value ) { return idMath::Fabs( value - 1.0f ) > 1e-3f; };
+	return settings.localExposure && ( settings.visualize == 4 || changes( settings.localHighlightContrast ) || changes( settings.localShadowContrast )
+		|| changes( settings.localDetailStrength ) );
+}
+
 idD3D12HdrPipeline::idD3D12HdrPipeline( const idD3D12Device & owner, idD3D12Submitter & submit, const idD3D12ComputeRootSignature & root,
 	const idD3D12InternalPasses & internalPasses, idD3D12SamplerHeap & samplerHeap, idD3D12DescriptorPool & srvs ) :
 	device( owner ),
@@ -348,6 +401,10 @@ void idD3D12HdrPipeline::CreateDefaults() {
 	bloomDownsample = D3D12_CreateComputePipeline( device, computeRoot, downsampleStage.code, downsampleStage.reflection, L"doom3 bloom downsample" );
 	const d3d12HlslStage_t & blurStage = passes.Stage( "internal_bloomBlur" );
 	bloomBlur = D3D12_CreateComputePipeline( device, computeRoot, blurStage.code, blurStage.reflection, L"doom3 bloom blur" );
+	const d3d12HlslStage_t & gridStage = passes.Stage( "internal_localExposureGrid" );
+	localExposureGrid = D3D12_CreateComputePipeline( device, computeRoot, gridStage.code, gridStage.reflection, L"doom3 local exposure grid" );
+	const d3d12HlslStage_t & localBlurStage = passes.Stage( "internal_localExposureBlur" );
+	localExposureBlur = D3D12_CreateComputePipeline( device, computeRoot, localBlurStage.code, localBlurStage.reflection, L"doom3 local exposure blur" );
 
 	// committed buffers start zeroed: the histogram empty; EyeAdaptation is set by the first resolve's reset
 	histogram = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, d3d12Exposure::BINS * 4, D3D12_RESOURCE_STATE_COMMON, L"doom3 exposure histogram",
@@ -547,27 +604,40 @@ void idD3D12HdrPipeline::Resolve( idD3D12RenderGraph & graph, idD3D12SceneTarget
 
 	const uint32 bloomLevels = ( bloomDownsample && bloomBlur ) ? d3d12Bloom::Levels( settings, rect.width, rect.height ) : 0;
 	const d3d12GraphResource_t bloom = ( bloomLevels > 0 ) ? AddBloom( graph, settings, input, width, height, rect, bloomLevels ) : d3d12GraphResource_t();
-	const uint32 visualize = ( settings.visualize == 3 && bloomLevels == 0 ) ? 0u : Min( static_cast<uint32>( settings.visualize ), 3u );
+	const bool local = localExposureGrid && localExposureBlur && d3d12LocalExposure::Active( settings );
+	const auto [grid, blurred] = local ? AddLocalExposure( graph, settings, input, rect, invPreExposure ) : std::pair<d3d12GraphResource_t, d3d12GraphResource_t>();
+	const bool hidden = ( settings.visualize == 3 && bloomLevels == 0 ) || ( settings.visualize == 4 && !local );
+	const uint32 visualize = hidden ? 0u : Min( static_cast<uint32>( settings.visualize ), 4u );
 	const float bloomIntensity = ( bloomLevels > 0 ) ? idMath::ClampFloat( 0.0f, 1.0f, settings.bloomIntensity ) : 0.0f;
+	const uint32 tiles[2] = { ( static_cast<uint32>( rect.width ) + d3d12LocalExposure::TILE - 1 ) / d3d12LocalExposure::TILE,
+		( static_cast<uint32>( rect.height ) + d3d12LocalExposure::TILE - 1 ) / d3d12LocalExposure::TILE };
 	const tonemapParms_t tonemapBase = { 0, 0, lutSampler, settings.dither ? 1u : 0u, invPreExposure, d3d12Lut::K, 1.0f / d3d12Lut::Range(), 0,
 		visualize, settings.histogramMinEV, binWidth, lowPercent, highPercent, rect.x, rect.y, rect.width, rect.height, 0, bloomIntensity,
-		1.0f / static_cast<float>( rect.width + ( rect.width & 1 ) ), 1.0f / static_cast<float>( rect.height + ( rect.height & 1 ) ) };
-	const auto record = [tonemapPso, tonemapBase, input, lutTexture, eye, target, bloom, rect]( idD3D12GraphContext & context ) {
+		1.0f / static_cast<float>( rect.width + ( rect.width & 1 ) ), 1.0f / static_cast<float>( rect.height + ( rect.height & 1 ) ), local ? 1u : 0u, 0, 0,
+		Max( settings.localHighlightContrast, 0.0f ), Max( settings.localShadowContrast, 0.0f ), Max( settings.localDetailStrength, 0.0f ),
+		idMath::ClampFloat( 0.0f, 1.0f, settings.localBlurredBlend ), GridMinLog( settings ), 1.0f / GridLogRange( settings ),
+		1.0f / static_cast<float>( tiles[0] * d3d12LocalExposure::TILE ), 1.0f / static_cast<float>( tiles[1] * d3d12LocalExposure::TILE ) };
+	std::vector<d3d12GraphUse_t> uses = { { input, d3d12GraphAccess_t::SRV }, { lutTexture, d3d12GraphAccess_t::SRV }, { eye, d3d12GraphAccess_t::SRV },
+		{ target, d3d12GraphAccess_t::RTV, 0 } };
+	if ( bloom.IsValid() ) {
+		uses.push_back( { bloom, d3d12GraphAccess_t::SRV, 0 } );
+	}
+	if ( local ) {
+		uses.push_back( { grid, d3d12GraphAccess_t::SRV } );
+		uses.push_back( { blurred, d3d12GraphAccess_t::SRV } );
+	}
+	graph.AddPass( "Tonemap", d3d12GraphPass_t::RASTER, uses, [tonemapPso, tonemapBase, input, lutTexture, eye, target, bloom, grid, blurred, rect](
+		idD3D12GraphContext & context ) {
 		tonemapParms_t tonemapParms = tonemapBase;
 		tonemapParms.sceneSrv = context.Srv( input );
 		tonemapParms.lutSrv = context.Srv( lutTexture );
 		tonemapParms.eyeSrv = context.Srv( eye );
 		tonemapParms.bloomSrv = bloom.IsValid() ? context.Srv( bloom, 0 ) : 0;
+		tonemapParms.gridSrv = grid.IsValid() ? context.Srv( grid ) : 0;
+		tonemapParms.blurredSrv = blurred.IsValid() ? context.Srv( blurred ) : 0;
 		const d3d12UploadSpan_t span = context.Parms( tonemapParms );
 		context.Draw( *tonemapPso, target, 0, rect, span );
-	};
-	if ( bloom.IsValid() ) {
-		graph.AddPass( "Tonemap", d3d12GraphPass_t::RASTER, { { input, d3d12GraphAccess_t::SRV }, { lutTexture, d3d12GraphAccess_t::SRV },
-			{ eye, d3d12GraphAccess_t::SRV }, { bloom, d3d12GraphAccess_t::SRV, 0 }, { target, d3d12GraphAccess_t::RTV, 0 } }, record );
-	} else {
-		graph.AddPass( "Tonemap", d3d12GraphPass_t::RASTER, { { input, d3d12GraphAccess_t::SRV }, { lutTexture, d3d12GraphAccess_t::SRV },
-			{ eye, d3d12GraphAccess_t::SRV }, { target, d3d12GraphAccess_t::RTV, 0 } }, record );
-	}
+	} );
 	graph.Execute( groups );
 	// after Execute: a submit inside it closed the copy's list with an older fence, so this one is late, never early
 	readbackFence = submitter.PendingFence();
@@ -683,6 +753,55 @@ d3d12GraphResource_t idD3D12HdrPipeline::AddBloom( idD3D12RenderGraph & graph, c
 		}
 	}
 	return sum;
+}
+
+std::pair<d3d12GraphResource_t, d3d12GraphResource_t> idD3D12HdrPipeline::AddLocalExposure( idD3D12RenderGraph & graph,
+	const postProcessSettings_t & settings, d3d12GraphResource_t input, const renderRect_t & rect, float invPreExposure ) {
+	using namespace d3d12LocalExposure;
+	d3d12PoolDesc_t gridDesc;
+	gridDesc.kind = d3d12PoolDesc_t::kind_t::TEXTURE_3D;
+	gridDesc.format = FORMAT;
+	gridDesc.width = ( static_cast<uint32>( rect.width ) + TILE - 1 ) / TILE;
+	gridDesc.height = ( static_cast<uint32>( rect.height ) + TILE - 1 ) / TILE;
+	gridDesc.depth = static_cast<uint16>( BINS );
+	gridDesc.unorderedAccess = true;
+	d3d12PoolDesc_t totalsDesc = gridDesc;
+	totalsDesc.kind = d3d12PoolDesc_t::kind_t::TEXTURE_2D;
+	totalsDesc.depth = 1;
+	const d3d12GraphResource_t grid = graph.Create( "Local exposure grid", gridDesc );
+	const d3d12GraphResource_t totals = graph.Create( "Local exposure totals", totalsDesc );
+	const d3d12GraphResource_t blurredGrid = graph.Create( "Local exposure grid blurred", gridDesc );
+	const d3d12GraphResource_t blurred = graph.Create( "Local exposure blurred luminance", totalsDesc );
+
+	const float logRange = GridLogRange( settings );
+	const localGridParms_t gridBase = { 0, 0, 0, static_cast<uint32>( rect.x ), static_cast<uint32>( rect.y ), static_cast<uint32>( rect.width ),
+		static_cast<uint32>( rect.height ), invPreExposure, GridMinLog( settings ), static_cast<float>( BINS ) / logRange, logRange };
+	graph.AddPass( "Local exposure grid", d3d12GraphPass_t::COMPUTE, { { input, d3d12GraphAccess_t::SRV }, { grid, d3d12GraphAccess_t::UAV, 0 },
+		{ totals, d3d12GraphAccess_t::UAV, 0 } }, [this, gridBase, input, grid, totals, gridDesc]( idD3D12GraphContext & context ) {
+			localGridParms_t parms = gridBase;
+			parms.sceneSrv = context.Srv( input );
+			parms.gridUav = context.Uav( grid, 0 );
+			parms.totalsUav = context.Uav( totals, 0 );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( localExposureGrid, &span, gridDesc.width * 16, gridDesc.height * 16 );	// a group of 16 x 16 per tile
+		} );
+
+	// the kernel is 6 sigma
+	const float sigma = Max( settings.localBlurredKernel * 0.01f * static_cast<float>( rect.width ) / ( 6.0f * static_cast<float>( TILE ) ), 0.25f );
+	const int32 radius = Min( static_cast<int32>( std::ceil( 3.0f * sigma ) ), static_cast<int32>( Max( gridDesc.width, gridDesc.height ) ) );
+	const localBlurParms_t blurBase = { 0, 0, 0, 0, gridDesc.width, gridDesc.height, 1.0f / ( 2.0f * sigma * sigma ), radius };
+	graph.AddPass( "Local exposure blur", d3d12GraphPass_t::COMPUTE, { { grid, d3d12GraphAccess_t::SRV }, { totals, d3d12GraphAccess_t::SRV },
+		{ blurredGrid, d3d12GraphAccess_t::UAV, 0 }, { blurred, d3d12GraphAccess_t::UAV, 0 } },
+		[this, blurBase, grid, totals, blurredGrid, blurred]( idD3D12GraphContext & context ) {
+			localBlurParms_t parms = blurBase;
+			parms.gridSrv = context.Srv( grid );
+			parms.totalsSrv = context.Srv( totals );
+			parms.gridUav = context.Uav( blurredGrid, 0 );
+			parms.blurredUav = context.Uav( blurred, 0 );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( localExposureBlur, &span, parms.tilesX, parms.tilesY, BINS + 1 );
+		} );
+	return { blurredGrid, blurred };
 }
 
 void idD3D12HdrPipeline::Poll() {

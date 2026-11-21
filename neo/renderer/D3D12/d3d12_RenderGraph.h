@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <span>
 
 #include "d3d12_Descriptors.h"
 #include "d3d12_Memory.h"
@@ -181,8 +182,12 @@ public:
 	// Names are literals: the graph keeps the pointers.
 	[[nodiscard]] d3d12GraphResource_t	Create( const char * name, const d3d12PoolDesc_t & desc );
 	[[nodiscard]] d3d12GraphResource_t	Import( const char * name, const d3d12GraphImport_t & import );
-	void							AddPass( const char * name, d3d12GraphPass_t type, std::initializer_list<d3d12GraphUse_t> uses,
+	void							AddPass( const char * name, d3d12GraphPass_t type, std::span<const d3d12GraphUse_t> uses,
 										std::function<void( idD3D12GraphContext & )> record, bool neverCull = false );
+	void							AddPass( const char * name, d3d12GraphPass_t type, std::initializer_list<d3d12GraphUse_t> passUses,
+										std::function<void( idD3D12GraphContext & )> record, bool neverCull = false ) {
+		AddPass( name, type, std::span( passUses.begin(), passUses.size() ), std::move( record ), neverCull );
+	}
 	// Records the kept passes into the open list and empties the graph; imports stay in their last state.
 	// groups: a debug group per pass (r_pix 2), nullptr for none.
 	void							Execute( idD3D12DebugGroups * groups = nullptr );

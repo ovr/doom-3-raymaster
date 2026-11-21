@@ -76,6 +76,8 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "exposureAdapt", shaderStageType_t::COMPUTE, "internal_exposureAdapt", nullptr },
 	{ "bloomDownsample", shaderStageType_t::COMPUTE, "internal_bloomDownsample", nullptr },
 	{ "bloomBlur", shaderStageType_t::COMPUTE, "internal_bloomBlur", nullptr },
+	{ "localExposureGrid", shaderStageType_t::COMPUTE, "internal_localExposureGrid", nullptr },
+	{ "localExposureBlur", shaderStageType_t::COMPUTE, "internal_localExposureBlur", nullptr },
 	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode", nullptr },
 	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode_msaa", "MULTISAMPLED=1" },
 };

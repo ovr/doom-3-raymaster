@@ -5658,6 +5658,140 @@ void BloomAllSamples( idTestGpu & gpu ) {
 	Bloom( gpu, 4 );
 }
 
+/*
+	The local exposure on a 64 x 64 scene (one tile), with and without MSAA, through the clamp curve at exposure 1:
+
+	  step      a left half of 0.05 and a right half of 0.6, 7 bins apart, under the grid alone: each half keeps its
+	            own base up to the edge, so shadows of contrast 1.5 and highlights of 0.5 give 0.18 ( L / 0.18 )^c
+	  detail    2 x 2 squares of 0.1 and 0.4 under the blurred luminance alone: their log mean 0.2 is the base,
+	            detail 0 makes the frame flat at it, detail 2 puts the squares at 0.05 and 0.8
+	  viewport  a bright scene outside the viewport does not reach its grid or blurred luminance
+	  off       all 1, or the local exposure off, give the bytes without it; visualize 4 draws only when it is on
+*/
+void LocalExposure( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestCopies::SIZE;
+	idTestCopies fixture( gpu, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12HdrPipeline hdr( gpu.device, gpu, computeRoot, fixture.passes, gpu.samplers, gpu.srvPool );
+	hdr.CreateDefaults();
+	fixture.Bind();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( computeRoot.Get() && fixture.scene.Color( true ).resource, "the compute root signature and the HDR scene" ) ) {
+		return;
+	}
+	idD3D12SceneTarget::surface_t & output = fixture.scene.Color();
+	struct fill_t {
+		std::vector<D3D12_RECT> rects;
+		float radiance;
+	};
+	const auto run = [&]( const postProcessSettings_t & settings, const renderRect_t & viewport, float background, const std::vector<fill_t> & fills ) {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & scene = fixture.scene.Color( true );
+		gpu.barriers.Transition( *scene.resource.Get(), scene.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float back[4] = { background, background, background, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), back, 0, nullptr );
+		for ( const fill_t & fill : fills ) {
+			const float rgba[4] = { fill.radiance, fill.radiance, fill.radiance, 1.0f };
+			gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false, true ), rgba, static_cast<UINT>( fill.rects.size() ), fill.rects.data() );
+		}
+		gpu.barriers.Transition( *output.resource.Get(), output.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		gpu.barriers.Flush();
+		const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+		gpu.List().ClearRenderTargetView( fixture.scene.Rtv( false ), grey, 0, nullptr );
+		hdr.Resolve( graph, fixture.scene, settings, viewport, 1.0f, hdrExposureStep_t(), nullptr );
+		gpu.WaitIdle();
+		idD3D12SceneTarget::surface_t & resolved = fixture.scene.Resolved( gpu.barriers, gpu );
+		return fixture.Read( *resolved.resource.Get(), resolved.state );
+	};
+	// the largest channel difference from expected( x, y ) over rect; 255 for an empty read
+	const auto worst = []( const std::vector<uint32> & texels, const renderRect_t & rect, const auto & expected ) {
+		int most = texels.empty() ? 255 : 0;
+		for ( int y = rect.y; y < rect.y + rect.height && !texels.empty(); y++ ) {
+			for ( int x = rect.x; x < rect.x + rect.width; x++ ) {
+				const int want = expected( x, y );
+				for ( int c = 0; c < 3; c++ ) {
+					most = Max( most, std::abs( static_cast<int>( ( texels[static_cast<size_t>( y ) * SIZE + x] >> ( c * 8 ) ) & 0xFF ) - want ) );
+				}
+			}
+		}
+		return most;
+	};
+	const auto encoded = []( double luminance ) { return ToByte( SrgbEncodeRef( luminance ) ); };
+	const auto contrast = []( double luminance, double c ) { return 0.18 * std::pow( luminance / 0.18, c ); };
+
+	const renderRect_t whole = { 0, 0, SIZE, SIZE };
+	postProcessSettings_t base;
+	base.autoExposure = false;
+	base.exposureCompensation = 0.0f;
+	base.tonemapper = hdrTonemapper_t::CLAMP;
+	base.dither = false;
+	base.bloomQuality = 0;
+	base.localBlurredBlend = 0.0f;
+
+	postProcessSettings_t step = base;
+	step.localShadowContrast = 1.5f;
+	step.localHighlightContrast = 0.5f;
+	const std::vector<fill_t> halves = { { { { 0, 0, SIZE / 2, SIZE } }, 0.05f } };
+	const std::vector<uint32> stepped = run( step, whole, 0.6f, halves );
+	const int shadow = encoded( contrast( 0.05, 1.5 ) );
+	const int highlight = encoded( contrast( 0.6, 0.5 ) );
+	const int stepError = worst( stepped, whole, [&]( int x, int ) { return ( x < SIZE / 2 ) ? shadow : highlight; } );
+	Check( stepError <= 1, va( "%u sample(s): the grid keeps each half's base up to the edge (%d, %d), off by %d", samples, shadow, highlight, stepError ) );
+
+	postProcessSettings_t flat = base;
+	flat.localBlurredBlend = 1.0f;
+	flat.localDetailStrength = 0.0f;
+	fill_t squares = { {}, 0.4f };
+	for ( int y = 0; y < SIZE; y += 2 ) {
+		for ( int x = ( y / 2 & 1 ) * 2; x < SIZE; x += 4 ) {
+			squares.rects.push_back( { x, y, x + 2, y + 2 } );
+		}
+	}
+	const std::vector<uint32> flattened = run( flat, whole, 0.1f, { squares } );
+	const int flatError = worst( flattened, whole, [&]( int, int ) { return encoded( 0.2 ); } );
+	Check( flatError <= 1, va( "%u sample(s): detail 0 makes the squares the blurred base 0.2, off by %d", samples, flatError ) );
+	postProcessSettings_t sharp = flat;
+	sharp.localDetailStrength = 2.0f;
+	const std::vector<uint32> sharpened = run( sharp, whole, 0.1f, { squares } );
+	const int sharpError = worst( sharpened, whole, [&]( int x, int y ) { return encoded( ( ( x / 2 + y / 2 ) & 1 ) ? 0.05 : 0.8 ); } );
+	Check( sharpError <= 1, va( "%u sample(s): detail 2 puts the squares at 0.05 and 0.8, off by %d", samples, sharpError ) );
+
+	postProcessSettings_t inside = base;
+	inside.localBlurredBlend = 1.0f;
+	inside.localShadowContrast = 0.5f;
+	const renderRect_t inner = { 16, 16, 32, 32 };
+	const std::vector<uint32> confined = run( inside, inner, 4.0f, { { { { 16, 16, 48, 48 } }, 0.05f } } );
+	const int insideError = worst( confined, inner, [&]( int, int ) { return encoded( contrast( 0.05, 0.5 ) ); } );
+	Check( insideError <= 1, va( "%u sample(s): the scene outside the viewport stays out of its local exposure, off by %d", samples, insideError ) );
+
+	postProcessSettings_t neutral = base;
+	neutral.localBlurredBlend = 0.6f;
+	postProcessSettings_t none = step;
+	none.localExposure = false;
+	postProcessSettings_t shown = step;
+	shown.visualize = 4;
+	postProcessSettings_t hidden = none;
+	hidden.visualize = 4;
+	const std::vector<uint32> plain = run( none, whole, 0.6f, halves );
+	Check( !plain.empty() && run( neutral, whole, 0.6f, halves ) == plain && run( hidden, whole, 0.6f, halves ) == plain,
+		"all 1, and visualize 4 with the local exposure off, give the frame without it" );
+	const std::vector<uint32> visualized = run( shown, whole, 0.6f, halves );
+	Check( !visualized.empty() && visualized != plain && visualized != stepped, "visualize 4 draws the local exposure" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void LocalExposureAllSamples( idTestGpu & gpu ) {
+	LocalExposure( gpu, 1 );
+	LocalExposure( gpu, 4 );
+}
+
 void CombineLutAllSamples( idTestGpu & gpu ) {
 	CombineLut( gpu, 1 );
 	CombineLut( gpu, 4 );
@@ -5819,6 +5953,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_Exposure", OnGpu<ExposureAllSamples> },
 	{ "Warp_Bloom", OnWarp<BloomAllSamples> },
 	{ "Gpu_Bloom", OnGpu<BloomAllSamples> },
+	{ "Warp_LocalExposure", OnWarp<LocalExposureAllSamples> },
+	{ "Gpu_LocalExposure", OnGpu<LocalExposureAllSamples> },
 	{ "Gpu_CombineLut", OnGpu<CombineLutAllSamples> },
 };
 

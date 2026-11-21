@@ -148,10 +148,16 @@ idCVar r_hdrHighPercent( "r_hdrHighPercent", "90", CVAR_RENDERER | CVAR_FLOAT, "
 idCVar r_hdrMeteringMask( "r_hdrMeteringMask", "0.5", CVAR_RENDERER | CVAR_FLOAT, "0 = every pixel counts the same in the eye adaptation, 1 = the corners count exp( -2 ) of the centre", 0.0f, 1.0f );
 idCVar r_hdrHistogramMinEV( "r_hdrHistogramMinEV", "-8", CVAR_RENDERER | CVAR_FLOAT, "EV100 of the start of the exposure histogram; darker pixels do not count", -16.0f, 16.0f );
 idCVar r_hdrHistogramMaxEV( "r_hdrHistogramMaxEV", "8", CVAR_RENDERER | CVAR_FLOAT, "EV100 of the end of the exposure histogram", -16.0f, 16.0f );
-idCVar r_hdrVisualize( "r_hdrVisualize", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = the exposure histogram and EVs over the HDR frame, 2 = false colour in stops around mid grey, 3 = the bloom alone", 0, 3 );
+idCVar r_hdrVisualize( "r_hdrVisualize", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = the exposure histogram and EVs over the HDR frame, 2 = false colour in stops around mid grey, 3 = the bloom alone, 4 = the local exposure", 0, 4 );
 idCVar r_hdrBloomQuality( "r_hdrBloomQuality", "5", CVAR_RENDERER | CVAR_INTEGER, "the HDR bloom: 0 = none, 1..5 = 2..6 levels from half the viewport down", 0, 5 );
 idCVar r_hdrBloomIntensity( "r_hdrBloomIntensity", "0.1", CVAR_RENDERER | CVAR_FLOAT, "how far the HDR frame is lerped toward its bloom, which keeps its energy", 0.0f, 1.0f );
 idCVar r_hdrBloomSizeScale( "r_hdrBloomSizeScale", "4", CVAR_RENDERER | CVAR_FLOAT, "scales the reach of every bloom level, in percent of the viewport's width", 0.0f, 32.0f );
+idCVar r_hdrLocalExposure( "r_hdrLocalExposure", "1", CVAR_RENDERER | CVAR_BOOL, "0 turns the HDR local exposure off whatever its contrasts" );
+idCVar r_hdrLocalHighlightContrast( "r_hdrLocalHighlightContrast", "1", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the contrast of the base above mid grey, 1 = as it is", 0.0f, 2.0f );
+idCVar r_hdrLocalShadowContrast( "r_hdrLocalShadowContrast", "1", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the contrast of the base below mid grey, 1 = as it is", 0.0f, 2.0f );
+idCVar r_hdrLocalDetail( "r_hdrLocalDetail", "1", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the strength of the detail around the base, 1 = as it is", 0.0f, 4.0f );
+idCVar r_hdrLocalBlurredBlend( "r_hdrLocalBlurredBlend", "0.6", CVAR_RENDERER | CVAR_FLOAT, "local exposure: 0 = the bilateral grid's base, 1 = the blurred luminance's", 0.0f, 1.0f );
+idCVar r_hdrLocalBlurredKernel( "r_hdrLocalBlurredKernel", "50", CVAR_RENDERER | CVAR_FLOAT, "local exposure: the blurred luminance's kernel, percent of the viewport's width", 1.0f, 200.0f );
 
 postProcessSettings_t R_DefaultPostProcessSettings() {
 	postProcessSettings_t settings;
@@ -179,6 +185,12 @@ postProcessSettings_t R_DefaultPostProcessSettings() {
 	settings.bloomQuality = static_cast<uint8>( r_hdrBloomQuality.GetInteger() );
 	settings.bloomIntensity = r_hdrBloomIntensity.GetFloat();
 	settings.bloomSizeScale = r_hdrBloomSizeScale.GetFloat();
+	settings.localExposure = r_hdrLocalExposure.GetBool();
+	settings.localHighlightContrast = r_hdrLocalHighlightContrast.GetFloat();
+	settings.localShadowContrast = r_hdrLocalShadowContrast.GetFloat();
+	settings.localDetailStrength = r_hdrLocalDetail.GetFloat();
+	settings.localBlurredBlend = r_hdrLocalBlurredBlend.GetFloat();
+	settings.localBlurredKernel = r_hdrLocalBlurredKernel.GetFloat();
 	return settings;
 }
 

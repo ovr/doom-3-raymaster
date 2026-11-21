@@ -22,6 +22,11 @@
 	  bloom           bloomQuality + 1 levels from half the viewport down, each a Gaussian reaching its size times
 	                  bloomSizeScale percent of the viewport's width, summed by the tints scaled to a luma of 1:
 	                  the frame is lerped toward that by bloomIntensity, so a flat field stays as it is
+	  local exposure  a base luminance per pixel, lerped by localBlurredBlend from a bilateral grid (64 x 64
+	                  pixel cells, 32 bins of log luminance) toward a Gaussian of localBlurredKernel percent of the
+	                  viewport's width; the base is scaled around mid grey by localHighlightContrast above it and
+	                  localShadowContrast below, the pixel's detail around the base by localDetailStrength; all 1
+	                  is the identity and costs nothing
 */
 
 enum class hdrTonemapper_t : uint8 { CLAMP, AGX, FILMIC, COUNT };
@@ -49,7 +54,7 @@ struct postProcessSettings_t {
 	float							meteringMask = 0.5f;		// 0 every pixel alike .. 1 the corners weigh exp( -2 )
 	float							histogramMinEV = -8.0f;		// EV100 of the first bin's start and the last bin's end
 	float							histogramMaxEV = 8.0f;
-	uint8							visualize = 0;				// 1 the histogram and the EVs over the image, 2 false colour, 3 the bloom
+	uint8							visualize = 0;				// 1 the histogram and EVs, 2 false colour, 3 the bloom, 4 the local exposure
 	float							whiteTemp = 6500.0f;
 	float							whiteTint = 0.0f;
 	colorGrade_t					global;
@@ -67,6 +72,12 @@ struct postProcessSettings_t {
 	std::array<float, 6>			bloomSizes = { 0.3f, 1.0f, 2.0f, 10.0f, 30.0f, 64.0f };
 	std::array<idVec3, 6>			bloomTints = { idVec3( 0.3465f, 0.3465f, 0.3465f ), idVec3( 0.138f, 0.138f, 0.138f ), idVec3( 0.1176f, 0.1176f, 0.1176f ),
 		idVec3( 0.066f, 0.066f, 0.066f ), idVec3( 0.066f, 0.066f, 0.066f ), idVec3( 0.061f, 0.061f, 0.061f ) };
+	bool							localExposure = true;
+	float							localHighlightContrast = 1.0f;	// 1 neutral, below 1 compresses the highlights' range
+	float							localShadowContrast = 1.0f;
+	float							localDetailStrength = 1.0f;
+	float							localBlurredBlend = 0.6f;		// 0 the grid alone, 1 the Gaussian alone
+	float							localBlurredKernel = 50.0f;		// percent of the viewport's width, 6 sigma
 };
 
 // How the eye adaptation moves at a resolve: by seconds of the main view's time, or at once to the target.

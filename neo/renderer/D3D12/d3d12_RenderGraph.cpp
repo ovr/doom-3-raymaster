@@ -394,7 +394,7 @@ d3d12GraphResource_t idD3D12RenderGraph::Import( const char * name, const d3d12G
 	return { static_cast<uint16>( resources.size() - 1 ) };
 }
 
-void idD3D12RenderGraph::AddPass( const char * name, d3d12GraphPass_t type, std::initializer_list<d3d12GraphUse_t> passUses,
+void idD3D12RenderGraph::AddPass( const char * name, d3d12GraphPass_t type, std::span<const d3d12GraphUse_t> passUses,
 	std::function<void( idD3D12GraphContext & )> record, bool neverCull ) {
 	pass_t & pass = passes.emplace_back();
 	pass.name = name;

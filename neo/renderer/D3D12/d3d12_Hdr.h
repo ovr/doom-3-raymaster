@@ -10,8 +10,9 @@
 	  SceneColor (RGBA16F, radiance x preExposure) ──[MSAA: Karis resolve, compute]──┬──────────────────────────┐
 	    ├─[Exposure histogram, compute: 64 bins of EV100, a value per 2 x 2]──────────┘                          │
 	    │   └─[Eye adaptation, one thread]─→ EyeAdaptation ─[copy]─→ readback: the next frame's preExposure      │
-	    └─[Bloom downsample: 13 taps, Karis on the first]─→ chain (RGBA16F, mips 1/2 .. 1/64 of the viewport)    │
-	        └─ per level, smallest first: [blur X]─→[blur Y, x tint, + the smaller level's sum]─→ Bloom ───────┤
+	    ├─[Bloom downsample: 13 taps, Karis on the first]─→ chain (RGBA16F, mips 1/2 .. 1/64 of the viewport)    │
+	    │   └─ per level, smallest first: [blur X]─→[blur Y, x tint, + the smaller level's sum]─→ Bloom ───────┤
+	    └─[Local exposure grid: 64 x 64 tiles x 32 bins of log2 luminance]─→[blur]─→ grid, blurred luminance ──┤
 	  Combine LUT (32^3 RGBA16F, rebuilt when its parms change, compute) ──────────────────────────────────────┤
 	  EyeAdaptation (the exposure) ────────────────────────────────────────────────────────────────────────────┤
 	                                                                                  [Tonemap, raster]─→ output (RGBA8, the viewport)
@@ -57,6 +58,16 @@ constexpr uint32					MAX_RADIUS = 64;			// taps on each side, internal/bloomBlur
 [[nodiscard]] std::vector<float>	Weights( const postProcessSettings_t & settings, uint32 level, int viewportWidth );
 // The tints of the levels in use, scaled so that their lumas sum to 1; all 0 when they sum to nothing.
 [[nodiscard]] std::array<idVec3, MAX_LEVELS>	Tints( const postProcessSettings_t & settings, uint32 levels );
+}
+
+// The local exposure (internal/localExposureGrid.hlsl, localExposureBlur.hlsl, PostProcessSettings.h): a bilateral
+// grid of TILE x TILE pixel cells and BINS bins of log2 luminance over the histogram's range, and the tiles' totals.
+namespace d3d12LocalExposure {
+constexpr uint32					TILE = 64;
+constexpr uint32					BINS = 32;
+constexpr DXGI_FORMAT				FORMAT = DXGI_FORMAT_R32G32_FLOAT;	// ( sum of log2 luminance above the range's start, count )
+// Whether a resolve needs it: off, or every contrast 1 without visualize 4, is the identity.
+[[nodiscard]] bool					Active( const postProcessSettings_t & settings );
 }
 
 namespace d3d12Exposure {
@@ -119,6 +130,9 @@ private:
 	// The bloom chain's passes from input's viewport rect; returns the resource whose mip 0 holds the sum.
 	[[nodiscard]] d3d12GraphResource_t	AddBloom( idD3D12RenderGraph & graph, const postProcessSettings_t & settings, d3d12GraphResource_t input,
 										uint32 inputWidth, uint32 inputHeight, const renderRect_t & rect, uint32 levels );
+	// The local exposure's passes from input's viewport rect: the blurred grid and the blurred luminance.
+	[[nodiscard]] std::pair<d3d12GraphResource_t, d3d12GraphResource_t>	AddLocalExposure( idD3D12RenderGraph & graph,
+										const postProcessSettings_t & settings, d3d12GraphResource_t input, const renderRect_t & rect, float invPreExposure );
 
 	const idD3D12Device &			device;
 	idD3D12Submitter &				submitter;
@@ -132,6 +146,8 @@ private:
 	d3d12ComputePipeline_t			exposureAdapt;
 	d3d12ComputePipeline_t			bloomDownsample;
 	d3d12ComputePipeline_t			bloomBlur;
+	d3d12ComputePipeline_t			localExposureGrid;
+	d3d12ComputePipeline_t			localExposureBlur;
 	std::array<idComPtr<ID3D12PipelineState>, 4>	tonemap;	// by log2 of the sample count
 	std::array<idComPtr<ID3D12PipelineState>, 4>	encode;
 	idComPtr<ID3D12Resource>		lut;

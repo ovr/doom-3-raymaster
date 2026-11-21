@@ -3,9 +3,15 @@
 // Please do not use this file to train or fine-tune AI models.
 
 /*
-	The tonemap of the HDR resolve: the scene colour (radiance times preExposure), lerped toward the bloom by
-	bloomIntensity, times the eye adaptation's exposure / preExposure, through the Combine LUT by its log
-	coordinate, dithered by half a step of the 8-bit output from a hash of the pixel, so two runs give the same bytes.
+	The tonemap of the HDR resolve: the scene colour (radiance times preExposure) times its local exposure,
+	lerped toward the bloom by bloomIntensity, times the eye adaptation's exposure / preExposure, through the
+	Combine LUT by its log coordinate, dithered by half a step of the 8-bit output from a hash of the pixel, so two
+	runs give the same bytes.
+
+	The local exposure of a pixel of log2 luminance l: its base b is the bilateral grid sliced at the pixel and l,
+	lerped toward the blurred luminance; with m the log2 radiance that exposes to mid grey,
+	  l' = m + ( b - m ) * ( b > m ? highlightContrast : shadowContrast ) + ( l - b ) * detailStrength
+	and the colour is scaled by 2^( l' - l ).
 
 	  visualize 1   over the image, in the viewport's top left: the histogram (the bins averaged bright), the
 	                measured (cyan), target (yellow) and adapted (green) EV100 as lines and numbers, then the
@@ -13,6 +19,8 @@
 	  visualize 2   instead of the image: the exposed luminance in stops around mid grey, a colour per stop from
 	                dark blue (-5) over green (0) to red (+4) and white
 	  visualize 3   the bloom alone, exposed and through the LUT
+	  visualize 4   the local exposure: the base, exposed and through the LUT, toward red where the pixel is
+	                darkened and toward blue where it is brightened, fully at 2 stops
 */
 
 #include "../include/exposure.hlsli"
@@ -40,6 +48,17 @@ cbuffer TonemapParms : register( b1 ) {
 	float bloomIntensity;	// 0: no bloom
 	float bloomScaleX;		// the bloom's uv of a pixel: ( pixel - view ) * scale, pixel at its centre
 	float bloomScaleY;
+	uint localExposure;		// 0: none
+	uint gridSrv;			// the blurred bilateral grid, Texture3D of ( sum of log2 luminance - gridMinLog, count )
+	uint blurredSrv;		// the blurred luminance, Texture2D of the same pairs
+	float highlightContrast;
+	float shadowContrast;
+	float detailStrength;
+	float blurredBlend;		// 0 the grid, 1 the blurred luminance
+	float gridMinLog;
+	float gridInvLogRange;
+	float gridScaleX;		// the grid's uv of a pixel: ( pixel - view ) * scale
+	float gridScaleY;
 };
 
 // Jimenez's interleaved gradient noise: 0..1, no frame index.
@@ -132,14 +151,44 @@ float3 Overlay( float3 color, int2 u ) {
 	return result;
 }
 
+// The factor of the local exposure for a pixel of radiance luminance at pixel; baseLog: its base, log2 radiance.
+float LocalExposure( float luminance, float2 pixel, float exposure, out float baseLog ) {
+	Texture3D<float4> grid = ResourceDescriptorHeap[gridSrv];
+	Texture2D<float4> blurred = ResourceDescriptorHeap[blurredSrv];
+	SamplerState filter = SamplerDescriptorHeap[lutSampler];
+	const float logLum = clamp( log2( max( luminance, 1e-30 ) ), gridMinLog, gridMinLog + 1.0 / gridInvLogRange );
+	const float2 uv = ( pixel - float2( viewX, viewY ) ) * float2( gridScaleX, gridScaleY );
+	const float2 cell = grid.SampleLevel( filter, float3( uv, ( logLum - gridMinLog ) * gridInvLogRange ), 0 ).xy;
+	const float2 wide = blurred.SampleLevel( filter, uv, 0 ).xy;
+	const float gridLog = ( cell.y > 1e-6 ) ? gridMinLog + cell.x / cell.y : logLum;
+	const float blurredLog = ( wide.y > 1e-6 ) ? gridMinLog + wide.x / wide.y : logLum;
+	baseLog = lerp( gridLog, blurredLog, blurredBlend );
+	const float middle = log2( 0.18 / max( exposure, 1e-30 ) );
+	const float contrast = ( baseLog > middle ) ? highlightContrast : shadowContrast;
+	const float localLog = middle + ( baseLog - middle ) * contrast + ( logLum - baseLog ) * detailStrength;
+	return exp2( localLog - logLum );
+}
+
+float3 LutColor( Texture3D<float4> lut, SamplerState lutFilter, float3 c ) {
+	const float3 t = saturate( log2( c / lutK + 1.0 ) * lutInvRange );
+	return lut.SampleLevel( lutFilter, t * ( 31.0 / 32.0 ) + 0.5 / 32.0, 0 ).rgb;
+}
+
 float4 PSMain( float4 position : SV_Position ) : SV_Target {
 	Texture2D<float4> scene = ResourceDescriptorHeap[sceneSrv];
 	Texture3D<float4> lut = ResourceDescriptorHeap[lutSrv];
 	SamplerState lutFilter = SamplerDescriptorHeap[lutSampler];
 	ByteAddressBuffer eye = ResourceDescriptorHeap[eyeSrv];
-	const float exposureScale = asfloat( eye.Load( 0 ) ) * invPreExposure;
+	const float exposure = asfloat( eye.Load( 0 ) );
+	const float exposureScale = exposure * invPreExposure;
 	const float4 sceneColor = scene.Load( int3( position.xy, 0 ) );
 	float3 radiance = sceneColor.rgb;
+	float localScale = 1.0;
+	float baseLog = 0.0;
+	if ( localExposure != 0 ) {
+		localScale = LocalExposure( dot( sceneColor.rgb, EXPOSURE_LUMA ) * invPreExposure, position.xy, exposure, baseLog );
+		radiance *= localScale;
+	}
 	if ( bloomIntensity > 0.0 || visualize == 3 ) {
 		Texture2D<float4> bloomTexture = ResourceDescriptorHeap[bloomSrv];
 		const float2 uv = ( position.xy - float2( viewX, viewY ) ) * float2( bloomScaleX, bloomScaleY );
@@ -150,9 +199,12 @@ float4 PSMain( float4 position : SV_Position ) : SV_Target {
 	float3 color;
 	if ( visualize == 2 ) {
 		color = FalseColor( dot( c, EXPOSURE_LUMA ) );
+	} else if ( visualize == 4 ) {
+		const float stops = log2( localScale );
+		const float3 base = LutColor( lut, lutFilter, clamp( exp2( baseLog ) * exposure, 0.0, HALF_MAX ) );
+		color = lerp( base, ( stops < 0.0 ) ? float3( 1.0, 0.15, 0.1 ) : float3( 0.1, 0.35, 1.0 ), saturate( abs( stops ) * 0.5 ) );
 	} else {
-		const float3 t = saturate( log2( c / lutK + 1.0 ) * lutInvRange );
-		color = lut.SampleLevel( lutFilter, t * ( 31.0 / 32.0 ) + 0.5 / 32.0, 0 ).rgb;
+		color = LutColor( lut, lutFilter, c );
 		if ( dither != 0 ) {
 			color += ( Noise( position.xy ) - 0.5 ) / 255.0;
 		}
