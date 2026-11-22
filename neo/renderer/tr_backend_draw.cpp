@@ -77,6 +77,20 @@ void RB_SetColor( float r, float g, float b, float a ) {
 	renderProgManager.SetRenderParm( RENDERPARM_COLOR, parm.ToFloatPtr() );
 }
 
+// hdrEmissive in the HDR scene: a colour above 1 goes to the shader divided by its largest channel k (up to 16)
+// and the light the stage adds is scaled by k^2.2 (the parms are gamma colours) times the material's scale.
+static float RB_StageEmissive( const idMaterial * shader, float color[4] ) {
+	const float scale = shader->GetHdrEmissive();
+	if ( scale <= 0.0f || !backEnd.hdrPhase ) {
+		return 1.0f;
+	}
+	const float k = idMath::ClampFloat( 1.0f, 16.0f, Max( color[0], Max( color[1], color[2] ) ) );
+	for ( int i = 0; i < 3; i++ ) {
+		color[i] /= k;
+	}
+	return scale * idMath::Pow( k, 2.2f );
+}
+
 // The fog's alpha is a distance and a modulate's alpha a weight: only rgb is a colour.
 idVec4 RB_ColorParm( const idVec4 & color ) {
 	if ( !backEnd.hdrPhase || backEnd.hdrGamma ) {
@@ -1958,6 +1972,7 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 			stageVertexColor_t svc = pStage->vertexColor;
 
 			renderLog.OpenBlock( "Old Shader Stage" );
+			const float emissive = RB_StageEmissive( shader, color );
 			RB_SetColor( color );
 
 			if ( surf->space->isGuiSurface ) {
@@ -2017,7 +2032,9 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 			RB_PrepareStageTexturing( pStage, surf );
 
 			// draw it
+			renderBackend->Emissive( emissive );
 			RB_DrawElementsWithCounters( surf );
+			renderBackend->Emissive( 1.0f );
 
 			RB_FinishStageTexturing( pStage, surf );
 

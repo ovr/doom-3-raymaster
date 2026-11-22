@@ -49,6 +49,7 @@ void idRenderBackend::SetDefaultState() {
 	latch.depthFuncStrict = true;
 	latch.polyOfsScale = latch.polyOfsBias = 0.0f;
 	latch.depthBoundsMin = latch.depthBoundsMax = 0.0f;
+	latch.emissive = 1.0f;
 	latch.viewport = latch.scissor = { 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() };
 }
 

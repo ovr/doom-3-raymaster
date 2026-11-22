@@ -214,7 +214,7 @@ public:
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,
-	// scissor = output.
+	// emissive 1, scissor = output.
 	void					SetDefaultState();
 	// Sets the whole state vector. A draw uses the vector latched at its DrawIndexed.
 	void					State( uint64 stateBits );
@@ -230,6 +230,9 @@ public:
 	void					PolygonOffset( float scale, float bias );
 	// Depth bounds test in window depth; ( 0, 0 ) turns it off; ignored without caps.depthBoundsTest or when zmin > zmax.
 	void					DepthBoundsTest( float zmin, float zmax );
+	// Scales the light the draws that follow add to the HDR scene (a material's hdrEmissive); 1 = none.
+	// Not a draw whose blend multiplies the target; a copy of the HDR scene that a draw samples keeps its value.
+	void					Emissive( float scale ) { latch.emissive = scale; }
 	// Viewport for the draws that follow.
 	void					Viewport( int x, int y, int width, int height );
 	// Scissor for the draws and clears that follow.

@@ -240,6 +240,7 @@ struct renderLatch_t {
 	renderRect_t		scissor = {};
 	programHandle_t		program = programHandle_t::NONE;
 	textureHandle_t		textures[MAX_TEXTURE_SLOTS][2] = {};	// [slot][textureKind_t]; what a draw samples
+	float				emissive = 1.0f;		// scales the light a draw adds to the HDR scene (hdrEmissive)
 };
 
 // packs the parms a stage reads, in its order; the only implementation of constant packing

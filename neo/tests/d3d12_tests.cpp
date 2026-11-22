@@ -4872,7 +4872,8 @@ void ColorSpace( idTestGpu & gpu ) {
 	  2  ONE ONE: colour 1, alpha 0.75 x2  alpha by MAX: 0.75, where a UNORM target would clamp the sum at 1
 	  3  ONE ZERO 1, then DST_COLOR ZERO   a factor of 0.5 multiplies the scene and is no radiance: 0.25
 	  then stripe 0 copied into a float texture and drawn over stripe 3 by texture.vfp: SceneColor and
-	  SceneOutput give back the 2 the scene held
+	  SceneOutput give back the 2 the scene held; then the same with the latch's emissive 4 (hdrEmissive), which
+	  exposes an add and a replace, not a factor; the float copy drawn keeps its value; then the gamma composite
 */
 void HdrScene( idTestGpu & gpu ) {
 	constexpr int SIZE = idTestRecorder::SIZE;
@@ -5001,6 +5002,21 @@ void HdrScene( idTestGpu & gpu ) {
 		checkStripe( texels, 3, idVec4( 2.0f, 2.0f, 2.0f, 1.0f ), "copy, SceneColor, SceneOutput: the scene's value again" );
 	}
 
+	fixture.recorder.Clear( clearLatch, clear );
+	latch.emissive = 4.0f;
+	draw( 0, color, ADD, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	draw( 1, color, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	draw( 1, color, GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	draw( 3, texture, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO, idVec4( 1.0f, 1.0f, 1.0f, 1.0f ) );
+	texels = readScene();
+	if ( !texels.empty() ) {
+		checkStripe( texels, 0, idVec4( 1.0f, 1.0f, 1.0f, 1.0f ), "emissive 4: an add of 0.5 times 0.5 times 4" );
+		checkStripe( texels, 1, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ), "emissive 4: the replace is exposed, the factor is not" );
+		checkStripe( texels, 2, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), "emissive 4: the clear is not" );
+		checkStripe( texels, 3, idVec4( 2.0f, 2.0f, 2.0f, 1.0f ), "emissive 4: the float copy drawn keeps its value" );
+	}
+	latch.emissive = 1.0f;
+
 	// the gamma composite, preExposure 0.5: the clear is enc( 0.5 * dec( c ) ), an alpha blend mixes in gamma,
 	// a factor is not exposed
 	fixture.recorder.SetHdrGamma( true );
@@ -5009,14 +5025,19 @@ void HdrScene( idTestGpu & gpu ) {
 	fixture.recorder.Clear( clearLatch, clear );
 	draw( 0, color, GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA, idVec4( 1.0f, 1.0f, 1.0f, 0.25f ) );
 	draw( 1, color, GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	latch.emissive = 4.0f;
+	draw( 3, color, ADD, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	latch.emissive = 1.0f;
 	texels = readScene();
 	const float cleared = R_LinearToSRGB( R_SRGBToLinear( 0.5f ) * PRE_EXPOSURE );
 	const float white = R_LinearToSRGB( PRE_EXPOSURE );
 	if ( !texels.empty() ) {
 		const float mixed = 0.25f * white + 0.75f * cleared;
+		const float hot = cleared + R_LinearToSRGB( R_SRGBToLinear( 0.5f ) * PRE_EXPOSURE * 4.0f );
 		checkStripe( texels, 0, idVec4( mixed, mixed, mixed, 0.8125f ), "an alpha blend in gamma" );
 		checkStripe( texels, 1, idVec4( 0.5f * cleared, 0.5f * cleared, 0.5f * cleared, 1.0f ), "a factor in gamma is not exposed" );
 		checkStripe( texels, 2, idVec4( cleared, cleared, cleared, 1.0f ), "a clear in gamma" );
+		checkStripe( texels, 3, idVec4( hot, hot, hot, 1.0f ), "emissive 4 in gamma scales the linear light of an add" );
 	}
 	fixture.recorder.SetHdr( false, PRE_EXPOSURE );
 	Check( !fixture.recorder.HdrGamma(), "the end of the HDR scene ends the gamma composite" );

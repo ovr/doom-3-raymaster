@@ -548,6 +548,10 @@ public:
 
 	float				GetPolygonOffset() const { return polygonOffset; }
 
+	// "hdrEmissive <scale>": in the HDR scene a stage colour above 1 is kept (up to 16) and the light the old
+	// style stages add is scaled by it; 0 = off, the LDR frames never change
+	float				GetHdrEmissive() const { return hdrEmissive; }
+
 	float				GetSurfaceArea() const { return surfaceArea; }
 	void				AddToSurfaceArea( float area ) { surfaceArea += area; }
 
@@ -649,6 +653,7 @@ private:
 	int					spectrum;			// for invisible writing, used for both lights and surfaces
 
 	float				polygonOffset;
+	float				hdrEmissive;
 
 	int					contentFlags;		// content flags
 	int					surfaceFlags;		// surface flags	
