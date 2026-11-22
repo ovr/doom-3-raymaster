@@ -224,6 +224,11 @@ public:
 	idDeclType *				GetDeclType( int type ) const { return declTypes[type]; }
 	const idDeclFile *			GetImplicitDeclFile() const { return &implicitDecls; }
 
+	// "patch <type> <name> { ... }": the body goes before the decl's closing brace when it is parsed
+	void						AddPatch( declType_t type, const char * name, const idDeclFile * file, const char * body, int length );
+	void						RemovePatches( const idDeclFile * file );
+	[[nodiscard]] bool			AppendPatches( declType_t type, const char * name, idStr & text ) const;
+
 	void						ConvertPDAsToStrings( const idCmdArgs &args );
 
 private:
@@ -243,6 +248,14 @@ private:
 	bool						insideLevelLoad;
 	idList<idDeclLocal *>		parseStack;		// the decls being parsed, outermost first (under mutex)
 
+	struct declPatch_t {
+		declType_t				type;
+		idStr					name;			// canonical
+		const idDeclFile *		file;
+		idStr					body;
+	};
+	idList<declPatch_t>			patches;		// in the order of the files
+
 	static idCVar				decl_show;
 
 private:
@@ -252,6 +265,7 @@ private:
 };
 
 idCVar idDeclManagerLocal::decl_show( "decl_show", "0", CVAR_SYSTEM, "set to 1 to print parses, 2 to also print references", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
+idCVar com_enhancedEffects( "com_enhancedEffects", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "1: the decl patches of base/ (the plasma gun's and the BFG's effects) and the effect fixes of the game code; 0: the retail effects" );
 
 idDeclManagerLocal	declManagerLocal;
 idDeclManager *		declManager = &declManagerLocal;
@@ -641,6 +655,7 @@ int idDeclFile::LoadAndParse() {
 	for ( idDeclLocal *decl = decls; decl; decl = decl->nextInFile ) {
 		decl->redefinedInReload = false;
 	}
+	declManagerLocal.RemovePatches( this );
 
 	src.SetFlags( DECL_LEXER_FLAGS );
 
@@ -660,6 +675,31 @@ int idDeclFile::LoadAndParse() {
 		}
 
 		declType_t identifiedType = DECL_MAX_TYPES;
+
+		// "patch" before a type name; before anything else it is the name of a decl of the default type
+		bool patchIsName = false;
+		if ( token.Icmp( "patch" ) == 0 ) {
+			idToken patchType;
+			if ( !src.ReadToken( &patchType ) ) {
+				src.Warning( "Type without definition at end of file" );
+				break;
+			}
+			const declType_t type = declManagerLocal.GetDeclTypeFromName( patchType );
+			if ( type == DECL_MAX_TYPES ) {
+				src.UnreadToken( &patchType );
+				patchIsName = true;
+			} else {
+				idToken patchName;
+				if ( !src.ReadToken( &patchName ) || !src.ReadToken( &token ) || token != "{" ) {
+					src.Warning( "patch %s: expecting a name and '{'", patchType.c_str() );
+					continue;
+				}
+				const int bodyStart = src.GetFileOffset();
+				src.SkipBracedSection( false );
+				declManagerLocal.AddPatch( type, patchName, this, buffer + bodyStart, src.GetFileOffset() - 1 - bodyStart );
+				continue;
+			}
+		}
 
 		// get the decl type from the type name
 		numTypes = declManagerLocal.GetNumDeclTypes();
@@ -686,14 +726,16 @@ int idDeclFile::LoadAndParse() {
 					src.Warning( "No type" );
 					continue;
 				}
-				src.UnreadToken( &token );
+				if ( !patchIsName ) {
+					src.UnreadToken( &token );
+				}
 				// use the default type
 				identifiedType = defaultType;
 			}
 		}
 
 		// now parse the name
-		if ( !src.ReadToken( &token ) ) {
+		if ( !patchIsName && !src.ReadToken( &token ) ) {
 			src.Warning( "Type without definition at end of file" );
 			break;
 		}
@@ -794,6 +836,41 @@ int idDeclFile::LoadAndParse() {
 */
 
 const char *listDeclStrings[] = { "current", "all", "ever", NULL };
+
+void idDeclManagerLocal::AddPatch( declType_t type, const char * name, const idDeclFile * file, const char * body, int length ) {
+	char canonicalName[MAX_STRING_CHARS];
+	MakeNameCanonical( name, canonicalName, sizeof( canonicalName ) );
+	declPatch_t & patch = patches.Alloc();
+	patch.type = type;
+	patch.name = canonicalName;
+	patch.file = file;
+	patch.body.Append( body, length );
+}
+
+void idDeclManagerLocal::RemovePatches( const idDeclFile * file ) {
+	for ( int i = patches.Num() - 1; i >= 0; i-- ) {
+		if ( patches[i].file == file ) {
+			patches.RemoveIndex( i );
+		}
+	}
+}
+
+bool idDeclManagerLocal::AppendPatches( declType_t type, const char * name, idStr & text ) const {
+	bool patched = false;
+	for ( int i = 0; i < patches.Num(); i++ ) {
+		const declPatch_t & patch = patches[i];
+		if ( patch.type != type || patch.name.Icmp( name ) != 0 ) {
+			continue;
+		}
+		const int brace = text.Last( '}' );
+		if ( brace < 0 ) {
+			break;
+		}
+		text = idStr( text.c_str(), 0, brace ) + "\n" + patch.body + "\n}";
+		patched = true;
+	}
+	return patched;
+}
 
 /*
 ===================
@@ -909,6 +986,7 @@ void idDeclManagerLocal::Shutdown() {
 
 	// free decl files
 	loadedFiles.DeleteContents( true );
+	patches.Clear();
 
 	// free the decl types and folders
 	declTypes.DeleteContents( true );
@@ -2406,15 +2484,17 @@ void idDeclLocal::ParseLocal() {
 
 	declState = DS_PARSED;
 
-	// parse
-	char *declText = (char *) _alloca( ( GetTextLength() + 1 ) * sizeof( char ) );
-	GetText( declText );
+	// parse; a patched decl skips its binary version, which was made from the text without the patches
+	idStr declText;
+	declText.Fill( ' ', GetTextLength() );
+	GetText( &declText[0] );
+	const bool patched = com_enhancedEffects.GetBool() && declManagerLocal.AppendPatches( type, name, declText );
 	struct parseScope_t {
 		idList<idDeclLocal *> & stack;
 		parseScope_t( idList<idDeclLocal *> & stack_, idDeclLocal * decl ) : stack( stack_ ) { stack.Append( decl ); }
 		~parseScope_t() { stack.RemoveIndex( stack.Num() - 1 ); }
 	} parseScope( declManagerLocal.parseStack, this );
-	self->Parse( declText, GetTextLength(), true );
+	self->Parse( declText.c_str(), declText.Length(), !patched );
 
 	// free generated text
 	if ( generatedDefaultText ) {

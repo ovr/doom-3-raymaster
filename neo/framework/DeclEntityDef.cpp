@@ -81,7 +81,8 @@ bool idDeclEntityDef::Parse( const char *text, const int textLength, bool allowB
 			return false;
 		}
 
-		if ( dict.FindKey( token ) ) {
+		// a patch (DeclManager.cpp) follows the decl's own text, which GetTextLength measures: its keys override
+		if ( dict.FindKey( token ) && src.GetFileOffset() < GetTextLength() ) {
 			src.Warning( "'%s' already defined", token.c_str() );
 		}
 		dict.Set( token, token2 );

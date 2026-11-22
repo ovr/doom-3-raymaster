@@ -6,9 +6,10 @@
 Runs the visual demos (base/vdemos/*.vdemo) in a retail install and collects their frames.
 
 .DESCRIPTION
-Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir, base/vdemos and base/shaders
-(the HLSL that DXC compiles) into the game dir, starts the game in a 1280x720 window with an isolated fs_savepath (the
-real config in Saved Games is never read or written), runs "vdemo <demos> quit" and copies into
+Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir, base/vdemos, base/shaders
+(the HLSL that DXC compiles) and the decl files of base/def, base/particles and base/materials into the game dir,
+starts the game in a 1280x720 window with an isolated fs_savepath (the real config in Saved Games is never read or
+written), runs "vdemo <demos> quit" and copies into
 -OutDir: the frames and vdemo.json of every demo, run.json,
 qconsole.log, the screenshots the demos took (screenshots/) and modules.txt, every module the game
 had loaded (polled every 5 s).
@@ -117,7 +118,16 @@ if ( -not $NoDeploy ) {
 	$shaderTarget = Join-Path $GameDir 'base\shaders'
 	if ( Test-Path $shaderTarget ) { Remove-Item -Recurse -Force $shaderTarget }
 	Copy-Item ( Join-Path $repoRoot 'base\shaders' ) $shaderTarget -Recurse -Force
-	Write-Host "deployed $BuildDir, base\vdemos and base\shaders to $GameDir"
+	# the decl files of the repo: new decls and patches of retail ones (com_enhancedEffects)
+	foreach ( $folder in 'def', 'particles', 'materials' ) {
+		$source = Join-Path $repoRoot "base\$folder"
+		if ( Test-Path $source ) {
+			$target = Join-Path $GameDir "base\$folder"
+			New-Item -ItemType Directory -Force $target | Out-Null
+			Copy-Item ( Join-Path $source '*' ) $target -Force
+		}
+	}
+	Write-Host "deployed $BuildDir, base\vdemos, base\shaders and the decl files of base to $GameDir"
 }
 
 # the save path is ours only: a marker file guards against wiping anything else

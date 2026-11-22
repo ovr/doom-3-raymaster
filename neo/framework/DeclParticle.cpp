@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 idCVar binaryLoadParticles( "binaryLoadParticles", "1", 0, "enable binary load/write of particle decls" );
+extern idCVar com_enhancedEffects;
 
 static const byte BPRT_VERSION = 101;
 static const unsigned int BPRT_MAGIC = ( 'B' << 24 ) | ( 'P' << 16 ) | ( 'R' << 8 ) | BPRT_VERSION;
@@ -494,8 +495,9 @@ bool idDeclParticle::Parse( const char *text, const int textLength, bool allowBi
 		return false;
 	}
 
-	// don't calculate bounds or write binary files for defaulted ( non-existent ) particles in resource builds
-	if ( fileSystem->UsingResourceFiles() ) {
+	// don't calculate bounds or write binary files for defaulted ( non-existent ) particles in resource builds;
+	// com_enhancedEffects bounds the text of a patch or of a loose file too, which a model would be culled by
+	if ( fileSystem->UsingResourceFiles() && !com_enhancedEffects.GetBool() ) {
 		bounds = idBounds( vec3_origin ).Expand( 8.0f );
 		return true;
 	}
@@ -512,7 +514,7 @@ bool idDeclParticle::Parse( const char *text, const int textLength, bool allowBi
 		bounds = idBounds( vec3_origin ).Expand( 8.0f );
 	}
 
-	if ( allowBinaryVersion && binaryLoadParticles.GetBool() ) {
+	if ( allowBinaryVersion && binaryLoadParticles.GetBool() && !fileSystem->UsingResourceFiles() ) {
 		idLib::Printf( "Writing %s\n", generatedFileName.c_str() );
 		idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_basepath" ) );
 		WriteBinary( outputFile, sourceChecksum );
