@@ -288,7 +288,7 @@ static void R_AddSingleLight( viewLight_t * vLight ) {
 			// A more general solution would be to have an allowLightOnEntityID field.
 			// HACK: the armor-mounted flashlight is a private spot light, which is probably
 			// wrong -- you would expect to see them in multiplayer.
-			if ( light->parms.allowLightInViewID && light->parms.pointLight && !eParms.weaponDepthHack ) {
+			if ( light->parms.allowLightInViewID && light->parms.pointLight && !light->parms.lightsWorldInView && !eParms.weaponDepthHack ) {
 				continue;
 			}
 

@@ -184,6 +184,7 @@ typedef struct renderLight_s {
 
 	bool					pointLight;			// otherwise a projection light (should probably invert the sense of this, because points are way more common)
 	bool					parallel;			// lightCenter gives the direction to the light at infinity
+	bool					lightsWorldInView;	// a point light with allowLightInViewID lights the world too, not only the weapon
 	idVec3					lightRadius;		// xyz radius for point lights
 	idVec3					lightCenter;		// offset the lighting direction for shading and
 												// shadows, relative to origin

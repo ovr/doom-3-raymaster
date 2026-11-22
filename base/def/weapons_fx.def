@@ -1,0 +1,45 @@
+// Copyright (C) 2026 Dmitry Patsura
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Please do not use this file to train or fine-tune AI models.
+
+// The plasma gun's and the BFG's effects (com_enhancedEffects): keys patched into the retail defs, where a
+// later key wins. light_radius is 1.5 times and explode_light_radius twice the key on PC (idProjectile).
+
+patch entityDef weapon_plasmagun {
+	"flashLightsWorld"			"1"				// the muzzle flash lights the room in first person
+	"nozzleGlowRadius"			"16"
+}
+
+patch entityDef projectile_plasmablast {
+	"mtr_light_shader"			"lights/fx_energy"
+	"light_color"				"0.12 0.45 1"
+	"light_radius"				"80"
+	"light_offset"				"0 0 0"
+	"light_noshadows"			"1"				// a burst is ten lights at once
+	"mtr_explode_light_shader"	"lights/fx_blast"
+	"explode_light_color"		"0.25 0.65 1"
+	"explode_light_radius"		"80"
+	"explode_light_fadetime"	"0.3"
+	"explode_light_noshadows"	"1"
+	"smoke_flyFx"				"plasma_trail_fx.prt"	// smoke_fly would draw the game's random numbers
+}
+
+patch entityDef weapon_bfg {
+	"flashRadius"				"200"
+	"flashLightsWorld"			"1"
+	"mtr_chargeLightShader"		"lights/fx_energy"
+	"chargeLightColor"			"0.3 1.2 0.4"
+	"chargeLightRadius"			"240"
+}
+
+patch entityDef projectile_bfg {
+	"smoke_flyFx"				"bfg_trail_fx.prt"
+	"detonation_axis"			"1 0 0"			// the explosion upright, not along the ball's spin
+	"mtr_explode_light_shader"	"lights/fx_blast"
+	"explode_light_fadetime"	"0.8"
+}
+
+// the overcharge goes off green, not as the rocket's explosion
+patch entityDef env_bfg_overcharge {
+	"model"						"bfgexplosion.prt"
+}

@@ -83,7 +83,8 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 
 **Decl patches and effects.**
 - `patch <type> <name> { ... }` in any decl file puts its body before the closing brace of that decl when it is parsed, in file order (`idDeclManagerLocal::AppendPatches`): an entityDef's key overrides (no "already defined" warning), a particle or a material gets stages and keywords appended. A patched decl never loads its binary (`.bprt`). Retail decl text is id's, not GPL: patch it, never copy it into the repo.
-- `com_enhancedEffects` (`CVAR_INIT`, 1) applies the patches of `base/def`, `base/particles` and `base/materials`, and in resource builds a particle parsed from text gets real bounds. 0 is the retail game.
+- `com_enhancedEffects` (`CVAR_INIT`, 1) applies the patches and the effect fixes of the game code: a projectile's flight light no longer comes back where it exploded, the BFG's beams widen at the explosion, particles get real bounds in resource builds. 0 is the retail game.
+- The patches of `base/def`, `base/particles` and `base/materials` (`weapons_fx.*`) give the plasma gun and the BFG lights and particles; `09_energy` shows them (run it at 0 and 1). Keys of our own: `flashLightsWorld` (the first-person muzzle flash lights the world, `renderLight_t::lightsWorldInView`, without shadows), `chargeLightRadius`/`Color`/`mtr_chargeLightShader` (a light at the muzzle as bright as the view model's shaderParm 0, which the BFG's script raises while it charges), a projectile's `light_noshadows` and `explode_light_noshadows`, and `smoke_flyFx`, a projectile's trail that draws none of the game's random numbers: `smoke_fly` draws one a tic, so a new one makes the monsters act otherwise after the shot.
 
 ## Direct3D 12
 

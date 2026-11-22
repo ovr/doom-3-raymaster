@@ -358,6 +358,13 @@ private:
 	const idMaterial *		nozzleGlowShader;	// shader for glow light
 	float					nozzleGlowRadius;	// radius of glow light
 
+	// "chargeLightRadius": a light at the muzzle as bright as the view model's shaderParm 0, which the BFG's
+	// script raises while it charges and lowers after the shot; made again from the def after a load
+	renderLight_t			chargeLight;
+	int						chargeLightHandle;
+	idVec3					chargeLightColor;
+	float					chargeLightRadius;	// 0 = none
+
 	// weighting for viewmodel angles
 	int						weaponAngleOffsetAverages;
 	float					weaponAngleOffsetScale;
@@ -372,6 +379,9 @@ private:
 	void					InitWorldModel( const idDeclEntityDef *def );
 	void					MuzzleRise( idVec3 &origin, idMat3 &axis );
 	void					UpdateNozzleFx();
+	void					InitChargeLight();
+	void					UpdateChargeLight( bool shown );
+	void					FreeChargeLight();
 	void					UpdateFlashPosition();
 
 	// script events

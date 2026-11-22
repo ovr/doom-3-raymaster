@@ -1,0 +1,28 @@
+# 09_energy: cpuboss arena. The plasma gun into the floor close up (each bolt lights the floor in flight and flashes
+# where it hits), then the BFG charged for a second and a half at three imps that stand still: the light at the
+# muzzle grows, the ball trails green, its beams reach the imps and it goes off on the middle one.
+# Run with com_enhancedEffects 0 and 1 to compare the retail effects with those of base/def, particles, materials.
+map game/cpuboss
+at 0 god
+at 0 notarget
+at 1 setviewpos -32 1850 188 90
+at 2 give weapon_plasmagun
+at 2 give weapon_bfg
+at 2 give ammo
+at 2 g_knockback 0
+at 5 spawn monster_demon_imp origin "-160 2180 130" angle 270 name imp1
+at 5 spawn monster_demon_imp origin "-32 2220 130" angle 270 name imp2
+at 5 spawn monster_demon_imp origin "100 2180 130" angle 270 name imp3
+impulse 10 8
+# plasma: down at the floor ahead, then a burst swept to the left
+move 50 80 pitch=40
+move 90 150 yaw=40 attack
+move 160 190 pitch=-40 yaw=-80
+# BFG: raised, charged for a second and a half, released at the imps
+impulse 200 10
+move 280 370 attack
+end 520
+capture 0 520 every=4 fps=60
+capture 100 106
+capture 360 366
+capture 418 440 every=2
