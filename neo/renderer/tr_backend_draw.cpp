@@ -1722,16 +1722,21 @@ static softParticleMode_t RB_SoftParticleMode( const drawSurf_t * surf, uint64 s
 	return GLS_SoftParticleMode( stateBits );
 }
 
-// texture_color_soft over the view's depth, copied at the first soft particle: the copy ends the pass, so it comes
-// before the stage binds anything.
-static void RB_BindSoftParticle( const drawSurf_t * surf, softParticleMode_t mode ) {
-	const idScreenRect & viewport = backEnd.viewDef->viewport;
+// The view's depth, copied once a view for the first stage that reads it.
+static void RB_CopyViewDepth() {
 	if ( !backEnd.softParticleDepth ) {
+		const idScreenRect & viewport = backEnd.viewDef->viewport;
 		renderLog.OpenBlock( "RB_SoftParticleDepth" );
 		globalImages->currentDepthImage->CopyDepthbuffer( viewport.x1, viewport.y1, viewport.GetWidth(), viewport.GetHeight() );
 		renderLog.CloseBlock();
 		backEnd.softParticleDepth = true;
 	}
+}
+
+// texture_color_soft over the view's depth: the copy ends the pass, so it comes before the stage binds anything.
+static void RB_BindSoftParticle( const drawSurf_t * surf, softParticleMode_t mode ) {
+	const idScreenRect & viewport = backEnd.viewDef->viewport;
+	RB_CopyViewDepth();
 	renderProgManager.BindShader_TextureVertexColorSoft();
 	const float parm[4] = { 1.0f / ( r_softParticleScale.GetFloat() * surf->particleSize ), static_cast<float>( mode ),
 		static_cast<float>( viewport.x1 ), static_cast<float>( viewport.y1 ) };
@@ -1901,6 +1906,16 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 					continue;
 				}
 				renderLog.OpenBlock( "New Shader Stage" );
+
+				// a stage that reads the view's depth (the effect programs fade at geometry): the copy ends the
+				// pass, so it comes before the stage binds anything
+				for ( int j = 0; j < newStage->numFragmentProgramImages; j++ ) {
+					if ( newStage->fragmentProgramImages[j] == globalImages->currentDepthImage ) {
+						RB_CopyViewDepth();
+						const float parm[4] = { 0.0f, 0.0f, static_cast<float>( backEnd.viewDef->viewport.x1 ), static_cast<float>( backEnd.viewDef->viewport.y1 ) };
+						SetFragmentParm( RENDERPARM_SOFTPARTICLE, parm );
+					}
+				}
 
 				renderBackend->State( stageGLState );
 			

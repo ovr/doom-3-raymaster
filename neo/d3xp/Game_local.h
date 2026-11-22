@@ -59,6 +59,7 @@ class idTestModel;
 class idAAS;
 class idAI;
 class idSmokeParticles;
+class idFxSystem;
 class idEntityFx;
 class idTypeInfo;
 class idProgram;
@@ -282,6 +283,7 @@ public:
 	idMultiplayerGame		mpGame;					// handles rules for standard dm
 
 	idSmokeParticles *		smokeParticles;			// global smoke trails
+	idFxSystem *			fxSystem;				// sparks, glows and marks with a state of their own (com_enhancedEffects)
 	idEditEntities *		editEntities;			// in game editing
 
 	bool					inCinematic;			// game is playing cinematic (player controls frozen)
@@ -793,6 +795,7 @@ const int	CINEMATIC_SKIP_DELAY	= SEC2MS( 2.0f );
 #include "physics/Physics_AF.h"
 
 #include "SmokeParticles.h"
+#include "FxSystem.h"
 
 #include "Entity.h"
 #include "GameEdit.h"

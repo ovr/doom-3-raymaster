@@ -138,6 +138,7 @@ set(GAME_D3XP_SOURCES
 	d3xp/Camera.cpp
 	d3xp/Entity.cpp
 	d3xp/Fx.cpp
+	d3xp/FxSystem.cpp
 	d3xp/Game_local.cpp
 	d3xp/Game_network.cpp
 	d3xp/GameEdit.cpp

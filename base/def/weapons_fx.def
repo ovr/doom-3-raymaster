@@ -12,16 +12,19 @@ patch entityDef weapon_plasmagun {
 
 patch entityDef projectile_plasmablast {
 	"mtr_light_shader"			"lights/fx_energy"
-	"light_color"				"0.12 0.45 1"
-	"light_radius"				"80"
+	"light_color"				"0.18 0.45 0.9"
+	"light_radius"				"90"
 	"light_offset"				"0 0 0"
 	"light_noshadows"			"1"				// a burst is ten lights at once
 	"mtr_explode_light_shader"	"lights/fx_blast"
-	"explode_light_color"		"0.25 0.65 1"
-	"explode_light_radius"		"80"
-	"explode_light_fadetime"	"0.3"
+	"explode_light_color"		"0.3 0.6 1.0"
+	"explode_light_radius"		"110"
+	"explode_light_fadetime"	"0.25"
 	"explode_light_noshadows"	"1"
-	"smoke_flyFx"				"plasma_trail_fx.prt"	// smoke_fly would draw the game's random numbers
+	"model_detonate"			"fx_none.prt"	// the effect system draws the impact
+	"fx_fly"					"fx_plasma_fly"
+	"fx_impact"					"fx_plasma_impact"
+	"model"		"fx_none.prt"
 }
 
 patch entityDef weapon_bfg {
@@ -33,13 +36,154 @@ patch entityDef weapon_bfg {
 }
 
 patch entityDef projectile_bfg {
-	"smoke_flyFx"				"bfg_trail_fx.prt"
+	"smoke_flyFx"				""
 	"detonation_axis"			"1 0 0"			// the explosion upright, not along the ball's spin
 	"mtr_explode_light_shader"	"lights/fx_blast"
 	"explode_light_fadetime"	"0.8"
+	"fx_fly"		"fx_bfg_fly"
+	"model"		"fx_none.prt"
 }
 
 // the overcharge goes off green, not as the rocket's explosion
 patch entityDef env_bfg_overcharge {
 	"model"						"bfgexplosion.prt"
+}
+
+// Effects of idFxSystem: emitters e1, e2, ... (FxSystem.h has the keys). Sizes are half-widths in units, the
+// intensity is radiance relative to a lit wall, a heat above 0 gives the colour of glowing metal.
+
+entityDef fx_plasma_fly {
+	"light_color"	"0.18 0.45 0.9"
+	"light_radius"	"150"
+	// the ball, unstable, and a wide halo; both ride the projectile
+	"e1_kind"		"orb"
+	"e1_size"		"12"
+	"e1_intensity"	"2"
+	"e1_color"		"0.2 0.5 1"
+	"e1_fadeDepth"	"5"
+	"e2_kind"		"glow"
+	"e2_size"		"22"
+	"e2_intensity"	"0.4"
+	"e2_color"		"0.1 0.35 1"
+	"e2_fadeDepth"	"12"
+	// what it throws off: born on the ball at its speed, the drag leaves them behind
+	"e3_kind"		"spark"
+	"e3_rate"		"320"
+	"e3_spread"		"3"
+	"e3_inherit"	"1"
+	"e3_drag"		"4"
+	"e3_speedMin"	"30"
+	"e3_speedMax"	"170"
+	"e3_cone"		"180"
+	"e3_lifeMin"	"0.1"
+	"e3_lifeMax"	"0.4"
+	"e3_size"		"0.35"
+	"e3_sizeEnd"	"0.35"
+	"e3_intensity"	"4"
+	"e3_vary"		"0.8"
+	"e3_color"		"0.15 0.45 1"
+	// sparks that fall and bounce
+	"e4_kind"		"spark"
+	"e4_rate"		"30"
+	"e4_spread"		"2"
+	"e4_speedMin"	"60"
+	"e4_speedMax"	"260"
+	"e4_cone"		"180"
+	"e4_inherit"	"0.6"
+	"e4_lifeMin"	"0.25"
+	"e4_lifeMax"	"0.7"
+	"e4_size"		"0.6"
+	"e4_gravity"	"500"
+	"e4_bounce"		"0.45"
+	"e4_intensity"	"6"
+	"e4_color"		"0.4 0.7 1"
+}
+
+entityDef fx_bfg_fly {
+	"light_color"	"0.25 1 0.35"
+	"light_radius"	"320"
+	// the ball: small in its quad, the arcs of its discharge reach far out
+	"e1_kind"		"orb"
+	"e1_size"		"84"
+	"e1_heat"		"1"
+	"e1_intensity"	"2"
+	"e1_color"		"0.2 1 0.3"
+	"e1_fadeDepth"	"8"
+	"e2_kind"		"glow"
+	"e2_size"		"90"
+	"e2_intensity"	"0.3"
+	"e2_color"		"0.15 1 0.25"
+	"e2_fadeDepth"	"24"
+	// what it throws off
+	"e3_kind"		"spark"
+	"e3_rate"		"700"
+	"e3_spread"		"15"
+	"e3_inherit"	"1"
+	"e3_drag"		"3"
+	"e3_speedMin"	"40"
+	"e3_speedMax"	"260"
+	"e3_cone"		"180"
+	"e3_lifeMin"	"0.15"
+	"e3_lifeMax"	"0.6"
+	"e3_size"		"0.5"
+	"e3_sizeEnd"	"0.5"
+	"e3_intensity"	"4"
+	"e3_vary"		"0.8"
+	"e3_color"		"0.2 1 0.3"
+	"e4_kind"		"spark"
+	"e4_rate"		"60"
+	"e4_spread"		"8"
+	"e4_speedMin"	"100"
+	"e4_speedMax"	"420"
+	"e4_cone"		"180"
+	"e4_inherit"	"0.6"
+	"e4_lifeMin"	"0.3"
+	"e4_lifeMax"	"0.9"
+	"e4_size"		"0.9"
+	"e4_gravity"	"500"
+	"e4_bounce"		"0.45"
+	"e4_intensity"	"6"
+	"e4_color"		"0.5 1 0.5"
+}
+
+entityDef fx_plasma_impact {
+	// the flash
+	"e1_kind"		"flash"
+	"e1_lifeMin"	"0.14"
+	"e1_size"		"8"
+	"e1_sizeEnd"	"30"
+	"e1_intensity"	"14"
+	"e1_color"		"0.35 0.65 1"
+	"e1_offset"		"3"
+	"e1_fadeDepth"	"8"
+	// the glow that lingers
+	"e2_kind"		"glow"
+	"e2_lifeMin"	"0.5"
+	"e2_size"		"18"
+	"e2_sizeEnd"	"8"
+	"e2_intensity"	"2"
+	"e2_color"		"0.15 0.4 1"
+	"e2_offset"		"4"
+	"e2_fadeDepth"	"10"
+	// molten sparks: they fall, bounce off the world and cool
+	"e3_kind"		"spark"
+	"e3_count"		"22"
+	"e3_speedMin"	"120"
+	"e3_speedMax"	"480"
+	"e3_cone"		"75"
+	"e3_lifeMin"	"0.5"
+	"e3_lifeMax"	"1.4"
+	"e3_size"		"0.7"
+	"e3_gravity"	"800"
+	"e3_drag"		"0.6"
+	"e3_bounce"		"0.5"
+	"e3_heat"		"1"
+	"e3_intensity"	"4"
+	"e3_offset"		"1"
+	// the spot it burnt, cooling
+	"e4_kind"		"mark"
+	"e4_lifeMin"	"2.6"
+	"e4_size"		"7"
+	"e4_heat"		"0.8"
+	"e4_intensity"	"1.5"
 }

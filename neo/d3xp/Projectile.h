@@ -135,6 +135,10 @@ protected:
 	// so monsters act as without it; made again from the def after a load
 	const idDeclParticle *	smokeFlyFx;
 	int						smokeFlyFxTime;
+	// "fx_fly" (idFxSystem): the effect of the flight; made again from the def after a load
+	const fxDef_t *			fxFly;
+	float					fxTravelled;
+	idVec3					fxLastOrigin;
 	bool					mNoExplodeDisappear;
 	bool					mTouchTriggers;
 

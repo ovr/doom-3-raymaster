@@ -88,6 +88,9 @@ idProjectile::idProjectile() :
 	smokeFlyTime		= 0;
 	smokeFlyFx			= NULL;
 	smokeFlyFxTime		= 0;
+	fxFly				= nullptr;
+	fxTravelled			= 0.0f;
+	fxLastOrigin		= vec3_zero;
 	state				= SPAWNED;
 	lightOffset			= vec3_zero;
 	lightStartTime		= 0;
@@ -202,6 +205,9 @@ void idProjectile::Restore( idRestoreGame *savefile ) {
 	const char * smokeFxName = spawnArgs.GetString( "smoke_flyFx" );
 	smokeFlyFx = ( *smokeFxName != '\0' ) ? static_cast<const idDeclParticle *>( declManager->FindType( DECL_PARTICLE, smokeFxName ) ) : NULL;
 	smokeFlyFxTime = ( smokeFlyFx != NULL && state == LAUNCHED ) ? gameLocal.time : 0;
+	fxFly = gameLocal.fxSystem->FindDef( spawnArgs.GetString( "fx_fly" ) );
+	fxTravelled = 0.0f;
+	fxLastOrigin = GetPhysics()->GetOrigin();
 
 	if ( lightDefHandle >= 0 ) {
 		lightDefHandle = gameRenderWorld->AddLightDef( &renderLight );
@@ -469,6 +475,9 @@ void idProjectile::Launch( const idVec3 &start, const idVec3 &dir, const idVec3 
 		smokeFlyFx = static_cast<const idDeclParticle *>( declManager->FindType( DECL_PARTICLE, smokeFxName ) );
 		smokeFlyFxTime = gameLocal.time;
 	}
+	fxFly = gameLocal.fxSystem->FindDef( spawnArgs.GetString( "fx_fly" ) );
+	fxTravelled = 0.0f;
+	fxLastOrigin = GetPhysics()->GetOrigin();
 
 	originalTimeGroup = timeGroup;
 
@@ -547,6 +556,11 @@ void idProjectile::AddParticlesAndLight() {
 		if ( !gameLocal.smokeParticles->EmitSmoke( smokeFlyFx, smokeFlyFxTime, fxRandom.RandomFloat(), GetPhysics()->GetOrigin(), dir.ToMat3(), timeGroup ) ) {
 			smokeFlyFxTime = gameLocal.time;
 		}
+	}
+	if ( fxFly != nullptr && state == LAUNCHED && !IsHidden() ) {
+		const idVec3 & origin = GetPhysics()->GetOrigin();
+		gameLocal.fxSystem->Trail( fxFly, fxLastOrigin, origin, GetPhysics()->GetLinearVelocity(), fxTravelled, entityNumber );
+		fxLastOrigin = origin;
 	}
 
 	// add the light
@@ -985,6 +999,7 @@ void idProjectile::Explode( const trace_t &collision, idEntity *ignore ) {
 		GetPhysics()->SetAxis( normal.ToMat3() );
 	}
 	GetPhysics()->SetOrigin( collision.endpos + 2.0f * collision.c.normal );
+	gameLocal.fxSystem->Burst( gameLocal.fxSystem->FindDef( spawnArgs.GetString( "fx_impact" ) ), collision.endpos, collision.c.normal );
 
 	// default remove time
 	if( fl.skipReplication && !spawnArgs.GetBool( "net_instanthit" ) ) {

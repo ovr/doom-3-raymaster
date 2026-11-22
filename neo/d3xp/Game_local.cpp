@@ -223,6 +223,7 @@ void idGameLocal::Clear() {
 	sessionCommand.Clear();
 	locationEntities = NULL;
 	smokeParticles = NULL;
+	fxSystem = NULL;
 	editEntities = NULL;
 	entityHash.Clear( 1024, MAX_GENTITIES );
 	inCinematic = false;
@@ -344,6 +345,7 @@ void idGameLocal::Init() {
 	program.Startup( SCRIPT_DEFAULT );
 	
 	smokeParticles = new (TAG_PARTICLE) idSmokeParticles;
+	fxSystem = new ( TAG_PARTICLE ) idFxSystem;
 
 	// set up the aas
 	dict = FindEntityDefDict( "aas_types" );
@@ -402,6 +404,8 @@ void idGameLocal::Shutdown() {
 
 	delete smokeParticles;
 	smokeParticles = NULL;
+	delete fxSystem;
+	fxSystem = NULL;
 
 	idClass::Shutdown();
 
@@ -993,6 +997,7 @@ void idGameLocal::LoadMap( const char * mapName, int randseed ) {
 
 	// clear the smoke particle free list
 	smokeParticles->Init();
+	fxSystem->Init();
 
 	common->UpdateLevelLoadPacifier();
 
@@ -1058,6 +1063,7 @@ void idGameLocal::LocalMapRestart( ) {
 
 	// clear the smoke particle free list
 	smokeParticles->Init();
+	fxSystem->Init();
 
 	// clear the sound system
 	if ( gameSoundWorld ) {
@@ -1531,6 +1537,9 @@ void idGameLocal::MapShutdown() {
 
 	if ( smokeParticles ) {
 		smokeParticles->Shutdown();
+	}
+	if ( fxSystem ) {
+		fxSystem->Shutdown();
 	}
 
 	pvs.Shutdown();
@@ -2455,6 +2464,7 @@ void idGameLocal::RunSingleFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 
 		// free old smoke particles
 		smokeParticles->FreeSmokes();
+		fxSystem->RunFrame();
 
 		// process events on the server
 		ServerProcessEntityNetworkEventQueue();

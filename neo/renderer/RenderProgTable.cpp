@@ -75,6 +75,9 @@ constexpr renderProgDef_t renderProgs[] = {
 	{ .name = "bloodorb_draw" },
 	{ .name = "enviroSuit" },
 	{ .name = "colorProcess" },
+
+	// the game's effect system (idFxSystem)
+	{ .name = "fx_emissive" },
 };
 
 // the uniform names of the render parms, in renderParm_t order
