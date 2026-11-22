@@ -1,0 +1,129 @@
+// Copyright (C) 2026 Dmitry Patsura
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Please do not use this file to train or fine-tune AI models.
+
+// The plasma gun's and the BFG's effects (com_enhancedEffects): lights and particle materials on the retail
+// images, and patches of retail materials ("patch <type> <name> { ... }" goes before its closing brace).
+// hdrEmissive scales the light a stage adds to the HDR scene; the LDR frames do not change.
+
+// a steady light: the plasma bolt in flight, the BFG's charge
+lights/fx_energy
+{
+	noshadows
+	{
+		forceHighQuality
+		map			lights/round
+		colored
+		zeroClamp
+	}
+}
+
+// a flickering impact flash; the game fades its colour over explode_light_fadetime
+lights/fx_blast
+{
+	noshadows
+	{
+		forceHighQuality
+		map			lights/round
+		zeroClamp
+		red			muzzleflashrandom[ time * 3.33 ] * Parm0
+		green		muzzleflashrandom[ time * 3.33 ] * Parm1
+		blue		muzzleflashrandom[ time * 3.33 ] * Parm2
+	}
+}
+
+textures/fx/spark
+{
+	noSelfShadow
+	noshadows
+	translucent
+	nonsolid
+	noimpact
+	hdrEmissive	3
+	{
+		blend		add
+		map			textures/particles/spark_white
+		vertexColor
+	}
+}
+
+textures/fx/plasma_glow
+{
+	noSelfShadow
+	noshadows
+	translucent
+	nonsolid
+	noimpact
+	twosided
+	hdrEmissive	1.5
+	{
+		blend		add
+		map			textures/particles/plasmablast
+		vertexColor
+	}
+}
+
+textures/fx/glow
+{
+	noSelfShadow
+	noshadows
+	translucent
+	nonsolid
+	noimpact
+	hdrEmissive	1.5
+	{
+		blend		add
+		map			textures/particles/boomboom2
+		vertexColor
+	}
+}
+
+textures/fx/flare
+{
+	noSelfShadow
+	noshadows
+	translucent
+	nonsolid
+	noimpact
+	twosided
+	hdrEmissive	2
+	{
+		blend		add
+		map			textures/particles/bfgballblast
+		vertexColor
+	}
+}
+
+// the plasma bolt: its table goes up to 2, which the LDR frames clamp at 1
+patch material textures/particles/plasma { hdrEmissive 1 }
+patch material textures/particles/plasma2 { hdrEmissive 1 }
+
+// the BFG ball, its arcs and glow, the beams
+patch material textures/particles/bfgballsac { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacglo { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacarc { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacarc2 { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacarc3 { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacarc4 { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacarc5 { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacarc6 { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacarc7 { hdrEmissive 1.5 }
+patch material textures/particles/bfgballsacarc8 { hdrEmissive 1.5 }
+patch material textures/particles/duffybolt { hdrEmissive 2 }
+
+// the effect system's light (idFxSystem): the program draws glows, sparks, flashes and hot marks from the bytes
+// of each vertex and fades them at the view's depth
+fx/emissive
+{
+	noSelfShadow
+	noshadows
+	translucent
+	nonsolid
+	noimpact
+	twosided
+	{
+		blend		add
+		program		fx_emissive.vfp
+		fragmentMap	0 _currentDepth
+	}
+}

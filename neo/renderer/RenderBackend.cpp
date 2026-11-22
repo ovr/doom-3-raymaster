@@ -35,54 +35,11 @@ If you have questions concerning this license or the applicable additional terms
 
 idRenderBackend *	renderBackend = nullptr;
 
-idCVar r_renderApi( "r_renderApi", "d3d12", CVAR_RENDERER | CVAR_INIT | CVAR_ARCHIVE, "graphics API of the renderer, read once at startup" );
-
-idRenderBackendFactory * idRenderBackendFactory::staticFactories = nullptr;
-
-/*
-========================
-idRenderBackendFactory::idRenderBackendFactory
-
-Runs before main: only links the instance into the list.
-========================
-*/
-idRenderBackendFactory::idRenderBackendFactory( const char * name, idRenderBackend * ( *createBackend )() ) :
-	apiName( name ),
-	create( createBackend ),
-	next( staticFactories ) {
-	staticFactories = this;
-}
-
-/*
-========================
-idRenderBackendFactory::Create
-========================
-*/
-idRenderBackend * idRenderBackendFactory::Create( const char * apiName ) {
-	for ( const idRenderBackendFactory * factory = staticFactories; factory != nullptr; factory = factory->next ) {
-		if ( idStr::Icmp( factory->apiName, apiName ) == 0 ) {
-			return factory->create();
-		}
-	}
-	return nullptr;
-}
-
-/*
-========================
-idRenderBackendFactory::ListApis
-========================
-*/
-void idRenderBackendFactory::ListApis( idStrList & names ) {
-	for ( const idRenderBackendFactory * factory = staticFactories; factory != nullptr; factory = factory->next ) {
-		names.Append( factory->apiName );
-	}
-}
-
 /*
 ========================
 idRenderBackend::SetDefaultState
 
-Once per frame (per eye in stereo). An immediate backend puts the API into this state in its hook.
+Once per frame (per eye in stereo).
 ========================
 */
 void idRenderBackend::SetDefaultState() {
@@ -92,9 +49,8 @@ void idRenderBackend::SetDefaultState() {
 	latch.depthFuncStrict = true;
 	latch.polyOfsScale = latch.polyOfsBias = 0.0f;
 	latch.depthBoundsMin = latch.depthBoundsMax = 0.0f;
+	latch.emissive = 1.0f;
 	latch.viewport = latch.scissor = { 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() };
-	latch.texturesSent = 0;
-	API_SetDefaultState();
 }
 
 /*
@@ -115,7 +71,6 @@ void idRenderBackend::Clear( bool color, bool depth, bool stencil, byte stencilV
 	clear.rgba[2] = b;
 	clear.rgba[3] = a;
 	assert( !depth || ( latch.stateBits & GLS_DEPTHMASK ) == 0 );
-	assert( !color || clear.colorWriteMask == 0xF || caps.maskedColorClear );
 	API_Clear( clear );
 }
 
@@ -132,7 +87,6 @@ void idRenderBackend::DestroyTexture( textureHandle_t texture ) {
 			}
 		}
 	}
-	latch.texturesSent = 0;
 	API_DestroyTexture( texture );
 }
 

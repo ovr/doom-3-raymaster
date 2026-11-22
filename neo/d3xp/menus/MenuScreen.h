@@ -1195,7 +1195,6 @@ public:
 			SYSTEM_FIELD_LODBIAS,
 			SYSTEM_FIELD_BRIGHTNESS,
 			SYSTEM_FIELD_VOLUME,
-			SYSTEM_FIELD_RENDERAPI,
 			MAX_SYSTEM_FIELDS
 		};
 
@@ -1229,7 +1228,6 @@ public:
 		int originalVsync;
 		float originalBrightness;
 		float originalVolume;
-		idStr originalRenderApi;	// the one this run draws with: the cvar is read once at startup
 
 		idList<vidMode_t>			modeList;
 	};

@@ -138,6 +138,7 @@ set(GAME_D3XP_SOURCES
 	d3xp/Camera.cpp
 	d3xp/Entity.cpp
 	d3xp/Fx.cpp
+	d3xp/FxSystem.cpp
 	d3xp/Game_local.cpp
 	d3xp/Game_network.cpp
 	d3xp/GameEdit.cpp
@@ -250,7 +251,7 @@ set(GAME_D3XP_SOURCES
 )
 
 
-# the Direct3D 12 backend (r_renderApi d3d12): always built, with /WX (CMakeLists.txt)
+# the Direct3D 12 backend, the only one: always built, with /WX (CMakeLists.txt)
 set(D3D12_SOURCES
 	renderer/D3D12/d3d12_Agility.cpp
 	renderer/D3D12/d3d12_Buffers.cpp
@@ -368,13 +369,6 @@ set(ENGINE_SOURCES
 	renderer/ModelDecal.cpp
 	renderer/ModelManager.cpp
 	renderer/ModelOverlay.cpp
-	renderer/OpenGL/gl_Buffer.cpp
-	renderer/OpenGL/gl_Draw.cpp
-	renderer/OpenGL/gl_Extensions.cpp
-	renderer/OpenGL/gl_State.cpp
-	renderer/OpenGL/gl_image.cpp
-	renderer/OpenGL/gl_RenderBackend.cpp
-	renderer/OpenGL/gl_RenderProgs.cpp
 	renderer/RenderBackend.cpp
 	renderer/RenderEntity.cpp
 	renderer/RenderLog.cpp
@@ -455,13 +449,11 @@ set(ENGINE_SOURCES
 	sys/sys_voicechat.cpp
 	sys/win32/win_achievements.cpp
 	sys/win32/win_cpu.cpp
-	sys/win32/win_glimp.cpp
 	sys/win32/win_input.cpp
 	sys/win32/win_localuser.cpp
 	sys/win32/win_main.cpp
 	sys/win32/win_net.cpp
 	sys/win32/win_profiler.cpp
-	sys/win32/win_qgl.cpp
 	sys/win32/win_savegame.cpp
 	sys/win32/win_session_local.cpp
 	sys/win32/win_shared.cpp

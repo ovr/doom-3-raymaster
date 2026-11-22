@@ -163,6 +163,9 @@ idWeapon::idWeapon() {
 	memset( &muzzleFlash, 0, sizeof( muzzleFlash ) );
 	memset( &worldMuzzleFlash, 0, sizeof( worldMuzzleFlash ) );
 	memset( &nozzleGlow, 0, sizeof( nozzleGlow ) );
+	memset( &chargeLight, 0, sizeof( chargeLight ) );
+	chargeLightHandle		= -1;
+	chargeLightRadius		= 0.0f;
 
 	muzzleFlashEnd			= 0;
 	flashColor				= vec3_origin;
@@ -544,6 +547,7 @@ void idWeapon::Restore( idRestoreGame *savefile ) {
 
 	savefile->ReadInt( muzzleFlashHandle );
 	savefile->ReadRenderLight( muzzleFlash );
+	muzzleFlash.lightsWorldInView = weaponDef->dict.GetBool( "flashLightsWorld" );
 	if ( muzzleFlashHandle >= 0 ) {
 		muzzleFlashHandle = gameRenderWorld->AddLightDef( &muzzleFlash );
 	}
@@ -621,6 +625,7 @@ void idWeapon::Restore( idRestoreGame *savefile ) {
 	savefile->ReadVec3( nozzleGlowColor );
 	savefile->ReadMaterial( nozzleGlowShader );
 	savefile->ReadFloat( nozzleGlowRadius );
+	InitChargeLight();
 
 	savefile->ReadInt( weaponAngleOffsetAverages );
 	savefile->ReadFloat( weaponAngleOffsetScale );
@@ -729,6 +734,8 @@ void idWeapon::Clear() {
 		gameRenderWorld->FreeLightDef( nozzleGlowHandle );
 		nozzleGlowHandle = -1;
 	}
+	FreeChargeLight();
+	chargeLightRadius = 0.0f;
 
 	memset( &renderEntity, 0, sizeof( renderEntity ) );
 	renderEntity.entityNum	= entityNumber;
@@ -1106,6 +1113,7 @@ void idWeapon::GetWeaponDef( const char *objectname, int ammoinclip ) {
 	muzzleFlash.lightRadius[0]							= flashRadius;
 	muzzleFlash.lightRadius[1]							= flashRadius;
 	muzzleFlash.lightRadius[2]							= flashRadius;
+	muzzleFlash.lightsWorldInView						= weaponDef->dict.GetBool( "flashLightsWorld" );
 
 	if ( !flashPointLight ) {
 		muzzleFlash.target								= flashTarget;
@@ -1129,6 +1137,8 @@ void idWeapon::GetWeaponDef( const char *objectname, int ammoinclip ) {
 	nozzleGlowRadius	= weaponDef->dict.GetFloat("nozzleGlowRadius", "10");
 	weaponDef->dict.GetString( "mtr_nozzleGlowShader", "", &shader );
 	nozzleGlowShader = declManager->FindMaterial( shader, false );
+
+	InitChargeLight();
 
 	// get the melee damage def
 	meleeDistance = weaponDef->dict.GetFloat( "melee_distance" );
@@ -1441,7 +1451,7 @@ void idWeapon::UpdateFlashPosition() {
 	// be at least 8 units away from a solid
 	muzzleFlash.origin = tr.endpos - playerViewAxis[0] * 8;
 
-	muzzleFlash.noShadows = !g_weaponShadows.GetBool();
+	muzzleFlash.noShadows = !g_weaponShadows.GetBool() || muzzleFlash.lightsWorldInView;
 
 	// put the world muzzle flash on the end of the joint, no matter what
 	GetGlobalJointTransform( false, flashJointWorld, worldMuzzleFlash.origin, worldMuzzleFlash.axis );
@@ -2024,6 +2034,50 @@ void idWeapon::UpdateNozzleFx() {
 }
 
 
+void idWeapon::InitChargeLight() {
+	memset( &chargeLight, 0, sizeof( chargeLight ) );
+	chargeLightHandle = -1;
+	chargeLightRadius = weaponDef->dict.GetFloat( "chargeLightRadius" );
+	chargeLightColor = weaponDef->dict.GetVector( "chargeLightColor", "1 1 1" );
+	chargeLight.shader = declManager->FindMaterial( weaponDef->dict.GetString( "mtr_chargeLightShader" ), false );
+	chargeLight.pointLight = true;
+	chargeLight.noShadows = true;
+	chargeLight.lightsWorldInView = true;
+	if ( owner != NULL ) {
+		chargeLight.allowLightInViewID = owner->entityNumber + 1;
+		chargeLight.viewAttachedID = owner->entityNumber + 1;
+	}
+	chargeLight.shaderParms[ SHADERPARM_TIMESCALE ] = 1.0f;
+}
+
+void idWeapon::UpdateChargeLight( bool shown ) {
+	const float level = idMath::ClampFloat( 0.0f, 1.0f, renderEntity.shaderParms[ SHADERPARM_RED ] );
+	if ( chargeLightRadius <= 0.0f || level <= 0.0f || !shown || flashJointView == INVALID_JOINT || !g_muzzleFlash.GetBool() ) {
+		FreeChargeLight();
+		return;
+	}
+	UpdateFlashPosition();
+	chargeLight.origin = muzzleFlash.origin;
+	chargeLight.axis = muzzleFlash.axis;
+	const float radius = chargeLightRadius * ( 0.5f + 0.5f * level );
+	chargeLight.lightRadius.Set( radius, radius, radius );
+	chargeLight.shaderParms[ SHADERPARM_RED ] = chargeLightColor.x * level;
+	chargeLight.shaderParms[ SHADERPARM_GREEN ] = chargeLightColor.y * level;
+	chargeLight.shaderParms[ SHADERPARM_BLUE ] = chargeLightColor.z * level;
+	if ( chargeLightHandle == -1 ) {
+		chargeLightHandle = gameRenderWorld->AddLightDef( &chargeLight );
+	} else {
+		gameRenderWorld->UpdateLightDef( chargeLightHandle, &chargeLight );
+	}
+}
+
+void idWeapon::FreeChargeLight() {
+	if ( chargeLightHandle != -1 ) {
+		gameRenderWorld->FreeLightDef( chargeLightHandle );
+		chargeLightHandle = -1;
+	}
+}
+
 /*
 ================
 idWeapon::BloodSplat
@@ -2450,6 +2504,7 @@ void idWeapon::PresentWeapon( bool showViewModel ) {
 	if ( nozzleFx ) {
 		UpdateNozzleFx();
 	}
+	UpdateChargeLight( showViewModel && !disabled && !IsHidden() );
 
 	// muzzle smoke
 	if ( showViewModel && !disabled && weaponSmoke && ( weaponSmokeStartTime != 0 ) ) {

@@ -33,6 +33,8 @@ If you have questions concerning this license or the applicable additional terms
 
 idCVar r_drawEyeColor( "r_drawEyeColor", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a colored box, red = left eye, blue = right eye, grey = non-stereo" );
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 - 5, log2 of the number of motion blur samples" );
+idCVar r_softParticles( "r_softParticles", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "fade particles out where they meet the scene behind them, instead of cutting them at a line" );
+idCVar r_softParticleScale( "r_softParticleScale", "0.1", CVAR_RENDERER | CVAR_FLOAT, "the depth a particle fades over, times its stage's largest size; more thins the big glows set into walls" );
 idCVar r_forceZPassStencilShadows( "r_forceZPassStencilShadows", "0", CVAR_RENDERER | CVAR_BOOL, "force Z-pass rendering for performance testing" );
 idCVar r_useStencilShadowPreload( "r_useStencilShadowPreload", "1", CVAR_RENDERER | CVAR_BOOL, "use stencil shadow preload algorithm instead of Z-fail" );
 idCVar r_skipShaderPasses( "r_skipShaderPasses", "0", CVAR_RENDERER | CVAR_BOOL, "" );
@@ -73,6 +75,20 @@ void RB_SetColor( float r, float g, float b, float a ) {
 	const idVec4 parm = RB_ColorParm( idVec4( idMath::ClampFloat( 0.0f, 1.0f, r ), idMath::ClampFloat( 0.0f, 1.0f, g ),
 		idMath::ClampFloat( 0.0f, 1.0f, b ), idMath::ClampFloat( 0.0f, 1.0f, a ) ) );
 	renderProgManager.SetRenderParm( RENDERPARM_COLOR, parm.ToFloatPtr() );
+}
+
+// hdrEmissive in the HDR scene: a colour above 1 goes to the shader divided by its largest channel k (up to 16)
+// and the light the stage adds is scaled by k^2.2 (the parms are gamma colours) times the material's scale.
+static float RB_StageEmissive( const idMaterial * shader, float color[4] ) {
+	const float scale = shader->GetHdrEmissive();
+	if ( scale <= 0.0f || !backEnd.hdrPhase ) {
+		return 1.0f;
+	}
+	const float k = idMath::ClampFloat( 1.0f, 16.0f, Max( color[0], Max( color[1], color[2] ) ) );
+	for ( int i = 0; i < 3; i++ ) {
+		color[i] /= k;
+	}
+	return scale * idMath::Pow( k, 2.2f );
 }
 
 // The fog's alpha is a distance and a modulate's alpha a weight: only rgb is a colour.
@@ -1696,6 +1712,38 @@ NON-INTERACTION SHADER PASSES
 =============================================================================================
 */
 
+// The fade of a particle stage (GLS_SoftParticleMode), NONE where it keeps the hard line: a stage that writes or ignores
+// depth, the weapon's (its depth range is squeezed), or a blend that cannot fade.
+static softParticleMode_t RB_SoftParticleMode( const drawSurf_t * surf, uint64 stateBits ) {
+	if ( surf->particleSize <= 0.0f || !r_softParticles.GetBool() || r_softParticleScale.GetFloat() <= 0.0f || surf->jointCache != 0
+		|| surf->space->weaponDepthHack || ( stateBits & GLS_DEPTHMASK ) == 0 || ( stateBits & GLS_DEPTHFUNC_BITS ) != GLS_DEPTHFUNC_LESS ) {
+		return softParticleMode_t::NONE;
+	}
+	return GLS_SoftParticleMode( stateBits );
+}
+
+// The view's depth, copied once a view for the first stage that reads it.
+static void RB_CopyViewDepth() {
+	if ( !backEnd.softParticleDepth ) {
+		const idScreenRect & viewport = backEnd.viewDef->viewport;
+		renderLog.OpenBlock( "RB_SoftParticleDepth" );
+		globalImages->currentDepthImage->CopyDepthbuffer( viewport.x1, viewport.y1, viewport.GetWidth(), viewport.GetHeight() );
+		renderLog.CloseBlock();
+		backEnd.softParticleDepth = true;
+	}
+}
+
+// texture_color_soft over the view's depth: the copy ends the pass, so it comes before the stage binds anything.
+static void RB_BindSoftParticle( const drawSurf_t * surf, softParticleMode_t mode ) {
+	const idScreenRect & viewport = backEnd.viewDef->viewport;
+	RB_CopyViewDepth();
+	renderProgManager.BindShader_TextureVertexColorSoft();
+	const float parm[4] = { 1.0f / ( r_softParticleScale.GetFloat() * surf->particleSize ), static_cast<float>( mode ),
+		static_cast<float>( viewport.x1 ), static_cast<float>( viewport.y1 ) };
+	SetFragmentParm( RENDERPARM_SOFTPARTICLE, parm );
+	globalImages->currentDepthImage->Bind( 1 );
+}
+
 /*
 =====================
 RB_DrawShaderPasses
@@ -1859,6 +1907,16 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 				}
 				renderLog.OpenBlock( "New Shader Stage" );
 
+				// a stage that reads the view's depth (the effect programs fade at geometry): the copy ends the
+				// pass, so it comes before the stage binds anything
+				for ( int j = 0; j < newStage->numFragmentProgramImages; j++ ) {
+					if ( newStage->fragmentProgramImages[j] == globalImages->currentDepthImage ) {
+						RB_CopyViewDepth();
+						const float parm[4] = { 0.0f, 0.0f, static_cast<float>( backEnd.viewDef->viewport.x1 ), static_cast<float>( backEnd.viewDef->viewport.y1 ) };
+						SetFragmentParm( RENDERPARM_SOFTPARTICLE, parm );
+					}
+				}
+
 				renderBackend->State( stageGLState );
 			
 				renderProgManager.BindShader( newStage->glslProgram, newStage->glslProgram );
@@ -1929,6 +1987,7 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 			stageVertexColor_t svc = pStage->vertexColor;
 
 			renderLog.OpenBlock( "Old Shader Stage" );
+			const float emissive = RB_StageEmissive( shader, color );
 			RB_SetColor( color );
 
 			if ( surf->space->isGuiSurface ) {
@@ -1961,6 +2020,8 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 				renderProgManager.BindShader_TextureTexGenVertexColor();
 			} else if ( pStage->texture.cinematic ) {
 				renderProgManager.BindShader_Bink();
+			} else if ( const softParticleMode_t softMode = RB_SoftParticleMode( surf, stageGLState ); softMode != softParticleMode_t::NONE ) {
+				RB_BindSoftParticle( surf, softMode );
 			} else {
 				if ( surf->jointCache ) {
 					renderProgManager.BindShader_TextureVertexColorSkinned();
@@ -1986,7 +2047,9 @@ static int RB_DrawShaderPasses( const drawSurf_t * const * const drawSurfs, cons
 			RB_PrepareStageTexturing( pStage, surf );
 
 			// draw it
+			renderBackend->Emissive( emissive );
 			RB_DrawElementsWithCounters( surf );
+			renderBackend->Emissive( 1.0f );
 
 			RB_FinishStageTexturing( pStage, surf );
 
@@ -2326,6 +2389,7 @@ static void RB_SetHdrGamma( bool gamma ) {
 
 void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool debugTools ) {
 	renderLog.OpenBlock( "RB_DrawViewInternal" );
+	backEnd.softParticleDepth = false;
 
 	//-------------------------------------------------
 	// guis can wind up referencing purged images that need to be loaded.
@@ -2515,37 +2579,6 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool d
 
 /*
 ==================
-RB_ClearColorMasked
-
-Clears the colour channels the latched state writes, inside the latched scissor. A backend that
-cannot clear part of the channels gets a quad instead; that changes the program and the MVP.
-==================
-*/
-static void RB_ClearColorMasked( float r, float g, float b, float a ) {
-	if ( renderBackend->Caps().maskedColorClear ) {
-		renderBackend->Clear( true, false, false, 0, r, g, b, a );
-		return;
-	}
-
-	const uint64 stateBits = renderBackend->GetStateBits();
-	const int cullType = renderBackend->GetCull();
-
-	renderBackend->State( ( stateBits & ( GLS_COLORMASK | GLS_ALPHAMASK ) ) | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS );
-	renderBackend->Cull( CT_TWO_SIDED );
-	RB_SetMVP( renderMatrix_identity );
-	backEnd.currentSpace = nullptr;
-	renderProgManager.BindShader_Color();
-	RB_SetColor( r, g, b, a );
-	RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
-
-	renderBackend->State( stateBits );
-	if ( cullType != CULL_UNSET ) {
-		renderBackend->Cull( cullType );
-	}
-}
-
-/*
-==================
 RB_MotionBlur
 
 Experimental feature
@@ -2571,7 +2604,7 @@ void RB_MotionBlur() {
 	// clear the alpha buffer and draw only the hands + weapon into it so
 	// we can avoid blurring them
 	renderBackend->State( GLS_COLORMASK | GLS_DEPTHMASK );
-	RB_ClearColorMasked( 0, 0, 0, 1 );
+	renderBackend->Clear( true, false, false, 0, 0, 0, 0, 1 );		// only the alpha: GLS_COLORMASK
 	RB_SetColor( 0, 0, 0, 0 );
 	globalImages->blackImage->Bind( 0 );
 	backEnd.currentSpace = NULL;

@@ -8,7 +8,9 @@
 #include "../tr_local.h"
 #include "d3d12_Backend.h"
 
-static idRenderBackendFactory d3d12Factory( "d3d12", []() -> idRenderBackend * { return new idRenderBackendD3D12; } );
+idRenderBackend * R_CreateRenderBackend() {
+	return new idRenderBackendD3D12;
+}
 
 idRenderBackendD3D12::idRenderBackendD3D12() {
 	ownerThread = Sys_GetCurrentThreadID();
@@ -17,9 +19,6 @@ idRenderBackendD3D12::idRenderBackendD3D12() {
 std::expected<void, idStr> idRenderBackendD3D12::Init( const renderBackendInit_t & init ) {
 	assert( !context );
 	ownerThread = Sys_GetCurrentThreadID();
-	if ( init.stereoPixelFormat ) {
-		return std::unexpected( idStr( "Direct3D 12 has no quad-buffer stereo" ) );
-	}
 	auto created = idD3D12Context::Create( init );
 	if ( !created ) {
 		return std::unexpected( created.error() );
@@ -66,8 +65,7 @@ void idRenderBackendD3D12::ResizeOutput( int width, int height ) {
 	}
 }
 
-// Cube maps are always seamless in D3D12, and the sample count is fixed at Init (O18). The settings are
-// kept for the next Init.
+// The setting is kept for the next Init.
 void idRenderBackendD3D12::SetOption( renderOption_t option, bool enable ) {
 	if ( option != renderOption_t::SRGB_OUTPUT || enable == srgbOutput ) {
 		return;
@@ -79,7 +77,7 @@ void idRenderBackendD3D12::SetOption( renderOption_t option, bool enable ) {
 	}
 }
 
-// The window shows the ramp through the present blit; GL sets the desktop's hardware ramp instead (O14).
+// The window shows the ramp through the present blit, never the desktop's hardware ramp (O14).
 void idRenderBackendD3D12::SetGammaRamp( const unsigned short red[256], const unsigned short green[256], const unsigned short blue[256] ) {
 	std::copy_n( red, 256, gamma.red.begin() );
 	std::copy_n( green, 256, gamma.green.begin() );
@@ -126,12 +124,9 @@ presentResult_t idRenderBackendD3D12::Present( presentMode_t mode ) {
 	return result;
 }
 
-// Present has waited for the frame, so unlike GL's query this never blocks.
+// Present has waited for the frame, so this never blocks.
 uint64 idRenderBackendD3D12::GetFrameGpuMicroseconds() {
 	return context ? context->timers.FrameMicroseconds() : 0;
-}
-
-void idRenderBackendD3D12::SelectOutput( outputEye_t ) {
 }
 
 // A lost device reads black.

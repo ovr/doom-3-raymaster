@@ -39,8 +39,7 @@ idGuiModel * tr_guiModel;
 // functions that are not called every frame
 screenConfig_t	screenConfig;
 
-idCVar r_debugContext( "r_debugContext", "0", CVAR_RENDERER, "Enable various levels of context debug." );
-idCVar r_skipIntelWorkarounds( "r_skipIntelWorkarounds", "0", CVAR_RENDERER | CVAR_BOOL, "skip workarounds for Intel driver bugs" );
+idCVar r_debugContext( "r_debugContext", "0", CVAR_RENDERER, "read at startup: 1 = the Direct3D 12 debug layer, 2 = plus GPU-based validation, 3 = plus DRED" );
 idCVar r_debugMaxDraws( "r_debugMaxDraws", "-1", CVAR_RENDERER | CVAR_INTEGER, "draw only the first N draws of every frame, -1 = all" );
 idCVar r_hashDrawStream( "r_hashDrawStream", "0", CVAR_RENDERER | CVAR_BOOL, "print a hash of the draws of every frame, without handle values" );
 idCVar r_testClearPattern( "r_testClearPattern", "0", CVAR_RENDERER | CVAR_BOOL, "end every frame with the clear pattern tools/vdemo/check-pattern.py checks" );
@@ -65,18 +64,16 @@ idCVar r_useSilRemap( "r_useSilRemap", "1", CVAR_RENDERER | CVAR_BOOL, "consider
 idCVar r_useNodeCommonChildren( "r_useNodeCommonChildren", "1", CVAR_RENDERER | CVAR_BOOL, "stop pushing reference bounds early when possible" );
 idCVar r_useShadowSurfaceScissor( "r_useShadowSurfaceScissor", "1", CVAR_RENDERER | CVAR_BOOL, "scissor shadows by the scissor rect of the interaction surfaces" );
 idCVar r_useCachedDynamicModels( "r_useCachedDynamicModels", "1", CVAR_RENDERER | CVAR_BOOL, "cache snapshots of dynamic models" );
-idCVar r_useSeamlessCubeMap( "r_useSeamlessCubeMap", "1", CVAR_RENDERER | CVAR_BOOL, "use ARB_seamless_cube_map if available" );
 idCVar r_useSRGB( "r_useSRGB", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 = both texture and framebuffer, 2 = framebuffer only, 3 = texture only" );
 idCVar r_maxAnisotropicFiltering( "r_maxAnisotropicFiltering", "8", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "limit aniso filtering" );
 idCVar r_useTrilinearFiltering( "r_useTrilinearFiltering", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "Extra quality filtering" );
 idCVar r_lodBias( "r_lodBias", "0.5", CVAR_RENDERER | CVAR_ARCHIVE, "image lod bias" );
 
-idCVar r_useStateCaching( "r_useStateCaching", "1", CVAR_RENDERER | CVAR_BOOL, "avoid redundant state changes in GL_*() calls" );
+idCVar r_useStateCaching( "r_useStateCaching", "1", CVAR_RENDERER | CVAR_BOOL, "0 = every State() changes every bit, so the depth test is no longer strict" );
 
 idCVar r_znear( "r_znear", "3", CVAR_RENDERER | CVAR_FLOAT, "near Z clip plane distance", 0.001f, 200.0f );
 
-idCVar r_ignoreGLErrors( "r_ignoreGLErrors", "1", CVAR_RENDERER | CVAR_BOOL, "ignore GL errors" );
-idCVar r_swapInterval( "r_swapInterval", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "0 = tear, 1 = swap-tear where available, 2 = always v-sync" );
+idCVar r_swapInterval( "r_swapInterval", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "0 = tear, 1 and 2 = v-sync" );
 
 idCVar r_gamma( "r_gamma", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "changes gamma tables", 0.5f, 3.0f );
 idCVar r_brightness( "r_brightness", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "changes gamma tables", 0.5f, 2.0f );
@@ -114,7 +111,7 @@ idCVar r_useLightPortalCulling( "r_useLightPortalCulling", "1", CVAR_RENDERER | 
 idCVar r_useLightAreaCulling( "r_useLightAreaCulling", "1", CVAR_RENDERER | CVAR_BOOL, "0 = off, 1 = on" );
 idCVar r_useLightScissors( "r_useLightScissors", "3", CVAR_RENDERER | CVAR_INTEGER, "0 = no scissor, 1 = non-clipped scissor, 2 = near-clipped scissor, 3 = fully-clipped scissor", 0, 3, idCmdSystem::ArgCompletion_Integer<0,3> );
 idCVar r_useEntityPortalCulling( "r_useEntityPortalCulling", "1", CVAR_RENDERER | CVAR_INTEGER, "0 = none, 1 = cull frustum corners to plane, 2 = exact clip the frustum faces", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
-idCVar r_logFile( "r_logFile", "0", CVAR_RENDERER | CVAR_INTEGER, "number of frames to emit GL logs" );
+idCVar r_logFile( "r_logFile", "0", CVAR_RENDERER | CVAR_INTEGER, "number of frames to write the render log of" );
 idCVar r_clear( "r_clear", "0", CVAR_RENDERER, "clear the screen at the start of every frame: 0 = no (a stereo eye is cleared black), 1 = purple, 2 = black, 'r g b' = custom" );
 
 idCVar r_offsetFactor( "r_offsetfactor", "0", CVAR_RENDERER | CVAR_FLOAT, "polygon offset parameter" );
@@ -243,7 +240,7 @@ idCVar r_materialOverride( "r_materialOverride", "", CVAR_RENDERER, "overrides a
 
 idCVar r_debugRenderToTexture( "r_debugRenderToTexture", "0", CVAR_RENDERER | CVAR_INTEGER, "" );
 
-idCVar stereoRender_enable( "stereoRender_enable", "0", CVAR_INTEGER | CVAR_ARCHIVE, "1 = side-by-side compressed, 2 = top and bottom compressed, 3 = side-by-side, 4 = 720 frame packed, 5 = interlaced, 6 = OpenGL quad buffer" );
+idCVar stereoRender_enable( "stereoRender_enable", "0", CVAR_INTEGER | CVAR_ARCHIVE, "1 = side-by-side compressed, 2 = top and bottom compressed, 3 = side-by-side, 4 = interlaced, 6 = 720 frame packed" );
 idCVar stereoRender_swapEyes( "stereoRender_swapEyes", "0", CVAR_BOOL | CVAR_ARCHIVE, "reverse eye adjustments" );
 idCVar stereoRender_deGhost( "stereoRender_deGhost", "0.05", CVAR_FLOAT | CVAR_ARCHIVE, "subtract from opposite eye to reduce ghosting" );
 
@@ -258,8 +255,6 @@ R_IsInitialized
 bool R_IsInitialized() {
 	return r_initialized;
 }
-
-static idStr renderApiInUse;	// r_renderApi when the backend was made: the cvar may change for the next start
 
 /*
 =============================
@@ -284,13 +279,9 @@ r_displayRefresh 70	specify 70 hz, etc
 =============================
 */
 void R_SetNewMode( const bool fullInit ) {
-	// try up to three different configurations
+	// the settings, then safe mode
 	idStr failure = "no window with these settings";
-	for ( int i = 0 ; i < 3 ; i++ ) {
-		if ( i == 0 && stereoRender_enable.GetInteger() != STEREO3D_QUAD_BUFFER ) {
-			continue;		// don't even try for a stereo mode
-		}
-
+	for ( int i = 0 ; i < 2 ; i++ ) {
 		windowParms_t	parms;
 
 		if ( r_fullscreen.GetInteger() <= 0 ) {
@@ -349,13 +340,12 @@ void R_SetNewMode( const bool fullInit ) {
 				init.width = screenConfig.nativeScreenWidth;
 				init.height = screenConfig.nativeScreenHeight;
 				init.multiSamples = r_multiSamples.GetInteger();
-				init.stereoPixelFormat = ( i == 0 );	// pass 0 only runs for STEREO3D_QUAD_BUFFER
 				const std::expected<void, idStr> started = renderBackend->Init( init );
 				if ( started ) {
 					break;
 				}
 				failure = started.error();
-				common->Warning( "%s: %s", r_renderApi.GetString(), failure.c_str() );
+				common->Warning( "Direct3D 12: %s", failure.c_str() );
 				Sys_DestroyWindow();
 			}
 		} else {
@@ -367,16 +357,8 @@ void R_SetNewMode( const bool fullInit ) {
 			}
 		}
 
-		if ( i == 2 ) {
-			// a backend other than OpenGL needs a newer GPU than the game did
-			const bool openGL = idStr::Icmp( r_renderApi.GetString(), "opengl" ) == 0;
-			common->FatalError( "Unable to initialize the render backend (r_renderApi \"%s\"): %s%s", r_renderApi.GetString(), failure.c_str(),
-				openGL ? "" : "\n\nTo play with OpenGL instead, start the game with +set r_renderApi opengl" );
-		}
-
-		if ( i == 0 ) {
-			// same settings, no stereo
-			continue;
+		if ( i == 1 ) {
+			common->FatalError( "Unable to initialize Direct3D 12: %s", failure.c_str() );
 		}
 
 safeMode:
@@ -391,7 +373,7 @@ safeMode:
 
 /*
 ==================
-R_InitOpenGL
+R_InitBackend
 
 Creates the window (Sys_CreateWindow) and the device of the render backend on it
 (renderBackend->Init), then the programs, the vertex cache and the frame data.
@@ -403,28 +385,16 @@ all renderSystem functions will still operate properly, notably the material
 and model information functions.
 ==================
 */
-void R_InitOpenGL() {
+void R_InitBackend() {
 
-	common->Printf( "----- R_InitOpenGL -----\n" );
+	common->Printf( "----- R_InitBackend -----\n" );
 
 	if ( R_IsInitialized() ) {
-		common->FatalError( "R_InitOpenGL called while active" );
+		common->FatalError( "R_InitBackend called while active" );
 	}
 
 	if ( renderBackend == nullptr ) {
-		// one backend per run
-		renderApiInUse = r_renderApi.GetString();
-		renderBackend = idRenderBackendFactory::Create( r_renderApi.GetString() );
-		if ( renderBackend == nullptr ) {
-			idStrList apis;
-			idRenderBackendFactory::ListApis( apis );
-			idStr known;
-			for ( int i = 0; i < apis.Num(); i++ ) {
-				known += ( i > 0 ) ? ", " : "";
-				known += apis[i];
-			}
-			common->FatalError( "r_renderApi \"%s\": no such render backend, the known ones: %s", r_renderApi.GetString(), known.c_str() );
-		}
+		renderBackend = R_CreateRenderBackend();
 	}
 
 	// the window, and the device of the render backend on it
@@ -1153,7 +1123,7 @@ R_VidRestart_f
 =================
 */
 void R_VidRestart_f( const idCmdArgs &args ) {
-	// if OpenGL isn't started, do nothing
+	// if the backend isn't started, do nothing
 	if ( !R_IsInitialized() ) {
 		return;
 	}
@@ -1608,7 +1578,7 @@ void idRenderSystemLocal::Shutdown() {
 
 	Clear();
 
-	ShutdownOpenGL();
+	ShutdownBackend();
 
 	delete renderBackend;
 	renderBackend = nullptr;
@@ -1728,13 +1698,12 @@ void idRenderSystemLocal::ResetFonts() {
 }
 /*
 ========================
-idRenderSystemLocal::InitOpenGL
+idRenderSystemLocal::InitBackend
 ========================
 */
-void idRenderSystemLocal::InitOpenGL() {
-	// if OpenGL isn't started, start it now
+void idRenderSystemLocal::InitBackend() {
 	if ( !R_IsInitialized() ) {
-		R_InitOpenGL();
+		R_InitBackend();
 
 		// Reloading images here causes the rendertargets to get deleted. Figure out how to handle this properly on 360
 		globalImages->ReloadImages( true );
@@ -1745,10 +1714,10 @@ void idRenderSystemLocal::InitOpenGL() {
 
 /*
 ========================
-idRenderSystemLocal::ShutdownOpenGL
+idRenderSystemLocal::ShutdownBackend
 ========================
 */
-void idRenderSystemLocal::ShutdownOpenGL() {
+void idRenderSystemLocal::ShutdownBackend() {
 	// the r_pix queries go away with the context
 	PC_Shutdown();
 
@@ -1763,14 +1732,10 @@ void idRenderSystemLocal::ShutdownOpenGL() {
 
 /*
 ========================
-idRenderSystemLocal::IsOpenGLRunning
+idRenderSystemLocal::IsBackendRunning
 ========================
 */
-const char * idRenderSystemLocal::GetRenderApi() const {
-	return renderApiInUse.c_str();
-}
-
-bool idRenderSystemLocal::IsOpenGLRunning() const {
+bool idRenderSystemLocal::IsBackendRunning() const {
 	return R_IsInitialized();
 }
 
@@ -1844,20 +1809,16 @@ bool idRenderSystemLocal::IsStereoScopicRenderingSupported() const {
 
 /*
 ========================
-idRenderSystemLocal::HasQuadBufferSupport
-========================
-*/
-bool idRenderSystemLocal::HasQuadBufferSupport() const {
-	return renderBackend->Caps().quadBufferStereo;
-}
-
-/*
-========================
 idRenderSystemLocal::GetStereoScopicRenderingMode
 ========================
 */
 stereo3DMode_t idRenderSystemLocal::GetStereoScopicRenderingMode() const {
-	return ( !IsStereoScopicRenderingSupported() ) ? STEREO3D_OFF : (stereo3DMode_t)stereoRender_enable.GetInteger();
+	// an old config's 5, the OpenGL quad buffer, or any unknown value is mono
+	const int mode = stereoRender_enable.GetInteger();
+	if ( !IsStereoScopicRenderingSupported() || mode <= STEREO3D_OFF || ( mode > STEREO3D_INTERLACED && mode != STEREO3D_HDMI_720 ) ) {
+		return STEREO3D_OFF;
+	}
+	return static_cast<stereo3DMode_t>( mode );
 }
 
 /*

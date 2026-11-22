@@ -439,7 +439,7 @@ idRenderMatrix::ApplyDepthHack
 ========================
 */
 ID_INLINE void idRenderMatrix::ApplyDepthHack( idRenderMatrix & src ) {
-	// scale projected z by 25%
+	// scale projected z by 25%; texture_color.hlsl knows the scale (the soft particles do not fade at the weapon)
 	src.m[2*4+0] *= 0.25f;
 	src.m[2*4+1] *= 0.25f;
 	src.m[2*4+2] *= 0.25f;

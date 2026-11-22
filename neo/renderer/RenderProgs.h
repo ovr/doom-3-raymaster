@@ -60,6 +60,7 @@ public:
 	void	BindShader_Texture( ) { BindShader_Builtin( renderProgBuiltin_t::TEXTURED ); }
 	void	BindShader_TextureVertexColor() { BindShader_Builtin( renderProgBuiltin_t::TEXTURE_VERTEXCOLOR ); };
 	void	BindShader_TextureVertexColorSkinned() { BindShader_Builtin( renderProgBuiltin_t::TEXTURE_VERTEXCOLOR_SKINNED ); };
+	void	BindShader_TextureVertexColorSoft() { BindShader_Builtin( renderProgBuiltin_t::TEXTURE_VERTEXCOLOR_SOFT ); }
 	void	BindShader_TextureTexGenVertexColor() { BindShader_Builtin( renderProgBuiltin_t::TEXTURE_TEXGEN_VERTEXCOLOR ); };
 	void	BindShader_Interaction()  { BindShader_Builtin( renderProgBuiltin_t::INTERACTION ); }
 	void	BindShader_InteractionSkinned()  { BindShader_Builtin( renderProgBuiltin_t::INTERACTION_SKINNED ); }

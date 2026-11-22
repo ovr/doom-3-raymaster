@@ -154,6 +154,7 @@ idRenderModel *idRenderModelPrt::InstantiateDynamicModel( const struct renderEnt
 			R_AllocStaticTriSurfVerts( surf->geometry, 4 * count );
 			R_AllocStaticTriSurfIndexes( surf->geometry, 6 * count );
 		}
+		surf->geometry->particleSize = stage->SoftParticleSize();
 
 		int numVerts = 0;
 		idDrawVert *verts = surf->geometry->verts;

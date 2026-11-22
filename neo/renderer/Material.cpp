@@ -111,6 +111,7 @@ void idMaterial::CommonInit() {
 	editorAlpha = 1.0;
 	spectrum = 0;
 	polygonOffset = 0;
+	hdrEmissive = 0.0f;
 	suppressInSubview = false;
 	refCount = 0;
 	portalSky = false;
@@ -1902,6 +1903,10 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 
 
 		// polygonOffset
+		else if ( !token.Icmp( "hdrEmissive" ) ) {
+			hdrEmissive = idMath::ClampFloat( 0.0f, 64.0f, src.ParseFloat() );
+			continue;
+		}
 		else if ( !token.Icmp( "polygonOffset" ) ) {
 			SetMaterialFlag( MF_POLYGONOFFSET );
 			if ( !src.ReadTokenOnLine( &token ) ) {

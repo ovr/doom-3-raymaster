@@ -55,4 +55,3 @@ If you have questions concerning this license or the applicable additional terms
 // win32 info
 #define WIN32_CONSOLE_CLASS				"D3BFG_WinConsole"
 #define	WIN32_WINDOW_CLASS_NAME			"D3BFG"
-#define	WIN32_FAKE_WINDOW_CLASS_NAME	"D3BFG_WGL_FAKE"

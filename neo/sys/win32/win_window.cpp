@@ -33,10 +33,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../framework/EngineHost.h"
 #include "../../renderer/tr_local.h"
 
-// last gamma ramp set by the renderer, re-applied after alt-tab
-static unsigned short	s_gameGamma[3][256];
-static bool				s_gameGammaValid = false;
-
 // display mode set with ChangeDisplaySettingsEx, re-applied after alt-tab
 static DEVMODE			s_cdsMode;
 static char				s_cdsDevice[CCHDEVICENAME];
@@ -47,91 +43,6 @@ static bool				s_lastParmsValid = false;
 
 // true while the fullscreen window is deactivated (alt-tabbed away)
 static bool				s_fullscreenSuspended = false;
-
-/*
-========================
-Win_SaveGamma
-========================
-*/
-static void Win_SaveGamma() {
-	HDC			hDC;
-	BOOL		success;
-
-	hDC = GetDC( GetDesktopWindow() );
-	success = GetDeviceGammaRamp( hDC, win32.oldHardwareGamma );
-	common->DPrintf( "...getting default gamma ramp: %s\n", success ? "success" : "failed" );
-	ReleaseDC( GetDesktopWindow(), hDC );
-}
-
-/*
-========================
-Win_RestoreGamma
-========================
-*/
-static void Win_RestoreGamma() {
-	HDC hDC;
-	BOOL success;
-
-	// if we never read in a reasonable looking
-	// table, don't write it out
-	if ( win32.oldHardwareGamma[0][255] == 0 ) {
-		return;
-	}
-
-	hDC = GetDC( GetDesktopWindow() );
-	success = SetDeviceGammaRamp( hDC, win32.oldHardwareGamma );
-	common->DPrintf ( "...restoring hardware gamma: %s\n", success ? "success" : "failed" );
-	ReleaseDC( GetDesktopWindow(), hDC );
-}
-
-
-/*
-========================
-Win_ApplyGameGamma
-
-The ramp goes to the display the window is on.
-========================
-*/
-static bool Win_ApplyGameGamma() {
-	const HDC hDC = GetDC( win32.hWnd );
-	if ( hDC == nullptr ) {
-		return false;
-	}
-	const bool success = SetDeviceGammaRamp( hDC, s_gameGamma ) != FALSE;
-	ReleaseDC( win32.hWnd, hDC );
-	return success;
-}
-
-/*
-========================
-Sys_SetDeviceGammaRamp
-
-The renderer calls this when the user adjusts r_gamma or r_brightness
-========================
-*/
-void Sys_SetDeviceGammaRamp( const unsigned short red[256], const unsigned short green[256], const unsigned short blue[256] ) {
-	// the ramp is the whole display's, which a window inside a host's must not change
-	if ( !win32.hWnd || engineHost != nullptr ) {
-		return;
-	}
-
-	for ( int i = 0; i < 256; i++ ) {
-		s_gameGamma[0][i] = red[i];
-		s_gameGamma[1][i] = green[i];
-		s_gameGamma[2][i] = blue[i];
-	}
-	s_gameGammaValid = true;
-
-	// while alt-tabbed away the desktop gamma stays in effect,
-	// the game ramp is applied again when the window is reactivated
-	if ( s_fullscreenSuspended ) {
-		return;
-	}
-
-	if ( !Win_ApplyGameGamma() ) {
-		common->Printf( "WARNING: SetDeviceGammaRamp failed.\n" );
-	}
-}
 
 /*
 ====================
@@ -162,7 +73,7 @@ static void Win_CreateWindowClass() {
 	wc.lpszClassName = WIN32_WINDOW_CLASS_NAME;
 
 	if ( !RegisterClass( &wc ) ) {
-		common->FatalError( "GLW_CreateWindow: could not register window class" );
+		common->FatalError( "Win_CreateWindowClass: could not register window class" );
 	}
 	common->Printf( "...registered window class\n" );
 
@@ -347,105 +258,6 @@ static const char * DMDFO( int dmDisplayFixedOutput ) {
 	case DMDFO_STRETCH: return "DMDFO_STRETCH";
 	}
 	return "UNKNOWN";
-}
-
-/*
-====================
-PrintDevMode
-====================
-*/
-static void PrintDevMode( DEVMODE & devmode ) {
-	common->Printf( "          dmPosition.x        : %i\n", devmode.dmPosition.x );
-	common->Printf( "          dmPosition.y        : %i\n", devmode.dmPosition.y );
-	common->Printf( "          dmBitsPerPel        : %i\n", devmode.dmBitsPerPel );
-	common->Printf( "          dmPelsWidth         : %i\n", devmode.dmPelsWidth );
-	common->Printf( "          dmPelsHeight        : %i\n", devmode.dmPelsHeight );
-	common->Printf( "          dmDisplayFixedOutput: %s\n", DMDFO( devmode.dmDisplayFixedOutput ) );
-	common->Printf( "          dmDisplayFlags      : 0x%x\n", devmode.dmDisplayFlags );
-	common->Printf( "          dmDisplayFrequency  : %i\n", devmode.dmDisplayFrequency );
-}
-
-/*
-====================
-DumpAllDisplayDevices
-====================
-*/
-void DumpAllDisplayDevices() {
-	common->Printf( "\n" );
-	for ( int deviceNum = 0 ; ; deviceNum++ ) {
-		DISPLAY_DEVICE	device = {};
-		device.cb = sizeof( device );
-		if ( !EnumDisplayDevices(
-				0,			// lpDevice
-				deviceNum,
-				&device,
-				0 /* dwFlags */ ) ) {
-			break;
-		}
-
-		common->Printf( "display device: %i\n", deviceNum );
-		common->Printf( "  DeviceName  : %s\n", device.DeviceName );
-		common->Printf( "  DeviceString: %s\n", device.DeviceString );
-		common->Printf( "  StateFlags  : 0x%x\n", device.StateFlags );
-		common->Printf( "  DeviceID    : %s\n", device.DeviceID );
-		common->Printf( "  DeviceKey   : %s\n", device.DeviceKey );
-
-		for ( int monitorNum = 0 ; ; monitorNum++ ) {
-			DISPLAY_DEVICE	monitor = {};
-			monitor.cb = sizeof( monitor );
-			if ( !EnumDisplayDevices(
-					device.DeviceName,
-					monitorNum,
-					&monitor,
-					0 /* dwFlags */ ) ) {
-				break;
-			}
-
-			common->Printf( "      DeviceName  : %s\n", monitor.DeviceName );
-			common->Printf( "      DeviceString: %s\n", monitor.DeviceString );
-			common->Printf( "      StateFlags  : 0x%x\n", monitor.StateFlags );
-			common->Printf( "      DeviceID    : %s\n", monitor.DeviceID );
-			common->Printf( "      DeviceKey   : %s\n", monitor.DeviceKey );
-
-			DEVMODE	currentDevmode = {};
-			if ( !EnumDisplaySettings( device.DeviceName,ENUM_CURRENT_SETTINGS, &currentDevmode ) ) {
-				common->Printf( "ERROR:  EnumDisplaySettings(ENUM_CURRENT_SETTINGS) failed!\n" );
-			}
-			common->Printf( "          -------------------\n" );
-			common->Printf( "          ENUM_CURRENT_SETTINGS\n" );
-			PrintDevMode( currentDevmode );
-
-			DEVMODE	registryDevmode = {};
-			if ( !EnumDisplaySettings( device.DeviceName,ENUM_REGISTRY_SETTINGS, &registryDevmode ) ) {
-				common->Printf( "ERROR:  EnumDisplaySettings(ENUM_CURRENT_SETTINGS) failed!\n" );
-			}
-			common->Printf( "          -------------------\n" );
-			common->Printf( "          ENUM_CURRENT_SETTINGS\n" );
-			PrintDevMode( registryDevmode );
-
-			for ( int modeNum = 0 ; ; modeNum++ ) {
-				DEVMODE	devmode = {};
-
-				if ( !EnumDisplaySettings( device.DeviceName,modeNum, &devmode ) ) {
-					break;
-				}
-
-				if ( devmode.dmBitsPerPel != 32 ) {
-					continue;
-				}
-				if ( devmode.dmDisplayFrequency < 60 ) {
-					continue;
-				}
-				if ( devmode.dmPelsHeight < 720 ) {
-					continue;
-				}
-				common->Printf( "          -------------------\n" );
-				common->Printf( "          modeNum             : %i\n", modeNum );
-				PrintDevMode( devmode );
-			}
-		}
-	}
-	common->Printf( "\n" );
 }
 
 /*
@@ -671,7 +483,7 @@ static bool Win_CreateWindow( windowParms_t parms ) {
 		 NULL);
 
 	if ( !win32.hWnd ) {
-		common->Printf( "^3GLW_CreateWindow() - Couldn't create window^0\n" );
+		common->Printf( "^3Sys_CreateWindow() - Couldn't create window^0\n" );
 		return false;
 	}
 
@@ -843,10 +655,6 @@ bool Sys_CreateWindow( const windowParms_t & requestedParms ) {
 		return false;
 	}
 
-	// save the hardware gamma so it can be
-	// restored on exit
-	Win_SaveGamma();
-
 	// create our window class if we haven't already
 	Win_CreateWindowClass();
 
@@ -957,8 +765,8 @@ Win_WindowDeactivated
 
 Called from WM_ACTIVATE when the window loses focus (alt-tab, click on
 another window, etc). A fullscreen window gives the desktop back: the
-desktop gamma and display mode are restored and an exclusive fullscreen
-window is minimized.
+desktop display mode is restored and an exclusive fullscreen window is
+minimized.
 ===================
 */
 void Win_WindowDeactivated() {
@@ -966,8 +774,6 @@ void Win_WindowDeactivated() {
 		return;
 	}
 	s_fullscreenSuspended = true;
-
-	Win_RestoreGamma();
 
 	if ( win32.cdsFullscreen ) {
 		ChangeDisplaySettingsEx( s_cdsDevice[0] ? s_cdsDevice : NULL, NULL, NULL, 0, NULL );
@@ -1009,17 +815,13 @@ void Win_WindowActivated() {
 	if ( Win_GetWindowDimensions( s_lastParms, x, y, w, h ) ) {
 		SetWindowPos( win32.hWnd, HWND_TOP, x, y, w, h, SWP_SHOWWINDOW );
 	}
-
-	if ( s_gameGammaValid ) {
-		Win_ApplyGameGamma();
-	}
 }
 
 /*
 ===================
 Sys_DestroyWindow
 
-Closes the window, resets the resolution and the gamma ramps.
+Closes the window and resets the resolution.
 The renderer backend must have released the window before.
 ===================
 */
@@ -1039,11 +841,7 @@ void Sys_DestroyWindow() {
 		win32.cdsFullscreen = 0;
 	}
 
-	// restore gamma
-	Win_RestoreGamma();
-
 	s_lastParmsValid = false;
-	s_gameGammaValid = false;
 	s_fullscreenSuspended = false;
 }
 

@@ -1,0 +1,16 @@
+# 10_plasmaball: the flight effects of the plasma bolt and of the BFG's ball alone, hung in the air by fxTest:
+# unstable balls that throw off particles, sparks and arcs. From a few steps away, then each close up.
+map game/cpuboss
+at 0 god
+at 0 notarget
+at 0 ui_showGun 0
+at 0 g_showHud 0
+at 1 setviewpos -32 1850 188 55
+at 20 fxTest fx_plasma_fly 90 -45
+at 20 fxTest fx_bfg_fly 130 45
+at 480 fxTest
+at 481 fxTest fx_plasma_fly 30
+at 960 fxTest
+at 961 fxTest fx_bfg_fly 80
+end 1500
+capture 24 1500 every=8 fps=60

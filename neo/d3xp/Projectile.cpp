@@ -86,6 +86,11 @@ idProjectile::idProjectile() :
 	thrust_end			= 0;
 	smokeFly			= NULL;
 	smokeFlyTime		= 0;
+	smokeFlyFx			= NULL;
+	smokeFlyFxTime		= 0;
+	fxFly				= nullptr;
+	fxTravelled			= 0.0f;
+	fxLastOrigin		= vec3_zero;
 	state				= SPAWNED;
 	lightOffset			= vec3_zero;
 	lightStartTime		= 0;
@@ -197,6 +202,12 @@ void idProjectile::Restore( idRestoreGame *savefile ) {
 		dir.NormalizeFast();
 		gameLocal.smokeParticles->EmitSmoke( smokeFly, gameLocal.time, gameLocal.random.RandomFloat(), GetPhysics()->GetOrigin(), GetPhysics()->GetAxis(), timeGroup /*_D3XP*/ );
 	}
+	const char * smokeFxName = spawnArgs.GetString( "smoke_flyFx" );
+	smokeFlyFx = ( *smokeFxName != '\0' ) ? static_cast<const idDeclParticle *>( declManager->FindType( DECL_PARTICLE, smokeFxName ) ) : NULL;
+	smokeFlyFxTime = ( smokeFlyFx != NULL && state == LAUNCHED ) ? gameLocal.time : 0;
+	fxFly = gameLocal.fxSystem->FindDef( spawnArgs.GetString( "fx_fly" ) );
+	fxTravelled = 0.0f;
+	fxLastOrigin = GetPhysics()->GetOrigin();
 
 	if ( lightDefHandle >= 0 ) {
 		lightDefHandle = gameRenderWorld->AddLightDef( &renderLight );
@@ -252,6 +263,10 @@ void idProjectile::Create( idEntity *owner, const idVec3 &start, const idVec3 &d
 		renderLight.lightRadius *= 1.5f;
 		renderLight.forceShadows = true;
 #endif
+		if ( spawnArgs.GetBool( "light_noshadows" ) ) {
+			renderLight.forceShadows = false;
+			renderLight.noShadows = true;
+		}
 		spawnArgs.GetVector( "light_color", "1 1 1", light_color );
 		renderLight.shaderParms[0] = light_color[0];
 		renderLight.shaderParms[1] = light_color[1];
@@ -264,6 +279,7 @@ void idProjectile::Create( idEntity *owner, const idVec3 &start, const idVec3 &d
 	lightStartTime = 0;
 	lightEndTime = 0;
 	smokeFlyTime = 0;
+	smokeFlyFxTime = 0;
 
 	damagePower = 1.0f;
 
@@ -453,6 +469,15 @@ void idProjectile::Launch( const idVec3 &start, const idVec3 &dir, const idVec3 
 		smokeFly = static_cast<const idDeclParticle *>( declManager->FindType( DECL_PARTICLE, smokeName ) );
 		smokeFlyTime = gameLocal.time;
 	}
+	smokeFlyFxTime = 0;
+	const char * smokeFxName = spawnArgs.GetString( "smoke_flyFx" );
+	if ( *smokeFxName != '\0' ) {
+		smokeFlyFx = static_cast<const idDeclParticle *>( declManager->FindType( DECL_PARTICLE, smokeFxName ) );
+		smokeFlyFxTime = gameLocal.time;
+	}
+	fxFly = gameLocal.fxSystem->FindDef( spawnArgs.GetString( "fx_fly" ) );
+	fxTravelled = 0.0f;
+	fxLastOrigin = GetPhysics()->GetOrigin();
 
 	originalTimeGroup = timeGroup;
 
@@ -522,6 +547,20 @@ void idProjectile::AddParticlesAndLight() {
 		if ( !gameLocal.smokeParticles->EmitSmoke( smokeFly, smokeFlyTime, gameLocal.random.RandomFloat(), GetPhysics()->GetOrigin(), dir.ToMat3(), timeGroup /*_D3XP*/ ) ) {
 			smokeFlyTime = gameLocal.time;
 		}
+	}
+	if ( smokeFlyFx != NULL && smokeFlyFxTime && !IsHidden() ) {
+		idVec3 dir = -GetPhysics()->GetLinearVelocity();
+		dir.Normalize();
+		SetTimeState ts( originalTimeGroup );
+		idRandom fxRandom( entityNumber * 7919 + gameLocal.time );
+		if ( !gameLocal.smokeParticles->EmitSmoke( smokeFlyFx, smokeFlyFxTime, fxRandom.RandomFloat(), GetPhysics()->GetOrigin(), dir.ToMat3(), timeGroup ) ) {
+			smokeFlyFxTime = gameLocal.time;
+		}
+	}
+	if ( fxFly != nullptr && state == LAUNCHED && !IsHidden() ) {
+		const idVec3 & origin = GetPhysics()->GetOrigin();
+		gameLocal.fxSystem->Trail( fxFly, fxLastOrigin, origin, GetPhysics()->GetLinearVelocity(), fxTravelled, entityNumber );
+		fxLastOrigin = origin;
 	}
 
 	// add the light
@@ -842,6 +881,7 @@ void idProjectile::Fizzle() {
 	if ( smokeFly && smokeFlyTime ) {
 		smokeFlyTime = 0;
 	}
+	smokeFlyFxTime = 0;
 
 	fl.takedamage = false;
 	physicsObj.SetContents( 0 );
@@ -950,6 +990,7 @@ void idProjectile::Explode( const trace_t &collision, idEntity *ignore ) {
 	if ( smokeFly && smokeFlyTime ) {
 		smokeFlyTime = 0;
 	}
+	smokeFlyFxTime = 0;
 
 	Hide();
 	FreeLightDef();
@@ -958,6 +999,7 @@ void idProjectile::Explode( const trace_t &collision, idEntity *ignore ) {
 		GetPhysics()->SetAxis( normal.ToMat3() );
 	}
 	GetPhysics()->SetOrigin( collision.endpos + 2.0f * collision.c.normal );
+	gameLocal.fxSystem->Burst( gameLocal.fxSystem->FindDef( spawnArgs.GetString( "fx_impact" ) ), collision.endpos, collision.c.normal );
 
 	// default remove time
 	if( fl.skipReplication && !spawnArgs.GetBool( "net_instanthit" ) ) {
@@ -1036,6 +1078,11 @@ void idProjectile::Explode( const trace_t &collision, idEntity *ignore ) {
 		renderLight.lightRadius *= 2.0f;
 		renderLight.forceShadows = true;
 #endif
+		renderLight.noShadows = false;
+		if ( spawnArgs.GetBool( "explode_light_noshadows" ) ) {
+			renderLight.forceShadows = false;
+			renderLight.noShadows = true;
+		}
 
 		// Midnight ctf
 		if ( gameLocal.mpGame.IsGametypeFlagBased() && gameLocal.serverInfo.GetBool("si_midnight") ) {
@@ -1061,6 +1108,8 @@ void idProjectile::Explode( const trace_t &collision, idEntity *ignore ) {
 		lightStartTime = gameLocal.time;
 		lightEndTime = MSEC_ALIGN_TO_FRAME( gameLocal.time + SEC2MS( light_fadetime ) );
 		BecomeActive( TH_THINK );
+	} else if ( cvarSystem->GetCVarBool( "com_enhancedEffects" ) ) {
+		renderLight.lightRadius.Zero();	// the light of the flight would come back at full colour where it exploded
 	}
 
 	fl.takedamage = false;
@@ -2383,6 +2432,9 @@ void idBFGProjectile::Explode( const trace_t &collision, idEntity *ignore ) {
 		}
 
 		beamTargets[i].renderEntity.shaderParms[SHADERPARM_BEAM_WIDTH] = beamWidth;
+		if ( beamTargets[i].modelDefHandle >= 0 && cvarSystem->GetCVarBool( "com_enhancedEffects" ) ) {
+			gameRenderWorld->UpdateEntityDef( beamTargets[i].modelDefHandle, &beamTargets[i].renderEntity );	// nothing else updates it
+		}
 
 		// if the hit entity takes damage
 		if ( damagePower ) {

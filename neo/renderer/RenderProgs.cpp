@@ -331,7 +331,7 @@ int	 idRenderProgManager::FindGLSLProgram( const char * name, int vIndex, int fI
 idRenderProgManager::LoadGLSLProgram
 
 The name and the stage indexes are written only after the backend linked the program. A failed
-link in OpenGL is an error that leaves the entry without them, so no later search finds it.
+link is an error that leaves the entry without them, so no later search finds it.
 ================================================================================================
 */
 void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int vertexShaderIndex, const int fragmentShaderIndex ) {

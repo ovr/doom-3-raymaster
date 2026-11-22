@@ -2322,6 +2322,22 @@ static void Cmd_SkipCinematic_f( const idCmdArgs &args ) {
 
 /*
 =================
+Cmd_FxTest_f
+=================
+*/
+static void Cmd_FxTest_f( const idCmdArgs & args ) {
+	idPlayer * player = gameLocal.GetLocalPlayer();
+	if ( player == nullptr ) {
+		return;
+	}
+	const float distance = ( args.Argc() > 2 ) ? static_cast<float>( atof( args.Argv( 2 ) ) ) : 48.0f;
+	const float right = ( args.Argc() > 3 ) ? static_cast<float>( atof( args.Argv( 3 ) ) ) : 0.0f;
+	const idMat3 axis = player->viewAngles.ToMat3();
+	gameLocal.fxSystem->Test( args.Argv( 1 ), player->GetEyePosition() + axis[0] * distance - axis[1] * right );
+}
+
+/*
+=================
 idGameLocal::InitConsoleCommands
 
 Let the system know about all of our commands
@@ -2365,6 +2381,7 @@ void idGameLocal::InitConsoleCommands() {
 	cmdSystem->AddCommand( "playerModel",			Cmd_PlayerModel_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"sets the given model on the player", idCmdSystem::ArgCompletion_Decl<DECL_MODELDEF> );
 	cmdSystem->AddCommand( "testFx",				Cmd_TestFx_f,				CMD_FL_GAME|CMD_FL_CHEAT,	"tests an FX system", idCmdSystem::ArgCompletion_Decl<DECL_FX> );
 	cmdSystem->AddCommand( "testBoneFx",			Cmd_TestBoneFx_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests an FX system bound to a joint", idCmdSystem::ArgCompletion_Decl<DECL_FX> );
+	cmdSystem->AddCommand( "fxTest",				Cmd_FxTest_f,				CMD_FL_GAME|CMD_FL_CHEAT,	"hangs a projectile's flight effect in front of the view, up to four: fxTest [fx def] [distance] [to the right]" );
 	cmdSystem->AddCommand( "testLight",				Cmd_TestLight_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests a light" );
 	cmdSystem->AddCommand( "testPointLight",		Cmd_TestPointLight_f,		CMD_FL_GAME|CMD_FL_CHEAT,	"tests a point light" );
 	cmdSystem->AddCommand( "popLight",				Cmd_PopLight_f,				CMD_FL_GAME|CMD_FL_CHEAT,	"removes the last created light" );

@@ -159,7 +159,7 @@ function(d3bfg_link_engine tgt)
 		doomclassic
 		timidity
 		xaudio2 xinput dbghelp dinput8 dsound dxguid iphlpapi
-		odbc32 odbccp32 opengl32 winmm wsock32
+		odbc32 odbccp32 winmm wsock32
 	)
 	target_link_options(${tgt} PRIVATE
 		/STACK:16777216,16777216
@@ -273,8 +273,7 @@ target_link_options(d3d12Tests PRIVATE /DEBUG)
 set_target_properties(d3d12Tests PROPERTIES FOLDER "tests")
 add_test(NAME d3d12Tests COMMAND d3d12Tests)
 
-# renderApiLeaks: no OpenGL name outside neo/renderer/OpenGL/ and the two WGL files, no D3D12 or DXGI
-# name outside neo/renderer/D3D12/
+# renderApiLeaks: no OpenGL name anywhere, no D3D12 or DXGI name outside neo/renderer/D3D12/
 add_test(NAME renderApiLeaks
 	COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/check-render-api-leaks.ps1")
 

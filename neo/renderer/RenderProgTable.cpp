@@ -44,6 +44,7 @@ constexpr renderProgDef_t renderProgs[] = {
 	{ .name = "texture", .builtin = TEXTURED },
 	{ .name = "texture_color", .builtin = TEXTURE_VERTEXCOLOR, .skinned = TEXTURE_VERTEXCOLOR_SKINNED },
 	{ .name = "texture_color_texgen", .builtin = TEXTURE_TEXGEN_VERTEXCOLOR },
+	{ .name = "texture_color_soft", .builtin = TEXTURE_VERTEXCOLOR_SOFT },
 	{ .name = "interaction", .builtin = INTERACTION, .skinned = INTERACTION_SKINNED },
 	{ .name = "interactionAmbient", .builtin = INTERACTION_AMBIENT, .skinned = INTERACTION_AMBIENT_SKINNED },
 	{ .name = "environment", .builtin = ENVIRONMENT, .skinned = ENVIRONMENT_SKINNED },
@@ -74,6 +75,9 @@ constexpr renderProgDef_t renderProgs[] = {
 	{ .name = "bloodorb_draw" },
 	{ .name = "enviroSuit" },
 	{ .name = "colorProcess" },
+
+	// the game's effect system (idFxSystem)
+	{ .name = "fx_emissive" },
 };
 
 // the uniform names of the render parms, in renderParm_t order
@@ -146,7 +150,8 @@ constexpr const char * renderParmNames[] = {
 
 	"rpOverbright",
 	"rpEnableSkinning",
-	"rpAlphaTest"
+	"rpAlphaTest",
+	"rpSoftParticle"
 };
 static_assert( std::size( renderParmNames ) == RENDERPARM_TOTAL );
 

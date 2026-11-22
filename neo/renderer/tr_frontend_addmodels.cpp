@@ -764,6 +764,7 @@ void R_AddSingleModel( viewEntity_t * vEntity ) {
 			baseDrawSurf->scissorRect = vEntity->scissorRect;
 			baseDrawSurf->extraGLState = 0;
 			baseDrawSurf->renderZFail = 0;
+			baseDrawSurf->particleSize = tri->particleSize;
 
 			R_SetupDrawSurfShader( baseDrawSurf, shader, renderEntity );
 

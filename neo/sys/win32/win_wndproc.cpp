@@ -160,7 +160,7 @@ static void Sys_SetAppActive( bool active ) {
 	}
 
 	// a fullscreen window gives the desktop back when it loses focus
-	// (restores the desktop display mode and gamma, minimizes itself)
+	// (restores the desktop display mode, minimizes itself)
 	if ( R_IsInitialized() ) {
 		if ( win32.activeApp ) {
 			Win_WindowActivated();

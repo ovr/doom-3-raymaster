@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 
 idCVar binaryLoadParticles( "binaryLoadParticles", "1", 0, "enable binary load/write of particle decls" );
+extern idCVar com_enhancedEffects;
 
 static const byte BPRT_VERSION = 101;
 static const unsigned int BPRT_MAGIC = ( 'B' << 24 ) | ( 'P' << 16 ) | ( 'R' << 8 ) | BPRT_VERSION;
@@ -494,8 +495,9 @@ bool idDeclParticle::Parse( const char *text, const int textLength, bool allowBi
 		return false;
 	}
 
-	// don't calculate bounds or write binary files for defaulted ( non-existent ) particles in resource builds
-	if ( fileSystem->UsingResourceFiles() ) {
+	// don't calculate bounds or write binary files for defaulted ( non-existent ) particles in resource builds;
+	// com_enhancedEffects bounds the text of a patch or of a loose file too, which a model would be culled by
+	if ( fileSystem->UsingResourceFiles() && !com_enhancedEffects.GetBool() ) {
 		bounds = idBounds( vec3_origin ).Expand( 8.0f );
 		return true;
 	}
@@ -512,7 +514,7 @@ bool idDeclParticle::Parse( const char *text, const int textLength, bool allowBi
 		bounds = idBounds( vec3_origin ).Expand( 8.0f );
 	}
 
-	if ( allowBinaryVersion && binaryLoadParticles.GetBool() ) {
+	if ( allowBinaryVersion && binaryLoadParticles.GetBool() && !fileSystem->UsingResourceFiles() ) {
 		idLib::Printf( "Writing %s\n", generatedFileName.c_str() );
 		idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_basepath" ) );
 		WriteBinary( outputFile, sourceChecksum );
@@ -1239,6 +1241,21 @@ void idParticleStage::ParticleOrigin( particleGen_t *g, idVec3 &origin ) const {
 	} else {
 		origin[2] -= gravity * g->age * g->age;
 	}
+}
+
+float idParticleStage::SoftParticleSize() const {
+	if ( orientation == POR_X || orientation == POR_Y || orientation == POR_Z ) {
+		return 0.0f;
+	}
+	if ( size.table == nullptr ) {
+		return Max( size.from, size.to );	// Eval is linear in frac
+	}
+	idRandom unused;
+	float largest = 0.0f;
+	for ( int i = 0; i <= 16; i++ ) {
+		largest = Max( largest, size.Eval( i / 16.0f, unused ) );
+	}
+	return largest;
 }
 
 /*

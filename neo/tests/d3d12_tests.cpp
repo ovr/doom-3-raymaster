@@ -993,7 +993,7 @@ constexpr samplerDesc_t POINT_CLAMP = { samplerFilter_t::NEAREST, samplerAddress
 	return static_cast<float>( p[0] | ( p[1] << 8 ) ) / 65535.0f;
 }
 
-// What GL samples from one texel of the uploaded data: its internal format, then the swizzle of GL_SetTexParameters.
+// What GL sampled from one texel of the uploaded data: its internal format, then the swizzle of GL_SetTexParameters.
 [[nodiscard]] idVec4 GlTexel( textureFormat_t format, const byte * p ) {
 	switch ( format ) {
 		case FMT_RGBA8:		return idVec4( Unorm8( p[0] ), Unorm8( p[1] ), Unorm8( p[2] ), Unorm8( p[3] ) );
@@ -2117,7 +2117,7 @@ void Test_PipelineStencil() {
 	Check( !off.StencilEnable, "no function and no front ops: no stencil test" );
 	Check( D3D12_NormalizeKey( Key( GLS_STENCIL_MAKE_MASK( 0x0F ) | GLS_SEPARATE_STENCIL ) ) == D3D12_NormalizeKey( Key( 0 ) ),
 		"with the test off the mask and the back ops do not count" );
-	// GLS:316-322 reads the front ops only: back ops alone leave GL's test off
+	// GL's backend read the front ops only: back ops alone left its test off
 	const D3D12_DEPTH_STENCIL_DESC1 backOnly = Desc( Key( GLS_SEPARATE_STENCIL | GLS_BackStencilOps( GLS_STENCIL_OP_PASS_INCR ) ) ).depthStencil;
 	Check( !backOnly.StencilEnable, "back ops alone: no stencil test, as in GL" );
 
@@ -3030,7 +3030,7 @@ void RasterGlRows( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
-// R_PipelineCull and FrontCounterClockwise FALSE against API_Cull: GL's front faces wind counter-clockwise in its window,
+// R_PipelineCull and FrontCounterClockwise FALSE against GL's API_Cull: its front faces wind counter-clockwise in its window,
 // a mirror swaps the culled face, and the two-sided stencil ops of a shadow volume go to GL's faces.
 void RasterCull( idTestGpu & gpu ) {
 	idTestRaster raster( gpu );
@@ -4180,6 +4180,154 @@ void DrawBindless( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+static_assert( GLS_SoftParticleMode( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE ) == softParticleMode_t::COLOR
+	&& GLS_SoftParticleMode( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE ) == softParticleMode_t::COLOR
+	&& GLS_SoftParticleMode( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_ONE_MINUS_SRC_COLOR ) == softParticleMode_t::COLOR
+	&& GLS_SoftParticleMode( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA ) == softParticleMode_t::ALPHA
+	&& GLS_SoftParticleMode( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA ) == softParticleMode_t::PREMULTIPLIED
+	&& GLS_SoftParticleMode( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO ) == softParticleMode_t::FILTER
+	&& GLS_SoftParticleMode( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_SRC_COLOR ) == softParticleMode_t::FILTER
+	&& GLS_SoftParticleMode( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO ) == softParticleMode_t::NONE );
+
+// texture_color_soft at window z 0.8 over a depth copy of eight row bands: the particle's own depth (fade 0), a quarter,
+// half and three quarters of the fade depth behind it, twice, the far clear (past the plane of GL's infinite projection)
+// and two z of the weapon's squeezed range (both fade 1); a column per GLS_SoftParticleMode. The bands are rows of the
+// copy in GL's order, as the depth-copy pass writes them.
+void SoftParticle( idTestGpu & gpu ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	constexpr int BANDS = 8;
+	constexpr float PARTICLE_Z = 0.6f;	// clip z: window z 0.8
+	constexpr int MODES = 4;
+	constexpr double NEAR_Z = 3.0;
+	constexpr double FADE = 8.0;		// the fade depth in view units
+	constexpr double PROJECTION_Z = -0.999;
+	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const programHandle_t program = fixture.Program( "texture_color_soft" );
+	const d3d12Program_t * linked = fixture.shaders.FindProgram( program );
+	if ( !Check( linked != nullptr && linked->info.samplerMask == 3 && linked->info.cubeMask == 0 && !linked->info.usesJoints,
+			"texture_color_soft reads 2D slots 0 and 1, no joints" ) ) {
+		return;
+	}
+	const auto viewDepth = [&]( double windowZ ) {
+		const double denominator = -PROJECTION_Z - ( windowZ * 2.0 - 1.0 );
+		const bool weapon = windowZ * 2.0 - 1.0 <= 0.25 * -PROJECTION_Z;
+		return ( denominator > 0.0 && !weapon ) ? 2.0 * NEAR_Z / denominator : 1e30;
+	};
+	const double particleDepth = 2.0 * NEAR_Z / ( -PROJECTION_Z - PARTICLE_Z );
+	const auto windowZ = [&]( double depth ) {
+		return static_cast<float>( ( -PROJECTION_Z - 2.0 * NEAR_Z / depth + 1.0 ) * 0.5 );
+	};
+	const std::array<float, BANDS> bandZ = { ( PARTICLE_Z + 1.0f ) * 0.5f, windowZ( particleDepth + 0.25 * FADE ), windowZ( particleDepth + 0.5 * FADE ),
+		windowZ( particleDepth + 0.75 * FADE ), windowZ( particleDepth + 2.0 * FADE ), 1.0f, 0.5f, 0.6f };
+
+	const textureHandle_t texel = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test particle" );
+	constexpr byte TEXEL[4] = { 200, 100, 50, 204 };
+	gpu.textures.Upload( texel, 0, 0, 1, 1, TEXEL, 0 );
+	const textureHandle_t depth = gpu.textures.Create( Opts( FMT_DEPTH, SIZE, SIZE, 1 ), textureRole_t::DEPTH_COPY, POINT_CLAMP, "test soft depth" );
+
+	std::array<idDrawVert, 4 * MODES> verts;
+	std::array<triIndex_t, 6 * MODES> indexes;
+	for ( int mode = 0; mode < MODES; mode++ ) {
+		const float left = -1.0f + 2.0f * mode / MODES;
+		const float right = left + 2.0f / MODES;
+		const float corners[4][2] = { { left, -1.0f }, { right, -1.0f }, { right, 1.0f }, { left, 1.0f } };
+		for ( int i = 0; i < 4; i++ ) {
+			idDrawVert & vert = verts[mode * 4 + i];
+			vert.Clear();
+			vert.xyz.Set( corners[i][0], corners[i][1], PARTICLE_Z );
+			vert.SetTexCoord( 0.5f, 0.5f );
+		}
+		constexpr triIndex_t QUAD[6] = { 0, 1, 2, 0, 2, 3 };
+		for ( int i = 0; i < 6; i++ ) {
+			indexes[mode * 6 + i] = static_cast<triIndex_t>( mode * 4 + QUAD[i] );
+		}
+	}
+	fixture.NewList();
+	const bufferHandle_t vertexBuffer = fixture.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( verts ) ), verts.data() );
+	const bufferHandle_t indexBuffer = fixture.buffers.Create( bufferType_t::INDEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( indexes ) ), indexes.data() );
+	d3d12TextureSurface_t * copy = ( depth != textureHandle_t::NONE ) ? gpu.textures.PrepareCopyTarget( depth, d3d12CopyKind_t::DEPTH, SIZE, SIZE ) : nullptr;
+	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && texel != textureHandle_t::NONE && copy != nullptr,
+			"the buffers and the textures" ) ) {
+		return;
+	}
+	gpu.barriers.Transition( *copy->resource.Get(), copy->state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	gpu.barriers.Flush();
+	for ( int band = 0; band < BANDS; band++ ) {
+		const float clear[4] = { bandZ[band], 0.0f, 0.0f, 0.0f };
+		const D3D12_RECT rows = { 0, band * SIZE / BANDS, SIZE, ( band + 1 ) * SIZE / BANDS };
+		gpu.List().ClearRenderTargetView( gpu.rtvPool.Cpu( copy->rtv ), clear, 1, &rows );
+	}
+
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	for ( int row = 0; row < 4; row++ ) {
+		parms[RENDERPARM_MVPMATRIX_X + row][row] = 1.0f;
+	}
+	parms[RENDERPARM_TEXTUREMATRIX_S].Set( 1.0f, 0.0f, 0.0f, 0.0f );
+	parms[RENDERPARM_TEXTUREMATRIX_T].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+	parms[RENDERPARM_VERTEXCOLOR_ADD].Set( 1.0f, 1.0f, 1.0f, 1.0f );		// modulate 0: a white vertex colour
+	parms[RENDERPARM_COLOR].Set( 1.0f, 1.0f, 1.0f, 1.0f );
+	parms[RENDERPARM_PROJMATRIX_Z].Set( 0.0f, 0.0f, static_cast<float>( PROJECTION_Z ), static_cast<float>( -2.0 * NEAR_Z ) );
+	renderLatch_t latch;
+	latch.stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK;		// no blend: the shader's result as it is
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	latch.program = program;
+	latch.textures[0][static_cast<size_t>( textureKind_t::TEX_2D )] = texel;
+	latch.textures[1][static_cast<size_t>( textureKind_t::TEX_2D )] = depth;
+	pipelineKey_t key = {};
+	key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+	key.layout = LAYOUT_DRAW_VERT;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.numIndexes = 6;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	for ( int mode = 0; mode < MODES; mode++ ) {
+		parms[RENDERPARM_SOFTPARTICLE].Set( static_cast<float>( 1.0 / FADE ), static_cast<float>( mode ), 0.0f, 0.0f );
+		dc.indexOffset = mode * 6 * static_cast<int>( sizeof( triIndex_t ) );
+		fixture.recorder.Draw( latch, key, dc );
+	}
+
+	const std::vector<uint32> texels = fixture.ReadColor();
+	if ( Check( texels.size() == static_cast<size_t>( SIZE ) * SIZE, "the scene is read" ) ) {
+		int wrong = 0;
+		idStr first;
+		for ( int row = 0; row < SIZE; row++ ) {
+			const int band = row * BANDS / SIZE;
+			const double fade = idMath::ClampFloat( 0.0f, 1.0f, static_cast<float>( ( viewDepth( bandZ[band] ) - particleDepth ) / FADE ) );
+			for ( int column = 0; column < SIZE; column++ ) {
+				const int mode = column * MODES / SIZE;
+				std::array<double, 4> want;
+				for ( int c = 0; c < 4; c++ ) {
+					const double value = TEXEL[c] / 255.0;
+					const bool rgb = c < 3;
+					want[c] = ( mode == 0 && rgb ) || ( mode == 1 && !rgb ) || mode == 2 ? value * fade : ( mode == 3 && rgb ) ? 1.0 + ( value - 1.0 ) * fade : value;
+				}
+				const uint32 got = texels[static_cast<size_t>( row ) * SIZE + column];
+				bool matches = true;
+				for ( int c = 0; c < 4; c++ ) {
+					matches = matches && std::abs( static_cast<int>( ( got >> ( 8 * c ) ) & 0xFF ) - static_cast<int>( want[c] * 255.0 + 0.5 ) ) <= 1;
+				}
+				if ( !matches && wrong++ == 0 ) {
+					first = va( "row %d column %d (fade %.3f, mode %d): 0x%08x", row, column, fade, mode, got );
+				}
+			}
+		}
+		Check( wrong == 0, va( "%d pixels unlike their mode's fade, first %s", wrong, first.c_str() ) );
+	}
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	gpu.textures.Destroy( texel );
+	gpu.textures.Destroy( depth );
+	CheckNoLayerErrors( gpu );
+}
+
 // Every value of r_d3d12FrameBuffers the adapter has.
 void DrawFrameBufferPlacements( idTestGpu & gpu ) {
 	for ( const d3d12BufferPlacement_t placement : { d3d12BufferPlacement_t::UPLOAD, d3d12BufferPlacement_t::STAGED, d3d12BufferPlacement_t::GPU_UPLOAD } ) {
@@ -4724,7 +4872,8 @@ void ColorSpace( idTestGpu & gpu ) {
 	  2  ONE ONE: colour 1, alpha 0.75 x2  alpha by MAX: 0.75, where a UNORM target would clamp the sum at 1
 	  3  ONE ZERO 1, then DST_COLOR ZERO   a factor of 0.5 multiplies the scene and is no radiance: 0.25
 	  then stripe 0 copied into a float texture and drawn over stripe 3 by texture.vfp: SceneColor and
-	  SceneOutput give back the 2 the scene held
+	  SceneOutput give back the 2 the scene held; then the same with the latch's emissive 4 (hdrEmissive), which
+	  exposes an add and a replace, not a factor; the float copy drawn keeps its value; then the gamma composite
 */
 void HdrScene( idTestGpu & gpu ) {
 	constexpr int SIZE = idTestRecorder::SIZE;
@@ -4853,6 +5002,21 @@ void HdrScene( idTestGpu & gpu ) {
 		checkStripe( texels, 3, idVec4( 2.0f, 2.0f, 2.0f, 1.0f ), "copy, SceneColor, SceneOutput: the scene's value again" );
 	}
 
+	fixture.recorder.Clear( clearLatch, clear );
+	latch.emissive = 4.0f;
+	draw( 0, color, ADD, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	draw( 1, color, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	draw( 1, color, GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	draw( 3, texture, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO, idVec4( 1.0f, 1.0f, 1.0f, 1.0f ) );
+	texels = readScene();
+	if ( !texels.empty() ) {
+		checkStripe( texels, 0, idVec4( 1.0f, 1.0f, 1.0f, 1.0f ), "emissive 4: an add of 0.5 times 0.5 times 4" );
+		checkStripe( texels, 1, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ), "emissive 4: the replace is exposed, the factor is not" );
+		checkStripe( texels, 2, idVec4( 0.0f, 0.0f, 0.0f, 0.0f ), "emissive 4: the clear is not" );
+		checkStripe( texels, 3, idVec4( 2.0f, 2.0f, 2.0f, 1.0f ), "emissive 4: the float copy drawn keeps its value" );
+	}
+	latch.emissive = 1.0f;
+
 	// the gamma composite, preExposure 0.5: the clear is enc( 0.5 * dec( c ) ), an alpha blend mixes in gamma,
 	// a factor is not exposed
 	fixture.recorder.SetHdrGamma( true );
@@ -4861,14 +5025,19 @@ void HdrScene( idTestGpu & gpu ) {
 	fixture.recorder.Clear( clearLatch, clear );
 	draw( 0, color, GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA, idVec4( 1.0f, 1.0f, 1.0f, 0.25f ) );
 	draw( 1, color, GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	latch.emissive = 4.0f;
+	draw( 3, color, ADD, idVec4( 0.5f, 0.5f, 0.5f, 1.0f ) );
+	latch.emissive = 1.0f;
 	texels = readScene();
 	const float cleared = R_LinearToSRGB( R_SRGBToLinear( 0.5f ) * PRE_EXPOSURE );
 	const float white = R_LinearToSRGB( PRE_EXPOSURE );
 	if ( !texels.empty() ) {
 		const float mixed = 0.25f * white + 0.75f * cleared;
+		const float hot = cleared + R_LinearToSRGB( R_SRGBToLinear( 0.5f ) * PRE_EXPOSURE * 4.0f );
 		checkStripe( texels, 0, idVec4( mixed, mixed, mixed, 0.8125f ), "an alpha blend in gamma" );
 		checkStripe( texels, 1, idVec4( 0.5f * cleared, 0.5f * cleared, 0.5f * cleared, 1.0f ), "a factor in gamma is not exposed" );
 		checkStripe( texels, 2, idVec4( cleared, cleared, cleared, 1.0f ), "a clear in gamma" );
+		checkStripe( texels, 3, idVec4( hot, hot, hot, 1.0f ), "emissive 4 in gamma scales the linear light of an add" );
 	}
 	fixture.recorder.SetHdr( false, PRE_EXPOSURE );
 	Check( !fixture.recorder.HdrGamma(), "the end of the HDR scene ends the gamma composite" );
@@ -5944,6 +6113,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_DrawFrameBuffers", OnWarp<DrawFrameBufferPlacements> },
 	{ "Warp_DrawBindless", OnWarp<DrawBindless> },
 	{ "Gpu_DrawBindless", OnGpu<DrawBindless> },
+	{ "Warp_SoftParticle", OnWarp<SoftParticle> },
+	{ "Gpu_SoftParticle", OnGpu<SoftParticle> },
 	{ "Gpu_DrawFrameBuffers", OnGpu<DrawFrameBufferPlacements> },
 	{ "Warp_RenderGraph", OnWarp<RenderGraph> },
 	{ "Gpu_RenderGraph", OnGpu<RenderGraph> },

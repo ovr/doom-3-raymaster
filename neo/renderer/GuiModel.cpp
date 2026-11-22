@@ -154,6 +154,7 @@ void idGuiModel::EmitSurfaces( float modelMatrix[16], float modelViewMatrix[16],
 		drawSurf->scissorRect = tr.viewDef->scissor;
 		drawSurf->sort = shader->GetSort();
 		drawSurf->renderZFail = 0;
+		drawSurf->particleSize = 0.0f;
 		// process the shader expressions for conditionals / color / texcoords
 		const float	*constRegs = shader->ConstantRegisters();
 		if ( constRegs ) {

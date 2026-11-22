@@ -131,6 +131,14 @@ protected:
 
 	const idDeclParticle *	smokeFly;
 	int						smokeFlyTime;
+	// "smoke_flyFx" (com_enhancedEffects): a trail of its own that draws none of the game's random numbers,
+	// so monsters act as without it; made again from the def after a load
+	const idDeclParticle *	smokeFlyFx;
+	int						smokeFlyFxTime;
+	// "fx_fly" (idFxSystem): the effect of the flight; made again from the def after a load
+	const fxDef_t *			fxFly;
+	float					fxTravelled;
+	idVec3					fxLastOrigin;
 	bool					mNoExplodeDisappear;
 	bool					mTouchTriggers;
 

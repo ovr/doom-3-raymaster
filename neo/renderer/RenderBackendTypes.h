@@ -64,11 +64,10 @@ enum class textureRole_t : uint8 {
 	COLOR_COPY,		// also the target of CopyOutputToTexture
 	DEPTH_COPY		// the target of CopyDepthToTexture; sampled as one float channel in 0..1
 };
-enum class outputEye_t : uint8 { BOTH, LEFT, RIGHT };
 // r_swapInterval 0, 1, 2; NONE finishes the frame without showing it
 enum class presentMode_t : uint8 { IMMEDIATE, ADAPTIVE, VSYNC, NONE };
 enum class presentResult_t : uint8 { OK, DEVICE_LOST };
-enum class renderOption_t : uint8 { SRGB_OUTPUT, SEAMLESS_CUBE_MAPS, MULTISAMPLE };	// hints: a backend without the notion ignores them
+enum class renderOption_t : uint8 { SRGB_OUTPUT };	// a setting between frames
 enum class samplerFilter_t : uint8 { NEAREST, LINEAR, LINEAR_MIP_NEAREST, LINEAR_MIP_LINEAR };
 enum class samplerAddress_t : uint8 { REPEAT, CLAMP, BORDER_BLACK, BORDER_TRANSPARENT };	// border 0,0,0,1 and 0,0,0,0
 
@@ -112,7 +111,7 @@ struct vertexLayoutDesc_t {
 
 static_assert( sizeof( idDrawVert ) == 32 && sizeof( idShadowVert ) == 16 && sizeof( idShadowVertSkinned ) == 32 );
 
-// The vertex inputs of every layout, in the order the OpenGL path sets them up.
+// The vertex inputs of every layout, in the order id's OpenGL path set them up.
 inline constexpr vertexLayoutDesc_t vertexLayouts[NUM_VERTEX_LAYOUTS] = {
 	// LAYOUT_UNKNOWN
 	{},
@@ -151,7 +150,7 @@ inline constexpr vertexLayoutDesc_t vertexLayouts[NUM_VERTEX_LAYOUTS] = {
 };
 
 struct renderCaps_t {
-	const char *	apiName;				// "OpenGL", "Direct3D 12", "Vulkan"
+	const char *	apiName;				// "Direct3D 12"
 	const char *	vendorName;
 	const char *	rendererName;
 	const char *	versionString;
@@ -162,9 +161,6 @@ struct renderCaps_t {
 	int				depthBits;				// printed by gfxInfo only
 	int				maxDebugGroupDepth;
 	bool			depthBoundsTest;
-	bool			maskedColorClear;		// Clear() can honour a partial colour write mask
-	bool			quadBufferStereo;		// the display has a quad-buffer format; SelectOutput( LEFT / RIGHT ) also needs Init to have asked for it
-	bool			adaptiveSync;			// presentMode_t::ADAPTIVE differs from VSYNC
 	bool			gpuTimer;				// GetFrameGpuMicroseconds returns a measurement
 	bool			timestamps;				// WriteTimestamp works
 	bool			debugGroups;
@@ -175,7 +171,6 @@ struct renderBackendInit_t {
 	void *		nativeWindow;		// HWND
 	int			width, height;		// client area
 	int			multiSamples;		// fixed until Shutdown
-	bool		stereoPixelFormat;	// ask for quad-buffer; Init fails when it cannot be had
 };
 
 // what a stage reads; filled by CreateShaderStage
@@ -214,7 +209,7 @@ struct clearDesc_t {
 	float			rgba[4];
 };
 
-// the 16 bytes a pipeline object is looked up by; GL never builds one
+// the 16 bytes a pipeline object is looked up by
 struct pipelineKey_t {
 	uint64		stateBits;		// latch.stateBits & GLS_PIPELINE_BITS
 	uint16		program;		// the backend's dense program index
@@ -245,7 +240,7 @@ struct renderLatch_t {
 	renderRect_t		scissor = {};
 	programHandle_t		program = programHandle_t::NONE;
 	textureHandle_t		textures[MAX_TEXTURE_SLOTS][2] = {};	// [slot][textureKind_t]; what a draw samples
-	uint32				texturesSent = 0;		// bit slot * 2 + kind: API_BindTexture has seen this entry
+	float				emissive = 1.0f;		// scales the light a draw adds to the HDR scene (hdrEmissive)
 };
 
 // packs the parms a stage reads, in its order; the only implementation of constant packing

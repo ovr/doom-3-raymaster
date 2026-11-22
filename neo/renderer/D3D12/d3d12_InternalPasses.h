@@ -41,7 +41,7 @@ public:
 	// The shaders and the blit PSO: device work, so after construction.
 	void							CreateDefaults();
 	// Scene → back buffer (in RENDER_TARGET), the rows flipped. An exact Load and an identity gamma copy the bytes;
-	// any other ramp maps each channel through the LUT, as the hardware ramp GL sets maps the desktop.
+	// any other ramp maps each channel through the LUT, as the hardware ramp of id's OpenGL renderer mapped the desktop.
 	void							PresentBlit( d3d12Descriptor_t sceneSrv, D3D12_CPU_DESCRIPTOR_HANDLE backBuffer, int width, int height );
 	// Between calls of the contract: the first ramp that is no identity creates the 256 x 1 LUT and its PSO.
 	void							SetGamma( const d3d12GammaRamp_t & ramp );

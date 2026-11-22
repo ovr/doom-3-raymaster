@@ -217,7 +217,10 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 		prepared.resources.SetTexture( slot, cube, textures.SampledView( handle, kind ).index );
 		prepared.resources.SetSampler( slot, sampler );
 	}
-	prepared.resources.SetColor( colorFlags, preExposure );
+	// the emissive scale exposes the light a draw adds; a float copy it samples keeps its value, as SceneColor
+	// divides by the same constant that SceneOutput multiplies by
+	const bool emissive = ( colorFlags & d3d12ColorFlags::RADIANCE ) != 0;
+	prepared.resources.SetColor( colorFlags, emissive ? preExposure * latch.emissive : preExposure );
 	stats.unboundSlots += unbound ? 1 : 0;
 	stats.incompleteBinds += incomplete ? 1 : 0;
 	prepared.vertexParmBytes = ParmBytes( program.vertexInfo );
