@@ -32,7 +32,8 @@ static const uint KIND_ORB = 4;			// an unstable ball of plasma
 // idRenderMatrix::ApplyDepthHack: the weapon's clip z is a quarter of the true one
 static const float WEAPON_DEPTH_SCALE = 0.25;
 
-static const int ORB_STEPS = 10;		// samples along the ray through an orb
+static const int ORB_STEPS = 14;		// samples along the ray through an orb
+static const float ORB_BOUND = 1.5;	// how far past its radius an orb's tongues reach
 static const int ARC_OCTAVES = 5;
 
 struct VSInput {
@@ -124,27 +125,34 @@ float4 PSMain( VSOutput input ) : SV_Target {
 		const float d = r / radius;
 		const float white = dot( input.light.rgb, 0.3333 );
 
-		// emission summed along the eye's ray: thin filaments of a warped noise that turn, a core hot by the inverse square
+		// emission summed along the eye's ray; the surface heaves and throws tongues past it, the gas is denser inward
 		float glow = 0.0;
-		[branch] if ( d < 1.0 ) {
-			const float halfDepth = sqrt( 1.0 - d * d );
+		[branch] if ( d < ORB_BOUND ) {
+			const float halfDepth = sqrt( ORB_BOUND * ORB_BOUND - d * d );
 			const float jitter = Hash21( int2( input.position.xy ), seed );
 			const float2 spin = float2( cos( t * 0.6 ), sin( t * 0.6 ) );
 			for ( int i = 0; i < ORB_STEPS; i++ ) {
 				const float z = ( ( float( i ) + jitter ) * ( 2.0 / ORB_STEPS ) - 1.0 ) * halfDepth;
 				const float rr = d * d + z * z;
+				const float rho = sqrt( rr );
 				const float3 q = float3( s.x * spin.x + z * spin.y, s.y, z * spin.x - s.x * spin.y );
+				const float3 dir = q / max( rho, 0.001 );
+				const float swell = ValueNoise3( dir * 1.7 + float3( 0.0, t * 0.8, 0.0 ), seed + 8 );
+				const float tongue = ValueNoise3( dir * 3.1 + float3( t * 1.1, 0.0, 0.0 ), seed + 9 );
+				const float edge = 0.72 + 0.3 * swell + 0.5 * tongue * tongue * tongue * tongue;
+				const float body = saturate( ( edge - rho ) / ( 0.35 * edge ) );
 				const float3 warp = float3( ValueNoise3( q * 1.6 + float3( 0.0, t * 0.5, 0.0 ), seed + 3 ),
 					ValueNoise3( q * 1.6 + float3( 31.0, 0.0, t * 0.4 ), seed + 4 ), 0.5 ) - 0.5;
 				const float n = Fbm3( q * 2.4 + warp * 1.8 + float3( 0.0, -t * 0.7, 0.0 ), seed + 6 );
 				const float ridge = saturate( 1.0 - abs( n * 2.0 - 1.0 ) * 2.5 );
-				glow += ridge * ridge * ( 1.0 - rr ) * ( 3.0 - 2.0 * rr ) + 0.012 / ( rr + 0.012 );
+				glow += ( ridge * ridge * 1.4 + 0.06 ) * body * body * ( 3.0 - 2.0 * body ) + 0.012 / ( rr + 0.012 ) * step( rho, 1.0 );
 			}
 			glow *= halfDepth * ( 2.0 / ORB_STEPS );
 		}
-		// the colour only where it is dim: the hot parts go white; around it a glare by the inverse square
+		// the colour stays saturated where the gas is thin; it whitens only where light piles up along the ray
 		const float glare = 0.03 / ( d * d * 0.5 + 0.03 );
-		radiance = input.light.rgb * ( glow * 2.5 + glare * 0.5 ) + white * ( glow * glow * 6.0 + glare * glare );
+		const float energy = glow * 2.4 + glare * 0.4;
+		radiance = input.light.rgb * energy + white * ( energy * energy * energy * 0.12 + glare * glare * 0.5 );
 
 		// arcs: each strikes out at its own angle, a fractal line with a fork, fades in a fraction of a second
 		const float angle = atan2( p.y, p.x );
