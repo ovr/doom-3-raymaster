@@ -10,6 +10,7 @@
 #include "../renderer/D3D12/d3d12_Copies.h"
 #include "../renderer/D3D12/d3d12_Draw.h"
 #include "../renderer/D3D12/d3d12_GpuScene.h"
+#include "../renderer/D3D12/d3d12_RayTracing.h"
 #include "../renderer/D3D12/d3d12_Hdr.h"
 #include "../renderer/D3D12/d3d12_Dxc.h"
 #include "../renderer/D3D12/d3d12_HlslCompiler.h"
@@ -5908,6 +5909,369 @@ void GpuScene( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+// ---- WARP: the acceleration structures of the GPU scene ---------------------------------------------------------
+
+// A frame over idTestRtScene's static buffers: the quad of idTestRayScene (vertices 0-3), a skinned quad (4-7) and
+// a grid whose BLAS compaction makes smaller (from 8, its indexes after the quad's).
+struct rtTestFrame_t {
+	static constexpr uint32			GRID = 32;
+	static constexpr uint32			GRID_FIRST = 8;
+	std::vector<gpuSceneWrite_t>	writes;
+	std::vector<gpuSceneInstance_t>	instances;
+	gpuSceneFrame_t					frame = {};
+
+	rtTestFrame_t( uint32 sequence, bool full, int generation = 1 ) {
+		frame.sceneId = 3;
+		frame.sequence = sequence;
+		frame.full = full;
+		frame.staticGeneration = generation;
+		frame.geometryCapacity = 64;
+	}
+	void Write( int index, uint32 firstVertex, uint32 numIndexes, uint32 flags, uint32 numVerts = 4, uint32 firstIndex = 0 ) {
+		gpuSceneWrite_t & write = writes.emplace_back();
+		memset( &write, 0, sizeof( write ) );
+		write.index = index;
+		write.record.vertexOffset = firstVertex * static_cast<uint32>( sizeof( idDrawVert ) );
+		write.record.indexOffset = firstIndex * static_cast<uint32>( sizeof( triIndex_t ) );
+		write.record.numIndexes = numIndexes;
+		write.record.numVerts = numVerts;
+		write.record.flags = flags;
+	}
+	// 10 and 11 the opaque quad (two entities of one model), 20 the quad not opaque, 30 the skinned quad, 40 the grid.
+	void WriteQuads() {
+		Write( 10, 0, 6, gpuSceneGeometry_t::GEO_OPAQUE );
+		Write( 11, 0, 6, gpuSceneGeometry_t::GEO_OPAQUE );
+		Write( 20, 0, 6, 0 );
+		Write( 30, 4, 6, gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_SKINNED );
+		Write( 40, GRID_FIRST, GRID * GRID * 6, gpuSceneGeometry_t::GEO_OPAQUE, ( GRID + 1 ) * ( GRID + 1 ), 6 );
+	}
+	gpuSceneInstance_t & Instance( uint32 firstGeometry, uint32 mask, uint64 blasKey, const idVec3 & origin ) {
+		gpuSceneInstance_t & instance = instances.emplace_back();
+		memset( &instance, 0, sizeof( instance ) );
+		instance.transform[0][0] = instance.transform[1][1] = instance.transform[2][2] = 1.0f;
+		instance.transform[0][3] = origin.x;
+		instance.transform[1][3] = origin.y;
+		instance.transform[2][3] = origin.z;
+		instance.firstGeometry = firstGeometry;
+		instance.numGeometries = 1;
+		instance.mask = mask;
+		instance.blasKey = blasKey;
+		instance.jointBuffer = bufferHandle_t::NONE;
+		return instance;
+	}
+	// idTestRayScene's two instances, then instance 0's model once more, out of every ray's way.
+	void AddRayScene( bool withSecond = true ) {
+		Instance( 10, gpuSceneInstance_t::MASK_VISIBLE, 0x100, vec3_origin );
+		if ( withSecond ) {
+			Instance( 20, gpuSceneInstance_t::MASK_SHADOW, 0x200, idVec3( 8.0f, 0.0f, -2.0f ) );
+		}
+		Instance( 11, gpuSceneInstance_t::MASK_VISIBLE, 0x100, idVec3( 100.0f, 0.0f, 0.0f ) );
+	}
+	gpuSceneUpdate_t Update( bufferHandle_t vertices, bufferHandle_t indexes ) {
+		frame.writes = writes.data();
+		frame.numWrites = static_cast<int>( writes.size() );
+		frame.instances = instances.data();
+		frame.numInstances = static_cast<int>( instances.size() );
+		frame.numGeometries = frame.numInstances;
+		return { &frame, vertices, indexes };
+	}
+};
+
+class idTestRtScene {
+public:
+	explicit						idTestRtScene( idTestGpu & gpu, uint64 unusedBuilds = idD3D12RayTracing::UNUSED_BUILDS );
+									~idTestRtScene();
+									idTestRtScene( const idTestRtScene & ) = delete;
+	idTestRtScene &					operator=( const idTestRtScene & ) = delete;
+	[[nodiscard]] bool				Ready() const { return ready; }
+	// The update, then the build, as UpdateGpuScene runs them.
+	[[nodiscard]] bool				Apply( rtTestFrame_t & frame, gpuSceneStats_t & stats );
+	void							Trace();	// idTestRayScene's rays against the last build's TLAS, executed
+
+	idTestGpu &						gpu;
+	idTestRayScene					rays;
+	idD3D12GpuScene					gpuScene;
+	idD3D12RayTracing				rt;
+	static constexpr uint32			GRID = rtTestFrame_t::GRID;
+	static constexpr uint32			GRID_FIRST = rtTestFrame_t::GRID_FIRST;
+	std::vector<idDrawVert>			vertices;
+	bufferHandle_t					vertexBuffer = bufferHandle_t::NONE;
+	bufferHandle_t					indexBuffer = bufferHandle_t::NONE;
+
+private:
+	bool							ready = false;
+};
+
+idTestRtScene::idTestRtScene( idTestGpu & owner, uint64 unusedBuilds ) :
+	gpu( owner ),
+	rays( owner ),
+	gpuScene( owner.device, owner, owner.graveyard, owner.srvPool, owner.barriers, owner.uploader, owner.textures ),
+	rt( owner.device, owner, owner.graveyard, owner.srvPool, owner.barriers, owner.uploader, owner.buffers, unusedBuilds ) {
+	if ( !rays.Ready() ) {
+		return;
+	}
+	rt.CreateDefaults( rays.fixture.passes.Stage( "internal_rtSkin" ), rays.computeRoot );
+	// the skinned quad: joint 0 alone, half and half, joint 1 alone, three joints
+	constexpr byte JOINTS[4][4] = { { 0, 0, 0, 0 }, { 0, 1, 0, 0 }, { 1, 0, 0, 0 }, { 0, 1, 1, 0 } };
+	constexpr byte WEIGHTS[4][4] = { { 255, 0, 0, 0 }, { 128, 127, 0, 0 }, { 255, 0, 0, 0 }, { 64, 96, 95, 0 } };
+	const idVec3 corners[4] = { idVec3( 0.0f, 0.0f, 0.0f ), idVec3( 4.0f, 0.0f, 0.0f ), idVec3( 4.0f, 4.0f, 0.0f ), idVec3( 0.0f, 4.0f, 0.0f ) };
+	vertices.resize( GRID_FIRST + ( GRID + 1 ) * ( GRID + 1 ) );
+	for ( size_t i = 0; i < vertices.size(); i++ ) {
+		idDrawVert & vertex = vertices[i];
+		vertex.Clear();
+		vertex.xyz = ( i < GRID_FIRST ) ? corners[i % 4] : idVec3( static_cast<float>( ( i - GRID_FIRST ) % ( GRID + 1 ) ),
+			static_cast<float>( ( i - GRID_FIRST ) / ( GRID + 1 ) ), 0.0f );
+		vertex.SetTexCoord( 0.25f * static_cast<float>( i & 7 ), 0.75f );
+		vertex.SetNormal( idVec3( 0.0f, 0.0f, 1.0f ) );
+		vertex.SetTangent( idVec3( 1.0f, 0.0f, 0.0f ) );
+		vertex.tangent[3] = ( i & 1 ) ? 255 : 0;
+		if ( i >= 4 && i < GRID_FIRST ) {
+			memcpy( vertex.color, JOINTS[i - 4], 4 );
+			memcpy( vertex.color2, WEIGHTS[i - 4], 4 );
+		}
+	}
+	std::vector<triIndex_t> indexes( idTestRayScene::INDEXES.begin(), idTestRayScene::INDEXES.end() );
+	for ( uint32 y = 0; y < GRID; y++ ) {
+		for ( uint32 x = 0; x < GRID; x++ ) {
+			const triIndex_t corner = static_cast<triIndex_t>( y * ( GRID + 1 ) + x );
+			for ( const uint32 offset : { 0u, 1u, GRID + 2, 0u, GRID + 2, GRID + 1 } ) {
+				indexes.push_back( static_cast<triIndex_t>( corner + offset ) );
+			}
+		}
+	}
+	vertexBuffer = gpu.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::STATIC, static_cast<int>( vertices.size() * sizeof( idDrawVert ) ), vertices.data() );
+	indexBuffer = gpu.buffers.Create( bufferType_t::INDEX, bufferUsage_t::STATIC, static_cast<int>( indexes.size() * sizeof( triIndex_t ) ), indexes.data() );
+	ready = Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE, "the static buffers" );
+}
+
+idTestRtScene::~idTestRtScene() {
+	if ( !gpu.device.IsLost() ) {
+		gpu.WaitIdle();
+	}
+	gpu.buffers.Destroy( vertexBuffer );
+	gpu.buffers.Destroy( indexBuffer );
+}
+
+bool idTestRtScene::Apply( rtTestFrame_t & frame, gpuSceneStats_t & stats ) {
+	rays.fixture.Bind();
+	if ( !gpuScene.Update( frame.Update( vertexBuffer, indexBuffer ) ) ) {
+		rt.Invalidate();
+		stats = {};
+		return false;
+	}
+	return rt.Build( rays.graph, gpuScene, nullptr, stats );
+}
+
+void idTestRtScene::Trace() {
+	rays.fixture.Bind();
+	const uint32 tlas = rt.TlasSrv().index;
+	rays.AddTrace( [tlas]( idD3D12GraphContext & ) { return tlas; }, {} );
+	rays.graph.Execute();
+}
+
+[[nodiscard]] idStr RtStats( const gpuSceneStats_t & stats ) {
+	return va( "tlas %d (%d waiting), blas %d (%d built, %d compacted, %llu bytes), skinned %d (%d verts)", stats.tlasInstances, stats.waiting,
+		stats.blas, stats.built, stats.compacted, stats.blasBytes, stats.skinned, stats.skinnedVerts );
+}
+
+// RayQuery's scene out of the GPU scene: the same hits with InstanceID the first record, the instance table, one BLAS
+// for two entities of a model, nothing built for the same update again, a delta from the cache, a key two models share.
+void RtTlas( idTestGpu & gpu ) {
+	idTestRtScene scene( gpu );
+	if ( !scene.Ready() ) {
+		return;
+	}
+	gpuSceneStats_t stats;
+	rtTestFrame_t first( 1, true );
+	first.WriteQuads();
+	first.AddRayScene();
+	Check( scene.Apply( first, stats ) && scene.rt.Valid(), "the first build" );
+	Check( stats.tlasInstances == 3 && stats.blas == 2 && stats.built == 2 && stats.waiting == 0 && stats.skinned == 0,
+		va( "the first build: %s", RtStats( stats ).c_str() ) );
+	scene.Trace();
+	scene.rays.CheckResults( "the first build" );
+
+	constexpr uint32 NO = d3d12RtInstance_t::NOT_SKINNED;
+	const std::array<d3d12RtInstance_t, 3> table = { { { 10, 1, NO, 0 }, { 20, 1, NO, 1 }, { 11, 1, NO, 2 } } };
+	Check( scene.rt.Instances().size() == table.size() && memcmp( scene.rt.Instances().data(), table.data(), sizeof( table ) ) == 0, "the instance table" );
+	const std::vector<byte> onGpu = gpu.Read( *scene.rt.InstanceTable(), &scene.rt.InstanceTableState(), 0, sizeof( table ) );
+	Check( onGpu.size() == sizeof( table ) && memcmp( onGpu.data(), table.data(), sizeof( table ) ) == 0, "the instance table on the GPU" );
+
+	const int passes = scene.rays.graph.LastStats().passes;
+	Check( scene.Apply( first, stats ) && scene.rays.graph.LastStats().passes == passes, "the same update again builds nothing" );
+
+	rtTestFrame_t second( 2, false );
+	second.AddRayScene();
+	Check( scene.Apply( second, stats ) && stats.built == 0 && stats.blas == 2 && stats.tlasInstances == 3,
+		va( "a delta takes the BLAS from the cache: %s", RtStats( stats ).c_str() ) );
+	scene.Trace();
+	scene.rays.CheckResults( "from the cache" );
+
+	rtTestFrame_t third( 3, false );
+	third.Write( 12, 0, 3, gpuSceneGeometry_t::GEO_OPAQUE );
+	third.AddRayScene();
+	third.Instance( 12, gpuSceneInstance_t::MASK_VISIBLE, 0x100, idVec3( 200.0f, 0.0f, 0.0f ) );
+	Check( scene.Apply( third, stats ) && stats.waiting == 1 && stats.tlasInstances == 3 && stats.blas == 2,
+		va( "another model under a held key waits: %s", RtStats( stats ).c_str() ) );
+	scene.Trace();
+	scene.rays.CheckResults( "one waiting" );
+	CheckNoLayerErrors( gpu );
+}
+
+// The static BLAS over frames: compacted once a wait has made their sizes readable and never before, dropped with
+// their static generation, evicted after unusedBuilds builds without an instance; the hits stay those of RayQuery.
+void RtBlasCache( idTestGpu & gpu ) {
+	constexpr uint64 UNUSED = 3;
+	idTestRtScene scene( gpu, UNUSED );
+	if ( !scene.Ready() ) {
+		return;
+	}
+	uint32 sequence = 1;
+	gpuSceneStats_t stats;
+	const auto apply = [&]( bool full, int generation, bool withSecond ) {
+		rtTestFrame_t frame( sequence++, full, generation );
+		if ( full ) {
+			frame.WriteQuads();
+		}
+		frame.AddRayScene( withSecond );
+		frame.Instance( 40, gpuSceneInstance_t::MASK_VISIBLE, 0x400, idVec3( 300.0f, 0.0f, 0.0f ) );
+		return scene.Apply( frame, stats );
+	};
+
+	Check( apply( true, 1, true ) && stats.built == 3 && scene.rt.NumUncompacted() == 3, va( "the first build: %s", RtStats( stats ).c_str() ) );
+	const uint64 builtBytes = stats.blasBytes;
+	Check( apply( false, 1, true ) && stats.compacted == 0 && scene.rt.NumUncompacted() == 3,
+		va( "no size is read before the wait: %s", RtStats( stats ).c_str() ) );
+	scene.Trace();
+	scene.rays.CheckResults( "before the sizes" );
+	// WARP's compacted sizes are its built ones: nothing to copy there
+	const bool warp = gpu.device.Features().warp;
+	Check( apply( false, 1, true ) && stats.built == 0 && scene.rt.NumUncompacted() == 0
+		&& ( warp ? stats.blasBytes == builtBytes : ( stats.compacted >= 1 && stats.blasBytes < builtBytes ) ),
+		va( "compacted after the wait: %s; %llu bytes built", RtStats( stats ).c_str(), builtBytes ) );
+	scene.Trace();
+	scene.rays.CheckResults( "compacted" );
+	Check( apply( false, 1, true ) && stats.compacted == 0 && stats.built == 0, va( "nothing to do: %s", RtStats( stats ).c_str() ) );
+	scene.Trace();
+	scene.rays.CheckResults( "after the compaction" );
+
+	Check( apply( true, 2, true ) && stats.built == 3 && stats.blas == 3 && scene.rt.NumUncompacted() == 3,
+		va( "a new static generation builds again: %s", RtStats( stats ).c_str() ) );
+	scene.Trace();
+	scene.rays.CheckResults( "a new generation" );
+
+	for ( uint64 unused = 1; unused <= UNUSED + 1; unused++ ) {
+		Check( apply( false, 2, false ) && stats.tlasInstances == 3, va( "without the second instance: %s", RtStats( stats ).c_str() ) );
+		const int want = ( unused <= UNUSED ) ? 3 : 2;
+		Check( stats.blas == want, va( "%llu builds without its instance: %d BLAS, not %d", unused, stats.blas, want ) );
+	}
+	Check( apply( false, 2, true ) && stats.built == 1 && stats.blas == 3, va( "an evicted BLAS is built again: %s", RtStats( stats ).c_str() ) );
+	scene.Trace();
+	scene.rays.CheckResults( "built again" );
+	CheckNoLayerErrors( gpu );
+}
+
+// internal/rtSkin.hlsl against the CPU's skinning of four vertices under mixed weights, then the skinned BLAS: a quad
+// its joints move as a whole is hit where they put it.
+void RtSkin( idTestGpu & gpu ) {
+	idTestRtScene scene( gpu );
+	if ( !scene.Ready() ) {
+		return;
+	}
+	std::array<idJointMat, 2> bent;
+	bent[0].SetRotation( idAngles( 0.0f, 30.0f, 0.0f ).ToMat3() );
+	bent[0].SetTranslation( idVec3( 1.0f, 2.0f, 0.5f ) );
+	bent[1].SetRotation( idAngles( 20.0f, 0.0f, 10.0f ).ToMat3() );
+	bent[1].SetTranslation( idVec3( -1.0f, 0.5f, 1.0f ) );
+	std::array<idJointMat, 2> moved;
+	for ( idJointMat & joint : moved ) {
+		joint.SetRotation( mat3_identity );
+		joint.SetTranslation( idVec3( 12.0f, 0.0f, 1.0f ) );
+	}
+	const bufferHandle_t bentJoints = gpu.buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, sizeof( bent ), bent.data() );
+	const bufferHandle_t movedJoints = gpu.buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, sizeof( moved ), moved.data() );
+	if ( !Check( bentJoints != bufferHandle_t::NONE && movedJoints != bufferHandle_t::NONE, "the joint buffers" ) ) {
+		return;
+	}
+	const auto addSkinned = [&]( rtTestFrame_t & frame, bufferHandle_t joints ) {
+		gpuSceneInstance_t & instance = frame.Instance( 30, gpuSceneInstance_t::MASK_VISIBLE, 0, vec3_origin );
+		instance.skinnedVerts = 4;
+		instance.numJoints = 2;
+		instance.jointBuffer = joints;
+	};
+	// the skinned vertices against GetSkinnedDrawVert, whose normal and tangent the shader also normalizes
+	const auto checkVertices = [&]( const char * label, const idJointMat * joints ) {
+		const std::vector<byte> read = gpu.Read( *scene.rt.SkinnedVertices(), &scene.rt.SkinnedVerticesState(), 0, 4 * sizeof( idDrawVert ) );
+		if ( !Check( read.size() == 4 * sizeof( idDrawVert ), va( "%s: the skinned vertices are read", label ) ) ) {
+			return;
+		}
+		for ( int i = 0; i < 4; i++ ) {
+			const idDrawVert & source = scene.vertices[4 + i];
+			const idDrawVert want = idDrawVert::GetSkinnedDrawVert( source, joints );
+			idDrawVert got;
+			memcpy( &got, &read[i * sizeof( idDrawVert )], sizeof( got ) );
+			idJointMat accum;
+			idJointMat::Mul( accum, joints[source.color[0]], source.color2[0] * ( 1.0f / 255.0f ) );
+			for ( int j = 1; j < 4; j++ ) {
+				idJointMat::Mad( accum, joints[source.color[j]], source.color2[j] * ( 1.0f / 255.0f ) );
+			}
+			idVec3 normal = accum * source.GetNormal();
+			idVec3 tangent = accum * source.GetTangent();
+			normal.Normalize();
+			tangent.Normalize();
+			bool directions = true;
+			for ( int c = 0; c < 3; c++ ) {
+				directions &= abs( got.normal[c] - VERTEX_FLOAT_TO_BYTE( normal[c] ) ) <= 1 && abs( got.tangent[c] - VERTEX_FLOAT_TO_BYTE( tangent[c] ) ) <= 1;
+			}
+			const bool same = got.xyz.Compare( want.xyz, 1e-5f ) && memcmp( got.st, want.st, sizeof( got.st ) ) == 0 && directions
+				&& got.tangent[3] == source.tangent[3] && memcmp( got.color, source.color, 4 ) == 0 && memcmp( got.color2, source.color2, 4 ) == 0;
+			Check( same, va( "%s, vertex %d: ( %g %g %g ), normal %d %d %d; the CPU's ( %g %g %g ), %d %d %d", label, i, got.xyz.x, got.xyz.y, got.xyz.z,
+				got.normal[0], got.normal[1], got.normal[2], want.xyz.x, want.xyz.y, want.xyz.z, VERTEX_FLOAT_TO_BYTE( normal[0] ),
+				VERTEX_FLOAT_TO_BYTE( normal[1] ), VERTEX_FLOAT_TO_BYTE( normal[2] ) ) );
+		}
+	};
+
+	gpuSceneStats_t stats;
+	rtTestFrame_t first( 1, true );
+	first.WriteQuads();
+	addSkinned( first, bentJoints );
+	Check( scene.Apply( first, stats ) && stats.skinned == 1 && stats.skinnedVerts == 4 && stats.tlasInstances == 1 && stats.blas == 0,
+		va( "a skinned instance: %s", RtStats( stats ).c_str() ) );
+	Check( scene.rt.Instances().size() == 1 && scene.rt.Instances()[0].skinnedOffset == 0, "its vertices first in the skinned ones" );
+	checkVertices( "bent", bent.data() );
+
+	rtTestFrame_t second( 2, false );
+	addSkinned( second, movedJoints );
+	Check( scene.Apply( second, stats ) && stats.skinned == 1, va( "skinned again: %s", RtStats( stats ).c_str() ) );
+	checkVertices( "moved", moved.data() );
+	scene.Trace();
+	const std::vector<byte> read = gpu.Read( *scene.rays.results.Get(), &scene.rays.resultsState, 0, idTestRayScene::BYTES );
+	if ( Check( read.size() == idTestRayScene::BYTES, "the results are read" ) ) {
+		int wrong = 0;
+		int hits = 0;
+		for ( uint32 y = 0; y < idTestRayScene::HEIGHT; y++ ) {
+			for ( uint32 x = 0; x < idTestRayScene::WIDTH; x++ ) {
+				uint32 got[8];
+				memcpy( got, &read[( y * idTestRayScene::WIDTH + x ) * 32], sizeof( got ) );
+				const float lx = x + 0.25f - 12.0f;
+				const float oy = ( y & 3 ) + 0.75f;
+				const bool hit = x >= 12;
+				float t;
+				memcpy( &t, &got[3], sizeof( t ) );
+				const bool right = ( got[7] != 0 ) == hit && ( !hit || ( got[0] == 30 && got[1] == 0 && got[2] == ( ( oy < lx ) ? 0u : 1u )
+					&& idMath::Fabs( t - 9.0f ) < 1e-4f ) );
+				wrong += right ? 0 : 1;
+				hits += ( got[7] != 0 ) ? 1 : 0;
+			}
+		}
+		Check( wrong == 0 && hits == 32, va( "the moved quad: %d rays wrong, %d hits, not 32", wrong, hits ) );
+	}
+	gpu.WaitIdle();
+	gpu.buffers.Destroy( bentJoints );
+	gpu.buffers.Destroy( movedJoints );
+	CheckNoLayerErrors( gpu );
+}
+
 // A float copy of the HDR scene keeps its values; an LDR copy of the output into the same texture is UNORM as
 // before; switching between the two formats swaps the spare in and creates nothing.
 void HdrCopies( idTestGpu & gpu, UINT samples ) {
@@ -6986,6 +7350,12 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_MotionVectors", OnWarp<MotionVectors> },
 	{ "GpuScene_Ranges", Test_GpuSceneRanges },
 	{ "Warp_GpuScene", OnWarp<GpuScene> },
+	{ "Warp_RtTlas", OnWarp<RtTlas> },
+	{ "Gpu_RtTlas", OnGpu<RtTlas> },
+	{ "Warp_RtBlasCache", OnWarp<RtBlasCache> },
+	{ "Gpu_RtBlasCache", OnGpu<RtBlasCache> },
+	{ "Warp_RtSkin", OnWarp<RtSkin> },
+	{ "Gpu_RtSkin", OnGpu<RtSkin> },
 	{ "Gpu_HdrScene", OnGpu<HdrScene> },
 	{ "Warp_HdrCopies", OnWarp<HdrCopiesAllSamples> },
 	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },

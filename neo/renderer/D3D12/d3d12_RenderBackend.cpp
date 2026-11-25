@@ -204,9 +204,9 @@ void idRenderBackendD3D12::DrawGBufferDebug( gbufferDebug_t mode, const renderRe
 	context->DrawGBufferDebug( mode, viewport );
 }
 
-bool idRenderBackendD3D12::UpdateGpuScene( const gpuSceneUpdate_t & update ) {
+bool idRenderBackendD3D12::UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats ) {
 	assert( IsOwnerThread() && inFrame );
-	return context->UpdateGpuScene( update );
+	return context->UpdateGpuScene( update, stats );
 }
 
 std::optional<hdrExposure_t> idRenderBackendD3D12::LastHdrExposure() const {

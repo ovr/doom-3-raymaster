@@ -18,8 +18,9 @@
 	are undefined until a pass writes them: after that the pool may give the same resource to another one.
 
 	An acceleration structure never leaves RAYTRACING_ACCELERATION_STRUCTURE: an AS_READ or AS_WRITE after an
-	AS_WRITE of it, and an AS_WRITE after an AS_READ, get a UAV barrier instead. That holds within one graph; a
-	structure built by an earlier graph is read in a later list. DEPTH_READ: an imported depth as depth and SRV.
+	AS_WRITE of it, and an AS_WRITE after an AS_READ, get a UAV barrier instead; an imported one the graph wrote
+	last gets one at the end, so a later graph of the same list reads it built. DEPTH_READ: an imported depth as
+	depth and SRV.
 	Not yet: async compute, aliasing of placed resources, the scene's passes (the draw recorder records them).
 */
 

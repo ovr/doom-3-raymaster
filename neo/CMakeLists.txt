@@ -247,6 +247,7 @@ add_executable(d3d12Tests
 	renderer/D3D12/d3d12_Output.cpp
 	renderer/D3D12/d3d12_Pipelines.cpp
 	renderer/D3D12/d3d12_Programs.cpp
+	renderer/D3D12/d3d12_RayTracing.cpp
 	renderer/D3D12/d3d12_RenderGraph.cpp
 	renderer/D3D12/d3d12_RingAllocator.cpp
 	renderer/D3D12/d3d12_ShaderCompiler.cpp

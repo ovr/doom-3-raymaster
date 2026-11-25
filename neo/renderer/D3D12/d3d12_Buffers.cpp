@@ -174,6 +174,14 @@ const d3d12Buffer_t * idD3D12BufferStore::Use( bufferHandle_t handle ) {
 	return buffer;
 }
 
+const d3d12Buffer_t * idD3D12BufferStore::UseForShaders( bufferHandle_t handle ) {
+	d3d12Buffer_t * buffer = table.Find( handle );
+	if ( buffer != nullptr && buffer->placement == d3d12BufferPlacement_t::STAGED ) {
+		barriers.Transition( *buffer->resource.Get(), buffer->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
+	}
+	return buffer;
+}
+
 D3D12_GPU_VIRTUAL_ADDRESS idD3D12BufferStore::ZeroJoints() const {
 	return zeroJoints ? zeroJoints->GetGPUVirtualAddress() : 0;
 }

@@ -69,6 +69,7 @@
 #include "d3d12_GpuScene.h"
 #include "d3d12_Hdr.h"
 #include "d3d12_Programs.h"
+#include "d3d12_RayTracing.h"
 #include "d3d12_RenderGraph.h"
 #include "d3d12_Textures.h"
 #include "d3d12_Timers.h"
@@ -116,8 +117,8 @@ public:
 	void							EndGBuffer();
 	// After the resolve: one target of the G-buffer over viewport of the output (r_gbufferDebug).
 	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport );
-	// R15, in a frame: ends the pass.
-	[[nodiscard]] bool				UpdateGpuScene( const gpuSceneUpdate_t & update );
+	// R15, in a frame: ends the pass; an applied update builds the acceleration structures.
+	[[nodiscard]] bool				UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats );
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	void							PushGroup( const char * name );			// r_pix 2, in a frame
@@ -160,6 +161,7 @@ public:
 	idD3D12RenderGraph				graph;
 	idD3D12HdrPipeline				hdr;
 	idD3D12GpuScene					gpuScene;
+	idD3D12RayTracing				rayTracing;
 
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );
