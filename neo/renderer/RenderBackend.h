@@ -142,6 +142,12 @@ If you have questions concerning this license or the applicable additional terms
 		draws until SetHdrSceneGamma( false ) blend there in gamma without decoding (backEnd.hdrGamma).
 		A resolve moves the eye adaptation by its step; LastHdrExposure is what a resolve the CPU has
 		read back chose (a frame or more late).
+	R14	With caps.gbuffer, in the HDR scene's linear phase: BeginGBuffer clears the viewport's rectangle of the
+		thin G-buffer (all zero) and sends the draws until EndGBuffer into its three targets with the scene's
+		depth instead of the scene: GB0 the octahedral world normal, GB1 F0 (sRGB) and roughness, GB2 the
+		motion in pixels of the scene since the previous frame (rows count up from the bottom, as GL's).
+		Only the gbuffer programs draw there, and nothing clears. The G-buffer has the scene's size and
+		sample count and holds until the next BeginGBuffer; DrawGBufferDebug shows one target in the output.
 
 ===============================================================================
 */
@@ -149,6 +155,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderState.h"
 #include "RenderBackendTypes.h"
 #include "PostProcessSettings.h"
+#include "RayTracingSettings.h"
 
 #include <expected>
 
@@ -227,6 +234,12 @@ public:
 	virtual void			EndHdrScene() {}
 	virtual void			SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) {}
 	[[nodiscard]] virtual std::optional<hdrExposure_t>	LastHdrExposure() const { return std::nullopt; }
+	// R14, in the linear phase, with caps.gbuffer. Each ends the pass of a pipeline backend. False: no G-buffer
+	// (a lost device), draw nothing until EndGBuffer.
+	[[nodiscard]] virtual bool	BeginGBuffer( const renderRect_t & viewport ) { return false; }
+	virtual void			EndGBuffer() {}
+	// After the resolve: the target r_gbufferDebug names, over the viewport of the output.
+	virtual void			DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {}
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,

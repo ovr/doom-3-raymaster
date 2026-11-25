@@ -80,6 +80,8 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "localExposureBlur", shaderStageType_t::COMPUTE, "internal_localExposureBlur", nullptr },
 	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode", nullptr },
 	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode_msaa", "MULTISAMPLED=1" },
+	{ "gbufferDebug", shaderStageType_t::FRAGMENT, "internal_gbufferDebug", nullptr },
+	{ "gbufferDebug", shaderStageType_t::FRAGMENT, "internal_gbufferDebug_msaa", "MULTISAMPLED=1" },
 };
 
 }	// namespace
@@ -343,6 +345,24 @@ void idD3D12InternalPasses::CopyDepth( d3d12Descriptor_t depthSrv, UINT samples,
 	const int32 origin[4] = { x, y, 0, 0 };
 	memcpy( parms.cpu, origin, sizeof( origin ) );
 	Record( submitter.List(), target, *pso.Get(), { 0, 0, width, height }, parms, &resources );
+}
+
+void idD3D12InternalPasses::GBufferDebug( std::span<const d3d12Descriptor_t, idD3D12SceneTarget::GBUFFER_TARGETS> gbufferSrvs, UINT samples,
+	gbufferDebug_t mode, D3D12_CPU_DESCRIPTOR_HANDLE target, d3d12TargetId_t id, const renderRect_t & viewport ) {
+	assert( id.value < d3d12TargetId_t::COUNT && id.Samples() == samples );
+	idComPtr<ID3D12PipelineState> & pso = gbufferDebug[id.value];
+	if ( !pso ) {
+		const char * stage = ( samples > 1 ) ? "internal_gbufferDebug_msaa" : "internal_gbufferDebug";
+		pso = CreatePipeline( Stage( stage ).code, id.ColorView(), id.Samples(), static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ),
+			L"doom3 G-buffer debug" );
+		if ( !pso ) {
+			return;		// a lost device
+		}
+	}
+	const d3d12UploadSpan_t parms = Parms();
+	const uint32 values[4] = { gbufferSrvs[0].index, gbufferSrvs[1].index, gbufferSrvs[2].index, static_cast<uint32>( mode ) };
+	memcpy( parms.cpu, values, sizeof( values ) );
+	Record( submitter.List(), target, *pso.Get(), viewport, parms, nullptr );
 }
 
 void idD3D12InternalPasses::ShowPanel( ID3D12PipelineState & pso, const d3d12DrawResources_t & resources, D3D12_CPU_DESCRIPTOR_HANDLE target,

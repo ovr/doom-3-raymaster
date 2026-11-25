@@ -15,7 +15,8 @@
 // The frame every draw, clear, copy and readback works on, in GL row order: memory row 0 is the bottom of
 // the screen, so the rectangles of shared code are used as they are and only the present blit flips rows.
 // Colour and depth are TYPELESS (UNORM + SRGB render target views, an R24 depth shader view); MSAA adds a resolve texture.
-// The HDR scene (R13) is a second colour surface of RGBA16F with the same depth, made at its first phase.
+// The HDR scene (R13) is a second colour surface of RGBA16F with the same depth, made at its first phase; the
+// G-buffer (R14) three more, d3d12TargetId_t::GBUFFER_FORMATS, made at the first BeginGBuffer.
 class idD3D12SceneTarget {
 public:
 	struct surface_t {
@@ -23,12 +24,19 @@ public:
 		d3d12ResourceState_t		state;
 		d3d12Descriptor_t			srv;			// colour: UNORM or RGBA16F; depth: R24_UNORM_X8_TYPELESS
 	};
+	static constexpr size_t			GBUFFER_TARGETS = d3d12TargetId_t::GBUFFER_FORMATS.size();
 
 									idD3D12SceneTarget( const idD3D12Device & device, idD3D12Graveyard & graveyard, idD3D12DescriptorPool & srvPool,
 										idD3D12DescriptorPool & rtvPool, idD3D12DescriptorPool & dsvPool );
 	void							Create( int width, int height, UINT samples );	// Init and Resize; the old resources are buried
 	// The HDR scene, black, when it is missing: the clear goes into the open list.
 	void							EnsureHdr( idD3D12Barriers & barriers, idD3D12Submitter & submitter );
+	// The G-buffer's surfaces when they are missing; false when one could not be made (a lost device).
+	[[nodiscard]] bool				EnsureGBuffer();
+	[[nodiscard]] surface_t &		GBuffer( size_t target ) { return gbuffer[target]; }
+	[[nodiscard]] std::array<D3D12_CPU_DESCRIPTOR_HANDLE, GBUFFER_TARGETS>	GBufferRtvs() const;
+	// Every target to zero inside rect, which lies inside the scene; leaves them in RENDER_TARGET.
+	void							ClearGBuffer( idD3D12Barriers & barriers, ID3D12GraphicsCommandList4 & list, const D3D12_RECT & rect );
 	[[nodiscard]] d3d12TargetId_t	Target( bool srgb, bool hdr = false ) const { return d3d12TargetId_t::Of( srgb, samples, hdr ); }
 	[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE	Rtv( bool srgb, bool hdr = false ) const {
 		return rtvPool.Cpu( hdr ? rtvHdr : ( srgb ? rtvSrgb : rtvUnorm ) );
@@ -55,7 +63,9 @@ private:
 	idD3D12DescriptorPool &			dsvPool;
 	surface_t						color, depth, resolved;
 	surface_t						hdrColor, hdrResolved;	// R13: none until EnsureHdr
+	std::array<surface_t, GBUFFER_TARGETS>	gbuffer;		// R14: none until EnsureGBuffer
 	d3d12Descriptor_t				rtvUnorm, rtvSrgb, rtvHdr, dsv;	// stable: Create rewrites the views, the SRVs are new
+	std::array<d3d12Descriptor_t, GBUFFER_TARGETS>	rtvGBuffer;
 	int								width = 0;
 	int								height = 0;
 	UINT							samples = 1;

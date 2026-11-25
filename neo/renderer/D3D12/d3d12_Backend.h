@@ -78,6 +78,9 @@ public:
 	void							EndHdrScene() override;
 	void							SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) override;
 	[[nodiscard]] std::optional<hdrExposure_t>	LastHdrExposure() const override;
+	[[nodiscard]] bool				BeginGBuffer( const renderRect_t & viewport ) override;
+	void							EndGBuffer() override;
+	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) override;
 	void							EndLevelLoad() override;			// r_d3d12CheckImages 1: d3d12_checkImages
 
 	bufferHandle_t					CreateBuffer( bufferType_t type, bufferUsage_t usage, int size, const void * data ) override;

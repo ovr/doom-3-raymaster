@@ -186,9 +186,6 @@ pipelineKey_t D3D12_NormalizeKey( const pipelineKey_t & key ) {
 	if ( ( raster & D3D12_KEY_CULL_BITS ) == D3D12_KEY_CULL_BITS ) {
 		raster &= ~D3D12_KEY_CULL_BITS;		// no such cull: none
 	}
-	if ( ( raster & D3D12_KEY_HDR_TARGET ) != 0 ) {
-		raster &= ~( 1 << D3D12_KEY_TARGET_SHIFT );		// the HDR scene has no sRGB view
-	}
 	if ( ( raster & D3D12_KEY_STRICT_DEPTH ) != 0 ) {
 		bits &= ~GLS_DEPTHFUNC_BITS;
 	}
@@ -260,7 +257,10 @@ d3d12PipelineDesc_t D3D12_PipelineDescFor( const pipelineKey_t & key, uint16 pro
 	depth.DepthBoundsTestEnable = depthBounds;
 
 	desc.topology = lines ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-	desc.colorFormat = targetId.ColorView();
+	desc.numTargets = targetId.NumTargets();
+	for ( uint32 i = 0; i < desc.numTargets; i++ ) {
+		desc.colorFormats[i] = targetId.Format( i );
+	}
 	desc.sample = { targetId.Samples(), 0 };
 	FillInputs( desc, key.layout, programAttribMask );
 	return desc;

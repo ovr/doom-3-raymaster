@@ -9,22 +9,32 @@
 #include "d3d12_Local.h"
 
 // Raster bits 3-5 and 7 of pipelineKey_t: the sRGB view, the sample count and the float HDR scene (R13) of the
-// scene target. The HDR scene has no sRGB view: its value 8 + samples is one per sample count.
+// scene target. The HDR scene has no sRGB view: its value 8 + samples is one per sample count, and 9 + samples
+// is the thin G-buffer (R14), three targets with the scene's depth.
 struct d3d12TargetId_t {
 	uint8							value = 0;
 	[[nodiscard]] static constexpr d3d12TargetId_t	Of( bool srgb, UINT samples, bool hdr = false ) {	// samples 1, 2, 4 or 8
 		return { static_cast<uint8>( ( ( srgb && !hdr ) ? 1 : 0 ) | ( std::countr_zero( samples ) << 1 ) | ( hdr ? 8 : 0 ) ) };
 	}
-	[[nodiscard]] constexpr bool	Srgb() const { return ( value & 1 ) != 0; }
+	[[nodiscard]] static constexpr d3d12TargetId_t	GBuffer( UINT samples ) {
+		return { static_cast<uint8>( 9 | ( std::countr_zero( samples ) << 1 ) ) };
+	}
+	[[nodiscard]] constexpr bool	Srgb() const { return ( value & 9 ) == 1; }
 	[[nodiscard]] constexpr UINT	Samples() const { return 1u << ( ( value >> 1 ) & 3 ); }
-	[[nodiscard]] constexpr bool	Hdr() const { return ( value & 8 ) != 0; }
+	[[nodiscard]] constexpr bool	Hdr() const { return ( value & 9 ) == 8; }
+	[[nodiscard]] constexpr bool	IsGBuffer() const { return ( value & 9 ) == 9; }
+	[[nodiscard]] constexpr UINT	NumTargets() const { return IsGBuffer() ? static_cast<UINT>( GBUFFER_FORMATS.size() ) : 1; }
+	[[nodiscard]] constexpr DXGI_FORMAT	Format( UINT target ) const { return IsGBuffer() ? GBUFFER_FORMATS[target] : ColorView(); }
 	[[nodiscard]] constexpr DXGI_FORMAT	ColorView() const {
-		return Hdr() ? HDR_FORMAT : ( Srgb() ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM );
+		return IsGBuffer() ? GBUFFER_FORMATS[0] : ( Hdr() ? HDR_FORMAT : ( Srgb() ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM ) );
 	}
 	constexpr bool					operator==( const d3d12TargetId_t & ) const = default;
 	static constexpr int			COUNT = 16;
 	static constexpr DXGI_FORMAT	DEPTH = DXGI_FORMAT_D24_UNORM_S8_UINT;
 	static constexpr DXGI_FORMAT	HDR_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	// include/gbuffer.hlsli: the octahedral normal, F0 and roughness, the motion
+	static constexpr std::array<DXGI_FORMAT, 3>	GBUFFER_FORMATS = { DXGI_FORMAT_R16G16_SNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+		DXGI_FORMAT_R16G16_FLOAT };
 };
 
 /*
@@ -65,7 +75,8 @@ struct d3d12TargetId_t {
 	  raster cull 1, 2                 CULL_MODE_FRONT, BACK with FrontCounterClockwise FALSE: the vertex shader flips
 	                                   y, so GL's counter-clockwise front faces are clockwise in D3D12
 	  raster bit 2 (lines)             LINE topology, and no culling, wireframe or depth bias, as GL_LINES has none
-	  raster bits 3-5, 7               d3d12TargetId_t: the colour view, the sample count, the float HDR scene
+	  raster bits 3-5, 7               d3d12TargetId_t: the colour view, the sample count, the float HDR scene or
+	                                   the G-buffer, whose three targets take the one blend of the key
 	  a dst alpha factor ONE           BLEND_OP_MAX for alpha into the float scene: a UNORM target clamps an
 	    into the HDR scene             add at 1, and the DST_ALPHA stages after it read 0..1
 	  depthBias slot                   DepthBias lround( units ), SlopeScaledDepthBias factor: D24 has GL's r = 2^-24
@@ -84,7 +95,7 @@ constexpr uint8						D3D12_KEY_HDR_TARGET = 0x80;
 	return { static_cast<uint8>( ( ( raster & D3D12_KEY_TARGET_BITS ) >> D3D12_KEY_TARGET_SHIFT ) | ( ( raster & D3D12_KEY_HDR_TARGET ) != 0 ? 8 : 0 ) ) };
 }
 [[nodiscard]] constexpr uint8		D3D12_KeyRaster( d3d12TargetId_t target ) {
-	return static_cast<uint8>( ( ( target.value & 7 ) << D3D12_KEY_TARGET_SHIFT ) | ( target.Hdr() ? D3D12_KEY_HDR_TARGET : 0 ) );
+	return static_cast<uint8>( ( ( target.value & 7 ) << D3D12_KEY_TARGET_SHIFT ) | ( ( target.value & 8 ) != 0 ? D3D12_KEY_HDR_TARGET : 0 ) );
 }
 
 struct d3d12DepthBias_t {
@@ -104,7 +115,8 @@ struct d3d12PipelineDesc_t {
 	D3D12_RASTERIZER_DESC			raster;
 	D3D12_DEPTH_STENCIL_DESC1		depthStencil;
 	D3D12_PRIMITIVE_TOPOLOGY_TYPE	topology;
-	DXGI_FORMAT						colorFormat;
+	std::array<DXGI_FORMAT, 3>		colorFormats;	// the first numTargets, d3d12TargetId_t::Format
+	uint32							numTargets;
 	DXGI_SAMPLE_DESC				sample;
 	std::array<D3D12_INPUT_ELEMENT_DESC, 12>	inputs;	// slot 0: what the layout has; slot 1: what it lacks
 	uint32							numInputs;

@@ -577,8 +577,10 @@ idComPtr<ID3D12PipelineState> idD3D12PipelineFactory::Make( const d3d12Program_t
 	stream.depthStencil.value = desc.depthStencil;
 	stream.inputLayout.value = { desc.inputs.data(), desc.numInputs };
 	stream.topology.value = desc.topology;
-	stream.targets.value.NumRenderTargets = 1;
-	stream.targets.value.RTFormats[0] = desc.colorFormat;
+	stream.targets.value.NumRenderTargets = desc.numTargets;
+	for ( uint32 i = 0; i < desc.numTargets; i++ ) {
+		stream.targets.value.RTFormats[i] = desc.colorFormats[i];
+	}
 	stream.depthFormat.value = d3d12TargetId_t::DEPTH;
 	stream.sample.value = desc.sample;
 	const D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = { sizeof( stream ), &stream };

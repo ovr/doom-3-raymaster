@@ -93,6 +93,9 @@ public:
 	// The gamma composite: the HDR scene holds its sRGB encoding, colours are not decoded. Ends the pass.
 	void							SetHdrGamma( bool enable );
 	[[nodiscard]] bool				HdrGamma() const { return hdr && hdrGamma; }
+	// R14, in the linear phase: draws go to the G-buffer's three targets with the scene's depth. Ends the pass.
+	void							SetGBuffer( bool enable );
+	[[nodiscard]] bool				GBuffer() const { return gbuffer; }
 	void							EndPass() { bound.passOpen = false; }	// R10: before a copy, a readback, the blit and in EndFrame
 	void							Invalidate() { bound = {}; }			// after an internal pass
 	void							NewList() { bound = {}; drawsInList = 0; }	// the submitter opened a list
@@ -160,5 +163,6 @@ private:
 	bool							srgb = false;
 	bool							hdr = false;
 	bool							hdrGamma = false;
+	bool							gbuffer = false;
 	float							preExposure = 1.0f;
 };

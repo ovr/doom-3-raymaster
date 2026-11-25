@@ -170,6 +170,7 @@ struct renderCaps_t {
 	bool			debugGroups;
 	bool			hdrScene;				// BeginHdrScene .. ResolveHdrScene draw into a linear float scene
 	bool			rayTracing;				// inline ray queries against the GPU scene (DXR 1.1)
+	bool			gbuffer;				// BeginGBuffer .. EndGBuffer write the thin G-buffer (R14); needs hdrScene
 };
 
 struct renderBackendInit_t {

@@ -33,7 +33,8 @@ struct d3d12Buffer_t {
 // thread (R1); everything else runs on the owner thread.
 class idD3D12BufferStore {
 public:
-	static constexpr int			JOINT_TAIL = 408 * 16;	// matrices_ubo is declared whole and a root CBV has no size
+	// the joints' cbuffer is declared whole and a root CBV has no size: gbuffer_skinned's 816 rows (R14)
+	static constexpr int			JOINT_TAIL = 816 * 16;
 
 									idD3D12BufferStore( const idD3D12Device & device, idD3D12Graveyard & graveyard, idD3D12Uploader & uploader,
 										idD3D12Barriers & barriers, d3d12BufferPlacement_t framePlacement );

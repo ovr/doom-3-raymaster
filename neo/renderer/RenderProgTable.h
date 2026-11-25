@@ -47,6 +47,7 @@ If you have questions concerning this license or the applicable additional terms
 
 	Materials name programs too ("heatHaze.vfp"), case ignored. A name the table lacks, or a stage it
 	does not list, is a stage without a shader on D3D12, and its program fails to link as in GL.
+	A gbuffer row exists only on a backend with caps.gbuffer; Init makes it after every other builtin.
 */
 
 enum class renderProgBuiltin_t : uint8 {
@@ -86,6 +87,8 @@ enum class renderProgBuiltin_t : uint8 {
 	BINK_GUI,
 	STEREO_INTERLACE,
 	MOTION_BLUR,
+	GBUFFER,
+	GBUFFER_SKINNED,
 
 	COUNT,
 	NONE = 0xFF
@@ -97,6 +100,7 @@ struct renderProgDef_t {
 	renderProgBuiltin_t	skinned = renderProgBuiltin_t::NONE;		// <name>_skinned; NONE: no skinned variant
 	bool				fragment = true;							// false: vertex only (shadow volumes)
 	bool				optionalSkinning = false;					// skins only when rpEnableSkinning is set
+	bool				gbuffer = false;							// made only with caps.gbuffer: the game data has no GL program
 };
 
 // A stage name of the table: its program and whether it is the skinned variant.
