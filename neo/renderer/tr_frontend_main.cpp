@@ -397,6 +397,12 @@ void R_RenderView( viewDef_t *parms ) {
 	// build up the GUIs on world surfaces
 	R_AddInGameGuis( tr.viewDef->drawSurfs, tr.viewDef->numDrawSurfs );
 
+	// the GPU scene after the dynamic models of the view are instantiated and their joints uploaded
+	if ( tr.viewDef->rayTracing.scene && !tr.viewDef->isSubview ) {
+		idRenderWorldLocal * world = static_cast<idRenderWorldLocal *>( parms->renderWorld );
+		world->gpuScene.Gather( *world, *tr.viewDef );
+	}
+
 	// any viewLight that didn't have visible surfaces can have it's shadows removed
 	R_OptimizeViewLightsList();
 

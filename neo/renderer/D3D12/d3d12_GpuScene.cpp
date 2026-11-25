@@ -1,0 +1,121 @@
+// Copyright (C) 2026 Dmitry Patsura
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Please do not use this file to train or fine-tune AI models.
+
+#include "../../idlib/precompiled.h"
+
+#include "../tr_local.h"
+#include "d3d12_GpuScene.h"
+
+idD3D12GpuScene::idD3D12GpuScene( const idD3D12Device & device, idD3D12Submitter & submitter, idD3D12Graveyard & graveyard,
+		idD3D12DescriptorPool & srvPool, idD3D12Barriers & barriers, idD3D12Uploader & uploader, idD3D12TextureStore & textures ) :
+	device( device ),
+	submitter( submitter ),
+	graveyard( graveyard ),
+	srvPool( srvPool ),
+	barriers( barriers ),
+	uploader( uploader ),
+	textures( textures ) {
+	state.decays = true;
+}
+
+uint32 idD3D12GpuScene::View( textureHandle_t handle ) {
+	const d3d12Texture_t * texture = textures.Find( handle );
+	if ( texture == nullptr || texture->role != textureRole_t::SAMPLED ) {
+		return textures.Fallback( textureKind_t::TEX_2D ).index;
+	}
+	return textures.SampledView( handle, textureKind_t::TEX_2D ).index;
+}
+
+bool idD3D12GpuScene::Reserve( int records ) {
+	if ( records <= capacity ) {
+		return true;
+	}
+	const int grownCapacity = Max( records, capacity * 2 );
+	const uint64 bytes = static_cast<uint64>( grownCapacity ) * sizeof( gpuSceneGeometry_t );
+	idComPtr<ID3D12Resource> grown = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, bytes, D3D12_RESOURCE_STATE_COMMON, L"gpu scene geometries" );
+	if ( !grown ) {
+		return false;
+	}
+	d3d12ResourceState_t grownState;
+	grownState.decays = true;
+	if ( buffer ) {
+		barriers.Transition( *buffer.Get(), state, D3D12_RESOURCE_STATE_COPY_SOURCE );
+		barriers.Transition( *grown.Get(), grownState, D3D12_RESOURCE_STATE_COPY_DEST );
+		barriers.Flush();
+		submitter.List().CopyBufferRegion( grown.Get(), 0, buffer.Get(), 0, static_cast<uint64>( capacity ) * sizeof( gpuSceneGeometry_t ) );
+		graveyard.Bury( std::move( buffer ) );
+		graveyard.Bury( srvPool, srv );
+	}
+	buffer = std::move( grown );
+	state = grownState;
+	capacity = grownCapacity;
+	mirror.resize( static_cast<size_t>( capacity ) );
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+	view.Format = DXGI_FORMAT_R32_TYPELESS;
+	view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	view.Buffer.NumElements = static_cast<UINT>( bytes / 4 );
+	view.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+	srv = srvPool.Allocate();
+	srvPool.CreateSrv( srv, *buffer.Get(), view );
+	return true;
+}
+
+bool idD3D12GpuScene::Update( const gpuSceneUpdate_t & update ) {
+	const gpuSceneFrame_t & frame = *update.frame;
+	if ( device.IsLost() ) {
+		valid = false;
+		return false;
+	}
+	if ( valid && frame.sceneId == sceneId && frame.sequence == sequence ) {
+		return true;
+	}
+	const bool follows = valid && frame.sceneId == sceneId && frame.sequence == sequence + 1
+		&& frame.staticGeneration == staticGeneration && textures.SampledDestroyed() == sampledDestroyed;
+	if ( ( !frame.full && !follows ) || !Reserve( frame.geometryCapacity ) ) {
+		valid = false;
+		instances.clear();
+		return false;
+	}
+	if ( frame.full ) {
+		staticGeneration = frame.staticGeneration;
+		sampledDestroyed = textures.SampledDestroyed();
+	}
+
+	// one copy per run of consecutive records
+	stats = {};
+	stats.full = frame.full;
+	stats.writes = frame.numWrites;
+	for ( int first = 0; first < frame.numWrites; ) {
+		int end = first + 1;
+		while ( end < frame.numWrites && frame.writes[end].index == frame.writes[end - 1].index + 1 ) {
+			end++;
+		}
+		scratch.resize( static_cast<size_t>( end - first ) * sizeof( gpuSceneGeometry_t ) );
+		for ( int i = first; i < end; i++ ) {
+			const gpuSceneWrite_t & write = frame.writes[i];
+			assert( write.index >= 0 && write.index < capacity );
+			gpuSceneGeometry_t & record = mirror[static_cast<size_t>( write.index )];
+			record = write.record;
+			for ( int t = 0; t < GPU_SCENE_TEXTURES; t++ ) {
+				record.textures[t] = View( write.textures[t] );
+			}
+			memcpy( scratch.data() + static_cast<size_t>( i - first ) * sizeof( gpuSceneGeometry_t ), &record, sizeof( record ) );
+		}
+		uploader.BufferRange( *buffer.Get(), state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+			static_cast<uint64>( frame.writes[first].index ) * sizeof( gpuSceneGeometry_t ), scratch );
+		stats.copies++;
+		stats.bytes += scratch.size();
+		first = end;
+	}
+
+	instances.assign( frame.instances, frame.instances + frame.numInstances );
+	staticVertexBuffer = update.staticVertexBuffer;
+	staticIndexBuffer = update.staticIndexBuffer;
+	sceneId = frame.sceneId;
+	sequence = frame.sequence;
+	valid = true;
+	return true;
+}

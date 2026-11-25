@@ -21,6 +21,7 @@ enum class gbufferDebug_t : uint8 {
 
 struct rayTracingSettings_t {
 	bool				gbuffer = false;	// the main view writes the G-buffer: a consumer is on, caps.gbuffer, HDR
+	bool				scene = false;		// the main view gathers the GPU scene: a consumer is on, caps.rayTracing, HDR
 	gbufferDebug_t		gbufferDebug = gbufferDebug_t::NONE;
 	float				gloss = 1.0f;		// r_gbufferGloss: sqrt( specular luminance ) times this is the gloss
 	int					frameCount = 0;		// the front end's frame: the motion is against the frame before

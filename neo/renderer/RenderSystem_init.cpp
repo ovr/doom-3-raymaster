@@ -205,6 +205,7 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	settings.frameCount = tr.frameCount;
 	const bool available = ( renderBackend != nullptr ) && renderBackend->Caps().gbuffer && postProcess.hdr;
 	settings.gbuffer = available && settings.gbufferDebug != gbufferDebug_t::NONE;
+	settings.scene = ( renderBackend != nullptr ) && renderBackend->Caps().rayTracing && postProcess.hdr && r_rtStats.GetBool();
 	return settings;
 }
 

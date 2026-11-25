@@ -142,6 +142,7 @@ void idVertexCache::Init() {
 		AllocGeoBufferSet( frameData[i], VERTCACHE_VERTEX_MEMORY_PER_FRAME, VERTCACHE_INDEX_MEMORY_PER_FRAME, VERTCACHE_JOINT_MEMORY_PER_FRAME, bufferUsage_t::FRAME );
 	}
 	AllocGeoBufferSet( staticData, STATIC_VERTEX_MEMORY, STATIC_INDEX_MEMORY, 0, bufferUsage_t::STATIC );
+	staticGeneration++;
 
 	MapGeoBufferSet( frameData[listNum] );
 }
@@ -177,6 +178,7 @@ call on loading a new map
 */
 void idVertexCache::FreeStaticData() {
 	ClearGeoBufferSet( staticData );
+	staticGeneration++;
 	mostUsedVertex = 0;
 	mostUsedIndex = 0;
 	mostUsedJoint = 0;

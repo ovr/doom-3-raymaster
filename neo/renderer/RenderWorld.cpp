@@ -362,6 +362,7 @@ void idRenderWorldLocal::FreeEntityDef( qhandle_t entityHandle ) {
 	}
 
 	R_FreeEntityDefDerivedData( def, false, false );
+	gpuScene.FreeEntity( entityHandle );
 
 	if ( common->WriteDemo() && def->archived ) {
 		WriteFreeEntity( entityHandle );

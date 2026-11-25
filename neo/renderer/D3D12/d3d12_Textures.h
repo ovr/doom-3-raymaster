@@ -114,6 +114,8 @@ public:
 	[[nodiscard]] int				Num() const { return table.Num(); }
 	[[nodiscard]] uint64			Bytes() const { return bytes; }
 	[[nodiscard]] int				CopySurfacesThisFrame() const { return copySurfaces; }	// P1: 0 while the copy sizes repeat
+	// SAMPLED textures destroyed so far: views kept elsewhere (the GPU scene's records) of an older count may be dead.
+	[[nodiscard]] uint64			SampledDestroyed() const { return sampledDestroyed; }
 	void							ResetFrameCounters() { copySurfaces = 0; }
 
 private:
@@ -139,6 +141,7 @@ private:
 	std::vector<byte>				scratch;		// a converted row, or a decoded DXT level
 	std::vector<byte>				rowScratch;
 	uint64							bytes = 0;
+	uint64							sampledDestroyed = 0;
 	int								copySurfaces = 0;	// created by PrepareCopyTarget this frame
 };
 

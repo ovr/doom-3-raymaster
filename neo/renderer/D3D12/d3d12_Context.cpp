@@ -137,7 +137,8 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	recorder( device, *this, barriers, scene, passes, pipelines, shaders, buffers, textures, constants, samplers ),
 	resourcePool( device, graveyard, srvPool, rtvPool ),
 	graph( device, *this, barriers, resourcePool, srvPool, rtvPool, constants, computeRootSignature ),
-	hdr( device, *this, computeRootSignature, passes, samplers, srvPool ) {
+	hdr( device, *this, computeRootSignature, passes, samplers, srvPool ),
+	gpuScene( device, *this, graveyard, srvPool, barriers, uploader, textures ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -411,6 +412,13 @@ void idD3D12Context::EndGBuffer() {
 	if ( recorder.GBuffer() ) {
 		recorder.SetGBuffer( false );
 	}
+}
+
+bool idD3D12Context::UpdateGpuScene( const gpuSceneUpdate_t & update ) {
+	recorder.EndPass();
+	const bool applied = gpuScene.Update( update );
+	recorder.Invalidate();
+	return applied;
 }
 
 void idD3D12Context::DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {
