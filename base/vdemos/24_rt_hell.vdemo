@@ -1,0 +1,27 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 24_rt_hell: hell, five stops for reflections and emissive light: the lava river by the statues, the skull
+# over the lava pool, a torch-lit hall, the lava path between the pillars, the room with the glowing pits.
+map game/hell
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# lava river: a pan across the statues
+at 1 setviewpos 0 384 102 120
+move 1 300 yaw=-12 pitch=1
+# skull: a dolly over the lava pool
+at 301 setviewpos 1688 -3880 -218 90
+move 301 600 forward=5 pitch=1
+# torch-lit hall: a pan past the torches and a monster
+at 601 setviewpos -745 -5528 -258 150
+move 601 900 yaw=-6 pitch=1
+# lava path: a dolly between the pillars
+at 901 setviewpos 142 -695 110 90
+move 901 1200 forward=6 pitch=1
+# glowing pits: a pan over the floor
+at 1201 setviewpos 178 -6171 -250 20
+move 1201 1500 yaw=-8 pitch=3
+end 1500
+capture 5 1500 every=10 fps=60

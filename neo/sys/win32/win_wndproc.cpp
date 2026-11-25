@@ -192,6 +192,12 @@ LRESULT CALLBACK MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 				if (::GetClientRect(win32.hWnd, &rect)) {
 
 					if ( rect.right > rect.left && rect.bottom > rect.top ) {
+						// another program can move and resize the window (a vdemo then warns about its size)
+						if ( rect.right - rect.left != screenConfig.nativeScreenWidth || rect.bottom - rect.top != screenConfig.nativeScreenHeight ) {
+							const WINDOWPOS & pos = *reinterpret_cast<const WINDOWPOS *>( lParam );
+							common->Printf( "window: client %dx%d -> %dx%d at %d ms (window %d,%d %dx%d, flags 0x%x)\n", screenConfig.nativeScreenWidth,
+								screenConfig.nativeScreenHeight, rect.right - rect.left, rect.bottom - rect.top, Sys_Milliseconds(), pos.x, pos.y, pos.cx, pos.cy, pos.flags );
+						}
 						screenConfig.nativeScreenWidth = rect.right - rect.left;
 						screenConfig.nativeScreenHeight = rect.bottom - rect.top;
 

@@ -1,0 +1,27 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 26_rt_enpro: enpro, five stops for reflections: the orange room by the curved railing, the red room, the
+# teal reactor floor, the red corridor over a lit grate floor, the reactor core.
+map game/enpro
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# orange room: a pan along the railing
+at 1 setviewpos 372 12 -3769 262
+move 1 300 yaw=-4 pitch=2
+# red room: a dolly over the grate floor
+at 301 setviewpos -336 -1064 -3769 45
+move 301 600 forward=5 pitch=2
+# teal reactor: a pan over the green floor
+at 601 setviewpos 448 -1640 -3769 165
+move 601 900 yaw=8 pitch=2
+# red corridor: a dolly over the lit grate floor
+at 901 setviewpos -1956 1348 -297 180
+move 901 1200 forward=6 pitch=2
+# reactor core: a pan around the core
+at 1201 setviewpos 64 -640 -3769 110
+move 1201 1500 yaw=-8 pitch=2
+end 1500
+capture 5 1500 every=10 fps=60

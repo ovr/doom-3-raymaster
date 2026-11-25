@@ -1,0 +1,42 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 20_rt_gallery: our own map (tools/rt/make_gallery.py), 40 s through its six rooms: materials, primitives, glass and a mirror;
+# coloured spots and an orbiting light; 16 small lights; a dark room under the flashlight; pulsing lights, fog and monsters; a long hall.
+map rt/gallery
+build
+set fs_resourceLoadPriority 0
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# materials: a dolly toward the pedestals, then a strafe past the glass looking down at the tiles
+at 1 setviewpos 384 120 100 90
+move 10 160 forward=14
+move 160 220 pitch=15
+move 220 410 right=12 yaw=10
+# colour: an orbit around the pillar under the three spots and the turning lamp
+at 420 setviewpos 840 110 170 45
+move 420 480 pitch=20
+move 440 770 right=12 yaw=8
+# lights: an orbit around the sphere among the 16 lights
+at 780 setviewpos 1520 110 150 45
+move 780 840 pitch=18
+move 800 1130 right=12 yaw=8
+# dark: the flashlight sweeps the room, the glowing strips and the cage lamps
+at 1140 setviewpos 2040 790 120 135
+impulse 1150 16
+move 1160 1340 yaw=-15
+move 1340 1520 yaw=30
+impulse 1550 16
+# motion: into the fog toward the monsters, the fan turning above
+at 1560 setviewpos 1420 1010 120 175
+move 1570 1910 forward=8 yaw=-4
+# hall: a crane down the 4000 units, then a turn back toward the door
+at 1920 setviewpos 1120 1600 210 180
+move 1920 1980 pitch=7
+move 1940 2250 forward=40
+move 2250 2310 pitch=-7
+move 2250 2400 yaw=72
+end 2400
+capture 0 2400 every=6 fps=60
