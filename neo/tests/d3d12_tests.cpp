@@ -17,6 +17,7 @@
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
 #include "../renderer/D3D12/d3d12_RenderGraph.h"
+#include "../renderer/D3D12/d3d12_RtPasses.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
 #include "../renderer/D3D12/d3d12_Textures.h"
 #include "../renderer/D3D12/d3d12_Timers.h"
@@ -5937,7 +5938,7 @@ struct rtTestFrame_t {
 		write.record.indexOffset = firstIndex * static_cast<uint32>( sizeof( triIndex_t ) );
 		write.record.numIndexes = numIndexes;
 		write.record.numVerts = numVerts;
-		write.record.flags = flags;
+		write.record.flags = flags | gpuSceneGeometry_t::GEO_CASTS_SHADOW;	// else the BLAS holds it not opaque
 	}
 	// 10 and 11 the opaque quad (two entities of one model), 20 the quad not opaque, 30 the skinned quad, 40 the grid.
 	void WriteQuads() {
@@ -6621,6 +6622,261 @@ void RtHit( idTestGpu & gpu ) {
 	gpu.textures.Destroy( diffuse );
 	gpu.textures.Destroy( specular );
 	gpu.textures.Destroy( alpha );
+	CheckNoLayerErrors( gpu );
+}
+
+/*
+	idD3D12RtPasses::Reflections over a mirror floor: the depth puts every pixel at z = 0, x and y its column and row
+	- 31.5, under an eye at ( 0, 0, 1000 ); the G-buffer gives it the normal +z, F0 1 and roughness 0, but roughness
+	0.8 in columns 40-47 and F0 0 in columns 24-27. Above it, quads whose drawn side faces down:
+
+	  ceiling   z = 10, x -30..30, y 0..30, a white diffuse, lit by a white point light at ( 0, 15, 5 ) of colour 0.5
+	  S         z = 7.5 over x -14..-6, y 11..19: casts the shadow of the ceiling's x -28..-12, y 7..23
+	  N         the same over x 6..14, but noshadows: the shadow rays pass it
+	  panel     z = 10, x -30..30, y -30..-15, emissive ( 1, 0.25, 0 ), lit by nothing
+
+	The composite adds the hit's radiance times preExposure 2; with alone the sum replaces the colour; without
+	shadows S darkens nothing.
+*/
+void RtReflection( idTestGpu & gpu ) {
+	idTestRtScene scene( gpu );
+	if ( !scene.Ready() ) {
+		return;
+	}
+	idTestCopies & fixture = scene.rays.fixture;
+	constexpr int SIZE = idTestCopies::SIZE;
+	constexpr float PRE_EXPOSURE = 2.0f;
+	const idVec4 base( 0.1f, 0.2f, 0.3f, 0.5f );
+	const idVec3 eye( 0.0f, 0.0f, 1000.0f );
+	const idVec3 lightOrigin( 0.0f, 15.0f, 5.0f );
+	constexpr float LIGHT_COLOR = 0.5f;
+
+	// the quad of corners 0..4 with its normal toward the side Doom 3 draws, -z
+	std::array<idDrawVert, 4> verts;
+	const idVec3 corners[4] = { idVec3( 0.0f, 0.0f, 0.0f ), idVec3( 4.0f, 0.0f, 0.0f ), idVec3( 4.0f, 4.0f, 0.0f ), idVec3( 0.0f, 4.0f, 0.0f ) };
+	for ( size_t i = 0; i < verts.size(); i++ ) {
+		verts[i].Clear();
+		verts[i].xyz = corners[i];
+		verts[i].SetTexCoord( corners[i].x * 0.25f, corners[i].y * 0.25f );
+		verts[i].SetNormal( idVec3( 0.0f, 0.0f, -1.0f ) );
+		verts[i].SetTangent( idVec3( 1.0f, 0.0f, 0.0f ) );
+		verts[i].SetBiTangentSign( 1.0f );
+	}
+	const bufferHandle_t vertexBuffer = gpu.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::STATIC, sizeof( verts ), verts.data() );
+	const bufferHandle_t indexBuffer = gpu.buffers.Create( bufferType_t::INDEX, bufferUsage_t::STATIC,
+		static_cast<int>( idTestRayScene::INDEXES.size() * sizeof( triIndex_t ) ), idTestRayScene::INDEXES.data() );
+
+	// 1 x 1: a white YCoCg diffuse, a flat bump, white for the emissive and the light's two images
+	const auto texture = [&]( std::array<byte, 4> texel, const char * name ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, name );
+		if ( handle != textureHandle_t::NONE ) {
+			gpu.textures.Upload( handle, 0, 0, 1, 1, texel.data(), 0 );
+		}
+		return handle;
+	};
+	const textureHandle_t diffuse = texture( { 128, 128, 0, 255 }, "test reflection diffuse" );
+	const textureHandle_t bump = texture( { 128, 128, 128, 128 }, "test reflection bump" );
+	const textureHandle_t white = texture( { 255, 255, 255, 255 }, "test reflection white" );
+	idD3D12RtPasses rtPasses( gpu.device, scene.rays.computeRoot, fixture.passes, gpu.samplers, gpu.buffers );
+	rtPasses.CreateDefaults();
+	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && diffuse != textureHandle_t::NONE
+			&& bump != textureHandle_t::NONE && white != textureHandle_t::NONE, "the geometry and the textures" ) ) {
+		return;
+	}
+
+	rtTestFrame_t frame( 1, true );
+	constexpr int DIFFUSE = static_cast<int>( gpuSceneTexture_t::DIFFUSE );
+	constexpr int BUMP = static_cast<int>( gpuSceneTexture_t::BUMP );
+	constexpr int EMISSIVE = static_cast<int>( gpuSceneTexture_t::EMISSIVE );
+	const auto quad = [&]( int record, uint32 flags, float x0, float x1, float y0, float y1, float z, uint64 blasKey ) -> gpuSceneWrite_t & {
+		frame.Write( record, 0, 6, flags );
+		gpuSceneWrite_t & write = frame.writes.back();
+		write.record.flags = flags;
+		for ( auto & rows : write.record.matrices ) {
+			rows[0] = idVec4( 1.0f, 0.0f, 0.0f, 0.0f );
+			rows[1] = idVec4( 0.0f, 1.0f, 0.0f, 0.0f );
+		}
+		gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), gpuSceneInstance_t::MASK_VISIBLE | gpuSceneInstance_t::MASK_SHADOW,
+			blasKey, idVec3( x0, y0, z ) );
+		instance.transform[0][0] = ( x1 - x0 ) * 0.25f;
+		instance.transform[1][1] = ( y1 - y0 ) * 0.25f;
+		return write;
+	};
+	constexpr uint32 CASTER = gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_CASTS_SHADOW;
+	gpuSceneWrite_t & ceiling = quad( 0, CASTER, -30.0f, 30.0f, 0.0f, 30.0f, 10.0f, 0x700 );
+	ceiling.textures[DIFFUSE] = diffuse;
+	ceiling.textures[BUMP] = bump;
+	ceiling.record.colors[0] = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+	quad( 1, CASTER, -14.0f, -6.0f, 11.0f, 19.0f, 7.5f, 0x700 );
+	quad( 2, gpuSceneGeometry_t::GEO_OPAQUE, 6.0f, 14.0f, 11.0f, 19.0f, 7.5f, 0x710 );
+	gpuSceneWrite_t & panel = quad( 3, CASTER, -30.0f, 30.0f, -30.0f, -15.0f, 10.0f, 0x700 );
+	panel.textures[EMISSIVE] = white;
+	panel.record.colors[2] = idVec4( 1.0f, 0.25f, 0.0f, 1.0f );
+
+	// a point light of radius 30: its projection and falloff map its bounds onto [0, 1]
+	gpuSceneLightWrite_t light;
+	memset( &light, 0, sizeof( light ) );
+	constexpr float RADIUS = 30.0f;
+	light.light.origin.Set( lightOrigin.x, lightOrigin.y, lightOrigin.z, 1.0f );
+	light.light.project[0].Set( 0.5f / RADIUS, 0.0f, 0.0f, 0.5f - lightOrigin.x * 0.5f / RADIUS );
+	light.light.project[1].Set( 0.0f, 0.5f / RADIUS, 0.0f, 0.5f - lightOrigin.y * 0.5f / RADIUS );
+	light.light.project[2].Set( 0.0f, 0.0f, 0.0f, 1.0f );
+	light.light.project[3].Set( 0.0f, 0.0f, 0.5f / RADIUS, 0.5f - lightOrigin.z * 0.5f / RADIUS );
+	light.light.color.Set( LIGHT_COLOR, LIGHT_COLOR, LIGHT_COLOR, 1.0f );
+	light.light.boundsMin.Set( lightOrigin.x - RADIUS, lightOrigin.y - RADIUS, lightOrigin.z - RADIUS, 0.0f );
+	light.light.boundsMax.Set( lightOrigin.x + RADIUS, lightOrigin.y + RADIUS, lightOrigin.z + RADIUS, 0.0f );
+	light.light.flags = gpuSceneLight_t::LIGHT_SHADOWS;
+	light.textures[0] = white;
+	light.textures[1] = white;
+	frame.frame.lights = &light;
+	frame.frame.numLights = 1;
+
+	gpuSceneStats_t stats;
+	fixture.Bind();
+	if ( !Check( scene.gpuScene.Update( frame.Update( vertexBuffer, indexBuffer ) ) && scene.gpuScene.NumLights() == 1
+			&& scene.rt.Build( scene.rays.graph, scene.gpuScene, nullptr, stats ) && stats.tlasInstances == 4 && stats.waiting == 0,
+			va( "the update and the build: %s", RtStats( stats ).c_str() ) ) ) {
+		return;
+	}
+
+	// the floor: depth 0.5, the G-buffer's bands; the scene's colour base
+	idD3D12SceneTarget & target = fixture.scene;
+	target.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( target.Color( true ).resource != nullptr && target.EnsureGBuffer(), "the HDR scene and the G-buffer" ) ) {
+		return;
+	}
+	const auto prepare = [&]() {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & depth = target.Depth();
+		idD3D12SceneTarget::surface_t & color = target.Color( true );
+		gpu.barriers.Transition( *depth.resource.Get(), depth.state, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+		gpu.barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		for ( size_t i = 0; i < idD3D12SceneTarget::GBUFFER_TARGETS; i++ ) {
+			idD3D12SceneTarget::surface_t & g = target.GBuffer( i );
+			gpu.barriers.Transition( *g.resource.Get(), g.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		}
+		gpu.barriers.Flush();
+		ID3D12GraphicsCommandList4 & list = gpu.List();
+		list.ClearDepthStencilView( target.Dsv(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 0, 0, nullptr );
+		list.ClearRenderTargetView( target.Rtv( false, true ), base.ToFloatPtr(), 0, nullptr );
+		const auto rtvs = target.GBufferRtvs();
+		const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		const float mirror[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+		const float rough[4] = { 1.0f, 1.0f, 1.0f, 0.8f };
+		list.ClearRenderTargetView( rtvs[0], zero, 0, nullptr );
+		list.ClearRenderTargetView( rtvs[1], mirror, 0, nullptr );
+		const D3D12_RECT roughBand = { 40, 0, 48, SIZE };
+		const D3D12_RECT blackBand = { 24, 0, 28, SIZE };
+		list.ClearRenderTargetView( rtvs[1], rough, 1, &roughBand );
+		list.ClearRenderTargetView( rtvs[1], zero, 1, &blackBand );
+	};
+
+	// The reflected radiance at a pixel as the passes compute it, with the plane the ray hits at z = 10.
+	const float lightScale = R_SRGBToLinear( LIGHT_COLOR );
+	const float bumpXY = 128.0f / 255.0f - 0.5f;
+	idVec3 localNormal( bumpXY, bumpXY, idMath::Sqrt( idMath::Fabs( 2.0f * bumpXY * bumpXY - 0.25f ) ) );
+	localNormal.Normalize();
+	const idVec4 tangent4 = VertexDirection( verts[0].tangent );
+	const idVec3 normal = VertexDirection( verts[0].normal ).ToVec3();
+	const idVec3 tangent = tangent4.ToVec3();
+	const idVec3 binormal = normal.Cross( tangent ) * tangent4.w;
+	const auto reflected = [&]( int column, int row, bool shadowed ) {
+		const idVec3 position( column + 0.5f - 32.0f, row + 0.5f - 32.0f, 0.0f );
+		idVec3 view = position - eye;
+		const float eyeDistance = view.Normalize();
+		const idVec3 direction( view.x, view.y, -view.z );
+		const idVec3 from = position + idVec3( 0.0f, 0.0f, 0.02f + 0.001f * eyeDistance );
+		const idVec3 hit = from + direction * ( ( 10.0f - from.z ) / direction.z );
+		if ( hit.y <= -15.0f ) {
+			return idVec3( 1.0f, R_SRGBToLinear( 0.25f ), 0.0f );	// the panel
+		}
+		if ( shadowed ) {
+			return vec3_zero;
+		}
+		// object space of the ceiling: x scaled by 15, y by 7.5; the tangent frame as the vertex bytes hold it
+		const idVec3 object( ( hit.x + 30.0f ) / 15.0f, hit.y / 7.5f, 0.0f );
+		const idVec3 toLight = idVec3( ( lightOrigin.x + 30.0f ) / 15.0f, lightOrigin.y / 7.5f, lightOrigin.z - 10.0f ) - object;
+		idVec3 lightVector( tangent * toLight, binormal * toLight, normal * toLight );
+		lightVector.Normalize();
+		const float lit = lightScale * ( lightVector * localNormal );
+		return idVec3( lit, lit, lit );
+	};
+	struct region_t {
+		const char *	name;
+		int				column0, column1, row0, row1;	// inclusive
+		bool			reflects;
+		bool			shadowed;					// by S, while shadows are on
+	};
+	// floor x = column - 31.5, y = row - 31.5; one unit clear of every edge the rays could reach
+	const std::array<region_t, 7> regions = { {
+		{ "lit", 28, 35, 34, 59, true, false },
+		{ "behind S", 9, 13, 42, 51, true, true },
+		{ "behind N", 48, 54, 42, 51, true, false },
+		{ "the panel", 4, 23, 4, 13, true, false },
+		{ "a miss", 4, 59, 19, 28, false, false },
+		{ "rough", 40, 47, 34, 39, false, false },
+		{ "F0 0", 24, 27, 34, 39, false, false },
+	} };
+	const rtView_t view = [&]() {
+		rtView_t v;
+		memset( &v, 0, sizeof( v ) );
+		v.clipToWorld[0][0] = 32.0f;
+		v.clipToWorld[1][1] = 32.0f;
+		v.clipToWorld[2][2] = 10.0f;
+		v.clipToWorld[3][3] = 1.0f;
+		v.origin[0] = eye.x;
+		v.origin[1] = eye.y;
+		v.origin[2] = eye.z;
+		v.pixelSpread = 0.001f;
+		return v;
+	}();
+	const auto run = [&]( const char * label, bool alone, bool shadows ) {
+		prepare();
+		rtReflectionSettings_t settings;
+		settings.enabled = true;
+		settings.alone = alone;
+		settings.shadows = shadows;
+		rtPasses.Reflections( scene.rays.graph, target, scene.rt, scene.gpuScene, settings, view, { 0, 0, SIZE, SIZE }, PRE_EXPOSURE, nullptr );
+		idD3D12SceneTarget::surface_t & color = target.Color( true );
+		std::vector<idVec4> texels;
+		for ( uint64 texel : ReadTexels<uint64>( gpu, *color.resource.Get(), color.state ) ) {
+			texels.push_back( HalfTexel( texel ) );
+		}
+		if ( !Check( texels.size() == static_cast<size_t>( SIZE * SIZE ), va( "%s: the scene is read", label ) ) ) {
+			return;
+		}
+		for ( const region_t & region : regions ) {
+			float worst = 0.0f;
+			idVec4 worstGot, worstWant;
+			for ( int row = region.row0; row <= region.row1; row++ ) {
+				for ( int column = region.column0; column <= region.column1; column++ ) {
+					const idVec3 added = region.reflects ? reflected( column, row, shadows && region.shadowed ) * PRE_EXPOSURE : vec3_zero;
+					const idVec4 want = alone ? idVec4( added.x, added.y, added.z, base.w )
+						: idVec4( base.x + added.x, base.y + added.y, base.z + added.z, base.w );
+					const idVec4 & got = texels[static_cast<size_t>( row ) * SIZE + column];
+					for ( int c = 0; c < 4; c++ ) {
+						const float error = idMath::Fabs( got[c] - want[c] ) / Max( 0.25f, idMath::Fabs( want[c] ) );
+						if ( error > worst ) {
+							worst = error;
+							worstGot = got;
+							worstWant = want;
+						}
+					}
+				}
+			}
+			Check( worst < 2e-3f, va( "%s, %s: worst %g, %s for %s", label, region.name, worst, worstGot.ToString(), worstWant.ToString() ) );
+		}
+	};
+	run( "added", false, true );
+	run( "alone", true, true );
+	run( "no shadows", false, false );
+
+	gpu.WaitIdle();
+	gpu.buffers.Destroy( vertexBuffer );
+	gpu.buffers.Destroy( indexBuffer );
+	gpu.textures.Destroy( diffuse );
+	gpu.textures.Destroy( bump );
+	gpu.textures.Destroy( white );
 	CheckNoLayerErrors( gpu );
 }
 
@@ -7710,6 +7966,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_RtSkin", OnGpu<RtSkin> },
 	{ "Warp_RtHit", OnWarp<RtHit> },
 	{ "Gpu_RtHit", OnGpu<RtHit> },
+	{ "Warp_RtReflection", OnWarp<RtReflection> },
+	{ "Gpu_RtReflection", OnGpu<RtReflection> },
 	{ "Gpu_HdrScene", OnGpu<HdrScene> },
 	{ "Warp_HdrCopies", OnWarp<HdrCopiesAllSamples> },
 	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },

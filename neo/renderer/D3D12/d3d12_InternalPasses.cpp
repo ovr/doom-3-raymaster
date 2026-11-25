@@ -85,6 +85,9 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "rtSkin", shaderStageType_t::COMPUTE, "internal_rtSkin", nullptr },
 	{ "rtDebug", shaderStageType_t::FRAGMENT, "internal_rtDebug", nullptr },
 	{ "rtDebug", shaderStageType_t::FRAGMENT, "internal_rtDebug_msaa", "MULTISAMPLED=1" },
+	{ "rtReflect", shaderStageType_t::COMPUTE, "internal_rtReflect", nullptr },
+	{ "rtReflect", shaderStageType_t::COMPUTE, "internal_rtReflect_msaa", "MULTISAMPLED=1" },
+	{ "rtComposite", shaderStageType_t::FRAGMENT, "internal_rtComposite", nullptr },
 };
 
 }	// namespace
@@ -147,14 +150,15 @@ const d3d12HlslStage_t & idD3D12InternalPasses::Stage( const char * name ) const
 }
 
 idComPtr<ID3D12PipelineState> idD3D12InternalPasses::CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
-	uint8 writeMask, const wchar_t * name ) const {
+	uint8 writeMask, const wchar_t * name, bool add ) const {
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
 	desc.pRootSignature = root.Get();
 	desc.VS = { triangleVs.data(), triangleVs.size() };
 	desc.PS = { pixelShader.data(), pixelShader.size() };
 	D3D12_RENDER_TARGET_BLEND_DESC & blend = desc.BlendState.RenderTarget[0];
 	blend.SrcBlend = blend.SrcBlendAlpha = D3D12_BLEND_ONE;
-	blend.DestBlend = blend.DestBlendAlpha = D3D12_BLEND_ZERO;
+	blend.DestBlend = blend.DestBlendAlpha = add ? D3D12_BLEND_ONE : D3D12_BLEND_ZERO;
+	blend.BlendEnable = add;
 	blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
 	blend.LogicOp = D3D12_LOGIC_OP_NOOP;
 	blend.RenderTargetWriteMask = writeMask;

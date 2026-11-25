@@ -64,9 +64,10 @@ public:
 										gbufferDebug_t mode, D3D12_CPU_DESCRIPTOR_HANDLE target, d3d12TargetId_t id, const renderRect_t & viewport );
 	// A stage of D3D12_InternalStages() by its name, after CreateDefaults; a fatal error for an unknown one.
 	[[nodiscard]] const d3d12HlslStage_t &	Stage( const char * name ) const;
-	// The triangle and pixelShader into one target of format, no blend, no depth: also the render graph's raster passes.
+	// The triangle and pixelShader into one target of format, no depth, the colour replacing the target's or (add)
+	// added to it: also the render graph's raster passes.
 	[[nodiscard]] idComPtr<ID3D12PipelineState>	CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
-										uint8 writeMask, const wchar_t * name ) const;
+										uint8 writeMask, const wchar_t * name, bool add = false ) const;
 
 private:
 	// The 256 bytes of root CBV b1. A full ring: submit, wait for the oldest chunk and take again, before anything is recorded.

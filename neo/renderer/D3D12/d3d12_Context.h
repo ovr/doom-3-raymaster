@@ -124,7 +124,9 @@ public:
 	// R15, in a frame: ends the pass; an applied update builds the acceleration structures.
 	[[nodiscard]] bool				UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats );
 	// After the resolve: r_rtDebug's rays over viewport of the output, nothing while the last update was refused.
-	void							DrawRayTracingDebug( const rtDebugView_t & view, const renderRect_t & viewport );
+	void							DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport );
+	// In the HDR scene's linear phase: the mirror reflections over viewport of SceneColor (r_rtReflections).
+	void							DrawRayTracedReflections( const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & viewport );
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	void							PushGroup( const char * name );			// r_pix 2, in a frame

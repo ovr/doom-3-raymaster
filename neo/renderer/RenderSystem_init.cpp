@@ -197,7 +197,13 @@ postProcessSettings_t R_DefaultPostProcessSettings() {
 // RayTracingSettings.h: copied into every view like the post process settings
 idCVar r_gbufferDebug( "r_gbufferDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows the main view's thin G-buffer: 1 = the world normal, 2 = F0, 3 = the roughness, 4 = the motion (hue = direction, 8 pixels = full)", 0, 4 );
 idCVar r_gbufferGloss( "r_gbufferGloss", "1.2", CVAR_RENDERER | CVAR_FLOAT, "the G-buffer's gloss is the square root of the specular luminance times this; the roughness is 1 - gloss", 0.0f, 4.0f );
-idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour", 0, 4 );
+idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the mirror reflections alone", 0, 5 );
+idCVar r_rtReflections( "r_rtReflections", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced mirror reflections of the main view on the surfaces whose specular may reflect" );
+idCVar r_rtReflectionScale( "r_rtReflectionScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced reflections", 0.0f, 4.0f );
+idCVar r_rtReflectionDistance( "r_rtReflectionDistance", "2048", CVAR_RENDERER | CVAR_FLOAT, "the longest reflection ray, in world units", 16.0f, 65536.0f );
+idCVar r_rtReflectionLights( "r_rtReflectionLights", "8", CVAR_RENDERER | CVAR_INTEGER, "lights that may light a reflected point, the first that reach it", 0, 64 );
+idCVar r_rtReflectionShadows( "r_rtReflectionShadows", "1", CVAR_RENDERER | CVAR_BOOL, "a shadow ray toward every light of a reflected point" );
+idCVar r_rtReflectionRoughness( "r_rtReflectionRoughness", "0.6", CVAR_RENDERER | CVAR_FLOAT, "pixels of this G-buffer roughness and rougher reflect nothing; the reflection fades in over 0.15 below it", 0.0f, 1.0f );
 
 rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & postProcess ) {
 	rayTracingSettings_t settings;
@@ -205,10 +211,20 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	settings.gloss = r_gbufferGloss.GetFloat();
 	settings.frameCount = tr.frameCount;
 	const bool available = ( renderBackend != nullptr ) && renderBackend->Caps().gbuffer && postProcess.hdr;
-	settings.gbuffer = available && settings.gbufferDebug != gbufferDebug_t::NONE;
 	const bool tracing = ( renderBackend != nullptr ) && renderBackend->Caps().rayTracing && postProcess.hdr;
 	settings.rtDebug = tracing ? static_cast<rtDebug_t>( r_rtDebug.GetInteger() ) : rtDebug_t::NONE;
-	settings.scene = tracing && ( r_rtStats.GetBool() || settings.rtDebug != rtDebug_t::NONE );
+
+	rtReflectionSettings_t & reflection = settings.reflection;
+	reflection.alone = ( settings.rtDebug == rtDebug_t::REFLECTION );
+	reflection.enabled = tracing && available && ( r_rtReflections.GetBool() || reflection.alone );
+	reflection.shadows = r_rtReflectionShadows.GetBool();
+	reflection.maxLights = r_rtReflectionLights.GetInteger();
+	reflection.scale = r_rtReflectionScale.GetFloat();
+	reflection.distance = r_rtReflectionDistance.GetFloat();
+	reflection.maxRoughness = r_rtReflectionRoughness.GetFloat();
+
+	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled );
+	settings.scene = tracing && ( r_rtStats.GetBool() || settings.rtDebug != rtDebug_t::NONE || reflection.enabled );
 	return settings;
 }
 

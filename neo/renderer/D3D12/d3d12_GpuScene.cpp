@@ -17,12 +17,67 @@ idD3D12GpuScene::idD3D12GpuScene( const idD3D12Device & device, idD3D12Submitter
 	uploader( uploader ),
 	textures( textures ) {
 	state.decays = true;
+	lightState.decays = true;
 }
 
 void idD3D12GpuScene::MakeTexturesReadable() {
 	for ( const auto & [handle, uses] : textureUses ) {
 		textures.MakeReadable( handle );
 	}
+	for ( const textureHandle_t handle : lightTextures ) {
+		textures.MakeReadable( handle );
+	}
+}
+
+bool idD3D12GpuScene::WriteLights( std::span<const gpuSceneLightWrite_t> lights ) {
+	numLights = 0;
+	lightTextures.clear();
+	if ( lights.empty() ) {
+		return true;
+	}
+	const int count = static_cast<int>( lights.size() );
+	if ( count > lightCapacity ) {
+		const int grownCapacity = Max( count, Max( lightCapacity * 2, 64 ) );
+		const uint64 bytes = static_cast<uint64>( grownCapacity ) * sizeof( gpuSceneLight_t );
+		idComPtr<ID3D12Resource> grown = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, bytes, D3D12_RESOURCE_STATE_COMMON, L"gpu scene lights" );
+		if ( !grown ) {
+			return false;
+		}
+		if ( lightBuffer ) {
+			graveyard.Bury( std::move( lightBuffer ) );
+			graveyard.Bury( srvPool, lightSrv );
+		}
+		lightBuffer = std::move( grown );
+		lightState = d3d12ResourceState_t();
+		lightState.decays = true;
+		lightCapacity = grownCapacity;
+		D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+		view.Format = DXGI_FORMAT_R32_TYPELESS;
+		view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		view.Buffer.NumElements = static_cast<UINT>( bytes / 4 );
+		view.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+		lightSrv = srvPool.Allocate();
+		srvPool.CreateSrv( lightSrv, *lightBuffer.Get(), view );
+	}
+	lightScratch.resize( lights.size() );
+	for ( size_t i = 0; i < lights.size(); i++ ) {
+		gpuSceneLight_t & light = lightScratch[i];
+		light = lights[i].light;
+		textureHandle_t sampled;
+		light.projection = View( lights[i].textures[0], sampled );
+		if ( sampled != textureHandle_t::NONE ) {
+			lightTextures.push_back( sampled );
+		}
+		light.falloff = View( lights[i].textures[1], sampled );
+		if ( sampled != textureHandle_t::NONE ) {
+			lightTextures.push_back( sampled );
+		}
+	}
+	uploader.BufferRange( *lightBuffer.Get(), lightState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0,
+		std::span( reinterpret_cast<const byte *>( lightScratch.data() ), lightScratch.size() * sizeof( gpuSceneLight_t ) ) );
+	numLights = count;
+	return true;
 }
 
 uint32 idD3D12GpuScene::View( textureHandle_t handle, textureHandle_t & sampled ) {
@@ -100,9 +155,10 @@ bool idD3D12GpuScene::Update( const gpuSceneUpdate_t & update ) {
 	}
 	const bool follows = valid && frame.sceneId == sceneId && frame.sequence == sequence + 1
 		&& frame.staticGeneration == staticGeneration && textures.SampledDestroyed() == sampledDestroyed;
-	if ( ( !frame.full && !follows ) || !Reserve( frame.geometryCapacity ) ) {
+	if ( ( !frame.full && !follows ) || !Reserve( frame.geometryCapacity ) || !WriteLights( std::span( frame.lights, static_cast<size_t>( frame.numLights ) ) ) ) {
 		valid = false;
 		instances.clear();
+		numLights = 0;
 		return false;
 	}
 	if ( frame.full ) {

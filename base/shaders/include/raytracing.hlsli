@@ -14,8 +14,9 @@
 	              geometry's are the frame's skinned ones (internal/rtSkin.hlsl), the others the static buffer's
 	  indexes     16-bit, from the geometry's first vertex
 
-	A non-opaque geometry (perforated) is alpha-tested as the depth pass tests it: alpha texture times the stage's
-	colour alpha against the reference. Heap indices that differ between lanes go through NonUniformResourceIndex.
+	A geometry the BLAS holds not opaque is perforated, alpha-tested as the depth pass tests it (alpha texture times
+	the stage's colour alpha against the reference), or casts no shadow: the rays that see take it whole, the shadow
+	rays (RtOccluded) skip it. Heap indices that differ between lanes go through NonUniformResourceIndex.
 */
 
 #ifndef RAYTRACING_HLSLI
@@ -126,7 +127,13 @@ float RtDot4( float2 st, float4 row ) {
 	return dot( float4( st, 0.0, 1.0 ), row );
 }
 
-// The hit point of a triangle: world space, the normals toward what Doom 3 shades.
+// The tangent's sign in its fourth byte, as interaction.hlsl reads it.
+float RtDecodeSign( uint packed ) {
+	return float( packed >> 24 ) * ( 2.0 / 255.0 ) - 1.0;
+}
+
+// The hit point of a triangle: world space, the normals toward what Doom 3 shades; the object space of the
+// interactions, whose vectors are the vertices' interpolated and not normalized, as the vertex program passes them.
 struct RtSurface {
 	float3	position;
 	float3	normal;			// the interpolated vertex normal
@@ -134,6 +141,10 @@ struct RtSurface {
 	float3	weights;		// the barycentric weights of the three vertices
 	float2	st[3];			// the vertices' texture coordinates
 	float	worldArea;		// of the triangle
+	float3	objectPosition;
+	float3	objectNormal;
+	float3	objectTangent;
+	float3	objectBinormal;
 };
 
 RtSurface RtSurfaceOf( RtHeap heap, RtGeometry g, uint instanceIndex, uint primitive, float2 barycentrics, float3x4 objectToWorld,
@@ -151,7 +162,9 @@ RtSurface RtSurfaceOf( RtHeap heap, RtGeometry g, uint instanceIndex, uint primi
 	s.weights = float3( 1.0 - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y );
 	float3 object[3];
 	float3 world[3];
-	float3 objectNormal = float3( 0.0, 0.0, 0.0 );
+	s.objectNormal = float3( 0.0, 0.0, 0.0 );
+	s.objectTangent = float3( 0.0, 0.0, 0.0 );
+	s.objectBinormal = float3( 0.0, 0.0, 0.0 );
 	[unroll]
 	for ( uint i = 0; i < 3; i++ ) {
 		const uint indexAt = g.indexOffset + ( primitive * 3 + i ) * 2;
@@ -159,15 +172,21 @@ RtSurface RtSurfaceOf( RtHeap heap, RtGeometry g, uint instanceIndex, uint primi
 		const uint index = ( ( indexAt & 2u ) != 0 ) ? ( word >> 16 ) : ( word & 0xFFFF );
 		const uint at = vertexBase + index * RT_VERTEX_BYTES;
 		const uint4 head = vertices.Load4( at );
+		const uint2 frame = vertices.Load2( at + 16 );
 		object[i] = asfloat( head.xyz );
 		world[i] = mul( objectToWorld, float4( object[i], 1.0 ) );
 		s.st[i] = float2( f16tof32( head.w & 0xFFFF ), f16tof32( head.w >> 16 ) );
-		objectNormal += RtDecodeDirection( vertices.Load( at + 16 ) ) * s.weights[i];
+		const float3 normal = RtDecodeDirection( frame.x );
+		const float3 tangent = RtDecodeDirection( frame.y );
+		s.objectNormal += normal * s.weights[i];
+		s.objectTangent += tangent * s.weights[i];
+		s.objectBinormal += cross( normal, tangent ) * RtDecodeSign( frame.y ) * s.weights[i];
 	}
+	s.objectPosition = object[0] * s.weights.x + object[1] * s.weights.y + object[2] * s.weights.z;
 	s.position = world[0] * s.weights.x + world[1] * s.weights.y + world[2] * s.weights.z;
 	// mul( n, worldToObject ): the inverse transpose. The plane of idPlane::FromPoints, ( v0 - v1 ) x ( v2 - v1 ), in
 	// object space as DXR's facing is, so a mirroring transform keeps the side
-	s.normal = normalize( mul( objectNormal, (float3x3)worldToObject ) );
+	s.normal = normalize( mul( s.objectNormal, (float3x3)worldToObject ) );
 	s.faceNormal = normalize( mul( cross( object[0] - object[1], object[2] - object[1] ), (float3x3)worldToObject ) );
 	s.worldArea = 0.5 * length( cross( world[1] - world[0], world[2] - world[0] ) );
 	return s;
@@ -214,12 +233,20 @@ float3 RtDiffuse( RtGeometry g, RtSurface s, float footprint, uint samplerIndex 
 	return ConvertYCoCgToRGB( RtSample( g, RT_TEXTURE_DIFFUSE, s, footprint, samplerIndex ) ) * g.colors[0].rgb;
 }
 
-// A candidate of perforated geometry: the side it draws, alpha-tested.
-bool RtAlphaPasses( RtHeap heap, uint record, uint instanceIndex, uint primitive, float2 barycentrics, bool frontFace,
-	float3x4 objectToWorld, float3x4 worldToObject, float t, float pixelSpread, float3 direction, uint samplerIndex ) {
+// A candidate the BLAS holds not opaque, as the ray sees it: the side it is drawn from; then whole, or alpha-tested.
+// A shadow ray takes the side that faces the light, the back face from where it starts, and nothing that casts no
+// shadow.
+bool RtCandidatePasses( RtHeap heap, uint record, uint instanceIndex, uint primitive, float2 barycentrics, bool frontFace,
+	float3x4 objectToWorld, float3x4 worldToObject, float t, float pixelSpread, float3 direction, uint samplerIndex, bool shadow ) {
 	const RtGeometry g = RtLoadGeometry( heap, record );
-	if ( !frontFace && ( g.flags & RT_GEO_TWO_SIDED ) == 0 ) {
+	if ( ( shadow ? frontFace : !frontFace ) && ( g.flags & RT_GEO_TWO_SIDED ) == 0 ) {
 		return false;
+	}
+	if ( shadow && ( g.flags & RT_GEO_CASTS_SHADOW ) == 0 ) {
+		return false;
+	}
+	if ( ( g.flags & RT_GEO_OPAQUE ) != 0 ) {
+		return true;
 	}
 	const RtSurface s = RtSurfaceOf( heap, g, instanceIndex, primitive, barycentrics, objectToWorld, worldToObject );
 	const float alpha = RtSample( g, RT_TEXTURE_ALPHA, s, RtFootprint( t, pixelSpread, direction, s.faceNormal ), samplerIndex ).a;
@@ -255,10 +282,10 @@ RtHit RtTrace( RtHeap heap, RayDesc ray, uint mask, float pixelSpread, uint samp
 	query.TraceRayInline( tlas, RAY_FLAG_NONE, mask, from );
 	while ( query.Proceed() ) {
 		if ( query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE
-			&& RtAlphaPasses( heap, query.CandidateInstanceID() + query.CandidateGeometryIndex(), query.CandidateInstanceIndex(),
+			&& RtCandidatePasses( heap, query.CandidateInstanceID() + query.CandidateGeometryIndex(), query.CandidateInstanceIndex(),
 				query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), query.CandidateTriangleFrontFace(),
 				query.CandidateObjectToWorld3x4(), query.CandidateWorldToObject3x4(), start + query.CandidateTriangleRayT(),
-				pixelSpread, ray.Direction, samplerIndex ) ) {
+				pixelSpread, ray.Direction, samplerIndex, false ) ) {
 			query.CommitNonOpaqueTriangleHit();
 		}
 	}
@@ -274,6 +301,30 @@ RtHit RtTrace( RtHeap heap, RayDesc ray, uint mask, float pixelSpread, uint samp
 	hit.objectToWorld = query.CommittedObjectToWorld3x4();
 	hit.worldToObject = query.CommittedWorldToObject3x4();
 	return hit;
+}
+
+// Whether a shadow caster lies within tMax along the ray: Doom 3's shadow volumes extrude the sides that face the
+// light, which the ray meets from behind, so it culls front faces; any hit ends the search. footprint: the
+// world units of a pixel at the origin, for the alpha's level.
+bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float footprint, uint samplerIndex ) {
+	RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[heap.tlas];
+	RayDesc ray;
+	ray.Origin = origin;
+	ray.Direction = direction;
+	ray.TMin = 0.0;
+	ray.TMax = tMax;
+	RayQuery<RAY_FLAG_CULL_FRONT_FACING_TRIANGLES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+	query.TraceRayInline( tlas, RAY_FLAG_NONE, RT_MASK_SHADOW, ray );
+	while ( query.Proceed() ) {
+		// a cone of the footprint's width all along: the level stays the origin's
+		if ( query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE
+			&& RtCandidatePasses( heap, query.CandidateInstanceID() + query.CandidateGeometryIndex(), query.CandidateInstanceIndex(),
+				query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), query.CandidateTriangleFrontFace(),
+				query.CandidateObjectToWorld3x4(), query.CandidateWorldToObject3x4(), 1.0, footprint, direction, samplerIndex, true ) ) {
+			query.CommitNonOpaqueTriangleHit();
+		}
+	}
+	return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
 #endif

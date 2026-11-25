@@ -37,12 +37,19 @@ constexpr uint64 AS_ALIGN = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNME
 	return view;
 }
 
+// The triangles every ray takes at once: no alpha test, and a shadow caster, since the shadow rays look at the rest
+// (a lamp's noshadows model around its light).
+[[nodiscard]] bool BlasOpaque( const gpuSceneGeometry_t & record ) {
+	constexpr uint32 BOTH = gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_CASTS_SHADOW;
+	return ( record.flags & BOTH ) == BOTH;
+}
+
 // vertices: the geometry's first idDrawVert.
 [[nodiscard]] D3D12_RAYTRACING_GEOMETRY_DESC Triangles( const gpuSceneGeometry_t & record, D3D12_GPU_VIRTUAL_ADDRESS vertices,
 	D3D12_GPU_VIRTUAL_ADDRESS indexes ) {
 	D3D12_RAYTRACING_GEOMETRY_DESC desc = {};
 	desc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-	desc.Flags = ( record.flags & gpuSceneGeometry_t::GEO_OPAQUE ) ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+	desc.Flags = BlasOpaque( record ) ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
 	desc.Triangles.IndexFormat = DXGI_FORMAT_R16_UINT;
 	desc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
 	desc.Triangles.IndexCount = record.numIndexes;
@@ -381,7 +388,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 			bool same = madeFrom.size() == records.size();
 			for ( size_t g = 0; same && g < records.size(); g++ ) {
 				same = madeFrom[g] == blasGeometry_t{ records[g].vertexOffset, records[g].indexOffset, records[g].numIndexes, records[g].numVerts,
-					( records[g].flags & gpuSceneGeometry_t::GEO_OPAQUE ) != 0 };
+					BlasOpaque( records[g] ) };
 			}
 			if ( !same ) {
 				stats.waiting++;		// two models with one key: the second waits for the first to go
@@ -400,7 +407,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		for ( const gpuSceneGeometry_t & record : records ) {
 			geometryDescs.push_back( Triangles( record, vertexBuffer->gpu + record.vertexOffset, indexBuffer->gpu ) );
 			entry.geometries.push_back( { record.vertexOffset, record.indexOffset, record.numIndexes, record.numVerts,
-				( record.flags & gpuSceneGeometry_t::GEO_OPAQUE ) != 0 } );
+				BlasOpaque( record ) } );
 		}
 		inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
 		inputs.pGeometryDescs = &geometryDescs[firstDesc];

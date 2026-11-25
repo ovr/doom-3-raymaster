@@ -8,7 +8,8 @@
 	The GPU scene's persistent half (R15): the geometry records in a DEFAULT buffer with a raw view, kept up to date
 	by the writes of each update, and a CPU copy for the acceleration structures. The buffer only grows; a bigger one
 	gets the old records by a GPU copy. A record's textures are the views of SAMPLED textures (the black fallback for
-	anything else), so destroying one invalidates the scene until the next full update.
+	anything else), so destroying one invalidates the scene until the next full update. The lights are written whole
+	by every applied update into a buffer of their own, which only grows too.
 */
 
 #include <array>
@@ -48,6 +49,11 @@ public:
 	[[nodiscard]] d3d12ResourceState_t &	BufferState() { return state; }
 	[[nodiscard]] d3d12Descriptor_t	BufferSrv() const { return srv; }	// raw, of every record
 	[[nodiscard]] int				Capacity() const { return capacity; }
+	// The last update's lights (gpuSceneLight_t, views in projection and falloff); no buffer while there were none.
+	[[nodiscard]] ID3D12Resource *	LightBuffer() const { return lightBuffer.Get(); }
+	[[nodiscard]] d3d12ResourceState_t &	LightBufferState() { return lightState; }
+	[[nodiscard]] d3d12Descriptor_t	LightBufferSrv() const { return lightSrv; }
+	[[nodiscard]] int				NumLights() const { return numLights; }
 	[[nodiscard]] const stats_t &	LastStats() const { return stats; }
 	// Before a pass traces: a texture leaves COPY_DEST only when bound, and a record's may be bound by no draw, or
 	// uploaded again (a video) since. Batched transitions of every texture a record names.
@@ -59,6 +65,7 @@ public:
 
 private:
 	[[nodiscard]] bool				Reserve( int records );
+	[[nodiscard]] bool				WriteLights( std::span<const gpuSceneLightWrite_t> lights );
 	// The view a record holds of texture; sampled the texture when it is SAMPLED, else NONE (the fallback's view).
 	[[nodiscard]] uint32			View( textureHandle_t texture, textureHandle_t & sampled );
 	void							SetRecordTexture( size_t record, int slot, textureHandle_t sampled );
@@ -80,6 +87,14 @@ private:
 	std::map<textureHandle_t, int>	textureUses;	// of recordTextures: what MakeTexturesReadable walks
 	std::vector<gpuSceneInstance_t>	instances;
 	std::vector<byte>				scratch;
+
+	idComPtr<ID3D12Resource>		lightBuffer;
+	d3d12ResourceState_t			lightState;
+	d3d12Descriptor_t				lightSrv;
+	int								lightCapacity = 0;
+	int								numLights = 0;
+	std::vector<gpuSceneLight_t>	lightScratch;
+	std::vector<textureHandle_t>	lightTextures;	// SAMPLED ones the lights view, for MakeTexturesReadable
 	bufferHandle_t					staticVertexBuffer = bufferHandle_t::NONE;
 	bufferHandle_t					staticIndexBuffer = bufferHandle_t::NONE;
 
