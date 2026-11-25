@@ -42,6 +42,7 @@ struct d3d12Features_t {
 	bool							dynamicDepthBias = false;	// OPTIONS16
 	bool							anisoPointMip = false;	// OPTIONS19
 	bool							tearing = false;		// DXGI_FEATURE_PRESENT_ALLOW_TEARING
+	D3D12_RAYTRACING_TIER			raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;	// OPTIONS5; 1.1 is part of 12_2
 };
 
 // CheckFeatureSupport1 with the Agility SDK's version where the runtime has it (the debug layer flags the old call):
@@ -62,7 +63,7 @@ public:
 	// adapter: "" = high performance, "warp", or an index. debugLevel: 1 layer + info queue, 2 + GBV, 3 + DRED.
 	[[nodiscard]] static std::expected<idD3D12Device, idStr>	Create( const idD3D12Library & library, const char * adapter, int debugLevel );
 
-	[[nodiscard]] ID3D12Device2 &	Get() const { return *device.Get(); }
+	[[nodiscard]] ID3D12Device5 &	Get() const { return *device.Get(); }
 	[[nodiscard]] IDXGIFactory6 &	Factory() const { return *factory.Get(); }
 	[[nodiscard]] const d3d12Features_t &	Features() const { return features; }
 	[[nodiscard]] int				DebugLevel() const { return debugLevel; }
@@ -87,7 +88,7 @@ private:
 
 	idComPtr<IDXGIFactory6>			factory;
 	idComPtr<IDXGIAdapter1>			adapter;
-	idComPtr<ID3D12Device2>			device;
+	idComPtr<ID3D12Device5>			device;
 	idComPtr<ID3D12InfoQueue>		infoQueue;				// r_debugContext >= 1
 	idComPtr<IDXGIInfoQueue>		dxgiInfoQueue;			// r_debugContext >= 1, when the DXGI debug layer is installed
 	d3d12Features_t					features;
@@ -168,8 +169,8 @@ class idD3D12CommandStream {
 public:
 									idD3D12CommandStream( const idD3D12Device & device, idD3D12Queue & queue );
 	[[nodiscard]] bool				IsOpen() const { return open; }
-	ID3D12GraphicsCommandList1 &	Open();				// a waited-for allocator or a new one; Reset; Serial()++
-	[[nodiscard]] ID3D12GraphicsCommandList1 &	List();	// asserts IsOpen()
+	ID3D12GraphicsCommandList4 &	Open();				// a waited-for allocator or a new one; Reset; Serial()++
+	[[nodiscard]] ID3D12GraphicsCommandList4 &	List();	// asserts IsOpen()
 	uint64							CloseAndExecute();	// returns the fence
 	void							Abandon();			// Shutdown after an error: close without executing
 	[[nodiscard]] uint64			Serial() const { return serial; }
@@ -180,7 +181,7 @@ private:
 	};
 	const idD3D12Device &			device;
 	idD3D12Queue &					queue;
-	idComPtr<ID3D12GraphicsCommandList1>	list;
+	idComPtr<ID3D12GraphicsCommandList4>	list;
 	idComPtr<ID3D12CommandAllocator>	current;
 	std::deque<allocator_t>			retired;		// fence order
 	uint64							serial = 0;
@@ -191,7 +192,7 @@ private:
 class idD3D12Submitter {
 public:
 	// The open list, opened on demand.
-	[[nodiscard]] virtual ID3D12GraphicsCommandList1 &	List() = 0;
+	[[nodiscard]] virtual ID3D12GraphicsCommandList4 &	List() = 0;
 	virtual uint64					SubmitChunk() = 0;		// only between calls or before a draw records anything
 	virtual void					WaitFor( uint64 fence ) = 0;	// then retires everything up to it
 	virtual void					WaitIdle() = 0;			// SubmitChunk, then waits for a signal after the last Present

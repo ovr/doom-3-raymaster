@@ -46,7 +46,7 @@ idD3D12GpuTimers::idD3D12GpuTimers( const idD3D12Device & owner, const idD3D12Qu
 	}
 }
 
-void idD3D12GpuTimers::BeginFrame( ID3D12GraphicsCommandList1 & list ) {
+void idD3D12GpuTimers::BeginFrame( ID3D12GraphicsCommandList4 & list ) {
 	if ( !heap ) {
 		return;
 	}
@@ -54,7 +54,7 @@ void idD3D12GpuTimers::BeginFrame( ID3D12GraphicsCommandList1 & list ) {
 	frameBegun = true;
 }
 
-void idD3D12GpuTimers::Write( ID3D12GraphicsCommandList1 & list, int set, int index ) {
+void idD3D12GpuTimers::Write( ID3D12GraphicsCommandList4 & list, int set, int index ) {
 	assert( set >= 0 && set < TIMESTAMP_SETS && index >= 0 && index < SLOTS_PER_SET );
 	if ( !heap || set < 0 || set >= TIMESTAMP_SETS || index < 0 || index >= SLOTS_PER_SET ) {
 		return;
@@ -66,7 +66,7 @@ void idD3D12GpuTimers::Write( ID3D12GraphicsCommandList1 & list, int set, int in
 
 // Only what was written is resolved: the layer rejects a query never ended. RenderLog writes the slots
 // 0 .. 2n - 1, so a frame resolves one run per set.
-void idD3D12GpuTimers::EndFrame( ID3D12GraphicsCommandList1 & list ) {
+void idD3D12GpuTimers::EndFrame( ID3D12GraphicsCommandList4 & list ) {
 	if ( !heap ) {
 		return;
 	}
@@ -100,7 +100,7 @@ void idD3D12GpuTimers::EndFrame( ID3D12GraphicsCommandList1 & list ) {
 	}
 }
 
-void idD3D12GpuTimers::Resolve( ID3D12GraphicsCommandList1 & list, UINT first, UINT count ) const {
+void idD3D12GpuTimers::Resolve( ID3D12GraphicsCommandList4 & list, UINT first, UINT count ) const {
 	list.ResolveQueryData( heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first, count, readback.Get(), first * sizeof( uint64 ) );
 }
 
@@ -165,14 +165,14 @@ bool idD3D12GpuTimers::CopyTicks( UINT first, std::span<uint64> ticks ) const {
 	return true;
 }
 
-void idD3D12DebugGroups::Begin( ID3D12GraphicsCommandList1 & list, int level ) const {
+void idD3D12DebugGroups::Begin( ID3D12GraphicsCommandList4 & list, int level ) const {
 	const std::array<wchar_t, MAX_NAME> & name = names[static_cast<size_t>( level )];
 	const size_t length = std::char_traits<wchar_t>::length( name.data() );
 	list.BeginEvent( PIX_EVENT_UNICODE, name.data(), static_cast<UINT>( ( length + 1 ) * sizeof( wchar_t ) ) );
 }
 
 // Engine names are ASCII: each byte widens to one UTF-16 unit.
-void idD3D12DebugGroups::Push( ID3D12GraphicsCommandList1 & list, const char * name ) {
+void idD3D12DebugGroups::Push( ID3D12GraphicsCommandList4 & list, const char * name ) {
 	if ( depth == MAX_DEPTH ) {
 		ignored++;
 		return;
@@ -188,7 +188,7 @@ void idD3D12DebugGroups::Push( ID3D12GraphicsCommandList1 & list, const char * n
 	pushed++;
 }
 
-void idD3D12DebugGroups::Pop( ID3D12GraphicsCommandList1 * list ) {
+void idD3D12DebugGroups::Pop( ID3D12GraphicsCommandList4 * list ) {
 	if ( ignored > 0 ) {
 		ignored--;
 		return;
@@ -202,13 +202,13 @@ void idD3D12DebugGroups::Pop( ID3D12GraphicsCommandList1 * list ) {
 	}
 }
 
-void idD3D12DebugGroups::CloseAll( ID3D12GraphicsCommandList1 & list ) {
+void idD3D12DebugGroups::CloseAll( ID3D12GraphicsCommandList4 & list ) {
 	for ( int level = 0; level < depth; level++ ) {
 		list.EndEvent();
 	}
 }
 
-void idD3D12DebugGroups::Reopen( ID3D12GraphicsCommandList1 & list ) {
+void idD3D12DebugGroups::Reopen( ID3D12GraphicsCommandList4 & list ) {
 	for ( int level = 0; level < depth; level++ ) {
 		Begin( list, level );
 	}

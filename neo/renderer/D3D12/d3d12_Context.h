@@ -13,11 +13,11 @@
 	idRenderBackendD3D12                     the facade; renderBackend points at it
 	 └── std::unique_ptr<idD3D12Context>      Init .. Shutdown; implements idD3D12Submitter
 	      ├── idD3D12Library                  d3d12.dll, dxgi.dll from System32; dxcompiler.dll, dxil.dll from the exe's folder
-	      ├── idD3D12Device                   IDXGIFactory6, IDXGIAdapter1, ID3D12Device2, info queues, features
+	      ├── idD3D12Device                   IDXGIFactory6, IDXGIAdapter1, ID3D12Device5, info queues, features
 	      ├── idD3D12LiveObjectReport         the teardown messages, Debug: what is alive once the members below are gone
 	      ├── idD3D12Queue                    ID3D12CommandQueue, ID3D12Fence; Waited() = the last explicit wait
 	      ├── idD3D12Graveyard                GPU objects that die after the fence of their last list
-	      ├── idD3D12CommandStream            ID3D12GraphicsCommandList1 + allocators reused by fence
+	      ├── idD3D12CommandStream            ID3D12GraphicsCommandList4 + allocators reused by fence
 	      ├── idD3D12DebugGroups              r_pix 2: the group stack, ended at a submit and begun again in the next list
 	      ├── idD3D12GpuTimers                r_pix 1 and the frame's GPU time: a TIMESTAMP query heap resolved in EndFrame
 	      ├── idD3D12Barriers                 transitions batched until the next draw, clear, copy or submit
@@ -80,7 +80,7 @@ public:
 									idD3D12Context( const idD3D12Context & ) = delete;
 	idD3D12Context &				operator=( const idD3D12Context & ) = delete;
 
-	ID3D12GraphicsCommandList1 &	List() override;	// a new list gets the heap, the root signature and an empty bound state
+	ID3D12GraphicsCommandList4 &	List() override;	// a new list gets the heap, the root signature and an empty bound state
 	uint64							SubmitChunk() override;	// flushes the barriers; closes the chunks of the rings
 	void							WaitFor( uint64 fence ) override;
 	void							WaitIdle() override;

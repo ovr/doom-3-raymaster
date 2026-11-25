@@ -66,7 +66,7 @@ public:
 private:
 	// The 256 bytes of root CBV b1. A full ring: submit, wait for the oldest chunk and take again, before anything is recorded.
 	[[nodiscard]] d3d12UploadSpan_t	Parms();
-	void							Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
+	void							Record( ID3D12GraphicsCommandList4 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
 										const renderRect_t & viewport, const d3d12UploadSpan_t & parms, const d3d12DrawResources_t * resources );
 	void							ShowPanel( ID3D12PipelineState & pso, const d3d12DrawResources_t & resources, D3D12_CPU_DESCRIPTOR_HANDLE target,
 										const renderRect_t & panel, bool alpha, float level );

@@ -40,6 +40,9 @@ constexpr uint64 PARM_ALIGN = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 			resource.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
 			resource.DepthOrArraySize = desc.depth;
 			break;
+		case d3d12PoolDesc_t::kind_t::ACCELERATION_STRUCTURE:
+			resource.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+			[[fallthrough]];
 		case d3d12PoolDesc_t::kind_t::BUFFER:
 			resource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 			resource.Height = 1;
@@ -73,6 +76,7 @@ constexpr uint64 PARM_ALIGN = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 			view.Texture3D.MipLevels = all ? desc.mips : 1;
 			break;
 		case d3d12PoolDesc_t::kind_t::BUFFER:
+		case d3d12PoolDesc_t::kind_t::ACCELERATION_STRUCTURE:	// its view is made by CreateViews
 			view.Format = DXGI_FORMAT_R32_TYPELESS;
 			view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
 			view.Buffer.NumElements = desc.width / 4;
@@ -96,6 +100,7 @@ constexpr uint64 PARM_ALIGN = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 			view.Texture3D.WSize = UINT_MAX;	// every slice of the mip
 			break;
 		case d3d12PoolDesc_t::kind_t::BUFFER:
+		case d3d12PoolDesc_t::kind_t::ACCELERATION_STRUCTURE:	// never made
 			view.Format = DXGI_FORMAT_R32_TYPELESS;
 			view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
 			view.Buffer.NumElements = desc.width / 4;
@@ -111,16 +116,24 @@ constexpr uint64 PARM_ALIGN = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 		case d3d12GraphAccess_t::UAV:			return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 		case d3d12GraphAccess_t::RTV:			return D3D12_RESOURCE_STATE_RENDER_TARGET;
 		case d3d12GraphAccess_t::COPY_SOURCE:	return D3D12_RESOURCE_STATE_COPY_SOURCE;
-		default:								return D3D12_RESOURCE_STATE_COPY_DEST;
+		case d3d12GraphAccess_t::COPY_DEST:		return D3D12_RESOURCE_STATE_COPY_DEST;
+		case d3d12GraphAccess_t::DEPTH_READ:	return D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+		default:								return D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
 	}
 }
 
 [[nodiscard]] constexpr bool Writes( d3d12GraphAccess_t access ) {
-	return access == d3d12GraphAccess_t::UAV || access == d3d12GraphAccess_t::RTV || access == d3d12GraphAccess_t::COPY_DEST;
+	return access == d3d12GraphAccess_t::UAV || access == d3d12GraphAccess_t::RTV || access == d3d12GraphAccess_t::COPY_DEST
+		|| access == d3d12GraphAccess_t::AS_WRITE;
 }
 
 [[nodiscard]] constexpr bool Reads( d3d12GraphAccess_t access ) {
-	return access == d3d12GraphAccess_t::SRV || access == d3d12GraphAccess_t::UAV || access == d3d12GraphAccess_t::COPY_SOURCE;
+	return access == d3d12GraphAccess_t::SRV || access == d3d12GraphAccess_t::UAV || access == d3d12GraphAccess_t::COPY_SOURCE
+		|| access == d3d12GraphAccess_t::AS_READ || access == d3d12GraphAccess_t::DEPTH_READ;
+}
+
+[[nodiscard]] constexpr bool IsStructureAccess( d3d12GraphAccess_t access ) {
+	return access == d3d12GraphAccess_t::AS_READ || access == d3d12GraphAccess_t::AS_WRITE;
 }
 
 [[nodiscard]] constexpr uint32 Groups( uint32 threads, uint32 groupSize ) {
@@ -166,19 +179,23 @@ d3d12PooledResource_t * idD3D12ResourcePool::Acquire( const d3d12PoolDesc_t & de
 }
 
 std::unique_ptr<d3d12PooledResource_t> idD3D12ResourcePool::Create( const d3d12PoolDesc_t & desc ) {
+	const bool structure = ( desc.kind == d3d12PoolDesc_t::kind_t::ACCELERATION_STRUCTURE );
 	assert( desc.mips >= 1 && ( desc.kind != d3d12PoolDesc_t::kind_t::BUFFER || ( desc.mips == 1 && desc.width % 4 == 0 ) ) );
+	assert( !structure || ( desc.mips == 1 && desc.width % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT == 0 ) );
 	assert( !desc.renderTarget || desc.kind == d3d12PoolDesc_t::kind_t::TEXTURE_2D );
 	assert( desc.samples == 1 || ( desc.kind == d3d12PoolDesc_t::kind_t::TEXTURE_2D && desc.mips == 1 && !desc.unorderedAccess ) );
 	auto pooled = std::make_unique<d3d12PooledResource_t>();
 	pooled->desc = desc;
 	const D3D12_RESOURCE_DESC resourceDesc = ResourceDesc( desc );
 	const D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT };
-	if ( !device.Check( device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &resourceDesc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+	const D3D12_RESOURCE_STATES initial = structure ? D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE : D3D12_RESOURCE_STATE_COMMON;
+	if ( !device.Check( device.Get().CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &resourceDesc, initial, nullptr,
 			IID_PPV_ARGS( &pooled->resource ) ), "CreateCommittedResource (render graph)" ) ) {
 		return nullptr;
 	}
 	pooled->bytes = device.Get().GetResourceAllocationInfo( 0, 1, &resourceDesc ).SizeInBytes;
 	pooled->states.resize( desc.mips );
+	pooled->states[0].current = initial;
 	// buffers go back to COMMON after every list, as the runtime puts them
 	pooled->states[0].decays = ( desc.kind == d3d12PoolDesc_t::kind_t::BUFFER );
 	CreateViews( *pooled );
@@ -190,6 +207,10 @@ void idD3D12ResourcePool::CreateViews( d3d12PooledResource_t & pooled ) {
 	const d3d12PoolDesc_t & desc = pooled.desc;
 	ID3D12Resource & resource = *pooled.resource.Get();
 	pooled.srv = srvPool.Allocate();
+	if ( desc.kind == d3d12PoolDesc_t::kind_t::ACCELERATION_STRUCTURE ) {
+		srvPool.CreateAccelerationStructureSrv( pooled.srv, resource.GetGPUVirtualAddress() );
+		return;
+	}
 	srvPool.CreateSrv( pooled.srv, resource, ShaderView( desc, d3d12GraphUse_t::ALL_MIPS ) );
 	for ( uint16 mip = 0; mip < desc.mips; mip++ ) {
 		if ( desc.mips > 1 ) {
@@ -254,14 +275,15 @@ void idD3D12ResourcePool::Free( d3d12PooledResource_t & pooled ) {
 
 // ---- the context of a pass ---------------------------------------------------------------------------------
 
-ID3D12GraphicsCommandList1 & idD3D12GraphContext::List() {
+ID3D12GraphicsCommandList4 & idD3D12GraphContext::List() {
 	return graph.submitter.List();
 }
 
-void idD3D12GraphContext::CheckUse( [[maybe_unused]] d3d12GraphResource_t resource, [[maybe_unused]] d3d12GraphAccess_t access ) const {
+void idD3D12GraphContext::CheckUse( [[maybe_unused]] d3d12GraphResource_t resource,
+	[[maybe_unused]] std::initializer_list<d3d12GraphAccess_t> accesses ) const {
 #ifdef _DEBUG
-	const bool used = std::ranges::any_of( graph.Uses( graph.passes[pass] ), [resource, access]( const d3d12GraphUse_t & use ) {
-		return use.resource == resource && use.access == access;
+	const bool used = std::ranges::any_of( graph.Uses( graph.passes[pass] ), [resource, accesses]( const d3d12GraphUse_t & use ) {
+		return use.resource == resource && std::ranges::find( accesses, use.access ) != accesses.end();
 	} );
 	assert( used );
 #endif
@@ -273,7 +295,7 @@ ID3D12Resource & idD3D12GraphContext::Resource( d3d12GraphResource_t resource ) 
 }
 
 uint32 idD3D12GraphContext::Srv( d3d12GraphResource_t resource, uint16 mip ) const {
-	CheckUse( resource, d3d12GraphAccess_t::SRV );
+	CheckUse( resource, { d3d12GraphAccess_t::SRV, d3d12GraphAccess_t::AS_READ, d3d12GraphAccess_t::DEPTH_READ } );
 	const idD3D12RenderGraph::resource_t & made = graph.resources[resource.index];
 	if ( made.imported ) {
 		return made.import.srv.index;
@@ -283,13 +305,13 @@ uint32 idD3D12GraphContext::Srv( d3d12GraphResource_t resource, uint16 mip ) con
 }
 
 uint32 idD3D12GraphContext::Uav( d3d12GraphResource_t resource, uint16 mip ) const {
-	CheckUse( resource, d3d12GraphAccess_t::UAV );
+	CheckUse( resource, { d3d12GraphAccess_t::UAV } );
 	const idD3D12RenderGraph::resource_t & made = graph.resources[resource.index];
 	return made.imported ? made.import.uav.index : made.pooled->uavs[mip].index;
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE idD3D12GraphContext::Rtv( d3d12GraphResource_t resource, uint16 mip ) const {
-	CheckUse( resource, d3d12GraphAccess_t::RTV );
+	CheckUse( resource, { d3d12GraphAccess_t::RTV } );
 	const idD3D12RenderGraph::resource_t & made = graph.resources[resource.index];
 	return made.imported ? made.import.rtv : graph.rtvPool.Cpu( made.pooled->rtvs[mip] );
 }
@@ -323,7 +345,7 @@ d3d12UploadSpan_t idD3D12GraphContext::Parms( std::span<const byte> bytes ) {
 void idD3D12GraphContext::Dispatch( const d3d12ComputePipeline_t & pipeline, const d3d12UploadSpan_t * parms, uint32 threadsX, uint32 threadsY,
 	uint32 threadsZ, std::span<const uint32> values ) {
 	assert( pipeline && values.size() <= d3d12ComputeConstants_t::COUNT );
-	ID3D12GraphicsCommandList1 & list = List();
+	ID3D12GraphicsCommandList4 & list = List();
 	graph.barriers.Flush();
 	if ( computeRootList != graph.submitter.ListSerial() ) {
 		list.SetComputeRootSignature( graph.computeRoot.Get() );
@@ -341,7 +363,7 @@ void idD3D12GraphContext::Dispatch( const d3d12ComputePipeline_t & pipeline, con
 
 void idD3D12GraphContext::Draw( ID3D12PipelineState & pso, d3d12GraphResource_t target, uint16 mip, const renderRect_t & viewport,
 	const d3d12UploadSpan_t & parms ) {
-	ID3D12GraphicsCommandList1 & list = List();
+	ID3D12GraphicsCommandList4 & list = List();
 	graph.barriers.Flush();
 	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rtv( target, mip );
 	list.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
@@ -357,7 +379,7 @@ void idD3D12GraphContext::Draw( ID3D12PipelineState & pso, d3d12GraphResource_t 
 }
 
 void idD3D12GraphContext::UavBarrier( d3d12GraphResource_t resource ) {
-	CheckUse( resource, d3d12GraphAccess_t::UAV );
+	CheckUse( resource, { d3d12GraphAccess_t::UAV } );
 	graph.barriers.Uav( Resource( resource ) );
 	graph.stats.barriers++;
 }
@@ -434,6 +456,19 @@ void idD3D12RenderGraph::Cull() {
 // A UAV access after one as UAV waits for its writes; any transition out of UNORDERED_ACCESS does so anyway.
 void idD3D12RenderGraph::Transition( const d3d12GraphUse_t & use ) {
 	resource_t & made = resources[use.resource.index];
+	if ( IsStructureAccess( use.access ) ) {
+		assert( made.imported ? made.import.state->current == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE
+			: made.desc.kind == d3d12PoolDesc_t::kind_t::ACCELERATION_STRUCTURE );
+		const bool hazard = ( made.lastStructureAccess == d3d12GraphAccess_t::AS_WRITE )
+			|| ( use.access == d3d12GraphAccess_t::AS_WRITE && made.lastStructureAccess.has_value() );
+		if ( hazard ) {
+			barriers.Uav( made.imported ? *made.import.resource : *made.pooled->resource.Get() );
+			stats.barriers++;
+		}
+		made.lastStructureAccess = use.access;
+		return;
+	}
+	assert( use.access != d3d12GraphAccess_t::DEPTH_READ || made.imported );
 	const D3D12_RESOURCE_STATES after = StateFor( use.access );
 	const bool uav = ( use.access == d3d12GraphAccess_t::UAV );
 	if ( made.imported ) {

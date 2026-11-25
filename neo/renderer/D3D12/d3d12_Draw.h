@@ -126,20 +126,20 @@ private:
 										d3d12Program_t & program );
 	[[nodiscard]] std::optional<reserved_t>	TryReserve( const prepared_t & prepared, const renderLatch_t & latch, const drawCall_t & dc );
 	[[nodiscard]] reserved_t		Reserve( const prepared_t & prepared, const renderLatch_t & latch, const drawCall_t & dc );
-	void							Record( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved,
+	void							Record( ID3D12GraphicsCommandList4 & list, const prepared_t & prepared, const reserved_t & reserved,
 										const renderLatch_t & latch, const drawCall_t & dc, const d3d12Program_t & program );
-	void							BeginPass( ID3D12GraphicsCommandList1 & list );	// R10: the first draw or clear after EndPass
+	void							BeginPass( ID3D12GraphicsCommandList4 & list );	// R10: the first draw or clear after EndPass
 	// The latched scissor cut to the scene: left, top, right, bottom.
 	[[nodiscard]] std::array<int, 4>	SceneScissor( const renderLatch_t & latch ) const;
-	void							BindDynamicState( ID3D12GraphicsCommandList1 & list, const renderLatch_t & latch, primitive_t topology );
-	void							BindParms( ID3D12GraphicsCommandList1 & list, const reserved_t & reserved, const renderLatch_t & latch,
+	void							BindDynamicState( ID3D12GraphicsCommandList4 & list, const renderLatch_t & latch, primitive_t topology );
+	void							BindParms( ID3D12GraphicsCommandList4 & list, const reserved_t & reserved, const renderLatch_t & latch,
 										const drawCall_t & dc, const d3d12Program_t & program );
 	// Queues the transitions, which Record flushes before it binds anything: the layer takes the state of a root
 	// CBV's buffer when SetGraphicsRootConstantBufferView is recorded, so a barrier after it mismatches (#527).
 	[[nodiscard]] used_t			Use( const prepared_t & prepared, const drawCall_t & dc, const d3d12Program_t & program );
-	void							BindJoints( ID3D12GraphicsCommandList1 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints );
-	void							BindResources( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const d3d12Program_t & program );
-	void							BindGeometry( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const drawCall_t & dc, const used_t & used );
+	void							BindJoints( ID3D12GraphicsCommandList4 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints );
+	void							BindResources( ID3D12GraphicsCommandList4 & list, const prepared_t & prepared, const d3d12Program_t & program );
+	void							BindGeometry( ID3D12GraphicsCommandList4 & list, const prepared_t & prepared, const drawCall_t & dc, const used_t & used );
 	[[nodiscard]] int				ChunkLimit() const;	// the draws the open list takes before it is submitted
 
 	const idD3D12Device &			device;

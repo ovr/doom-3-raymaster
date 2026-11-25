@@ -176,11 +176,11 @@ void idD3D12Context::CreateDefaults() {
 	shaders.Prebuild();
 }
 
-ID3D12GraphicsCommandList1 & idD3D12Context::List() {
+ID3D12GraphicsCommandList4 & idD3D12Context::List() {
 	if ( commands.IsOpen() ) {
 		return commands.List();
 	}
-	ID3D12GraphicsCommandList1 & list = commands.Open();
+	ID3D12GraphicsCommandList4 & list = commands.Open();
 	// the directly indexed heaps come before the root signature
 	ID3D12DescriptorHeap * heaps[] = { srvPool.ShaderVisibleHeap(), samplers.Heap() };
 	list.SetDescriptorHeaps( 2, heaps );

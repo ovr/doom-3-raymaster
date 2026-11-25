@@ -169,6 +169,7 @@ struct renderCaps_t {
 	bool			timestamps;				// WriteTimestamp works
 	bool			debugGroups;
 	bool			hdrScene;				// BeginHdrScene .. ResolveHdrScene draw into a linear float scene
+	bool			rayTracing;				// inline ray queries against the GPU scene (DXR 1.1)
 };
 
 struct renderBackendInit_t {

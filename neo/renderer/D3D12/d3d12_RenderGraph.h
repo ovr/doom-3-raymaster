@@ -16,6 +16,10 @@
 	A pass is kept when it writes an imported resource, or something a kept pass after it reads (a UAV counts as
 	read and written). A transient lives from the first to the last kept pass that uses it, and its contents
 	are undefined until a pass writes them: after that the pool may give the same resource to another one.
+
+	An acceleration structure never leaves RAYTRACING_ACCELERATION_STRUCTURE: an AS_READ or AS_WRITE after an
+	AS_WRITE of it, and an AS_WRITE after an AS_READ, get a UAV barrier instead. That holds within one graph; a
+	structure built by an earlier graph is read in a later list. DEPTH_READ: an imported depth as depth and SRV.
 	Not yet: async compute, aliasing of placed resources, the scene's passes (the draw recorder records them).
 */
 
@@ -30,10 +34,11 @@
 
 // A transient resource as the pool keys it: graph resources of equal descriptions may get the same one.
 struct d3d12PoolDesc_t {
-	enum class kind_t : uint8 { TEXTURE_2D, TEXTURE_3D, BUFFER };
+	// ACCELERATION_STRUCTURE: a buffer for a build's result, with an acceleration structure SRV and no other view
+	enum class kind_t : uint8 { TEXTURE_2D, TEXTURE_3D, BUFFER, ACCELERATION_STRUCTURE };
 	kind_t							kind = kind_t::TEXTURE_2D;
 	DXGI_FORMAT						format = DXGI_FORMAT_UNKNOWN;	// a buffer: UNKNOWN, raw views of 32-bit words
-	uint32							width = 1;			// a buffer: its bytes, a multiple of 4
+	uint32							width = 1;			// a buffer: its bytes, a multiple of 4 (of 256 for a structure)
 	uint32							height = 1;
 	uint16							depth = 1;			// TEXTURE_3D
 	uint16							mips = 1;
@@ -104,8 +109,9 @@ struct d3d12GraphResource_t {
 	constexpr bool					operator==( const d3d12GraphResource_t & ) const = default;
 };
 
-enum class d3d12GraphAccess_t : uint8 { SRV, UAV, RTV, COPY_SOURCE, COPY_DEST };
-enum class d3d12GraphPass_t : uint8 { RASTER, COMPUTE, COPY };
+// AS_READ: a ray query, or a TLAS build over this BLAS. AS_WRITE: the destination of a build.
+enum class d3d12GraphAccess_t : uint8 { SRV, UAV, RTV, COPY_SOURCE, COPY_DEST, AS_READ, AS_WRITE, DEPTH_READ };
+enum class d3d12GraphPass_t : uint8 { RASTER, COMPUTE, COPY, AS_BUILD };
 
 struct d3d12GraphUse_t {
 	static constexpr uint16			ALL_MIPS = UINT16_MAX;
@@ -117,7 +123,7 @@ struct d3d12GraphUse_t {
 // A resource the frame owns: the graph transitions it through its state, the views stay the owner's.
 struct d3d12GraphImport_t {
 	ID3D12Resource *				resource = nullptr;
-	d3d12ResourceState_t *			state = nullptr;	// of the whole resource
+	d3d12ResourceState_t *			state = nullptr;	// of the whole resource; a structure's is RAYTRACING_ACCELERATION_STRUCTURE
 	d3d12Descriptor_t				srv;
 	d3d12Descriptor_t				uav;
 	D3D12_CPU_DESCRIPTOR_HANDLE		rtv = {};
@@ -130,9 +136,10 @@ class idD3D12RenderGraph;
 // What a pass records with. A resource must be one of the pass's uses; Parms comes before anything is recorded.
 class idD3D12GraphContext {
 public:
-	[[nodiscard]] ID3D12GraphicsCommandList1 &	List();
+	[[nodiscard]] ID3D12GraphicsCommandList4 &	List();
 	[[nodiscard]] ID3D12Resource &	Resource( d3d12GraphResource_t resource ) const;
-	// Heap indices for ResourceDescriptorHeap.
+	[[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS	Address( d3d12GraphResource_t resource ) const { return Resource( resource ).GetGPUVirtualAddress(); }
+	// Heap indices for ResourceDescriptorHeap; Srv also of an AS_READ or a DEPTH_READ use.
 	[[nodiscard]] uint32			Srv( d3d12GraphResource_t resource, uint16 mip = d3d12GraphUse_t::ALL_MIPS ) const;
 	[[nodiscard]] uint32			Uav( d3d12GraphResource_t resource, uint16 mip = 0 ) const;
 	[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE	Rtv( d3d12GraphResource_t resource, uint16 mip = 0 ) const;
@@ -157,7 +164,7 @@ public:
 private:
 	friend class idD3D12RenderGraph;
 	explicit						idD3D12GraphContext( idD3D12RenderGraph & owner ) : graph( owner ) {}
-	void							CheckUse( d3d12GraphResource_t resource, d3d12GraphAccess_t access ) const;
+	void							CheckUse( d3d12GraphResource_t resource, std::initializer_list<d3d12GraphAccess_t> accesses ) const;
 
 	idD3D12RenderGraph &			graph;
 	int								pass = -1;
@@ -203,6 +210,7 @@ private:
 		d3d12PooledResource_t *		pooled = nullptr;	// in Execute, from its first to its last kept pass
 		int							first = -1;			// kept passes
 		int							last = -1;
+		std::optional<d3d12GraphAccess_t>	lastStructureAccess;	// AS_READ or AS_WRITE, in Execute
 	};
 	struct pass_t {
 		const char *				name = nullptr;
