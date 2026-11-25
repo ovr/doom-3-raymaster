@@ -138,7 +138,8 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	resourcePool( device, graveyard, srvPool, rtvPool ),
 	graph( device, *this, barriers, resourcePool, srvPool, rtvPool, constants, computeRootSignature ),
 	hdr( device, *this, computeRootSignature, passes, samplers, srvPool ),
-	gpuScene( device, *this, graveyard, srvPool, barriers, uploader, textures ) {
+	gpuScene( device, *this, graveyard, srvPool, barriers, uploader, textures ),
+	rayTracing( device, *this, graveyard, srvPool, barriers, uploader, buffers ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -173,6 +174,7 @@ void idD3D12Context::CreateDefaults() {
 	textures.CreateDefaults();
 	passes.CreateDefaults();
 	hdr.CreateDefaults();
+	rayTracing.CreateDefaults( passes.Stage( "internal_rtSkin" ), computeRootSignature );
 	buffers.CreateDefaults();
 	shaders.Prebuild();
 }
@@ -414,9 +416,16 @@ void idD3D12Context::EndGBuffer() {
 	}
 }
 
-bool idD3D12Context::UpdateGpuScene( const gpuSceneUpdate_t & update ) {
+// A failed build leaves nothing to trace this frame; a full update would not help it, so the update stands.
+bool idD3D12Context::UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats ) {
 	recorder.EndPass();
 	const bool applied = gpuScene.Update( update );
+	if ( applied ) {
+		static_cast<void>( rayTracing.Build( graph, gpuScene, ( groups.Depth() > 0 ) ? &groups : nullptr, stats ) );
+	} else {
+		rayTracing.Invalidate();
+		stats = {};
+	}
 	recorder.Invalidate();
 	return applied;
 }

@@ -270,6 +270,7 @@ set(D3D12_SOURCES
 	renderer/D3D12/d3d12_Output.cpp
 	renderer/D3D12/d3d12_Pipelines.cpp
 	renderer/D3D12/d3d12_Programs.cpp
+	renderer/D3D12/d3d12_RayTracing.cpp
 	renderer/D3D12/d3d12_RenderBackend.cpp
 	renderer/D3D12/d3d12_RenderGraph.cpp
 	renderer/D3D12/d3d12_RingAllocator.cpp

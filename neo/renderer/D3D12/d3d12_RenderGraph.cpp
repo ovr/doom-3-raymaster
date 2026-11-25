@@ -551,6 +551,14 @@ void idD3D12RenderGraph::Execute( idD3D12DebugGroups * groups ) {
 			}
 		}
 	}
+	// a later graph of the same list may read what this one built
+	for ( const resource_t & made : resources ) {
+		if ( made.imported && made.lastStructureAccess == d3d12GraphAccess_t::AS_WRITE ) {
+			barriers.Uav( *made.import.resource );
+			stats.barriers++;
+		}
+	}
+	barriers.Flush();
 	lastStats = stats;
 	Clear();
 }

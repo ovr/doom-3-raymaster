@@ -82,6 +82,7 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "hdrEncode", shaderStageType_t::FRAGMENT, "internal_hdrEncode_msaa", "MULTISAMPLED=1" },
 	{ "gbufferDebug", shaderStageType_t::FRAGMENT, "internal_gbufferDebug", nullptr },
 	{ "gbufferDebug", shaderStageType_t::FRAGMENT, "internal_gbufferDebug_msaa", "MULTISAMPLED=1" },
+	{ "rtSkin", shaderStageType_t::COMPUTE, "internal_rtSkin", nullptr },
 };
 
 }	// namespace

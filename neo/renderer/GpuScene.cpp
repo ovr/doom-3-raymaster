@@ -369,7 +369,8 @@ void RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 		}
 	}
 	const gpuSceneUpdate_t update = { &frame, vertexCache.StaticVertexBuffer(), vertexCache.StaticIndexBuffer() };
-	const bool applied = renderBackend->UpdateGpuScene( update );
+	gpuSceneStats_t stats;
+	const bool applied = renderBackend->UpdateGpuScene( update, stats );
 	static int refused = 0;
 	if ( !applied ) {
 		gpuSceneLost.store( frame.sceneId );
@@ -379,9 +380,11 @@ void RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 	static int lastPrint = 0;
 	if ( r_rtStats.GetBool() && Sys_Milliseconds() - lastPrint >= 1000 ) {
 		lastPrint = Sys_Milliseconds();
-		common->Printf( "rt scene %u.%u: %d instances, %d geometries, %d written%s, capacity %d, %d refused\n", frame.sceneId,
-			frame.sequence, frame.numInstances, frame.numGeometries, frame.numWrites, frame.full ? " (full)" : "", frame.geometryCapacity,
-			refused );
+		common->Printf( "rt scene %u.%u: %d instances, %d geometries, %d written%s, capacity %d, %d refused; tlas %d (%d waiting), "
+			"blas %d (%d built, %d compacted, %.1f MB), skinned %d (%d verts), %.1f MB per frame\n", frame.sceneId, frame.sequence,
+			frame.numInstances, frame.numGeometries, frame.numWrites, frame.full ? " (full)" : "", frame.geometryCapacity, refused,
+			stats.tlasInstances, stats.waiting, stats.blas, stats.built, stats.compacted, stats.blasBytes / ( 1024.0 * 1024.0 ), stats.skinned,
+			stats.skinnedVerts, stats.frameBytes / ( 1024.0 * 1024.0 ) );
 		refused = 0;
 	}
 }

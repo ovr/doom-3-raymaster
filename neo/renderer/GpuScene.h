@@ -104,6 +104,19 @@ struct gpuSceneUpdate_t {
 	bufferHandle_t			staticIndexBuffer;
 };
 
+// What the backend made of an update's acceleration structures, for r_rtStats.
+struct gpuSceneStats_t {
+	int						tlasInstances = 0;
+	int						waiting = 0;		// instances left out: their BLAS waits for the frame's build budget
+	int						blas = 0;			// static BLAS kept, one per distinct model
+	int						built = 0;			// static BLAS built this frame
+	int						compacted = 0;		// static BLAS copied at their compacted size this frame
+	int						skinned = 0;		// skinned instances, skinned and built again every frame
+	int						skinnedVerts = 0;
+	uint64					blasBytes = 0;		// of the static BLAS
+	uint64					frameBytes = 0;		// the TLAS, the skinned BLAS and vertices, the scratch
+};
+
 // First fit over [0, capacity), free ranges sorted and merged. A failed fit grows the capacity (at least double).
 class idGpuSceneRanges {
 public:

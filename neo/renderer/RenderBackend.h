@@ -152,7 +152,9 @@ If you have questions concerning this license or the applicable additional terms
 		the backend's persistent copy of the scene and takes its instances for the frame. It applies a full update,
 		or the one after the update it applied last (same scene, sequence + 1), and the same one again as a no-op;
 		otherwise, after a texture a record names was destroyed, or on a lost device it returns false, keeps nothing
-		the passes may trace this frame, and shared code sends a full update next.
+		the passes may trace this frame, and shared code sends a full update next. An applied update builds the
+		acceleration structures of its instances (an instance whose BLAS waits for a later frame is left out) and
+		fills stats; the no-op builds nothing.
 
 ===============================================================================
 */
@@ -166,6 +168,7 @@ If you have questions concerning this license or the applicable additional terms
 
 class idImageOpts;
 struct gpuSceneUpdate_t;
+struct gpuSceneStats_t;
 
 // r_debugMaxDraws and r_hashDrawStream for every backend. The cvars are read once a frame, so with
 // both off a draw pays one compare.
@@ -247,7 +250,7 @@ public:
 	// After the resolve: the target r_gbufferDebug names, over the viewport of the output.
 	virtual void			DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {}
 	// R15, in a frame, with caps.rayTracing. Ends the pass of a pipeline backend.
-	[[nodiscard]] virtual bool	UpdateGpuScene( const gpuSceneUpdate_t & update ) { return false; }
+	[[nodiscard]] virtual bool	UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats ) { return false; }
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,

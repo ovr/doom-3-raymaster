@@ -47,6 +47,10 @@ public:
 	[[nodiscard]] d3d12Descriptor_t	BufferSrv() const { return srv; }	// raw, of every record
 	[[nodiscard]] int				Capacity() const { return capacity; }
 	[[nodiscard]] const stats_t &	LastStats() const { return stats; }
+	// What was applied last: a build of the acceleration structures follows each new one.
+	[[nodiscard]] uint32			SceneId() const { return sceneId; }
+	[[nodiscard]] uint32			Sequence() const { return sequence; }
+	[[nodiscard]] int				StaticGeneration() const { return staticGeneration; }
 
 private:
 	[[nodiscard]] bool				Reserve( int records );
