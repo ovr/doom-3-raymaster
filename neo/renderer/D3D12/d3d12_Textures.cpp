@@ -85,7 +85,7 @@ idD3D12TextureStore::idD3D12TextureStore( const idD3D12Device & owner, idD3D12Gr
 	unalignedBlocks( unaligned ) {
 }
 
-// Never uploaded again, so they go to PIXEL_SHADER_RESOURCE for good.
+// Never uploaded again, so they go to ALL_SHADER_RESOURCE for good.
 void idD3D12TextureStore::CreateDefaults() {
 	const d3d12FormatInfo_t format = D3D12_FormatFor( FMT_RGBA8, CFM_DEFAULT, textureRole_t::SAMPLED, 1, 1, true );
 	constexpr byte BLACK[4] = { 0, 0, 0, 255 };
@@ -97,7 +97,7 @@ void idD3D12TextureStore::CreateDefaults() {
 		for ( int face = 0; face < surface.faces; face++ ) {
 			static_cast<void>( CopyRegion( surface, format, static_cast<UINT>( face ), true, 1, 1, BLACK, sizeof( BLACK ), false ) );
 		}
-		barriers.Transition( *surface.resource.Get(), surface.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		barriers.Transition( *surface.resource.Get(), surface.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
 	}
 }
 
@@ -407,7 +407,7 @@ bool d3d12Texture_t::IncompleteCopy() const {
 
 void idD3D12TextureStore::MakeReadable( textureHandle_t handle ) {
 	if ( d3d12Texture_t * texture = table.Find( handle ) ) {
-		barriers.Transition( *texture->surface.resource.Get(), texture->surface.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		barriers.Transition( *texture->surface.resource.Get(), texture->surface.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
 	}
 }
 

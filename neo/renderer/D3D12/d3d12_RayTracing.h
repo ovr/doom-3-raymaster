@@ -10,7 +10,8 @@
 	  rt skin          COMPUTE    the skinned instances' vertices (internal/rtSkin.hlsl), idDrawVert's layout
 	  rt blas          AS_BUILD   new static BLAS and every skinned one
 	  rt blas compact  AS_BUILD   the BLAS whose compacted sizes came back, copied at that size
-	  rt tlas          AS_BUILD   every instance whose BLAS exists: InstanceID its first geometry record
+	  rt tlas          AS_BUILD   every instance whose BLAS exists: InstanceID its first geometry record, the front
+	                              face the side Doom 3 draws (TRIANGLE_FRONT_COUNTERCLOCKWISE)
 	  rt blas sizes    AS_BUILD   the compacted sizes of static BLAS not asked yet, while none are in flight
 	  rt blas readback COPY       those sizes into a READBACK buffer
 
@@ -66,7 +67,10 @@ public:
 	[[nodiscard]] d3d12Descriptor_t	TlasSrv() const { return tlasSrv; }
 	[[nodiscard]] d3d12Descriptor_t	InstanceTableSrv() const { return tableSrv; }		// raw, d3d12RtInstance_t
 	[[nodiscard]] d3d12Descriptor_t	SkinnedVerticesSrv() const { return skinnedSrv; }	// raw, idDrawVert
+	[[nodiscard]] d3d12Descriptor_t	StaticVerticesSrv() const { return staticVertexSrv; }	// raw, of the scene's static buffers
+	[[nodiscard]] d3d12Descriptor_t	StaticIndexesSrv() const { return staticIndexSrv; }
 	[[nodiscard]] ID3D12Resource *	Tlas() const { return tlas.Get(); }
+	[[nodiscard]] d3d12ResourceState_t &	TlasState() { return tlasState; }
 	[[nodiscard]] ID3D12Resource *	InstanceTable() const { return table.Get(); }
 	[[nodiscard]] d3d12ResourceState_t &	InstanceTableState() { return tableState; }
 	[[nodiscard]] ID3D12Resource *	SkinnedVertices() const { return skinned.Get(); }
@@ -155,7 +159,9 @@ private:
 	uint32							builtScene = 0;
 	uint32							builtSequence = 0;
 	bool							valid = false;
-	std::vector<std::pair<bufferHandle_t, d3d12Descriptor_t>>	bufferSrvs;	// raw views of the buffers rtSkin reads
+	std::vector<std::pair<bufferHandle_t, d3d12Descriptor_t>>	bufferSrvs;	// raw views of the buffers rtSkin and the hits read
+	d3d12Descriptor_t				staticVertexSrv;
+	d3d12Descriptor_t				staticIndexSrv;
 
 	// the frame's work, kept until the next build: the graph records it in Execute
 	std::vector<D3D12_RAYTRACING_GEOMETRY_DESC>	geometryDescs;

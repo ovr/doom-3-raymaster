@@ -293,9 +293,12 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 	const d3d12Buffer_t * vertexBuffer = buffers.UseForShaders( scene.StaticVertexBuffer() );
 	const d3d12Buffer_t * indexBuffer = buffers.UseForShaders( scene.StaticIndexBuffer() );
 	const d3d12Descriptor_t vertexSrv = BufferSrv( scene.StaticVertexBuffer() );
-	if ( vertexBuffer == nullptr || indexBuffer == nullptr || !vertexSrv.IsValid() ) {
+	const d3d12Descriptor_t indexSrv = BufferSrv( scene.StaticIndexBuffer() );
+	if ( vertexBuffer == nullptr || indexBuffer == nullptr || !vertexSrv.IsValid() || !indexSrv.IsValid() ) {
 		return false;
 	}
+	staticVertexSrv = vertexSrv;
+	staticIndexSrv = indexSrv;
 
 	geometryDescs.clear();
 	blasBuilds.clear();
@@ -467,6 +470,15 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		memcpy( desc.Transform, instance.transform, sizeof( desc.Transform ) );
 		desc.InstanceID = instance.firstGeometry & 0xFFFFFF;
 		desc.InstanceMask = instance.mask & 0xFF;
+		// Doom 3 draws the side that winds clockwise in GL's window: DXR's back face, unless flipped. The rays cull
+		// back faces; an instance with a two-sided geometry culls none (include/raytracing.hlsli)
+		desc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_FRONT_COUNTERCLOCKWISE;
+		for ( const gpuSceneGeometry_t & geometry : geometries.subspan( instance.firstGeometry, instance.numGeometries ) ) {
+			if ( ( geometry.flags & gpuSceneGeometry_t::GEO_TWO_SIDED ) != 0 ) {
+				desc.Flags |= D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
+				break;
+			}
+		}
 		desc.AccelerationStructure = ( *placed[entry.sceneInstance].buffer )->GetGPUVirtualAddress() + placed[entry.sceneInstance].offset;
 	}
 	if ( !instances.empty() ) {

@@ -62,6 +62,17 @@ static bool R_GpuScenePlainStage( const shaderStage_t & stage, const float * reg
 		&& stage.texture.dynamic == DI_STATIC && stage.texture.texgen == TG_EXPLICIT && stage.newStage == nullptr;
 }
 
+// The depth pass, like the front end, draws nothing of a surface whose stages are all conditioned off (the wings
+// of a dead wraith).
+static bool R_GpuSceneStagesOff( const idMaterial & shader, const float * regs ) {
+	for ( int i = 0; i < shader.GetNumStages(); i++ ) {
+		if ( regs[shader.GetStage( i )->conditionRegister] != 0.0f ) {
+			return false;
+		}
+	}
+	return true;
+}
+
 // The record of one surface: the stages RB_RenderInteractions reads, an unlit stage that adds or replaces as the
 // emissive and the alpha-tested one, with the depth pass's choice of the fast path.
 static void R_GpuSceneMaterial( const idMaterial & shader, const float * regs, gpuSceneWrite_t & write ) {
@@ -115,13 +126,29 @@ static void R_GpuSceneMaterial( const idMaterial & shader, const float * regs, g
 			write.images[t] = stage.texture.image;
 			RB_SetupInteractionStage( &stage, regs, white, record.matrices[t], color != nullptr ? color->ToFloatPtr() : nullptr );
 		}
+		// the depth pass draws every enabled alpha-tested stage: a later one of the same image, matrix and colour alpha
+		// lowers the reference (a monster's two burn stages), another image is left out
 		const int alpha = static_cast<int>( gpuSceneTexture_t::ALPHA );
-		if ( perforated && stage.hasAlphaTest && !found[alpha] ) {
-			found[alpha] = true;
-			write.images[alpha] = stage.texture.image;
-			RB_SetupInteractionStage( &stage, regs, white, record.matrices[alpha], nullptr );
-			record.alphaTest.Set( regs[stage.alphaTestRegister], regs[stage.color.registers[3]], 0.0f, 0.0f );
+		if ( perforated && stage.hasAlphaTest ) {
+			idVec4 matrix[2];
+			RB_SetupInteractionStage( &stage, regs, white, matrix, nullptr );
+			const float reference = regs[stage.alphaTestRegister];
+			const float scale = regs[stage.color.registers[3]];
+			if ( !found[alpha] ) {
+				found[alpha] = true;
+				write.images[alpha] = stage.texture.image;
+				record.matrices[alpha][0] = matrix[0];
+				record.matrices[alpha][1] = matrix[1];
+				record.alphaTest.Set( reference, scale, 0.0f, 0.0f );
+			} else if ( write.images[alpha] == stage.texture.image && matrix[0] == record.matrices[alpha][0]
+					&& matrix[1] == record.matrices[alpha][1] && scale == record.alphaTest.y ) {
+				record.alphaTest.x = Min( record.alphaTest.x, reference );
+			}
 		}
+	}
+	// without an enabled alpha-tested stage the depth pass draws the surface solid
+	if ( perforated && !found[static_cast<int>( gpuSceneTexture_t::ALPHA )] ) {
+		record.flags |= gpuSceneGeometry_t::GEO_OPAQUE;
 	}
 }
 
@@ -134,26 +161,15 @@ static uint64 R_GpuSceneHash( uint64 hash, uint32 value ) {
 }
 
 void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, const idRenderModel & model, bool skinned ) {
-	int count = 0;
-	for ( int i = 0; i < model.NumSurfaces(); i++ ) {
-		const modelSurface_t & surf = *model.Surface( i );
-		if ( R_GpuSceneSurface( surf, R_RemapShaderBySkin( surf.shader, def.parms.customSkin, def.parms.customShader ) ) ) {
-			count++;
-		}
-	}
-	if ( count != slot.numGeometries ) {
-		geometries.Free( slot.firstGeometry, slot.numGeometries );
-		slot.firstGeometry = ( count > 0 ) ? geometries.Allocate( count ) : 0;
-		slot.numGeometries = count;
-	}
 	slot.model = &model;
 	slot.modified = def.lastModifiedFrameNum;
 	slot.skinned = skinned;
 	slot.animated = false;
 	slot.skinnedVerts = 0;
 
+	// the records first: the registers decide which surfaces are drawn, so how many the slot holds this frame
+	building.SetNum( 0 );
 	uint64 key = 0xcbf29ce484222325ull;
-	int k = 0;
 	float scratch[MAX_EXPRESSION_REGISTERS];
 	for ( int i = 0; i < model.NumSurfaces(); i++ ) {
 		const modelSurface_t & surf = *model.Surface( i );
@@ -161,12 +177,6 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 		if ( !R_GpuSceneSurface( surf, shader ) ) {
 			continue;
 		}
-		const srfTriangles_t & tri = *surf.geometry;
-		gpuSceneWrite_t write;
-		memset( &write, 0, sizeof( write ) );
-		write.index = slot.firstGeometry + k++;
-		write.material = shader;
-
 		const float * regs = shader->ConstantRegisters();
 		if ( regs == nullptr ) {
 			shader->EvaluateRegisters( scratch, def.parms.shaderParms, tr.viewDef->renderView.shaderParms,
@@ -174,6 +184,13 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 			regs = scratch;
 			slot.animated = true;
 		}
+		if ( R_GpuSceneStagesOff( *shader, regs ) ) {
+			continue;
+		}
+		const srfTriangles_t & tri = *surf.geometry;
+		gpuSceneWrite_t & write = building.Alloc();
+		memset( &write, 0, sizeof( write ) );
+		write.material = shader;
 
 		gpuSceneGeometry_t & record = write.record;
 		bufferHandle_t buffer;
@@ -199,7 +216,15 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 		key = R_GpuSceneHash( key, record.numIndexes );
 		key = R_GpuSceneHash( key, record.numVerts );
 		key = R_GpuSceneHash( key, record.flags & gpuSceneGeometry_t::GEO_OPAQUE );
-		Emit( write );
+	}
+	if ( building.Num() != slot.numGeometries ) {
+		geometries.Free( slot.firstGeometry, slot.numGeometries );
+		slot.firstGeometry = ( building.Num() > 0 ) ? geometries.Allocate( building.Num() ) : 0;
+		slot.numGeometries = building.Num();
+	}
+	for ( int k = 0; k < building.Num(); k++ ) {
+		building[k].index = slot.firstGeometry + k;
+		Emit( building[k] );
 	}
 	slot.blasKey = skinned ? 0 : ( key | 1 );
 }
@@ -287,8 +312,9 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 			const idRenderModelStatic * joints = nullptr;
 			if ( parms.hModel->IsDynamicModel() == DM_STATIC ) {
 				model = parms.hModel;
-			} else if ( gpuSkinning && def.dynamicModel != nullptr && def.dynamicModelFrameCount == frame ) {
-				// a skinned model the view instantiated this frame: its bind pose is static, its joints drawn
+			} else if ( gpuSkinning && def.dynamicModel != nullptr ) {
+				// a skinned model drawn this frame: its bind pose is static, its joints uploaded. A cached one counts too
+				// (a monster at rest is not instantiated again), one not drawn has no current joints
 				joints = R_GpuSceneJoints( *def.dynamicModel );
 				model = ( joints != nullptr ) ? def.dynamicModel : nullptr;
 			}

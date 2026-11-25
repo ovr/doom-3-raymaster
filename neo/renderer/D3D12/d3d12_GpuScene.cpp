@@ -19,12 +19,37 @@ idD3D12GpuScene::idD3D12GpuScene( const idD3D12Device & device, idD3D12Submitter
 	state.decays = true;
 }
 
-uint32 idD3D12GpuScene::View( textureHandle_t handle ) {
+void idD3D12GpuScene::MakeTexturesReadable() {
+	for ( const auto & [handle, uses] : textureUses ) {
+		textures.MakeReadable( handle );
+	}
+}
+
+uint32 idD3D12GpuScene::View( textureHandle_t handle, textureHandle_t & sampled ) {
 	const d3d12Texture_t * texture = textures.Find( handle );
 	if ( texture == nullptr || texture->role != textureRole_t::SAMPLED ) {
+		sampled = textureHandle_t::NONE;
 		return textures.Fallback( textureKind_t::TEX_2D ).index;
 	}
+	sampled = handle;
 	return textures.SampledView( handle, textureKind_t::TEX_2D ).index;
+}
+
+void idD3D12GpuScene::SetRecordTexture( size_t record, int slot, textureHandle_t sampled ) {
+	textureHandle_t & held = recordTextures[record][slot];
+	if ( held == sampled ) {
+		return;
+	}
+	if ( held != textureHandle_t::NONE ) {
+		const auto found = textureUses.find( held );
+		if ( --found->second == 0 ) {
+			textureUses.erase( found );
+		}
+	}
+	if ( sampled != textureHandle_t::NONE ) {
+		textureUses[sampled]++;
+	}
+	held = sampled;
 }
 
 bool idD3D12GpuScene::Reserve( int records ) {
@@ -51,6 +76,7 @@ bool idD3D12GpuScene::Reserve( int records ) {
 	state = grownState;
 	capacity = grownCapacity;
 	mirror.resize( static_cast<size_t>( capacity ) );
+	recordTextures.resize( static_cast<size_t>( capacity ) );
 
 	D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
 	view.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -100,7 +126,9 @@ bool idD3D12GpuScene::Update( const gpuSceneUpdate_t & update ) {
 			gpuSceneGeometry_t & record = mirror[static_cast<size_t>( write.index )];
 			record = write.record;
 			for ( int t = 0; t < GPU_SCENE_TEXTURES; t++ ) {
-				record.textures[t] = View( write.textures[t] );
+				textureHandle_t sampled;
+				record.textures[t] = View( write.textures[t], sampled );
+				SetRecordTexture( static_cast<size_t>( write.index ), t, sampled );
 			}
 			memcpy( scratch.data() + static_cast<size_t>( i - first ) * sizeof( gpuSceneGeometry_t ), &record, sizeof( record ) );
 		}

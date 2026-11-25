@@ -106,7 +106,8 @@ public:
 	// other kind or an incomplete copy.
 	[[nodiscard]] d3d12Descriptor_t	SampledView( textureHandle_t texture, textureKind_t kind );
 	[[nodiscard]] d3d12Descriptor_t	Fallback( textureKind_t kind ) const { return fallbacks[static_cast<size_t>( kind )].srv; }
-	void							MakeReadable( textureHandle_t texture );	// PIXEL_SHADER_RESOURCE, batched
+	// ALL_SHADER_RESOURCE, batched: the ray traced passes read the GPU scene's textures in compute
+	void							MakeReadable( textureHandle_t texture );
 	void							RecordUploads( bool record ) { recordUploads = record; }
 	// visit( handle, texture ) in handle index order; it must not create or destroy.
 	template<typename F> void		ForEach( F && visit ) { table.ForEach( std::forward<F>( visit ) ); }

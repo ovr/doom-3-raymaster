@@ -11,6 +11,8 @@
 	anything else), so destroying one invalidates the scene until the next full update.
 */
 
+#include <array>
+#include <map>
 #include <span>
 
 #include "../GpuScene.h"
@@ -47,6 +49,9 @@ public:
 	[[nodiscard]] d3d12Descriptor_t	BufferSrv() const { return srv; }	// raw, of every record
 	[[nodiscard]] int				Capacity() const { return capacity; }
 	[[nodiscard]] const stats_t &	LastStats() const { return stats; }
+	// Before a pass traces: a texture leaves COPY_DEST only when bound, and a record's may be bound by no draw, or
+	// uploaded again (a video) since. Batched transitions of every texture a record names.
+	void							MakeTexturesReadable();
 	// What was applied last: a build of the acceleration structures follows each new one.
 	[[nodiscard]] uint32			SceneId() const { return sceneId; }
 	[[nodiscard]] uint32			Sequence() const { return sequence; }
@@ -54,7 +59,9 @@ public:
 
 private:
 	[[nodiscard]] bool				Reserve( int records );
-	[[nodiscard]] uint32			View( textureHandle_t texture );
+	// The view a record holds of texture; sampled the texture when it is SAMPLED, else NONE (the fallback's view).
+	[[nodiscard]] uint32			View( textureHandle_t texture, textureHandle_t & sampled );
+	void							SetRecordTexture( size_t record, int slot, textureHandle_t sampled );
 
 	const idD3D12Device &			device;
 	idD3D12Submitter &				submitter;
@@ -69,6 +76,8 @@ private:
 	d3d12Descriptor_t				srv;
 	int								capacity = 0;
 	std::vector<gpuSceneGeometry_t>	mirror;
+	std::vector<std::array<textureHandle_t, GPU_SCENE_TEXTURES>>	recordTextures;	// by record, the SAMPLED textures it views
+	std::map<textureHandle_t, int>	textureUses;	// of recordTextures: what MakeTexturesReadable walks
 	std::vector<gpuSceneInstance_t>	instances;
 	std::vector<byte>				scratch;
 	bufferHandle_t					staticVertexBuffer = bufferHandle_t::NONE;

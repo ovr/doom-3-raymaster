@@ -775,7 +775,7 @@ public:
 	static constexpr int			POINTS = 16;
 	explicit						idTestSampler( idTestGpu & gpu );
 	[[nodiscard]] bool				Ready() const { return pipelines[0] && pipelines[1] && mapped != nullptr; }
-	// The view must be in PIXEL_SHADER_RESOURCE once the batch is flushed.
+	// The view must be readable by a pixel shader once the batch is flushed (MakeReadable's ALL_SHADER_RESOURCE).
 	[[nodiscard]] std::vector<idVec4>	Sample( d3d12Descriptor_t view, textureKind_t kind, const D3D12_SAMPLER_DESC & sampler,
 										std::span<const idVec4> points );
 
@@ -5911,11 +5911,13 @@ void GpuScene( idTestGpu & gpu ) {
 
 // ---- WARP: the acceleration structures of the GPU scene ---------------------------------------------------------
 
-// A frame over idTestRtScene's static buffers: the quad of idTestRayScene (vertices 0-3), a skinned quad (4-7) and
-// a grid whose BLAS compaction makes smaller (from 8, its indexes after the quad's).
+// A frame over idTestRtScene's static buffers: the quad of idTestRayScene (vertices 0-3), a skinned quad (4-7), a
+// grid whose BLAS compaction makes smaller (from 8, its indexes after the quad's) and a quad whose st are xy / 4.
 struct rtTestFrame_t {
 	static constexpr uint32			GRID = 32;
 	static constexpr uint32			GRID_FIRST = 8;
+	static constexpr uint32			QUAD_FIRST = GRID_FIRST + ( GRID + 1 ) * ( GRID + 1 );
+	static constexpr uint32			QUAD_INDEX = 6 + GRID * GRID * 6;
 	std::vector<gpuSceneWrite_t>	writes;
 	std::vector<gpuSceneInstance_t>	instances;
 	gpuSceneFrame_t					frame = {};
@@ -6015,13 +6017,19 @@ idTestRtScene::idTestRtScene( idTestGpu & owner, uint64 unusedBuilds ) :
 	constexpr byte JOINTS[4][4] = { { 0, 0, 0, 0 }, { 0, 1, 0, 0 }, { 1, 0, 0, 0 }, { 0, 1, 1, 0 } };
 	constexpr byte WEIGHTS[4][4] = { { 255, 0, 0, 0 }, { 128, 127, 0, 0 }, { 255, 0, 0, 0 }, { 64, 96, 95, 0 } };
 	const idVec3 corners[4] = { idVec3( 0.0f, 0.0f, 0.0f ), idVec3( 4.0f, 0.0f, 0.0f ), idVec3( 4.0f, 4.0f, 0.0f ), idVec3( 0.0f, 4.0f, 0.0f ) };
-	vertices.resize( GRID_FIRST + ( GRID + 1 ) * ( GRID + 1 ) );
+	constexpr uint32 QUAD_FIRST = rtTestFrame_t::QUAD_FIRST;
+	vertices.resize( QUAD_FIRST + 4 );
 	for ( size_t i = 0; i < vertices.size(); i++ ) {
 		idDrawVert & vertex = vertices[i];
 		vertex.Clear();
-		vertex.xyz = ( i < GRID_FIRST ) ? corners[i % 4] : idVec3( static_cast<float>( ( i - GRID_FIRST ) % ( GRID + 1 ) ),
-			static_cast<float>( ( i - GRID_FIRST ) / ( GRID + 1 ) ), 0.0f );
-		vertex.SetTexCoord( 0.25f * static_cast<float>( i & 7 ), 0.75f );
+		if ( i >= QUAD_FIRST ) {
+			vertex.xyz = corners[i - QUAD_FIRST];
+			vertex.SetTexCoord( vertex.xyz.x * 0.25f, vertex.xyz.y * 0.25f );
+		} else {
+			vertex.xyz = ( i < GRID_FIRST ) ? corners[i % 4] : idVec3( static_cast<float>( ( i - GRID_FIRST ) % ( GRID + 1 ) ),
+				static_cast<float>( ( i - GRID_FIRST ) / ( GRID + 1 ) ), 0.0f );
+			vertex.SetTexCoord( 0.25f * static_cast<float>( i & 7 ), 0.75f );
+		}
 		vertex.SetNormal( idVec3( 0.0f, 0.0f, 1.0f ) );
 		vertex.SetTangent( idVec3( 1.0f, 0.0f, 0.0f ) );
 		vertex.tangent[3] = ( i & 1 ) ? 255 : 0;
@@ -6039,6 +6047,7 @@ idTestRtScene::idTestRtScene( idTestGpu & owner, uint64 unusedBuilds ) :
 			}
 		}
 	}
+	indexes.insert( indexes.end(), idTestRayScene::INDEXES.begin(), idTestRayScene::INDEXES.end() );
 	vertexBuffer = gpu.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::STATIC, static_cast<int>( vertices.size() * sizeof( idDrawVert ) ), vertices.data() );
 	indexBuffer = gpu.buffers.Create( bufferType_t::INDEX, bufferUsage_t::STATIC, static_cast<int>( indexes.size() * sizeof( triIndex_t ) ), indexes.data() );
 	ready = Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE, "the static buffers" );
@@ -6269,6 +6278,349 @@ void RtSkin( idTestGpu & gpu ) {
 	gpu.WaitIdle();
 	gpu.buffers.Destroy( bentJoints );
 	gpu.buffers.Destroy( movedJoints );
+	CheckNoLayerErrors( gpu );
+}
+
+// Rays through include/raytracing.hlsli: per ray 32 dwords (hit, record, t, front face; position, instance index;
+// normal; face normal, area; the diffuse's uv, footprint; RtDiffuse, its alpha; specular), then the record DUMP_RECORD.
+constexpr const char * RT_HIT_COMPUTE =
+	"#include \"../include/raytracing.hlsli\"\n"
+	"cbuffer Parms : register( b0 ) { uint results; uint tlas; uint records; uint instances; uint vertices; uint indexes;\n"
+	"	uint skinned; uint linearSampler; uint dumpRecord; uint3 unused; };\n"
+	"%s"
+	"[numthreads( 16, 1, 1 )]\n"
+	"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+	"	RWByteAddressBuffer output = ResourceDescriptorHeap[results];\n"
+	"	RtHeap heap;\n"
+	"	heap.tlas = tlas; heap.records = records; heap.instances = instances;\n"
+	"	heap.vertices = vertices; heap.indexes = indexes; heap.skinned = skinned;\n"
+	"	if ( id.x == RAYS ) {\n"
+	"		const RtGeometry g = RtLoadGeometry( heap, dumpRecord );\n"
+	"		const uint at = RAYS * 128;\n"
+	"		output.Store4( at, uint4( g.vertexOffset, g.indexOffset, g.numIndexes, g.numVerts ) );\n"
+	"		output.Store4( at + 16, uint4( g.flags, g.skinnedOffset, 0, 0 ) );\n"
+	"		output.Store4( at + 32, uint4( g.textures[0], g.textures[1], g.textures[2], g.textures[3] ) );\n"
+	"		output.Store4( at + 48, uint4( g.textures[4], 0, 0, 0 ) );\n"
+	"		for ( uint c = 0; c < 3; c++ ) { output.Store4( at + 64 + c * 16, asuint( g.colors[c] ) ); }\n"
+	"		for ( uint t = 0; t < RT_TEXTURES; t++ ) {\n"
+	"			output.Store4( at + 112 + t * 32, asuint( g.matrices[t][0] ) );\n"
+	"			output.Store4( at + 128 + t * 32, asuint( g.matrices[t][1] ) );\n"
+	"		}\n"
+	"		output.Store4( at + 272, asuint( g.alphaTest ) );\n"
+	"		return;\n"
+	"	}\n"
+	"	if ( id.x > RAYS ) { return; }\n"
+	"	RayDesc ray;\n"
+	"	ray.Origin = ORIGINS[id.x].xyz;\n"
+	"	ray.Direction = DIRECTIONS[id.x].xyz;\n"
+	"	ray.TMin = DIRECTIONS[id.x].w;\n"
+	"	ray.TMax = 100.0;\n"
+	"	const float spread = ORIGINS[id.x].w;\n"
+	"	const RtHit hit = RtTrace( heap, ray, 0xFF, spread, linearSampler );\n"
+	"	const uint at = id.x * 128;\n"
+	"	output.Store4( at, uint4( hit.hit ? 1 : 0, hit.record, asuint( hit.t ), hit.frontFace ? 1 : 0 ) );\n"
+	"	if ( !hit.hit ) { return; }\n"
+	"	const RtGeometry g = RtLoadGeometry( heap, hit.record );\n"
+	"	const RtSurface s = RtSurfaceOf( heap, g, hit.instanceIndex, hit.primitive, hit.barycentrics, hit.objectToWorld, hit.worldToObject );\n"
+	"	const float footprint = RtFootprint( hit.t, spread, ray.Direction, s.faceNormal );\n"
+	"	const float4 diffuse = RtSample( g, RT_TEXTURE_DIFFUSE, s, footprint, linearSampler );\n"
+	"	output.Store4( at + 16, uint4( asuint( s.position ), hit.instanceIndex ) );\n"
+	"	output.Store4( at + 32, uint4( asuint( s.normal ), 0 ) );\n"
+	"	output.Store4( at + 48, uint4( asuint( s.faceNormal ), asuint( s.worldArea ) ) );\n"
+	"	output.Store4( at + 64, uint4( asuint( RtTexCoord( g, RT_TEXTURE_DIFFUSE, s ) ), asuint( footprint ), 0 ) );\n"
+	"	output.Store4( at + 80, asuint( float4( RtDiffuse( g, s, footprint, linearSampler ), diffuse.a ) ) );\n"
+	"	output.Store4( at + 96, asuint( RtSample( g, RT_TEXTURE_SPECULAR, s, footprint, linearSampler ) ) );\n"
+	"}\n";
+
+/*
+	idTestRtScene's quads under eight instances; every quad's vertex normals are +z, and the side Doom 3 draws faces -z.
+	Records 10 to 52 are two-sided:
+
+	  0  record 10   the quad at the origin
+	  1  record 30   the skinned quad, moved by ( 2, 0, 0 ) by its joints and by ( 10, 0, 1 ) by its instance
+	  2  record 11   the quad turned upright at ( 50, 5, 0 ): y up to z, its drawn side +y
+	  3  record 50   the st quad at ( 20, 0, 0 ): a 4 x 4 diffuse under a swapped stage matrix, a specular of a colour per mip
+	  4  record 51   the st quad at ( 30, 0, 0 ), alpha-tested: alpha 0 left of x = 2, 1 right of it
+	  5  record 52   the same at ( 40, 0, 0 ) under a colour alpha of 0.25, which no texel passes
+	  6  53, 54      at ( 60, 0, 0 ): 53 one-sided and tested as 51, 54 two-sided and tested as 52; the instance culls
+	                 nothing, so the candidate loop has to reject 53's back face
+	  7  record 55   the one-sided quad at ( 70, 0, 0 ), opaque: the ray culls its back face
+*/
+void RtHit( idTestGpu & gpu ) {
+	idTestRtScene scene( gpu );
+	if ( !scene.Ready() ) {
+		return;
+	}
+	struct ray_t {
+		idVec3	origin;
+		idVec3	direction;
+		float	spread;
+		int		instance;	// -1: a miss
+		uint32	record;
+		float	t;
+		float	tMin = 0.0f;
+	};
+	const idVec3 down( 0.0f, 0.0f, -1.0f );
+	const idVec3 up( 0.0f, 0.0f, 1.0f );
+	const std::array<ray_t, 17> rays = { {
+		{ idVec3( 1.25f, 0.75f, 10.0f ), down, 0.001f, 0, 10, 10.0f },
+		{ idVec3( 13.25f, 0.75f, 10.0f ), down, 0.001f, 1, 30, 9.0f },
+		{ idVec3( 51.25f, -5.0f, 0.75f ), idVec3( 0.0f, 1.0f, 0.0f ), 0.001f, 2, 11, 10.0f },
+		{ idVec3( 51.25f, 15.0f, 0.75f ), idVec3( 0.0f, -1.0f, 0.0f ), 0.001f, 2, 11, 10.0f },
+		{ idVec3( 22.5f, 1.5f, 10.0f ), down, 0.001f, 3, 50, 10.0f },		// level 0: texel ( 2, 1 ), the specular's red
+		{ idVec3( 22.5f, 1.5f, 10.0f ), down, 0.2f, 3, 50, 10.0f },			// a footprint of 2 texels: green
+		{ idVec3( 22.5f, 1.5f, 10.0f ), down, 0.4f, 3, 50, 10.0f },			// 4 texels: blue
+		{ idVec3( 31.0f, 0.5f, 10.0f ), down, 0.001f, -1, 0, 0.0f },		// alpha 0
+		{ idVec3( 33.0f, 0.5f, 10.0f ), down, 0.001f, 4, 51, 10.0f },		// alpha 1
+		{ idVec3( 43.0f, 0.5f, 10.0f ), down, 0.001f, -1, 0, 0.0f },		// alpha 1 × 0.25
+		{ idVec3( -50.0f, -50.0f, 10.0f ), down, 0.001f, -1, 0, 0.0f },
+		// from a TMin on, as the primary rays start at the near plane: t counts from the origin all the same
+		{ idVec3( 1.25f, 0.75f, 10.0f ), down, 0.001f, 0, 10, 10.0f, 2.0f },
+		{ idVec3( 33.0f, 0.5f, 10.0f ), down, 0.001f, 4, 51, 10.0f, 2.0f },	// a committed non-opaque hit
+		// the back faces of one-sided quads are missed, as the raster culls them
+		{ idVec3( 63.0f, 0.5f, 10.0f ), down, 0.001f, -1, 0, 0.0f },
+		{ idVec3( 63.0f, 0.5f, -10.0f ), up, 0.001f, 6, 53, 10.0f },
+		{ idVec3( 73.0f, 0.5f, 10.0f ), down, 0.001f, -1, 0, 0.0f },
+		{ idVec3( 73.0f, 0.5f, -10.0f ), up, 0.001f, 7, 55, 10.0f },
+	} };
+	const std::array<idMat3, 8> axes = { mat3_identity, mat3_identity, idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f ),
+		mat3_identity, mat3_identity, mat3_identity, mat3_identity, mat3_identity };
+	// the skinned quad: its joints move it by skinOffset, its instance by the rest of ( 12, 0, 1 )
+	const idVec3 skinOffset( 2.0f, 0.0f, 0.0f );
+	const std::array<idVec3, 8> origins = { vec3_origin, idVec3( 10.0f, 0.0f, 1.0f ), idVec3( 50.0f, 5.0f, 0.0f ), idVec3( 20.0f, 0.0f, 0.0f ),
+		idVec3( 30.0f, 0.0f, 0.0f ), idVec3( 40.0f, 0.0f, 0.0f ), idVec3( 60.0f, 0.0f, 0.0f ), idVec3( 70.0f, 0.0f, 0.0f ) };
+	// as the instance's transform rows: idMat3 * idVec3 would take the transpose
+	const auto place = [&]( int instance, const idVec3 & point ) {
+		const idMat3 & m = axes[instance];
+		const idVec3 skinned = point + ( ( instance == 1 ) ? skinOffset : vec3_origin );
+		return idVec3( m[0] * skinned, m[1] * skinned, m[2] * skinned ) + origins[instance];
+	};
+
+	// the shader's rays out of the same table
+	idStr table = va( "static const uint RAYS = %d;\nstatic const float4 ORIGINS[RAYS] = {\n", static_cast<int>( rays.size() ) );
+	for ( const ray_t & ray : rays ) {
+		table += va( "	float4( %.9g, %.9g, %.9g, %.9g ),\n", ray.origin.x, ray.origin.y, ray.origin.z, ray.spread );
+	}
+	table += "};\nstatic const float4 DIRECTIONS[RAYS] = {\n";
+	for ( const ray_t & ray : rays ) {
+		table += va( "	float4( %.9g, %.9g, %.9g, %.9g ),\n", ray.direction.x, ray.direction.y, ray.direction.z, ray.tMin );
+	}
+	table += "};\n";
+	d3d12HlslSource_t source;
+	source.name = "test_rthit";
+	source.path = "shaders/internal/test_rthit.hlsl";
+	source.text = va( RT_HIT_COMPUTE, table.c_str() );
+	const auto built = scene.rays.fixture.hlslCompiler.Build( source, shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	if ( !Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		return;
+	}
+	const d3d12ComputePipeline_t pipeline = D3D12_CreateComputePipeline( gpu.device, scene.rays.computeRoot, built->code, built->reflection, L"test rt hit" );
+
+	// diffuse: texel ( x, y ) = ( 40 + 50x, 30 + 60y, 200 ); specular: a mip red, green, blue; alpha: by column 0, 1
+	const textureHandle_t diffuse = gpu.textures.Create( Opts( FMT_RGBA8, 4, 4, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test rt diffuse" );
+	const textureHandle_t specular = gpu.textures.Create( Opts( FMT_RGBA8, 4, 4, 3 ), textureRole_t::SAMPLED, POINT_CLAMP, "test rt specular" );
+	const textureHandle_t alpha = gpu.textures.Create( Opts( FMT_RGBA8, 2, 2, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test rt alpha" );
+	const uint32 linearSampler = gpu.samplers.Acquire( D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::REPEAT, 1.0f, 0.0f } ) );
+	if ( !Check( pipeline && diffuse != textureHandle_t::NONE && specular != textureHandle_t::NONE && alpha != textureHandle_t::NONE,
+		"the pipeline and the textures" ) ) {
+		return;
+	}
+	std::array<byte, 4 * 4 * 4> texels;
+	for ( int i = 0; i < 16; i++ ) {
+		texels[i * 4 + 0] = static_cast<byte>( 40 + 50 * ( i % 4 ) );
+		texels[i * 4 + 1] = static_cast<byte>( 30 + 60 * ( i / 4 ) );
+		texels[i * 4 + 2] = 200;
+		texels[i * 4 + 3] = 255;
+	}
+	gpu.textures.Upload( diffuse, 0, 0, 4, 4, texels.data(), 0 );
+	for ( int level = 0; level < 3; level++ ) {
+		std::array<byte, 4 * 4 * 4> solid = {};
+		for ( int i = 0; i < 16; i++ ) {
+			solid[i * 4 + level] = 255;
+			solid[i * 4 + 3] = 255;
+		}
+		gpu.textures.Upload( specular, level, 0, 4 >> level, 4 >> level, solid.data(), 0 );
+	}
+	const std::array<byte, 2 * 2 * 4> holes = { 255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 255 };
+	gpu.textures.Upload( alpha, 0, 0, 2, 2, holes.data(), 0 );
+
+	std::array<idJointMat, 2> moved;
+	for ( idJointMat & joint : moved ) {
+		joint.SetRotation( mat3_identity );
+		joint.SetTranslation( skinOffset );
+	}
+	const bufferHandle_t joints = gpu.buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, sizeof( moved ), moved.data() );
+
+	rtTestFrame_t frame( 1, true );
+	frame.WriteQuads();
+	const auto writeQuad = [&]( int index, uint32 flags ) -> gpuSceneWrite_t & {
+		frame.Write( index, rtTestFrame_t::QUAD_FIRST, 6, flags, 4, rtTestFrame_t::QUAD_INDEX );
+		gpuSceneWrite_t & write = frame.writes.back();
+		for ( auto & rows : write.record.matrices ) {
+			rows[0] = idVec4( 1.0f, 0.0f, 0.0f, 0.0f );
+			rows[1] = idVec4( 0.0f, 1.0f, 0.0f, 0.0f );
+		}
+		return write;
+	};
+	constexpr int DIFFUSE = static_cast<int>( gpuSceneTexture_t::DIFFUSE );
+	constexpr int SPECULAR = static_cast<int>( gpuSceneTexture_t::SPECULAR );
+	constexpr int ALPHA = static_cast<int>( gpuSceneTexture_t::ALPHA );
+	constexpr uint32 DUMP_RECORD = 50;
+	{
+		gpuSceneWrite_t & write = writeQuad( 50, gpuSceneGeometry_t::GEO_OPAQUE );
+		write.textures[DIFFUSE] = diffuse;
+		write.textures[SPECULAR] = specular;
+		write.record.skinnedOffset = 0x40;
+		write.record.colors[0] = idVec4( 0.5f, 1.0f, 0.25f, 1.0f );
+		write.record.colors[1] = idVec4( 2.0f, 3.0f, 4.0f, 5.0f );
+		write.record.colors[2] = idVec4( 6.0f, 7.0f, 8.0f, 9.0f );
+		write.record.matrices[DIFFUSE][0] = idVec4( 0.0f, 1.0f, 0.0f, 0.25f );	// u = t + 1/4, v = s - 1/4
+		write.record.matrices[DIFFUSE][1] = idVec4( 1.0f, 0.0f, 0.0f, -0.25f );
+		write.record.matrices[ALPHA][0] = idVec4( 10.0f, 11.0f, 12.0f, 13.0f );
+		write.record.alphaTest = idVec4( 0.125f, 0.75f, 14.0f, 15.0f );
+	}
+	writeQuad( 51, 0 ).textures[ALPHA] = alpha;
+	frame.writes.back().record.alphaTest = idVec4( 0.5f, 1.0f, 0.0f, 0.0f );
+	writeQuad( 52, 0 ).textures[ALPHA] = alpha;
+	frame.writes.back().record.alphaTest = idVec4( 0.5f, 0.25f, 0.0f, 0.0f );
+	writeQuad( 53, 0 ).textures[ALPHA] = alpha;
+	frame.writes.back().record.alphaTest = idVec4( 0.5f, 1.0f, 0.0f, 0.0f );
+	writeQuad( 54, 0 ).textures[ALPHA] = alpha;
+	frame.writes.back().record.alphaTest = idVec4( 0.5f, 0.25f, 0.0f, 0.0f );
+	writeQuad( 55, gpuSceneGeometry_t::GEO_OPAQUE );
+	for ( gpuSceneWrite_t & write : frame.writes ) {
+		if ( write.index != 53 && write.index != 55 ) {
+			write.record.flags |= gpuSceneGeometry_t::GEO_TWO_SIDED;
+		}
+	}
+	const std::array<uint32, 8> firstRecords = { 10, 30, 11, 50, 51, 52, 53, 55 };
+	const std::array<uint64, 8> blasKeys = { 0x100, 0, 0x100, 0x500, 0x510, 0x520, 0x530, 0x550 };
+	for ( size_t i = 0; i < firstRecords.size(); i++ ) {
+		gpuSceneInstance_t & instance = frame.Instance( firstRecords[i], gpuSceneInstance_t::MASK_VISIBLE, blasKeys[i], origins[i] );
+		for ( int row = 0; row < 3; row++ ) {
+			for ( int column = 0; column < 3; column++ ) {
+				instance.transform[row][column] = axes[i][row][column];
+			}
+		}
+	}
+	frame.instances[1].skinnedVerts = 4;
+	frame.instances[1].numJoints = 2;
+	frame.instances[1].jointBuffer = joints;
+	frame.instances[6].numGeometries = 2;
+
+	gpuSceneStats_t stats;
+	if ( !Check( joints != bufferHandle_t::NONE && scene.Apply( frame, stats ) && stats.tlasInstances == 8 && stats.waiting == 0,
+		va( "the build: %s", RtStats( stats ).c_str() ) ) ) {
+		return;
+	}
+	scene.gpuScene.MakeTexturesReadable();
+	gpu.barriers.Flush();
+	bool readable = true;
+	for ( const textureHandle_t handle : { diffuse, specular, alpha } ) {
+		readable &= gpu.textures.Find( handle )->surface.state.current == D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+	}
+	Check( readable, "MakeTexturesReadable leaves the records' textures in ALL_SHADER_RESOURCE" );
+
+	const uint32 bytes = static_cast<uint32>( rays.size() + 1 ) * 128 + sizeof( gpuSceneGeometry_t );
+	idComPtr<ID3D12Resource> results = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, bytes, D3D12_RESOURCE_STATE_COMMON, L"test rt hit results",
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	d3d12ResourceState_t resultsState;
+	resultsState.decays = true;
+	const d3d12Descriptor_t resultsUav = gpu.srvPool.Allocate();
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+	uavDesc.Buffer.NumElements = bytes / 4;
+	uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+	gpu.srvPool.CreateUav( resultsUav, *results.Get(), uavDesc );
+
+	scene.rays.fixture.Bind();
+	static_cast<void>( gpu.buffers.UseForShaders( scene.vertexBuffer ) );
+	static_cast<void>( gpu.buffers.UseForShaders( scene.indexBuffer ) );
+	idD3D12RenderGraph & graph = scene.rays.graph;
+	const d3d12GraphResource_t output = graph.Import( "results", { results.Get(), &resultsState, {}, resultsUav, {}, bytes, 1 } );
+	const d3d12GraphResource_t records = graph.Import( "records", { scene.gpuScene.Buffer(), &scene.gpuScene.BufferState(), scene.gpuScene.BufferSrv(), {}, {}, 0, 0 } );
+	const d3d12GraphResource_t instances = graph.Import( "instances", { scene.rt.InstanceTable(), &scene.rt.InstanceTableState(), scene.rt.InstanceTableSrv(), {}, {}, 0, 0 } );
+	const d3d12GraphResource_t skinned = graph.Import( "skinned", { scene.rt.SkinnedVertices(), &scene.rt.SkinnedVerticesState(), scene.rt.SkinnedVerticesSrv(), {}, {}, 0, 0 } );
+	const std::array<uint32, 4> fixed = { scene.rt.TlasSrv().index, scene.rt.StaticVerticesSrv().index, scene.rt.StaticIndexesSrv().index, linearSampler };
+	graph.AddPass( "rt hit", d3d12GraphPass_t::COMPUTE, { { output, d3d12GraphAccess_t::UAV }, { records, d3d12GraphAccess_t::SRV },
+		{ instances, d3d12GraphAccess_t::SRV }, { skinned, d3d12GraphAccess_t::SRV } }, [&, fixed]( idD3D12GraphContext & context ) {
+		const std::array<uint32, 12> parms = { context.Uav( output ), fixed[0], context.Srv( records ), context.Srv( instances ), fixed[1], fixed[2],
+			context.Srv( skinned ), fixed[3], DUMP_RECORD, 0, 0, 0 };
+		const d3d12UploadSpan_t span = context.Parms( parms );
+		context.Dispatch( pipeline, &span, static_cast<uint32>( rays.size() + 1 ), 1 );
+	} );
+	graph.Execute();
+	const std::vector<byte> read = gpu.Read( *results.Get(), &resultsState, 0, bytes );
+
+	if ( Check( read.size() == bytes, "the results are read" ) ) {
+		for ( size_t i = 0; i < rays.size(); i++ ) {
+			const ray_t & ray = rays[i];
+			uint32 head[4];
+			float got[32];
+			memcpy( head, &read[i * 128], sizeof( head ) );
+			memcpy( got, &read[i * 128], sizeof( got ) );
+			const bool hit = ray.instance >= 0;
+			if ( !Check( ( head[0] != 0 ) == hit, va( "ray %d: %s, not %s", static_cast<int>( i ), head[0] ? "a hit" : "a miss", hit ? "a hit" : "a miss" ) ) || !hit ) {
+				continue;
+			}
+			const idVec3 position( got[4], got[5], got[6] );
+			const idVec3 normal( got[8], got[9], got[10] );
+			const idVec3 face( got[12], got[13], got[14] );
+			uint32 instanceIndex;
+			memcpy( &instanceIndex, &got[7], sizeof( instanceIndex ) );
+			// the side Doom 3 draws: the eye in front of the plane of the first triangle, as R_DeriveFacePlanes makes it
+			idPlane plane;
+			plane.FromPoints( place( ray.instance, scene.vertices[0].xyz ), place( ray.instance, scene.vertices[1].xyz ),
+				place( ray.instance, scene.vertices[2].xyz ) );
+			const bool front = plane.Distance( ray.origin ) > 0.0f;
+			const idVec3 wantNormal = place( ray.instance, idVec3( 0.0f, 0.0f, 1.0f ) ) - place( ray.instance, vec3_origin );
+			const bool right = head[1] == ray.record && idMath::Fabs( got[2] - ray.t ) < 1e-4f && ( head[3] != 0 ) == front
+				&& position.Compare( ray.origin + ray.direction * ray.t, 1e-4f ) && normal.Compare( wantNormal, 0.01f )
+				&& face.Compare( plane.Normal(), 1e-5f ) && idMath::Fabs( got[15] - 8.0f ) < 1e-4f
+				&& instanceIndex < scene.rt.Instances().size() && scene.rt.Instances()[instanceIndex].sceneInstance == static_cast<uint32>( ray.instance );
+			Check( right, va( "ray %d: record %u, t %g, front %u (want %d), at ( %g %g %g ), normal ( %g %g %g ), face ( %g %g %g ) (want %s), area %g",
+				static_cast<int>( i ), head[1], got[2], head[3], front ? 1 : 0, position.x, position.y, position.z, normal.x, normal.y, normal.z,
+				face.x, face.y, face.z, plane.Normal().ToString(), got[15] ) );
+		}
+		const auto rayFloats = [&]( int ray, int first ) {
+			idVec4 v;
+			memcpy( v.ToFloatPtr(), &read[ray * 128 + first * 4], sizeof( v ) );
+			return v;
+		};
+		// ray 4: uv ( t + 1/4, s - 1/4 ) at st ( 0.625, 0.375 ), the centre of texel ( 2, 1 ): Co, Cg, the scale and Y
+		// decoded as include/ycocg.hlsli does, times the colour
+		const idVec4 uv = rayFloats( 4, 16 );
+		const idVec4 albedo = rayFloats( 4, 20 );
+		const float scale = 1.0f / ( 200.0f / 255.0f * 31.875f + 1.0f );
+		const float co = 140.0f / 255.0f * scale;
+		const float cg = 90.0f / 255.0f * scale;
+		const idVec4 wantAlbedo( ( co - cg + 1.0f ) * 0.5f, cg - 0.50196078f * scale + 1.0f, ( -co - cg + 1.00392156f * scale + 1.0f ) * 0.25f, 1.0f );
+		Check( idMath::Fabs( uv.x - 0.625f ) < 1e-5f && idMath::Fabs( uv.y - 0.375f ) < 1e-5f && albedo.Compare( wantAlbedo, 1e-5f ),
+			va( "the diffuse: uv %g %g, %s; want 0.625 0.375, %s", uv.x, uv.y, albedo.ToString(), wantAlbedo.ToString() ) );
+		// the specular's level: log2( t × spread × texels per unit ), 1 texel per unit
+		const std::array<idVec4, 3> levels = { idVec4( 1.0f, 0.0f, 0.0f, 1.0f ), idVec4( 0.0f, 1.0f, 0.0f, 1.0f ), idVec4( 0.0f, 0.0f, 1.0f, 1.0f ) };
+		for ( int level = 0; level < 3; level++ ) {
+			const idVec4 got = rayFloats( 4 + level, 24 );
+			const float footprint = rayFloats( 4 + level, 16 ).z;
+			Check( got.Compare( levels[level], 0.02f ) && idMath::Fabs( footprint - 10.0f * rays[4 + level].spread ) < 1e-4f,
+				va( "ray %d: the specular %s at a footprint of %g, not mip %d", 4 + level, got.ToString(), footprint, level ) );
+		}
+
+		gpuSceneGeometry_t want = scene.gpuScene.Geometries()[DUMP_RECORD];
+		want.unused[0] = want.unused[1] = 0;
+		want.textures[5] = want.textures[6] = want.textures[7] = 0;
+		Check( memcmp( &read[rays.size() * 128], &want, sizeof( want ) ) == 0 && want.textures[DIFFUSE] == gpu.textures.SampledView( diffuse, textureKind_t::TEX_2D ).index,
+			"RtLoadGeometry reads every field of gpuSceneGeometry_t" );
+	}
+
+	gpu.WaitIdle();
+	gpu.srvPool.Free( resultsUav );
+	gpu.samplers.Release( linearSampler );
+	gpu.buffers.Destroy( joints );
+	gpu.textures.Destroy( diffuse );
+	gpu.textures.Destroy( specular );
+	gpu.textures.Destroy( alpha );
 	CheckNoLayerErrors( gpu );
 }
 
@@ -7356,6 +7708,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_RtBlasCache", OnGpu<RtBlasCache> },
 	{ "Warp_RtSkin", OnWarp<RtSkin> },
 	{ "Gpu_RtSkin", OnGpu<RtSkin> },
+	{ "Warp_RtHit", OnWarp<RtHit> },
+	{ "Gpu_RtHit", OnGpu<RtHit> },
 	{ "Gpu_HdrScene", OnGpu<HdrScene> },
 	{ "Warp_HdrCopies", OnWarp<HdrCopiesAllSamples> },
 	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },

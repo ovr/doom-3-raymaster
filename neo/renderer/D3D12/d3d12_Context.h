@@ -44,7 +44,10 @@
 	      ├── idD3D12DrawRecorder             clears and draws into the open pass: Prepare, Reserve, Record
 	      ├── idD3D12ResourcePool             the render graph's transient textures and buffers, kept 30 frames unused
 	      ├── idD3D12RenderGraph              the post-process passes: culling, transient resources, barriers
-	      └── idD3D12HdrPipeline              R13: the HDR scene's resolve on the graph, the combine LUT, the tonemap
+	      ├── idD3D12HdrPipeline              R13: the HDR scene's resolve on the graph, the combine LUT, the tonemap
+	      ├── idD3D12GpuScene                 R15: the geometry records in a DEFAULT buffer, kept by the updates
+	      ├── idD3D12RayTracing               R15: the BLAS cache, the skinned BLAS and the TLAS, built on the graph
+	      └── idD3D12RtPasses                 R15: the passes that trace them (r_rtDebug)
 
 	Sync points: every wait is explicit, and everything that frees or reuses memory reads
 	idD3D12Queue::Waited(), never the fence, so two runs record the same commands.
@@ -71,6 +74,7 @@
 #include "d3d12_Programs.h"
 #include "d3d12_RayTracing.h"
 #include "d3d12_RenderGraph.h"
+#include "d3d12_RtPasses.h"
 #include "d3d12_Textures.h"
 #include "d3d12_Timers.h"
 
@@ -119,6 +123,8 @@ public:
 	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport );
 	// R15, in a frame: ends the pass; an applied update builds the acceleration structures.
 	[[nodiscard]] bool				UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats );
+	// After the resolve: r_rtDebug's rays over viewport of the output, nothing while the last update was refused.
+	void							DrawRayTracingDebug( const rtDebugView_t & view, const renderRect_t & viewport );
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	void							PushGroup( const char * name );			// r_pix 2, in a frame
@@ -162,6 +168,7 @@ public:
 	idD3D12HdrPipeline				hdr;
 	idD3D12GpuScene					gpuScene;
 	idD3D12RayTracing				rayTracing;
+	idD3D12RtPasses					rtPasses;
 
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );

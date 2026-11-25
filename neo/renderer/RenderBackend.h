@@ -154,7 +154,10 @@ If you have questions concerning this license or the applicable additional terms
 		otherwise, after a texture a record names was destroyed, or on a lost device it returns false, keeps nothing
 		the passes may trace this frame, and shared code sends a full update next. An applied update builds the
 		acceleration structures of its instances (an instance whose BLAS waits for a later frame is left out) and
-		fills stats; the no-op builds nothing.
+		fills stats; the no-op builds nothing. A triangle's front face is the side Doom 3 draws (clockwise in
+		GL's window). After the resolve, DrawRayTracingDebug traces a ray per pixel of the main view against
+		what the last applied update built and draws what it hits over the output; it draws nothing while the
+		scene is refused.
 
 ===============================================================================
 */
@@ -251,6 +254,8 @@ public:
 	virtual void			DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {}
 	// R15, in a frame, with caps.rayTracing. Ends the pass of a pipeline backend.
 	[[nodiscard]] virtual bool	UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats ) { return false; }
+	// R15, after the resolve: r_rtDebug's view over the viewport of the output.
+	virtual void			DrawRayTracingDebug( const rtDebugView_t & view, const renderRect_t & viewport ) {}
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,
