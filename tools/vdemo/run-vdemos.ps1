@@ -6,7 +6,8 @@
 Runs the visual demos (base/vdemos/*.vdemo) in a retail install and collects their frames.
 
 .DESCRIPTION
-Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir and base/vdemos into the game dir
+Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir, base/vdemos and our own maps
+(base/maps/rt/*.map, which the demos compile with their build directive; stale .map files there are removed) into the game dir
 (with -Api d3d12 also base/shaders, the HLSL that DXC compiles), starts the game in a 1280x720 window with an isolated fs_savepath (the
 real config in Saved Games is never read or written), runs "vdemo <demos> quit" and copies into
 -OutDir: the frames and vdemo.json of every demo, run.json,
@@ -31,6 +32,7 @@ anything, 2 when the game timed out, crashed, exited with a nonzero code or ran 
 tools\vdemo\run-vdemos.ps1 -OutDir research\vdemo\baseline
 tools\vdemo\run-vdemos.ps1 -OutDir build\vdemo\run2 -Demos 01_camera,04_lighting -NoDeploy
 tools\vdemo\run-vdemos.ps1 -Api d3d12 -DebugLevel 1 -OutDir build\vdemo\d3d12 -Demos 01_camera -ExtraArgs '+set','r_testClearPattern','1'
+tools\vdemo\run-vdemos.ps1 -Api d3d12 -GameDir testing_rt -BuildDir build\rt-demo-bin -OutDir build\vdemo\rt -Demos 20_rt_gallery
 #>
 [CmdletBinding()]
 param(
@@ -83,9 +85,12 @@ function Get-LineCount( [string] $path, [string] $pattern ) {
 if ( -not $BuildDir ) { $BuildDir = Join-Path $repoRoot 'build\vs2022-x64\bin\Release' }
 if ( -not $GameDir ) { $GameDir = Join-Path ( Get-MainCheckout ) 'testing_1' }
 if ( -not $SavePath ) { $SavePath = Join-Path $repoRoot 'build\vdemo-save' }
-if ( -not [System.IO.Path]::IsPathRooted( $OutDir ) ) { $OutDir = Join-Path ( Get-Location ) $OutDir }
-$OutDir = [System.IO.Path]::GetFullPath( $OutDir )
-$SavePath = [System.IO.Path]::GetFullPath( $SavePath )
+# relative to this shell's location, not to the process's working directory
+foreach ( $name in 'OutDir', 'GameDir', 'BuildDir', 'SavePath' ) {
+	$value = Get-Variable $name -ValueOnly
+	if ( -not [System.IO.Path]::IsPathRooted( $value ) ) { $value = Join-Path ( Get-Location ) $value }
+	Set-Variable $name ( [System.IO.Path]::GetFullPath( $value ) )
+}
 
 if ( Get-Process -Name 'Doom3BFG' -ErrorAction SilentlyContinue ) {
 	Write-Error 'Doom3BFG.exe is running; close it first (this script never stops a game it did not start).'
@@ -115,6 +120,11 @@ if ( -not $NoDeploy ) {
 	New-Item -ItemType Directory -Force $vdemoTarget | Out-Null
 	Get-ChildItem $vdemoTarget -Filter '*.vdemo' | Remove-Item -Force
 	Copy-Item ( Join-Path $repoRoot 'base\vdemos\*.vdemo' ) $vdemoTarget -Force
+	# our own maps, which the demos compile with their build directive
+	$mapTarget = Join-Path $GameDir 'base\maps\rt'
+	New-Item -ItemType Directory -Force $mapTarget | Out-Null
+	Get-ChildItem $mapTarget -Filter '*.map' | Remove-Item -Force
+	Copy-Item ( Join-Path $repoRoot 'base\maps\rt\*.map' ) $mapTarget -Force
 	# GL compiles the GLSL baked into the packs and reads no loose file
 	if ( $Api -eq 'd3d12' ) {
 		# the HLSL DXC compiles, with its include folder; a file an older deploy left is removed
@@ -122,7 +132,7 @@ if ( -not $NoDeploy ) {
 		if ( Test-Path $shaderTarget ) { Remove-Item -Recurse -Force $shaderTarget }
 		Copy-Item ( Join-Path $repoRoot 'base\shaders' ) $shaderTarget -Recurse -Force
 	}
-	Write-Host "deployed $BuildDir and base\vdemos to $GameDir"
+	Write-Host "deployed $BuildDir, base\vdemos and base\maps\rt to $GameDir"
 }
 
 # the save path is ours only: a marker file guards against wiping anything else

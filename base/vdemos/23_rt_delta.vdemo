@@ -1,0 +1,27 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 23_rt_delta: delta1, five stops for reflections: the white-lit stairs over a grate floor, the orange corridor
+# with its wall lamps, the red room, the Mars landscape through a window, the teal panels.
+map game/delta1
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# stairs: a dolly over the grate floor
+at 1 setviewpos -48 -424 294 90
+move 1 300 forward=5 pitch=2
+# orange corridor: a pan along the wall lamps
+at 301 setviewpos 1668 1042 12 50
+move 301 600 yaw=-8 pitch=2
+# red room: a pan over the grate floor
+at 601 setviewpos 312 -2750 70 185
+move 601 900 yaw=-8 pitch=2
+# window: a pan over the Mars landscape
+at 901 setviewpos -544 -1024 489 200
+move 901 1200 yaw=-8 pitch=1
+# teal panels: a pan over the lit floor
+at 1201 setviewpos 2792 -272 46 335
+move 1201 1500 yaw=-8 pitch=2
+end 1500
+capture 5 1500 every=10 fps=60

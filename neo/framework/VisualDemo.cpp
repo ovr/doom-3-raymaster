@@ -41,6 +41,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "VisualDemo.h"
 #include "../renderer/RenderBackend.h"
+#include "../../editor/compilers/MapCompiler.h"
 
 /*
 ===============================================================================
@@ -56,6 +57,8 @@ If you have questions concerning this license or the applicable additional terms
 	starts with '#' or '//' is a comment. Tic 0 is the first game tic after the map load.
 
 	map <map>					the map to load, as for the map command (game/mars_city1)
+	build						dmap the map first when fs_savepath has no .proc of it or an older one
+								(a map of our own; it needs set fs_resourceLoadPriority 0)
 	set <cvar> <value>			set before the map loads, restored when the demo ends
 	at <tic> <command>			one console command, run just before game tic <tic>
 	move <from> <to> <keys>		scripted input for tics from..to-1; overlapping moves add up
@@ -128,6 +131,29 @@ constexpr int		EXPECTED_HEIGHT = 720;
 	return static_cast<int>( msec * vdemo_timeoutScale.GetFloat() );
 }
 
+// The build directive, before the load timeout starts. Two compiles of one map give the same bytes, so a demo
+// frames the same whether it compiled or not.
+[[nodiscard]] bool BuildMap( const idStr & map ) {
+	const ID_TIME_T source = fileSystem->GetTimestamp( va( "maps/%s.map", map.c_str() ) );
+	const ID_TIME_T compiled = fileSystem->GetTimestamp( va( "maps/%s.proc", map.c_str() ) );
+	if ( source == FILE_NOT_FOUND_TIMESTAMP ) {
+		common->Warning( "vdemo: build: there is no maps/%s.map", map.c_str() );
+		return false;
+	}
+	if ( compiled != FILE_NOT_FOUND_TIMESTAMP && compiled >= source ) {
+		return true;
+	}
+	compileOptions_t options;
+	options.mapName = map;
+	compileResult_t result;
+	if ( !CompileMap( options, result ) ) {
+		common->Warning( "vdemo: build: dmap %s %s", map.c_str(), ( result.status == compileStatus_t::LEAKED ) ? "leaks" : result.error.c_str() );
+		return false;
+	}
+	common->Printf( "vdemo: build: dmap %s, %d areas, %d portals, %.1f seconds\n", map.c_str(), result.areas, result.portals, result.seconds );
+	return true;
+}
+
 struct cvarSetting_t {
 	idStr		name;
 	idStr		value;
@@ -189,6 +215,7 @@ struct capture_t {
 struct demo_t {
 	idStr							name;
 	idStr							map;
+	bool							build = false;
 	int								endTic = -1;
 	std::vector<cvarSetting_t>		cvars;
 	std::vector<timedCommand_t>		commands;
@@ -503,6 +530,7 @@ private:
 	enum class state_t {
 		IDLE,
 		NEXT_DEMO,
+		UNLOADING,		// a build waits for the map before it to go: the compiler shares the collision manager
 		LOADING,
 		RUNNING,
 		DRAINING
@@ -516,6 +544,7 @@ private:
 	void			StartRun( std::vector<idStr> names, bool quit );
 	void			FinishRun();
 	void			BeginDemo();
+	void			LoadMap();
 	void			EndDemo( const char * status );
 
 	void			SetCVar( const char * name, const char * value );
@@ -607,6 +636,15 @@ void idVisualDemoLocal::RunFrame( bool gameRunning, int numGameFrames, float ren
 
 	if ( state == state_t::NEXT_DEMO ) {
 		BeginDemo();
+	}
+
+	if ( state == state_t::UNLOADING ) {
+		if ( !common->IsMapSpawned() ) {
+			LoadMap();
+		} else if ( now - stateStartTime > ScaledTimeoutMsec( LOAD_TIMEOUT_MSEC ) ) {
+			common->Warning( "vdemo %s: the map before it did not unload", demo.name.c_str() );
+			EndDemo( "unload timeout" );
+		}
 	}
 
 	if ( state == state_t::LOADING ) {
@@ -911,6 +949,11 @@ bool idVisualDemoLocal::ParseLine( const char * file, int lineNum, const char * 
 			return fail( "usage: map <map>" );
 		}
 		out.map = words[1];
+	} else if ( idStr::Icmp( op, "build" ) == 0 ) {
+		if ( numWords != 1 ) {
+			return fail( "usage: build" );
+		}
+		out.build = true;
 	} else if ( idStr::Icmp( op, "set" ) == 0 ) {
 		if ( numWords != 3 ) {
 			return fail( "usage: set <cvar> <value>, quote a value with spaces" );
@@ -1150,6 +1193,28 @@ void idVisualDemoLocal::BeginDemo() {
 	}
 	for ( const cvarSetting_t & setting : demo.cvars ) {
 		SetCVar( setting.name, setting.value );
+	}
+	if ( demo.build && common->IsMapSpawned() ) {
+		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "disconnect\n" );
+		stateStartTime = Sys_Milliseconds();
+		state = state_t::UNLOADING;
+		return;
+	}
+	LoadMap();
+}
+
+/*
+========================
+idVisualDemoLocal::LoadMap
+========================
+*/
+void idVisualDemoLocal::LoadMap() {
+	const idStr & name = demo.name;
+	if ( demo.build && !BuildMap( demo.map ) ) {
+		results.back().status = "build failed";
+		nextDemo++;
+		state = state_t::NEXT_DEMO;
+		return;
 	}
 
 	// frames of an earlier run with other capture windows would mix in

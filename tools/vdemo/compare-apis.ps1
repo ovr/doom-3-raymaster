@@ -19,7 +19,8 @@ then checks:
 The summary is printed and written to <OutRoot>\d3d12-<Stage>-summary.md.
 
 -Api opengl runs the same gate on OpenGL, a check of the tools themselves (no GBV there).
--ExtraArgs go to every run.
+-ExtraArgs go to every run. -GameDir (the install) and -BuildDir (the binaries) go to run-vdemos.ps1,
+which picks its defaults when they are not given.
 -Layer <name> takes the "args" of that layer of -Bars into every run, runs OpenGL with them as the
 baseline (<OutRoot>\opengl-<Stage>-<name>) instead of -Baseline, and checks the layer's bars.
 
@@ -33,6 +34,7 @@ Exit code 0 when every check passed, 1 otherwise.
 tools\vdemo\compare-apis.ps1 -Stage s8 -Demos _x4_gui -Layer clear -Gbv
 tools\vdemo\compare-apis.ps1 -Stage selftest -Demos 01_camera,_x4_gui -Api opengl
 tools\vdemo\compare-apis.ps1 -Stage h6 -Demos 01_camera,04_lighting -Hdr -Gbv
+tools\vdemo\compare-apis.ps1 -Stage rt1 -Demos 20_rt_gallery -Hdr -GameDir testing_rt -BuildDir build\rt-demo-bin
 #>
 [CmdletBinding()]
 param(
@@ -45,7 +47,9 @@ param(
 	[string] $Baseline,
 	[string] $Bars,
 	[string] $Layer,
-	[string] $OutRoot
+	[string] $OutRoot,
+	[string] $GameDir,
+	[string] $BuildDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,6 +91,8 @@ function Invoke-Run( [string] $name, [hashtable] $options, [string] $runApi = $A
 	$options['Api'] = $runApi
 	$options['Demos'] = $Demos
 	$options['ExtraArgs'] = $ExtraArgs
+	if ( $GameDir ) { $options['GameDir'] = $GameDir }
+	if ( $BuildDir ) { $options['BuildDir'] = $BuildDir }
 	$code = 2
 	try {
 		# to the host: what the script writes must not become the return value of this function

@@ -1,0 +1,28 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 25_rt_caverns: caverns1, five stops, the flashlight on from the second: the storage room on a grate floor, the
+# catwalk, the orange-lit grate floor by the railing, the lockers under a red light, the lava under the catwalk.
+map game/caverns1
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# storage room: a dolly over the grate floor
+at 1 setviewpos 1688 576 -1114 0
+move 1 300 forward=6 pitch=1
+# catwalk: the flashlight on, a pan along the railing
+at 301 setviewpos -1880 856 230 340
+move 301 600 yaw=8 pitch=3
+impulse 311 16
+# railing: a dolly over the orange-lit grate floor
+at 601 setviewpos -2508 -4151 3302 270
+move 601 900 forward=3 pitch=2
+# lockers: a pan under the red light
+at 901 setviewpos -1532 -4656 3302 245
+move 901 1200 yaw=-8 pitch=2
+# lava: a pan over the lava under the catwalk
+at 1201 setviewpos -1688 288 -114 290
+move 1201 1500 yaw=-8 pitch=3
+end 1500
+capture 5 1500 every=10 fps=60

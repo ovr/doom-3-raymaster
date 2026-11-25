@@ -1,0 +1,28 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 21_rt_marscity: mars_city2, five stops for reflections: the washroom mirror over the sinks (under a light the demo adds),
+# the blue office over a grate floor, the infirmary window, the orange-lit corridor with the blood-stained floor, the crate room.
+map game/mars_city2
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# washroom: a slide along the mirror over the sinks
+at 1 setviewpos -2530 -1190 228 148
+move 1 300 right=6 yaw=13 pitch=2
+at 1 spawn light origin "-2490 -1114 270" light_radius "320 320 150" _color "0.85 0.85 0.8" name rt_washroom_light
+# office: a pan over the monitors and the grate floor
+at 301 setviewpos -1248 -676 230 110
+move 301 600 yaw=-8 pitch=2
+# infirmary: a pan across the window
+at 601 setviewpos -2560 -2816 262 15
+move 601 900 yaw=-6 pitch=1
+# orange-lit corridor: a pan over the blood-stained floor
+at 901 setviewpos -3192 -2900 258 110
+move 901 1200 yaw=-8 pitch=3
+# crate room: a dolly toward the crate
+at 1201 setviewpos -1864 -1534 238 0
+move 1201 1500 forward=4 pitch=2
+end 1500
+capture 5 1500 every=10 fps=60
