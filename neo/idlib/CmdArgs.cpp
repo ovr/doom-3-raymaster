@@ -117,10 +117,12 @@ void idCmdArgs::TokenizeString( const char *text, bool keepAsStrings ) {
 	}
 
 	lex.LoadMemory( text, idStr::Length( text ), "idCmdSystemLocal::TokenizeString" );
+	// without ALLOWNUMBERNAMES "vdemo 20_rt_gallery" is the two arguments 20 and _rt_gallery
 	lex.SetFlags( LEXFL_NOERRORS
 				| LEXFL_NOWARNINGS
 				| LEXFL_NOSTRINGCONCAT
 				| LEXFL_ALLOWPATHNAMES
+				| LEXFL_ALLOWNUMBERNAMES
 				| LEXFL_NOSTRINGESCAPECHARS
 				| LEXFL_ALLOWIPADDRESSES | ( keepAsStrings ? LEXFL_ONLYSTRINGS : 0 ) );
 

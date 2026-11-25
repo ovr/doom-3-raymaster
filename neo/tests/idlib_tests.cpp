@@ -1376,6 +1376,29 @@ TEST( Interp_ViewAttachedPose ) {
 /*
 ===============================================================================
 
+	Console tokenizer: a name may start with digits, numbers keep their sign.
+
+===============================================================================
+*/
+
+TEST( CmdArgs_Tokenize ) {
+	idCmdArgs args;
+	args.TokenizeString( "vdemo 20_rt_gallery 01_camera quit", false );
+	CHECK( args.Argc() == 4, "argc %d", args.Argc() );
+	CHECK( idStr::Cmp( args.Argv( 1 ), "20_rt_gallery" ) == 0, "'%s'", args.Argv( 1 ) );
+	CHECK( idStr::Cmp( args.Argv( 2 ), "01_camera" ) == 0, "'%s'", args.Argv( 2 ) );
+
+	args.TokenizeString( "setviewpos -384 120.5 0 90 \"a b\" maps/rt/gallery 1.cfg", false );
+	const char * const expected[] = { "setviewpos", "-384", "120.5", "0", "90", "a b", "maps/rt/gallery", "1.cfg" };
+	CHECK( args.Argc() == 8, "argc %d", args.Argc() );
+	for ( int i = 0; i < Min( args.Argc(), 8 ); i++ ) {
+		CHECK( idStr::Cmp( args.Argv( i ), expected[i] ) == 0, "argv %d '%s'", i, args.Argv( i ) );
+	}
+}
+
+/*
+===============================================================================
+
 	Global operator new and delete: every form must come from Heap.cpp, and only its
 	_aligned_malloc blocks padded to 16 pass _aligned_msize, the CRT's new doesn't.
 
