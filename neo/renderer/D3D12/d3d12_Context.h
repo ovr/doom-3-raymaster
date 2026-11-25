@@ -110,6 +110,11 @@ public:
 	// The gamma composite of the view inside viewport: to the scene's sRGB encoding or back.
 	void							SetHdrSceneGamma( bool gamma, const renderRect_t & viewport );
 	[[nodiscard]] std::optional<hdrExposure_t>	LastHdrExposure() const;
+	// R14, in the HDR scene's linear phase: the viewport of the G-buffer cleared, then the draws go there.
+	[[nodiscard]] bool				BeginGBuffer( const renderRect_t & viewport );
+	void							EndGBuffer();
+	// After the resolve: one target of the G-buffer over viewport of the output (r_gbufferDebug).
+	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport );
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	void							PushGroup( const char * name );			// r_pix 2, in a frame

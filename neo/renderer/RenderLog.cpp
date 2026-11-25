@@ -87,6 +87,7 @@ static constexpr const char * RenderPassName( const renderLogMainBlock_t pass ) 
 		case MRB_NONE:						return "None";
 		case MRB_BEGIN_DRAWING_VIEW:		return "Begin drawing view";
 		case MRB_FILL_DEPTH_BUFFER:			return "Fill depth buffer";
+		case MRB_GBUFFER:					return "G-buffer";
 		case MRB_DRAW_INTERACTIONS:			return "Interactions";
 		case MRB_STENCIL_SHADOWS:			return "Stencil shadows";
 		case MRB_LIGHT_INTERACTIONS:		return "Light interactions";

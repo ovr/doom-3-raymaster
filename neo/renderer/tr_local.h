@@ -34,6 +34,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderState.h"
 #include "RenderBackendTypes.h"
 #include "PostProcessSettings.h"
+#include "RayTracingSettings.h"
 #include "ScreenRect.h"
 #include "ImageOpts.h"
 #include "Image.h"
@@ -105,6 +106,7 @@ struct drawSurf_t {
 	vertCacheHandle_t		ambientCache;		// idDrawVert
 	vertCacheHandle_t		shadowCache;		// idShadowVert / idShadowVertSkinned
 	vertCacheHandle_t		jointCache;			// idJointMat
+	int						prevJointRow;		// with jointCache: the float4 row of the previous frame's joints (0: none kept)
 	const viewEntity_t *	space;
 	const idMaterial *		material;			// may be NULL for shadow volumes
 	uint64					extraGLState;		// Extra GL state |'d with material->stage[].drawStateBits
@@ -277,6 +279,11 @@ public:
 	bool					dynamicModelBlended = false;		// dynamicModel is drawn between pose[0] and pose[1]
 	float					dynamicModelBlendAlpha = 0.0f;		// at this alpha
 
+	// the G-buffer's motion (R_EntityMotion): the drawn modelMatrix of motionFrame and of the frame before it
+	float					motionMatrix[16] = {};
+	float					motionPrevMatrix[16] = {};
+	int						motionFrame = -1;		// tr.frameCount of motionMatrix; -1 none yet
+
 
 	// the local bounds used to place entityRefs, either from parms for dynamic entities, or a model bounds
 	idBounds				localReferenceBounds;	
@@ -387,6 +394,7 @@ struct viewEntity_t {
 		
 	float					modelMatrix[16];		// local coords to global coords
 	float					modelViewMatrix[16];	// local coords to eye coords
+	float					prevModelMatrix[16];	// with viewDef->rayTracing.gbuffer: the previous frame's modelMatrix
 
 	idRenderMatrix			mvp;
 
@@ -435,6 +443,7 @@ struct viewDef_t {
 												// of the plane is the visible side
 	idScreenRect		viewport;				// in real pixels and proper Y flip
 	postProcessSettings_t	postProcess;		// R_DefaultPostProcessSettings; the back end reads the main view's
+	rayTracingSettings_t	rayTracing;			// R_DefaultRayTracingSettings; the same
 
 	idScreenRect		scissor;
 	// for scissor clipping, local inside renderView viewport
@@ -670,6 +679,17 @@ struct hdrLastResolve_t {
 	bool				valid;
 };
 
+// The camera of the main view's last G-buffer, per eye: the camera's motion for the next one (R14).
+struct gbufferLastView_t {
+	idRenderMatrix		projection;
+	float				worldModelView[16];
+	int					viewID;
+	int					frame;					// rayTracingSettings_t::frameCount of the view
+	int					width;
+	int					height;
+	bool				valid;
+};
+
 struct backEndState_t {
 	const viewDef_t	*	viewDef;
 	backEndCounters_t	pc;
@@ -680,7 +700,9 @@ struct backEndState_t {
 	bool				currentRenderCopied;	// true if any material has already referenced _currentRender
 	bool				hdrPhase;				// BeginHdrScene .. ResolveHdrScene: the colour parms decode from sRGB (R13)
 	bool				hdrGamma;				// in hdrPhase, the gamma composite: they do not
+	bool				gbufferView;			// the view being drawn is the HDR main view and writes the G-buffer (R14)
 	hdrLastResolve_t	hdrLastResolve;
+	gbufferLastView_t	gbufferLast[2];
 
 	idRenderMatrix		prevMVP[2];				// world MVP from previous frame for motion blur, per-eye
 
@@ -882,6 +904,8 @@ extern idCVar r_hdrGammaBlend;
 
 // The r_hdr* cvars as settings, which RenderScene copies into the view.
 postProcessSettings_t R_DefaultPostProcessSettings();
+// The r_gbuffer* and r_rt* cvars, and whether the main view writes the G-buffer at all.
+rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & postProcess );
 extern idCVar r_flareSize;					// scale the flare deforms from the material def
 
 extern idCVar r_gamma;						// changes gamma tables

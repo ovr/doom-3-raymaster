@@ -871,6 +871,200 @@ static void RB_SetupInteractionStage( const shaderStage_t *surfaceStage, const f
 }
 
 /*
+=========================================================================================
+
+THE THIN G-BUFFER (R14)
+
+=========================================================================================
+*/
+
+// The first bump and specular stage that is on, as RB_RenderInteractions reads them; without one, flat or black.
+struct gbufferMaterial_t {
+	idImage *	bump;
+	idImage *	specular;
+	idVec4		bumpMatrix[2] = { idVec4( 1, 0, 0, 0 ), idVec4( 0, 1, 0, 0 ) };
+	idVec4		specularMatrix[2] = { idVec4( 1, 0, 0, 0 ), idVec4( 0, 1, 0, 0 ) };
+	idVec4		specularColor = vec4_zero;
+};
+
+static gbufferMaterial_t RB_GBufferMaterial( const idMaterial & shader, const float * regs ) {
+	gbufferMaterial_t material;
+	material.bump = globalImages->flatNormalMap;
+	material.specular = globalImages->blackImage;
+	if ( shader.GetFastPathBumpImage() != nullptr && !r_skipInteractionFastPath.GetBool() ) {
+		material.bump = shader.GetFastPathBumpImage();
+		if ( shader.GetFastPathSpecularImage() != nullptr ) {
+			material.specular = shader.GetFastPathSpecularImage();
+			material.specularColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+		}
+		return material;
+	}
+	const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	bool bump = false;
+	bool specular = false;
+	for ( int i = 0; i < shader.GetNumStages() && !( bump && specular ); i++ ) {
+		const shaderStage_t * stage = shader.GetStage( i );
+		if ( regs[stage->conditionRegister] == 0 || stage->texture.image == nullptr ) {
+			continue;
+		}
+		if ( stage->lighting == SL_BUMP && !bump ) {
+			material.bump = stage->texture.image;
+			RB_SetupInteractionStage( stage, regs, nullptr, material.bumpMatrix, nullptr );
+			bump = true;
+		} else if ( stage->lighting == SL_SPECULAR && !specular ) {
+			material.specular = stage->texture.image;
+			RB_SetupInteractionStage( stage, regs, white, material.specularMatrix, material.specularColor.ToFloatPtr() );
+			specular = true;
+		}
+	}
+	return material;
+}
+
+// The previous MVP in the order of R_AddSingleModel's, so a still entity under a still camera has no motion to the bit.
+static void RB_SetGBufferSpace( const viewEntity_t & space, const idRenderMatrix & prevProjection, const float prevWorldModelView[16] ) {
+	RB_SetMVP( space.mvp );
+	float modelMatrixTranspose[16];
+	R_MatrixTranspose( space.modelMatrix, modelMatrixTranspose );
+	SetVertexParms( RENDERPARM_MODELMATRIX_X, modelMatrixTranspose, 4 );
+
+	const float * prevModelMatrix = ( space.entityDef != nullptr ) ? space.prevModelMatrix : space.modelMatrix;
+	float prevModelView[16];
+	R_MatrixMultiply( prevModelMatrix, prevWorldModelView, prevModelView );
+	idRenderMatrix prevView;
+	idRenderMatrix::Transpose( *reinterpret_cast<const idRenderMatrix *>( prevModelView ), prevView );
+	idRenderMatrix prevMvp;
+	idRenderMatrix::Multiply( prevProjection, prevView, prevMvp );
+	SetVertexParms( RENDERPARM_PREVMVPMATRIX_X, prevMvp[0], 4 );
+}
+
+// The depth pass's polygon offset of a surface its generic path draws, and whether that path draws it at all.
+static bool RB_GBufferDepthOffset( const idMaterial & shader, const float * regs, uint64 & stateBits ) {
+	int stage = 0;
+	while ( stage < shader.GetNumStages() && regs[shader.GetStage( stage )->conditionRegister] == 0 ) {
+		stage++;
+	}
+	if ( stage == shader.GetNumStages() ) {
+		return false;
+	}
+	bool offset = shader.TestMaterialFlag( MF_POLYGONOFFSET );
+	float units = shader.GetPolygonOffset();
+	if ( shader.Coverage() == MC_PERFORATED ) {
+		// the first alpha-tested stage it draws; none drawn of those it tried is no depth at all
+		bool tried = false;
+		bool drawn = false;
+		for ( stage = 0; stage < shader.GetNumStages() && !drawn; stage++ ) {
+			const shaderStage_t * pStage = shader.GetStage( stage );
+			if ( !pStage->hasAlphaTest || regs[pStage->conditionRegister] == 0 ) {
+				continue;
+			}
+			tried = true;
+			if ( regs[pStage->color.registers[3]] <= 0.0f ) {
+				continue;
+			}
+			drawn = true;
+			if ( pStage->privatePolygonOffset ) {
+				offset = true;
+				units = pStage->privatePolygonOffset;
+			}
+		}
+		if ( tried && !drawn ) {
+			return false;
+		}
+	}
+	if ( offset ) {
+		stateBits |= GLS_POLYGON_OFFSET;
+		renderBackend->PolygonOffset( r_offsetFactor.GetFloat(), r_offsetUnits.GetFloat() * units );
+	}
+	return true;
+}
+
+/*
+=====================
+RB_FillGBuffer
+
+The surfaces of the depth pass again, depth-equal without depth writes, into the thin G-buffer: each with the
+depth pass's matrix, cull and polygon offset lands on its own depth. The motion is from the previous frame's
+camera and model matrix (and joints) to this one's.
+=====================
+*/
+static void RB_FillGBuffer( drawSurf_t ** drawSurfs, int numDrawSurfs ) {
+	const viewDef_t * viewDef = backEnd.viewDef;
+	const idScreenRect & v = viewDef->viewport;
+	if ( !renderBackend->BeginGBuffer( { v.x1, v.y1, v.GetWidth(), v.GetHeight() } ) ) {
+		renderBackend->EndGBuffer();
+		return;
+	}
+	renderLog.OpenMainBlock( MRB_GBUFFER );
+	renderLog.OpenBlock( "RB_FillGBuffer" );
+
+	// the camera of the main view's last G-buffer when that was the frame before, else this one: no camera motion
+	gbufferLastView_t & last = backEnd.gbufferLast[( viewDef->renderView.viewEyeBuffer == 1 ) ? 1 : 0];
+	const bool moving = last.valid && last.viewID == viewDef->renderView.viewID && last.frame == viewDef->rayTracing.frameCount - 1
+		&& last.width == v.GetWidth() && last.height == v.GetHeight();
+	const idRenderMatrix & prevProjection = moving ? last.projection : viewDef->projectionRenderMatrix;
+	const float * prevWorldModelView = moving ? last.worldModelView : viewDef->worldSpace.modelViewMatrix;
+
+	backEnd.currentSpace = nullptr;
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t * surf = drawSurfs[i];
+		const idMaterial & shader = *surf->material;
+		if ( shader.Coverage() == MC_TRANSLUCENT ) {
+			continue;
+		}
+		const float * regs = surf->shaderRegisters;
+		const bool subview = ( shader.GetSort() == static_cast<float>( SS_SUBVIEW ) );
+		uint64 stateBits = GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL;
+		if ( ( subview || shader.Coverage() == MC_PERFORATED ) && !RB_GBufferDepthOffset( shader, regs, stateBits ) ) {
+			continue;
+		}
+		if ( surf->space != backEnd.currentSpace ) {
+			RB_SetGBufferSpace( *surf->space, prevProjection, prevWorldModelView );
+			backEnd.currentSpace = surf->space;
+		}
+
+		const gbufferMaterial_t material = RB_GBufferMaterial( shader, regs );
+		SetVertexParm( RENDERPARM_BUMPMATRIX_S, material.bumpMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_BUMPMATRIX_T, material.bumpMatrix[1].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_SPECULARMATRIX_S, material.specularMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_SPECULARMATRIX_T, material.specularMatrix[1].ToFloatPtr() );
+		SetFragmentParm( RENDERPARM_SPECULARMODIFIER, RB_ColorParm( material.specularColor ).ToFloatPtr() );
+
+		// a mirror, the weapon and GUIs must not reflect the scene again
+		const bool reflects = !subview && !surf->space->weaponDepthHack && !surf->space->isGuiSurface;
+		const bool twoSided = ( shader.GetCullType() == CT_TWO_SIDED ) || surf->space->isGuiSurface;
+		const float gbufferParms[4] = { viewDef->rayTracing.gloss, static_cast<float>( ( reflects ? 1 : 0 ) | ( twoSided ? 2 : 0 ) ),
+			v.GetWidth() * 0.5f, v.GetHeight() * 0.5f };
+		SetFragmentParm( RENDERPARM_GBUFFER, gbufferParms );
+		if ( surf->jointCache ) {
+			const float jointMotion[4] = { static_cast<float>( surf->prevJointRow ), 0.0f, 0.0f, 0.0f };
+			SetVertexParm( RENDERPARM_JOINTMOTION, jointMotion );
+			renderProgManager.BindShader_GBufferSkinned();
+		} else {
+			renderProgManager.BindShader_GBuffer();
+		}
+		material.bump->Bind( 0 );
+		material.specular->Bind( 1 );
+		renderBackend->State( stateBits );
+
+		renderLog.OpenBlock( shader.GetName() );
+		RB_DrawElementsWithCounters( surf );
+		renderLog.CloseBlock();
+	}
+	renderBackend->EndGBuffer();
+
+	last.projection = viewDef->projectionRenderMatrix;
+	memcpy( last.worldModelView, viewDef->worldSpace.modelViewMatrix, sizeof( last.worldModelView ) );
+	last.viewID = viewDef->renderView.viewID;
+	last.frame = viewDef->rayTracing.frameCount;
+	last.width = v.GetWidth();
+	last.height = v.GetHeight();
+	last.valid = true;
+
+	renderLog.CloseBlock();
+	renderLog.CloseMainBlock();
+}
+
+/*
 =================
 RB_DrawSingleInteraction
 =================
@@ -2417,6 +2611,9 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool d
 	// fill the depth buffer and clear color buffer to black except on subviews
 	//-------------------------------------------------
 	RB_FillDepthBufferFast( drawSurfs, numDrawSurfs );
+	if ( backEnd.gbufferView && viewDef->viewEntitys != nullptr && numDrawSurfs > 0 ) {
+		RB_FillGBuffer( drawSurfs, numDrawSurfs );
+	}
 
 	//-------------------------------------------------
 	// main light renderer
@@ -2696,6 +2893,7 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	backEnd.pc.c_surfaces += backEnd.viewDef->numDrawSurfs;
 
 	// render the scene
+	backEnd.gbufferView = hdrMainView && backEnd.hdrPhase && backEnd.viewDef->rayTracing.gbuffer;
 	RB_DrawViewInternal( cmd->viewDef, stereoEye, !hdrMainView );
 
 	// motion blur is in HDR: the resolve comes after it
@@ -2709,8 +2907,12 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		renderLog.CloseMainBlock();
 		backEnd.hdrPhase = false;
 		backEnd.hdrGamma = false;
+		if ( backEnd.gbufferView ) {
+			renderBackend->DrawGBufferDebug( backEnd.viewDef->rayTracing.gbufferDebug, { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
+		}
 		RB_RenderDebugTools( (drawSurf_t **)&backEnd.viewDef->drawSurfs[0], backEnd.viewDef->numDrawSurfs );
 	}
+	backEnd.gbufferView = false;
 
 	// optionally draw a box colored based on the eye number
 	if ( r_drawEyeColor.GetBool() ) {

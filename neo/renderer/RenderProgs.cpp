@@ -123,10 +123,14 @@ void idRenderProgManager::Init() {
 	common->Printf( "----- Initializing Render Shaders -----\n" );
 
 	builtinShaders.fill( -1 );
-	// the vertex-only programs after every other builtin, as the stage and program indexes always were
-	for ( const bool fragment : { true, false } ) {
+	// the vertex-only programs after the others, as the stage and program indexes always were; the gbuffer
+	// ones last, so every other index is the same on each backend
+	const bool gbuffer = ( renderBackend != nullptr ) && renderBackend->Caps().gbuffer;
+	enum class phase_t { FRAGMENT, VERTEX_ONLY, GBUFFER };
+	for ( const phase_t phase : { phase_t::FRAGMENT, phase_t::VERTEX_ONLY, phase_t::GBUFFER } ) {
 		for ( const renderProgDef_t & program : R_RenderProgs() ) {
-			if ( program.builtin == renderProgBuiltin_t::NONE || program.fragment != fragment ) {
+			const phase_t programPhase = program.gbuffer ? phase_t::GBUFFER : ( program.fragment ? phase_t::FRAGMENT : phase_t::VERTEX_ONLY );
+			if ( program.builtin == renderProgBuiltin_t::NONE || programPhase != phase || ( program.gbuffer && !gbuffer ) ) {
 				continue;
 			}
 			LoadBuiltin( program, false );
@@ -142,23 +146,26 @@ void idRenderProgManager::Init() {
 	cmdSystem->AddCommand( "renderProgInfo", R_RenderProgInfo_f, CMD_FL_RENDERER, "lists what the render backend reported for every loaded program; renderProgInfo <file> writes it to fs_savepath" );
 }
 
-// A builtin with both stages has the same index in the stage lists and the program list.
+// A builtin's program has its vertex stage's index (BindShader takes it as the program). The fragment list
+// lacks the vertex-only programs, so a builtin loaded after them has a smaller fragment index.
 void idRenderProgManager::LoadBuiltin( const renderProgDef_t & program, bool skinned ) {
 	const idStr name = R_RenderProgStageName( program, skinned );
 	int & index = builtinShaders[static_cast<size_t>( skinned ? program.skinned : program.builtin )];
 	if ( !program.fragment ) {
 		index = FindVertexShader( name );
-		FindGLSLProgram( name, index, -1 );
+		[[maybe_unused]] const int programIndex = FindGLSLProgram( name, index, -1 );
+		assert( programIndex == index );
 		return;
 	}
 	index = vertexShaders.Append( NewVertexShader( name ) );
 	fragmentShader_t fragment;
 	fragment.name = name;
-	fragmentShaders.Append( fragment );
-	renderProgs.Append( renderProg_t() );
+	const int fragmentIndex = fragmentShaders.Append( fragment );
+	[[maybe_unused]] const int programIndex = renderProgs.Append( renderProg_t() );
+	assert( programIndex == index );
 	LoadVertexShader( index );
-	LoadFragmentShader( index );
-	LoadGLSLProgram( index, index, index );
+	LoadFragmentShader( fragmentIndex );
+	LoadGLSLProgram( index, index, fragmentIndex );
 }
 
 // Its joint use from the program table: shared code binds the joints and rpEnableSkinning by it.

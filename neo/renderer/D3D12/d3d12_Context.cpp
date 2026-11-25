@@ -389,6 +389,47 @@ void idD3D12Context::EndHdrScene() {
 	}
 }
 
+bool idD3D12Context::BeginGBuffer( const renderRect_t & viewport ) {
+	if ( !hdrScene || recorder.HdrGamma() || device.IsLost() ) {
+		return false;
+	}
+	recorder.EndPass();
+	if ( !scene.EnsureGBuffer() ) {
+		return false;
+	}
+	const D3D12_RECT rect = { Max( viewport.x, 0 ), Max( viewport.y, 0 ), Min( viewport.x + viewport.width, scene.Width() ),
+		Min( viewport.y + viewport.height, scene.Height() ) };
+	if ( rect.right <= rect.left || rect.bottom <= rect.top ) {
+		return false;
+	}
+	scene.ClearGBuffer( barriers, List(), rect );
+	recorder.SetGBuffer( true );
+	return true;
+}
+
+void idD3D12Context::EndGBuffer() {
+	if ( recorder.GBuffer() ) {
+		recorder.SetGBuffer( false );
+	}
+}
+
+void idD3D12Context::DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {
+	if ( mode == gbufferDebug_t::NONE || device.IsLost() || !scene.GBuffer( 0 ).resource ) {
+		return;
+	}
+	recorder.EndPass();
+	std::array<d3d12Descriptor_t, idD3D12SceneTarget::GBUFFER_TARGETS> views;
+	for ( size_t i = 0; i < views.size(); i++ ) {
+		idD3D12SceneTarget::surface_t & target = scene.GBuffer( i );
+		barriers.Transition( *target.resource.Get(), target.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		views[i] = target.srv;
+	}
+	idD3D12SceneTarget::surface_t & color = scene.Color();
+	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	passes.GBufferDebug( views, scene.Samples(), mode, scene.Rtv( false ), scene.Target( false ), viewport );
+	recorder.Invalidate();
+}
+
 void idD3D12Context::CopyDepthToTexture( textureHandle_t texture, int x, int y, int width, int height ) {
 	if ( device.IsLost() ) {
 		return;

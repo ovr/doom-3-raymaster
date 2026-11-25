@@ -2282,6 +2282,11 @@ void idRenderModelStatic::PurgeModel() {
 		Mem_Free( jointsInverted );
 		jointsInverted = NULL;
 	}
+	if ( jointsMotion != nullptr ) {
+		Mem_Free( jointsMotion );
+		jointsMotion = nullptr;
+		jointsMotionFrame = -1;
+	}
 
 	purged = true;
 }

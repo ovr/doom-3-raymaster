@@ -194,6 +194,20 @@ postProcessSettings_t R_DefaultPostProcessSettings() {
 	return settings;
 }
 
+// RayTracingSettings.h: copied into every view like the post process settings
+idCVar r_gbufferDebug( "r_gbufferDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows the main view's thin G-buffer: 1 = the world normal, 2 = F0, 3 = the roughness, 4 = the motion (hue = direction, 8 pixels = full)", 0, 4 );
+idCVar r_gbufferGloss( "r_gbufferGloss", "1.2", CVAR_RENDERER | CVAR_FLOAT, "the G-buffer's gloss is the square root of the specular luminance times this; the roughness is 1 - gloss", 0.0f, 4.0f );
+
+rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & postProcess ) {
+	rayTracingSettings_t settings;
+	settings.gbufferDebug = static_cast<gbufferDebug_t>( r_gbufferDebug.GetInteger() );
+	settings.gloss = r_gbufferGloss.GetFloat();
+	settings.frameCount = tr.frameCount;
+	const bool available = ( renderBackend != nullptr ) && renderBackend->Caps().gbuffer && postProcess.hdr;
+	settings.gbuffer = available && settings.gbufferDebug != gbufferDebug_t::NONE;
+	return settings;
+}
+
 idCVar r_flareSize( "r_flareSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scale the flare deforms from the material def" ); 
 
 idCVar r_skipPrelightShadows( "r_skipPrelightShadows", "0", CVAR_RENDERER | CVAR_BOOL, "skip the dmap generated static shadow volumes" );

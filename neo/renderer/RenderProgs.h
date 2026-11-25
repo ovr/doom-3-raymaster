@@ -91,6 +91,9 @@ public:
 	void	BindShader_Bink() { BindShader_Builtin( renderProgBuiltin_t::BINK ); }
 	void	BindShader_BinkGUI() { BindShader_Builtin( renderProgBuiltin_t::BINK_GUI ); }
 	void	BindShader_MotionBlur() { BindShader_Builtin( renderProgBuiltin_t::MOTION_BLUR ); }
+	// caps.gbuffer only: without it Init made no such program
+	void	BindShader_GBuffer() { BindShader_Builtin( renderProgBuiltin_t::GBUFFER ); }
+	void	BindShader_GBufferSkinned() { BindShader_Builtin( renderProgBuiltin_t::GBUFFER_SKINNED ); }
 
 	// the joints buffer should only be bound for vertex programs that use joints
 	bool	ShaderUsesJoints() const { return vertexShaders[currentVertexShader].usesJoints; }

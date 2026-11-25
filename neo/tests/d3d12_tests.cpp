@@ -2021,7 +2021,10 @@ constexpr d3d12DepthBias_t TEST_BIAS = { -100, -2.0f };
 	}
 	put( depth.DepthBoundsTestEnable );
 	put( desc.topology );
-	put( desc.colorFormat );
+	put( desc.numTargets );
+	for ( uint32 i = 0; i < desc.numTargets; i++ ) {
+		put( desc.colorFormats[i] );
+	}
 	put( desc.sample.Count );
 	put( desc.sample.Quality );
 	put( desc.numInputs );
@@ -2201,9 +2204,14 @@ void Test_PipelineRaster() {
 	Check( D3D12_DepthBiasFor( -2.0f, -100.4f ) == d3d12DepthBias_t{ -100, -2.0f } && D3D12_DepthBiasFor( 1.5f, 2.5f ).bias == 3, "units round to an INT" );
 
 	const d3d12PipelineDesc_t plain = Desc( Key( 0, d3d12TargetId_t::Of( false, 1 ).value << D3D12_KEY_TARGET_SHIFT ) );
-	Check( plain.colorFormat == DXGI_FORMAT_R8G8B8A8_UNORM && plain.sample.Count == 1 && plain.sample.Quality == 0, "target 0: UNORM, one sample" );
+	Check( plain.numTargets == 1 && plain.colorFormats[0] == DXGI_FORMAT_R8G8B8A8_UNORM && plain.sample.Count == 1 && plain.sample.Quality == 0,
+		"target 0: UNORM, one sample" );
 	const d3d12PipelineDesc_t srgb = Desc( Key( 0, d3d12TargetId_t::Of( true, 4 ).value << D3D12_KEY_TARGET_SHIFT ) );
-	Check( srgb.colorFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && srgb.sample.Count == 4, "the target id: the sRGB view, 4 samples" );
+	Check( srgb.numTargets == 1 && srgb.colorFormats[0] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && srgb.sample.Count == 4,
+		"the target id: the sRGB view, 4 samples" );
+	const d3d12PipelineDesc_t gbuffer = Desc( Key( 0, D3D12_KeyRaster( d3d12TargetId_t::GBuffer( 2 ) ) ) );
+	Check( gbuffer.numTargets == 3 && gbuffer.colorFormats[0] == DXGI_FORMAT_R16G16_SNORM && gbuffer.colorFormats[1] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+		&& gbuffer.colorFormats[2] == DXGI_FORMAT_R16G16_FLOAT && gbuffer.sample.Count == 2, "the G-buffer: three targets, the scene's samples" );
 	Check( plain.raster.DepthClipEnable && !plain.raster.MultisampleEnable && !plain.raster.AntialiasedLineEnable, "depth clip, aliased lines" );
 }
 
@@ -2411,7 +2419,8 @@ void Test_PipelineJournal() {
 		&& read.EntriesFor( "interaction|interaction" )[0] == hdrEntry, "the HDR scene's bit 7 is read back" );
 }
 
-// Raster bits 3-5 and 7: every target id goes through the key and back; the HDR scene has no sRGB view.
+// Raster bits 3-5 and 7: every target id goes through the key and back; the HDR scene has no sRGB view, its bit is
+// the G-buffer's.
 void Test_PipelineTargetIds() {
 	for ( uint8 value = 0; value < d3d12TargetId_t::COUNT; value++ ) {
 		const d3d12TargetId_t id = { value };
@@ -2425,10 +2434,13 @@ void Test_PipelineTargetIds() {
 		const d3d12TargetId_t ldr = d3d12TargetId_t::Of( true, samples );
 		Check( !ldr.Hdr() && ldr.Srgb() && ldr.Samples() == samples && ldr.ColorView() == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
 			va( "the output of %u samples keeps its ids", samples ) );
+		const d3d12TargetId_t gbuffer = d3d12TargetId_t::GBuffer( samples );
+		Check( gbuffer.IsGBuffer() && !gbuffer.Hdr() && !gbuffer.Srgb() && gbuffer.Samples() == samples && gbuffer.NumTargets() == 3
+			&& !hdr.IsGBuffer() && !ldr.IsGBuffer() && ldr.NumTargets() == 1, va( "the G-buffer of %u samples is an id of its own", samples ) );
 	}
 	pipelineKey_t key = {};
 	key.raster = static_cast<uint8>( D3D12_KeyRaster( d3d12TargetId_t::Of( false, 2, true ) ) | ( 1 << D3D12_KEY_TARGET_SHIFT ) );
-	Check( D3D12_KeyTarget( D3D12_NormalizeKey( key ).raster ) == d3d12TargetId_t::Of( false, 2, true ), "the normalized key drops an sRGB bit under HDR" );
+	Check( D3D12_KeyTarget( D3D12_NormalizeKey( key ).raster ) == d3d12TargetId_t::GBuffer( 2 ), "the normalized key keeps the G-buffer's bit" );
 }
 
 // gui and shadow.vertex alone (no PS), from the repo's base/shaders.
@@ -5361,6 +5373,394 @@ void HdrScene( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+// ---- the thin G-buffer (R14) ----------------------------------------------------------------------------------
+
+// The G-buffer of a test scene, level 0 of each target as 32-bit texels; ends the pass and opens a new list.
+struct gbufferTexels_t {
+	std::vector<uint32>			normal;		// two SNORM16
+	std::vector<uint32>			material;	// RGBA8, rgb sRGB
+	std::vector<uint32>			motion;		// two halfs
+};
+
+[[nodiscard]] gbufferTexels_t ReadGBuffer( idTestGpu & gpu, idTestRecorder & fixture ) {
+	fixture.recorder.EndPass();
+	gbufferTexels_t texels;
+	std::vector<uint32> * const targets[] = { &texels.normal, &texels.material, &texels.motion };
+	for ( size_t i = 0; i < std::size( targets ); i++ ) {
+		idD3D12SceneTarget::surface_t & surface = fixture.scene.GBuffer( i );
+		*targets[i] = ReadTexels( gpu, *surface.resource.Get(), surface.state );
+	}
+	fixture.NewList();
+	return texels;
+}
+
+[[nodiscard]] idVec2 Snorm16Pair( uint32 texel ) {
+	return idVec2( Max( -1.0f, static_cast<int16>( texel & 0xFFFF ) / 32767.0f ), Max( -1.0f, static_cast<int16>( texel >> 16 ) / 32767.0f ) );
+}
+
+[[nodiscard]] idVec2 HalfPair( uint32 texel ) {
+	return idVec2( HalfToFloat( static_cast<uint16>( texel ) ), HalfToFloat( static_cast<uint16>( texel >> 16 ) ) );
+}
+
+// include/gbuffer.hlsli's EncodeOctahedral
+[[nodiscard]] idVec2 OctahedralRef( idVec3 n ) {
+	n /= idMath::Fabs( n.x ) + idMath::Fabs( n.y ) + idMath::Fabs( n.z );
+	if ( n.z >= 0.0f ) {
+		return idVec2( n.x, n.y );
+	}
+	return idVec2( ( 1.0f - idMath::Fabs( n.y ) ) * ( n.x >= 0.0f ? 1.0f : -1.0f ), ( 1.0f - idMath::Fabs( n.x ) ) * ( n.y >= 0.0f ? 1.0f : -1.0f ) );
+}
+
+// A vertex attribute as the program reads it: UNORM bytes, * 2 - 1.
+[[nodiscard]] idVec4 VertexDirection( const byte bytes[4] ) {
+	return idVec4( bytes[0] / 255.0f * 2.0f - 1.0f, bytes[1] / 255.0f * 2.0f - 1.0f, bytes[2] / 255.0f * 2.0f - 1.0f, bytes[3] / 255.0f * 2.0f - 1.0f );
+}
+
+// The opening of the G-buffer as idD3D12Context::BeginGBuffer does it, over the whole test scene.
+[[nodiscard]] bool BeginTestGBuffer( idTestGpu & gpu, idTestRecorder & fixture ) {
+	fixture.recorder.EndPass();
+	if ( !Check( fixture.scene.EnsureGBuffer(), "the G-buffer's surfaces" ) ) {
+		return false;
+	}
+	fixture.scene.ClearGBuffer( gpu.barriers, gpu.List(), { 0, 0, idTestRecorder::SIZE, idTestRecorder::SIZE } );
+	fixture.recorder.SetGBuffer( true );
+	return true;
+}
+
+// Quads over stripes of a quarter of the scene each, at z = 0, with a normal, a tangent and a joint (0, weight 1).
+struct gbufferQuads_t {
+	static constexpr int		STRIPES = 4;
+	std::array<idDrawVert, 4 * STRIPES>	verts;
+	std::array<triIndex_t, 6 * STRIPES>	indexes;
+
+	gbufferQuads_t() {
+		for ( int stripe = 0; stripe < STRIPES; stripe++ ) {
+			const float left = -1.0f + 2.0f * stripe / STRIPES;
+			const float right = left + 2.0f / STRIPES;
+			const float corners[4][2] = { { left, -1.0f }, { right, -1.0f }, { right, 1.0f }, { left, 1.0f } };
+			for ( int i = 0; i < 4; i++ ) {
+				idDrawVert & vert = verts[stripe * 4 + i];
+				vert.Clear();
+				vert.xyz.Set( corners[i][0], corners[i][1], 0.0f );
+				vert.SetTexCoord( 0.5f, 0.5f );
+				vert.SetNormal( 0.0f, 0.0f, 1.0f );
+				vert.SetTangent( 1.0f, 0.0f, 0.0f );
+				vert.SetBiTangentSign( 1.0f );
+				vert.color2[0] = 255;
+			}
+			constexpr triIndex_t QUAD[6] = { 0, 1, 2, 0, 2, 3 };
+			for ( int i = 0; i < 6; i++ ) {
+				indexes[stripe * 6 + i] = static_cast<triIndex_t>( stripe * 4 + QUAD[i] );
+			}
+		}
+	}
+};
+
+/*
+	gbuffer.vfp, depth-equal over the depth of depth.vfp, in the HDR scene's linear phase; stripes of 16 columns:
+
+	  0  a bump texel tilted along the tangent, a model matrix turned 90 degrees about z, a specular map of sRGB
+	     128 times ( 1, 0.5, 0.25 ), gloss 1.2: the world normal, F0 and roughness; the previous MVP is this one
+	  1  the same, but it must not reflect (F0 0, roughness 1); the previous MVP a quarter of clip space to the
+	     left: 8 pixels of motion to the right
+	  2  drawn by the G-buffer only: no depth of its own, so depth-equal leaves the cleared zeros
+	  3  drawn by neither
+*/
+void GBuffer( idTestGpu & gpu ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	constexpr int STRIPE = SIZE / gbufferQuads_t::STRIPES;
+	constexpr float GLOSS = 1.2f;
+	constexpr byte BUMP[4] = { 0, 128, 0, 204 };		// wy: x 0.3 and y about 0 in tangent space
+	constexpr byte SPECULAR[4] = { 128, 128, 128, 255 };
+	const idVec4 specularModifier( 1.0f, 0.5f, 0.25f, 1.0f );
+	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const programHandle_t depth = fixture.Program( "depth" );
+	const programHandle_t gbuffer = fixture.Program( "gbuffer" );
+	const d3d12Program_t * linked = fixture.shaders.FindProgram( gbuffer );
+	if ( !Check( linked != nullptr && fixture.shaders.FindProgram( depth ) != nullptr, "depth and gbuffer" )
+			|| !Check( linked->info.samplerMask == 3 && !linked->info.usesJoints, "gbuffer samples slots 0 and 1, no joints" ) ) {
+		return;
+	}
+	const auto texture = [&]( const byte texel[4], const char * name ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, name );
+		gpu.textures.Upload( handle, 0, 0, 1, 1, texel, 0 );
+		return handle;
+	};
+	const textureHandle_t bump = texture( BUMP, "test bump" );
+	const textureHandle_t specular = texture( SPECULAR, "test specular" );
+
+	const gbufferQuads_t quads;
+	fixture.NewList();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	const bufferHandle_t vertexBuffer = fixture.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( quads.verts ) ),
+		quads.verts.data() );
+	const bufferHandle_t indexBuffer = fixture.buffers.Create( bufferType_t::INDEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( quads.indexes ) ),
+		quads.indexes.data() );
+	if ( !Check( fixture.scene.Color( true ).resource != nullptr && vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE,
+			"the HDR scene and the quads" ) ) {
+		return;
+	}
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	for ( int row = 0; row < 4; row++ ) {
+		parms[RENDERPARM_MVPMATRIX_X + row][row] = 1.0f;
+		parms[RENDERPARM_PREVMVPMATRIX_X + row][row] = 1.0f;
+	}
+	parms[RENDERPARM_MODELMATRIX_X].Set( 0.0f, -1.0f, 0.0f, 0.0f );	// 90 degrees about z
+	parms[RENDERPARM_MODELMATRIX_Y].Set( 1.0f, 0.0f, 0.0f, 0.0f );
+	parms[RENDERPARM_MODELMATRIX_Z].Set( 0.0f, 0.0f, 1.0f, 0.0f );
+	parms[RENDERPARM_BUMPMATRIX_S].Set( 1.0f, 0.0f, 0.0f, 0.0f );
+	parms[RENDERPARM_BUMPMATRIX_T].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+	parms[RENDERPARM_SPECULARMATRIX_S] = parms[RENDERPARM_BUMPMATRIX_S];
+	parms[RENDERPARM_SPECULARMATRIX_T] = parms[RENDERPARM_BUMPMATRIX_T];
+	parms[RENDERPARM_GLOBALEYEPOS].Set( 0.0f, 0.0f, 10.0f, 1.0f );
+	parms[RENDERPARM_SPECULARMODIFIER] = specularModifier;
+	renderLatch_t latch;
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	latch.textures[0][static_cast<size_t>( textureKind_t::TEX_2D )] = bump;
+	latch.textures[1][static_cast<size_t>( textureKind_t::TEX_2D )] = specular;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.numIndexes = 6;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	const auto draw = [&]( int stripe, programHandle_t program, uint64 stateBits ) {
+		latch.program = program;
+		latch.stateBits = stateBits;
+		pipelineKey_t key = {};
+		key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+		key.layout = LAYOUT_DRAW_VERT;
+		dc.indexOffset = stripe * 6 * static_cast<int>( sizeof( triIndex_t ) );
+		fixture.recorder.Draw( latch, key, dc );
+	};
+
+	fixture.recorder.SetHdr( true, 1.0f );
+	clearDesc_t clear = {};
+	clear.rect = latch.viewport;
+	clear.color = clear.depth = clear.stencil = true;
+	clear.colorWriteMask = 0xF;
+	renderLatch_t clearLatch = latch;
+	clearLatch.stateBits = 0;
+	fixture.recorder.Clear( clearLatch, clear );
+	draw( 0, depth, GLS_DEFAULT );
+	draw( 1, depth, GLS_DEFAULT );
+	if ( !BeginTestGBuffer( gpu, fixture ) ) {
+		return;
+	}
+	constexpr uint64 EQUAL = GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL;
+	const float halfSize = SIZE * 0.5f;
+	parms[RENDERPARM_GBUFFER].Set( GLOSS, 1.0f, halfSize, halfSize );
+	draw( 0, gbuffer, EQUAL );
+	parms[RENDERPARM_GBUFFER].Set( GLOSS, 0.0f, halfSize, halfSize );
+	parms[RENDERPARM_PREVMVPMATRIX_X].Set( 1.0f, 0.0f, 0.0f, -0.25f );
+	draw( 1, gbuffer, EQUAL );
+	draw( 2, gbuffer, EQUAL );
+	fixture.recorder.SetGBuffer( false );
+	const d3d12DrawStats_t stats = fixture.recorder.TakeStats();
+	Check( stats.draws == 5 && stats.skipped == 0 && stats.unboundSlots == 0, va( "%d draws, %d skipped, %d unbound", stats.draws, stats.skipped,
+		stats.unboundSlots ) );
+
+	// the expected values, as the program computes them
+	const idVec4 vNormal = VertexDirection( quads.verts[0].normal );
+	const idVec4 vTangent = VertexDirection( quads.verts[0].tangent );
+	const idVec3 vBinormal = vNormal.ToVec3().Cross( vTangent.ToVec3() ) * vTangent.w;
+	idVec3 local( BUMP[3] / 255.0f - 0.5f, BUMP[1] / 255.0f - 0.5f, 0.0f );
+	local.z = idMath::Sqrt( idMath::Fabs( local.x * local.x + local.y * local.y - 0.25f ) );
+	local.Normalize();
+	const idVec3 model = vTangent.ToVec3() * local.x + vBinormal * local.y + vNormal.ToVec3() * local.z;
+	idVec3 world( -model.y, model.x, model.z );
+	world.Normalize();
+	const idVec2 normal = OctahedralRef( world );
+	idVec3 f0;
+	for ( int i = 0; i < 3; i++ ) {
+		f0[i] = idMath::ClampFloat( 0.0f, 1.0f, R_SRGBToLinear( SPECULAR[i] / 255.0f ) * specularModifier[i] );
+	}
+	const float gloss = idMath::ClampFloat( 0.0f, 1.0f, idMath::Sqrt( f0.x * 0.2126f + f0.y * 0.7152f + f0.z * 0.0722f ) * GLOSS );
+	const auto encode = [&]( float linear ) { return static_cast<int>( idMath::Floor( R_LinearToSRGB( linear ) * 255.0f + 0.5f ) ); };
+	const std::array<int, 4> material = { encode( f0.x ), encode( f0.y ), encode( f0.z ),
+		static_cast<int>( idMath::Floor( ( 1.0f - gloss ) * 255.0f + 0.5f ) ) };
+
+	const gbufferTexels_t texels = ReadGBuffer( gpu, fixture );
+	if ( !Check( texels.normal.size() == static_cast<size_t>( SIZE ) * SIZE && texels.material.size() == texels.normal.size()
+			&& texels.motion.size() == texels.normal.size(), "the G-buffer is read" ) ) {
+		return;
+	}
+	const auto byteNear = []( uint32 texel, const std::array<int, 4> & expected ) {
+		for ( int channel = 0; channel < 4; channel++ ) {
+			if ( std::abs( static_cast<int>( ( texel >> ( channel * 8 ) ) & 0xFF ) - expected[channel] ) > 1 ) {
+				return false;
+			}
+		}
+		return true;
+	};
+	struct stripe_t {
+		const char *			what;
+		bool					surface;
+		std::array<int, 4>		material;
+		idVec2					motion;
+	};
+	const std::array<stripe_t, gbufferQuads_t::STRIPES> expected = { {
+		{ "a still reflecting surface", true, material, idVec2( 0.0f, 0.0f ) },
+		{ "a moving surface that does not reflect", true, { 0, 0, 0, 255 }, idVec2( 8.0f, 0.0f ) },
+		{ "no depth of its own", false, { 0, 0, 0, 0 }, idVec2( 0.0f, 0.0f ) },
+		{ "not drawn", false, { 0, 0, 0, 0 }, idVec2( 0.0f, 0.0f ) },
+	} };
+	for ( int stripe = 0; stripe < gbufferQuads_t::STRIPES; stripe++ ) {
+		const stripe_t & want = expected[stripe];
+		int wrongNormal = 0;
+		int wrongMaterial = 0;
+		int wrongMotion = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = stripe * STRIPE; column < ( stripe + 1 ) * STRIPE; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				wrongNormal += ( want.surface ? Snorm16Pair( texels.normal[at] ).Compare( normal, 2e-4f ) : texels.normal[at] == 0 ) ? 0 : 1;
+				wrongMaterial += byteNear( texels.material[at], want.material ) ? 0 : 1;
+				// the motion of a still surface is zero to the bit
+				wrongMotion += ( want.motion.x == 0.0f ? texels.motion[at] == 0 : HalfPair( texels.motion[at] ).Compare( want.motion, 1e-2f ) ) ? 0 : 1;
+			}
+		}
+		const size_t first = static_cast<size_t>( stripe ) * STRIPE;
+		Check( wrongNormal == 0, va( "stripe %d, %s: %d normals wrong (%s, not %s)", stripe, want.what, wrongNormal,
+			Snorm16Pair( texels.normal[first] ).ToString( 4 ), want.surface ? normal.ToString( 4 ) : "zero" ) );
+		Check( wrongMaterial == 0, va( "stripe %d, %s: %d F0 and roughness wrong (%08x, not %02x%02x%02x%02x)", stripe, want.what, wrongMaterial,
+			texels.material[first], want.material[3], want.material[2], want.material[1], want.material[0] ) );
+		Check( wrongMotion == 0, va( "stripe %d, %s: %d motions wrong (%s, not %s)", stripe, want.what, wrongMotion,
+			HalfPair( texels.motion[first] ).ToString( 3 ), want.motion.ToString( 3 ) ) );
+	}
+	fixture.recorder.SetHdr( false, 1.0f );
+	fixture.recorder.EndPass();
+	gpu.WaitIdle();
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	gpu.textures.Destroy( bump );
+	gpu.textures.Destroy( specular );
+	CheckNoLayerErrors( gpu );
+}
+
+/*
+	gbuffer_skinned depth-equal over the depth of depth_skinned with the same joints, so the two skin to the bit.
+	One block of joints: the current one (the identity) at row 0, the previous one a quarter of clip space to the
+	left at row 16. Stripe 0 names row 16: 8 pixels of motion to the right; stripe 1 names row 0: none.
+*/
+void MotionVectors( idTestGpu & gpu ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	constexpr int STRIPE = SIZE / gbufferQuads_t::STRIPES;
+	constexpr int PREVIOUS_ROW = 16;
+	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const programHandle_t depth = fixture.Program( "depth_skinned" );
+	const programHandle_t gbuffer = fixture.Program( "gbuffer_skinned" );
+	const d3d12Program_t * linked = fixture.shaders.FindProgram( gbuffer );
+	if ( !Check( linked != nullptr && fixture.shaders.FindProgram( depth ) != nullptr, "depth_skinned and gbuffer_skinned" )
+			|| !Check( linked->info.usesJoints, "gbuffer_skinned reads joints" ) ) {
+		return;
+	}
+	const gbufferQuads_t quads;
+	std::array<idVec4, 2 * PREVIOUS_ROW> joints;
+	joints.fill( vec4_zero );
+	for ( int block = 0; block < 2; block++ ) {
+		idVec4 * rows = &joints[block * PREVIOUS_ROW];
+		rows[0].Set( 1.0f, 0.0f, 0.0f, ( block == 0 ) ? 0.0f : -0.25f );
+		rows[1].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+		rows[2].Set( 0.0f, 0.0f, 1.0f, 0.0f );
+	}
+	fixture.NewList();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	const bufferHandle_t vertexBuffer = fixture.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( quads.verts ) ),
+		quads.verts.data() );
+	const bufferHandle_t indexBuffer = fixture.buffers.Create( bufferType_t::INDEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( quads.indexes ) ),
+		quads.indexes.data() );
+	const bufferHandle_t jointBuffer = fixture.buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, static_cast<int>( sizeof( joints ) ), joints.data() );
+	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && jointBuffer != bufferHandle_t::NONE, "the buffers" ) ) {
+		return;
+	}
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	for ( int row = 0; row < 4; row++ ) {
+		parms[RENDERPARM_MVPMATRIX_X + row][row] = 1.0f;
+		parms[RENDERPARM_PREVMVPMATRIX_X + row][row] = 1.0f;
+	}
+	for ( int row = 0; row < 3; row++ ) {
+		parms[RENDERPARM_MODELMATRIX_X + row][row] = 1.0f;
+	}
+	parms[RENDERPARM_GBUFFER].Set( 1.0f, 1.0f, SIZE * 0.5f, SIZE * 0.5f );
+	renderLatch_t latch;
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.jointBuffer = jointBuffer;
+	dc.numJoints = 2;
+	dc.numIndexes = 6;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	const auto draw = [&]( int stripe, programHandle_t program, uint64 stateBits ) {
+		latch.program = program;
+		latch.stateBits = stateBits;
+		pipelineKey_t key = {};
+		key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+		key.layout = LAYOUT_DRAW_VERT;
+		dc.indexOffset = stripe * 6 * static_cast<int>( sizeof( triIndex_t ) );
+		fixture.recorder.Draw( latch, key, dc );
+	};
+
+	fixture.recorder.SetHdr( true, 1.0f );
+	clearDesc_t clear = {};
+	clear.rect = latch.viewport;
+	clear.color = clear.depth = clear.stencil = true;
+	clear.colorWriteMask = 0xF;
+	renderLatch_t clearLatch = latch;
+	clearLatch.stateBits = 0;
+	fixture.recorder.Clear( clearLatch, clear );
+	draw( 0, depth, GLS_DEFAULT );
+	draw( 1, depth, GLS_DEFAULT );
+	if ( !BeginTestGBuffer( gpu, fixture ) ) {
+		return;
+	}
+	parms[RENDERPARM_JOINTMOTION].Set( static_cast<float>( PREVIOUS_ROW ), 0.0f, 0.0f, 0.0f );
+	draw( 0, gbuffer, GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL );
+	parms[RENDERPARM_JOINTMOTION] = vec4_zero;
+	draw( 1, gbuffer, GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL );
+	fixture.recorder.SetGBuffer( false );
+
+	const gbufferTexels_t texels = ReadGBuffer( gpu, fixture );
+	if ( Check( texels.motion.size() == static_cast<size_t>( SIZE ) * SIZE && texels.normal.size() == texels.motion.size(), "the G-buffer is read" ) ) {
+		const std::array<idVec2, 2> expected = { idVec2( 8.0f, 0.0f ), idVec2( 0.0f, 0.0f ) };
+		for ( int stripe = 0; stripe < 2; stripe++ ) {
+			int uncovered = 0;
+			int wrong = 0;
+			for ( int row = 0; row < SIZE; row++ ) {
+				for ( int column = stripe * STRIPE; column < ( stripe + 1 ) * STRIPE; column++ ) {
+					const size_t at = static_cast<size_t>( row ) * SIZE + column;
+					uncovered += ( texels.normal[at] == 0 ) ? 1 : 0;
+					wrong += ( stripe == 1 ? texels.motion[at] == 0 : HalfPair( texels.motion[at] ).Compare( expected[stripe], 1e-2f ) ) ? 0 : 1;
+				}
+			}
+			const size_t first = static_cast<size_t>( stripe ) * STRIPE;
+			Check( uncovered == 0, va( "stripe %d: %d texels failed depth-equal against depth_skinned", stripe, uncovered ) );
+			Check( wrong == 0, va( "stripe %d: %d motions wrong (%s, not %s)", stripe, wrong, HalfPair( texels.motion[first] ).ToString( 3 ),
+				expected[stripe].ToString( 3 ) ) );
+		}
+	}
+	fixture.recorder.SetHdr( false, 1.0f );
+	fixture.recorder.EndPass();
+	gpu.WaitIdle();
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	fixture.buffers.Destroy( jointBuffer );
+	CheckNoLayerErrors( gpu );
+}
+
 // A float copy of the HDR scene keeps its values; an LDR copy of the output into the same texture is UNORM as
 // before; switching between the two formats swaps the spare in and creates nothing.
 void HdrCopies( idTestGpu & gpu, UINT samples ) {
@@ -6435,6 +6835,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_RenderGraph", OnGpu<RenderGraph> },
 	{ "Hdr_Settings", Test_HdrSettings },
 	{ "Warp_HdrScene", OnWarp<HdrScene> },
+	{ "Warp_GBuffer", OnWarp<GBuffer> },
+	{ "Warp_MotionVectors", OnWarp<MotionVectors> },
 	{ "Gpu_HdrScene", OnGpu<HdrScene> },
 	{ "Warp_HdrCopies", OnWarp<HdrCopiesAllSamples> },
 	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },

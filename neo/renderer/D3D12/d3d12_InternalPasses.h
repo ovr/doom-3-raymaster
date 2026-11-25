@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "../RayTracingSettings.h"
 #include "d3d12_Output.h"
 #include "d3d12_Pipelines.h"
 #include "d3d12_HlslCompiler.h"
@@ -57,6 +58,10 @@ public:
 	// into the whole width x height R32_FLOAT target (in RENDER_TARGET), rows in order. Texels outside the scene read 0.
 	void							CopyDepth( d3d12Descriptor_t depthSrv, UINT samples, D3D12_CPU_DESCRIPTOR_HANDLE target, int x, int y,
 										int width, int height );
+	// r_gbufferDebug: a target of the G-buffer (its views, in PIXEL_SHADER_RESOURCE, sample 0) as colour over
+	// viewport of the target (in RENDER_TARGET), which has the G-buffer's size.
+	void							GBufferDebug( std::span<const d3d12Descriptor_t, idD3D12SceneTarget::GBUFFER_TARGETS> gbufferSrvs, UINT samples,
+										gbufferDebug_t mode, D3D12_CPU_DESCRIPTOR_HANDLE target, d3d12TargetId_t id, const renderRect_t & viewport );
 	// A stage of D3D12_InternalStages() by its name, after CreateDefaults; a fatal error for an unknown one.
 	[[nodiscard]] const d3d12HlslStage_t &	Stage( const char * name ) const;
 	// The triangle and pixelShader into one target of format, no blend, no depth: also the render graph's raster passes.
@@ -94,4 +99,5 @@ private:
 	std::array<idComPtr<ID3D12PipelineState>, 2>	depthCopy;	// [multisampled], on first use
 	std::array<idComPtr<ID3D12PipelineState>, d3d12TargetId_t::COUNT * 16>	maskedClear;	// [target id * 16 + mask], on first use
 	std::array<idComPtr<ID3D12PipelineState>, d3d12TargetId_t::COUNT * 2>	showImage;		// [target id * 2 + kind], on first use
+	std::array<idComPtr<ID3D12PipelineState>, d3d12TargetId_t::COUNT>	gbufferDebug;	// [target id], on first use
 };

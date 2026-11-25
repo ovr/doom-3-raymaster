@@ -1,0 +1,12 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# _x9_gbuffer: the G-buffer views (r_gbufferDebug) on 20_rt_gallery, another per room: normals, F0, roughness,
+# normals in the dark, motion among the monsters and the fan, F0 down the hall.
+include 20_rt_gallery
+set r_gbufferDebug 1
+at 420 r_gbufferDebug 2
+at 780 r_gbufferDebug 3
+at 1140 r_gbufferDebug 1
+at 1560 r_gbufferDebug 4
+at 1920 r_gbufferDebug 2

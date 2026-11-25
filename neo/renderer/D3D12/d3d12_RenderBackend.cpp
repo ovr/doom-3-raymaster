@@ -29,6 +29,7 @@ std::expected<void, idStr> idRenderBackendD3D12::Init( const renderBackendInit_t
 	caps.gpuTimer = context->timers.Available();
 	caps.timestamps = context->timers.Available();
 	caps.hdrScene = true;
+	caps.gbuffer = true;
 	context->textures.RecordUploads( r_d3d12CheckImages.GetBool() );
 	context->SetSrgb( srgbOutput );
 	context->SetGamma( gamma );
@@ -189,6 +190,18 @@ void idRenderBackendD3D12::EndHdrScene() {
 
 void idRenderBackendD3D12::SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) {
 	context->SetHdrSceneGamma( encoded, viewport );
+}
+
+bool idRenderBackendD3D12::BeginGBuffer( const renderRect_t & viewport ) {
+	return context->BeginGBuffer( viewport );
+}
+
+void idRenderBackendD3D12::EndGBuffer() {
+	context->EndGBuffer();
+}
+
+void idRenderBackendD3D12::DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {
+	context->DrawGBufferDebug( mode, viewport );
 }
 
 std::optional<hdrExposure_t> idRenderBackendD3D12::LastHdrExposure() const {

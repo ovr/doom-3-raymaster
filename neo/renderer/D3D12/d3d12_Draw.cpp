@@ -51,15 +51,31 @@ idD3D12DrawRecorder::idD3D12DrawRecorder( const idD3D12Device & owner, idD3D12Su
 }
 
 void idD3D12DrawRecorder::BeginPass( ID3D12GraphicsCommandList4 & list ) {
-	idD3D12SceneTarget::surface_t & color = scene.Color( hdr );
 	idD3D12SceneTarget::surface_t & depth = scene.Depth();
-	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	barriers.Transition( *depth.resource.Get(), depth.state, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-	barriers.Flush();
-	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = scene.Rtv( srgb, hdr );
 	const D3D12_CPU_DESCRIPTOR_HANDLE dsv = scene.Dsv();
-	list.OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
+	if ( gbuffer ) {
+		for ( size_t i = 0; i < idD3D12SceneTarget::GBUFFER_TARGETS; i++ ) {
+			idD3D12SceneTarget::surface_t & target = scene.GBuffer( i );
+			barriers.Transition( *target.resource.Get(), target.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		}
+		barriers.Flush();
+		const auto rtvs = scene.GBufferRtvs();
+		list.OMSetRenderTargets( static_cast<UINT>( rtvs.size() ), rtvs.data(), FALSE, &dsv );
+	} else {
+		idD3D12SceneTarget::surface_t & color = scene.Color( hdr );
+		barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		barriers.Flush();
+		const D3D12_CPU_DESCRIPTOR_HANDLE rtv = scene.Rtv( srgb, hdr );
+		list.OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
+	}
 	bound.passOpen = true;
+}
+
+void idD3D12DrawRecorder::SetGBuffer( bool enable ) {
+	assert( !enable || hdr );
+	EndPass();
+	gbuffer = enable;
 }
 
 // The target id in the key changes with the view, so the next draw binds a PSO of the other format.
@@ -74,6 +90,7 @@ void idD3D12DrawRecorder::SetHdr( bool enable, float scenePreExposure ) {
 	EndPass();
 	hdr = enable;
 	hdrGamma = false;
+	gbuffer = false;
 	preExposure = scenePreExposure;
 }
 
@@ -85,6 +102,10 @@ void idD3D12DrawRecorder::SetHdrGamma( bool enable ) {
 // The scene is in GL row order, so the rectangle of shared code is used as it is. glClear obeys
 // glDepthMask; the stencil write mask is never changed from 0xFF.
 void idD3D12DrawRecorder::Clear( const renderLatch_t & latch, const clearDesc_t & clear ) {
+	if ( gbuffer ) {
+		assert( false );	// R14: nothing clears between BeginGBuffer and EndGBuffer
+		return;
+	}
 	const int x0 = Max( clear.rect.x, 0 );
 	const int y0 = Max( clear.rect.y, 0 );
 	const int x1 = Min( clear.rect.x + clear.rect.width, scene.Width() );
@@ -174,7 +195,8 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 	prepared_t prepared;
 	pipelineKey_t key = sharedKey;
 	key.program = program.dense;
-	key.raster = static_cast<uint8>( key.raster | D3D12_KeyRaster( scene.Target( srgb, hdr ) ) );
+	const d3d12TargetId_t target = gbuffer ? d3d12TargetId_t::GBuffer( scene.Samples() ) : scene.Target( srgb, hdr );
+	key.raster = static_cast<uint8>( key.raster | D3D12_KeyRaster( target ) );
 	if ( ( latch.stateBits & GLS_POLYGON_OFFSET ) != 0 && dc.topology == primitive_t::TRIANGLES ) {
 		key.depthBias = pipelines.Bias().Slot( latch.polyOfsScale, latch.polyOfsBias );
 	}

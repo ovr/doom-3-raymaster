@@ -72,13 +72,16 @@ idD3D12SceneTarget::idD3D12SceneTarget( const idD3D12Device & owner, idD3D12Grav
 	rtvUnorm = rtvPool.Allocate();
 	rtvSrgb = rtvPool.Allocate();
 	rtvHdr = rtvPool.Allocate();
+	for ( d3d12Descriptor_t & rtv : rtvGBuffer ) {
+		rtv = rtvPool.Allocate();
+	}
 	dsv = dsvPool.Allocate();
 }
 
 // The RTVs and the DSV are rewritten in their slots, a recorded list keeps what it was given. A submitted list
 // reads the SRVs from the shader-visible heap when it runs: each new resource takes new SRV slots.
 void idD3D12SceneTarget::Create( int newWidth, int newHeight, UINT sampleCount ) {
-	for ( surface_t * surface : { &color, &depth, &resolved, &hdrColor, &hdrResolved } ) {
+	for ( surface_t * surface : { &color, &depth, &resolved, &hdrColor, &hdrResolved, &gbuffer[0], &gbuffer[1], &gbuffer[2] } ) {
 		graveyard.Bury( std::move( surface->resource ) );
 		if ( surface->srv.IsValid() ) {
 			graveyard.Bury( srvPool, surface->srv );
@@ -122,6 +125,45 @@ void idD3D12SceneTarget::EnsureHdr( idD3D12Barriers & barriers, idD3D12Submitter
 	barriers.Transition( *hdrColor.resource.Get(), hdrColor.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	barriers.Flush();
 	submitter.List().ClearRenderTargetView( Rtv( false, true ), CLEAR_COLOR, 0, nullptr );
+}
+
+// Not cleared here: BeginGBuffer clears the viewport it draws.
+bool idD3D12SceneTarget::EnsureGBuffer() {
+	static constexpr const wchar_t * NAMES[] = { L"doom3 G-buffer normal", L"doom3 G-buffer F0 roughness", L"doom3 G-buffer motion" };
+	static_assert( std::size( NAMES ) == GBUFFER_TARGETS );
+	for ( size_t i = 0; i < GBUFFER_TARGETS; i++ ) {
+		if ( gbuffer[i].resource ) {
+			continue;
+		}
+		const DXGI_FORMAT format = d3d12TargetId_t::GBUFFER_FORMATS[i];
+		CreateColor( gbuffer[i], format, samples, true, NAMES[i] );
+		if ( !gbuffer[i].resource ) {
+			return false;
+		}
+		D3D12_RENDER_TARGET_VIEW_DESC view = {};
+		view.Format = format;
+		view.ViewDimension = ( samples > 1 ) ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
+		device.Get().CreateRenderTargetView( gbuffer[i].resource.Get(), &view, rtvPool.Cpu( rtvGBuffer[i] ) );
+	}
+	return true;
+}
+
+std::array<D3D12_CPU_DESCRIPTOR_HANDLE, idD3D12SceneTarget::GBUFFER_TARGETS> idD3D12SceneTarget::GBufferRtvs() const {
+	std::array<D3D12_CPU_DESCRIPTOR_HANDLE, GBUFFER_TARGETS> rtvs;
+	for ( size_t i = 0; i < GBUFFER_TARGETS; i++ ) {
+		rtvs[i] = rtvPool.Cpu( rtvGBuffer[i] );
+	}
+	return rtvs;
+}
+
+void idD3D12SceneTarget::ClearGBuffer( idD3D12Barriers & barriers, ID3D12GraphicsCommandList4 & list, const D3D12_RECT & rect ) {
+	for ( surface_t & target : gbuffer ) {
+		barriers.Transition( *target.resource.Get(), target.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	}
+	barriers.Flush();
+	for ( const D3D12_CPU_DESCRIPTOR_HANDLE rtv : GBufferRtvs() ) {
+		list.ClearRenderTargetView( rtv, CLEAR_COLOR, 1, &rect );
+	}
 }
 
 void idD3D12SceneTarget::CreateColor( surface_t & surface, DXGI_FORMAT format, UINT sampleCount, bool renderTarget, const wchar_t * name ) {

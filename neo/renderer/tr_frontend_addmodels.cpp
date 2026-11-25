@@ -446,9 +446,27 @@ void R_SetupDrawSurfShader( drawSurf_t * drawSurf, const idMaterial * shader, co
 R_SetupDrawSurfJoints
 ===================
 */
+// The drawn joints, then those of the frame before: the block the model was last drawn with, when that was in the
+// frame before; else the drawn ones again (no motion). A model rebuilt within a frame keeps the frame's previous.
+static const idJointMat * R_JointsWithMotion( idRenderModelStatic & model, int bytes ) {
+	if ( model.jointsMotion == nullptr ) {
+		model.jointsMotion = static_cast<idJointMat *>( Mem_ClearedAlloc( bytes * 2, TAG_JOINTMAT ) );
+		model.jointsMotionFrame = -1;
+	}
+	byte * const current = reinterpret_cast<byte *>( model.jointsMotion );
+	if ( model.jointsMotionFrame != tr.frameCount ) {
+		const bool drawnBefore = ( model.jointsMotionFrame == tr.frameCount - 1 );
+		memcpy( current + bytes, drawnBefore ? current : reinterpret_cast<const byte *>( model.jointsInverted ), bytes );
+		model.jointsMotionFrame = tr.frameCount;
+	}
+	memcpy( current, model.jointsInverted, bytes );
+	return model.jointsMotion;
+}
+
 void R_SetupDrawSurfJoints( drawSurf_t * drawSurf, const srfTriangles_t * tri, const idMaterial * shader ) {
 	if ( tri->staticModelWithJoints == NULL || !r_useGPUSkinning.GetBool() ) {
 		drawSurf->jointCache = 0;
+		drawSurf->prevJointRow = 0;
 		return;
 	}
 
@@ -458,9 +476,30 @@ void R_SetupDrawSurfJoints( drawSurf_t * drawSurf, const srfTriangles_t * tri, c
 	// 0 = changed since the upload (InstantiateDynamicModel); CacheIsCurrent takes it for frame 0 of the 15-bit counter
 	if ( model->jointsInvertedBuffer == 0 || !vertexCache.CacheIsCurrent( model->jointsInvertedBuffer ) ) {
 		const int alignment = renderBackend->Caps().uniformBufferOffsetAlignment;
-		model->jointsInvertedBuffer = vertexCache.AllocJoint( model->jointsInverted, ALIGN( model->numInvertedJoints * sizeof( idJointMat ), alignment ) );
+		const int bytes = ALIGN( model->numInvertedJoints * static_cast<int>( sizeof( idJointMat ) ), alignment );
+		if ( tr.viewDef->rayTracing.gbuffer ) {
+			// the skinned programs read the first block as before; gbuffer_skinned the second too (R14)
+			model->jointsInvertedBuffer = vertexCache.AllocJoint( R_JointsWithMotion( *model, bytes ), bytes * 2 );
+			model->jointsMotionRow = bytes / static_cast<int>( sizeof( idVec4 ) );
+		} else {
+			model->jointsInvertedBuffer = vertexCache.AllocJoint( model->jointsInverted, bytes );
+			model->jointsMotionRow = 0;
+		}
 	}
 	drawSurf->jointCache = model->jointsInvertedBuffer;
+	drawSurf->prevJointRow = model->jointsMotionRow;
+}
+
+// The previous frame's drawn modelMatrix, updated once per frame whatever the views: an entity not drawn in the
+// frame before has none, and does not move.
+static void R_EntityMotion( idRenderEntityLocal & def, float prevModelMatrix[16] ) {
+	if ( def.motionFrame != tr.frameCount ) {
+		const bool drawnBefore = ( def.motionFrame == tr.frameCount - 1 );
+		memcpy( def.motionPrevMatrix, drawnBefore ? def.motionMatrix : def.modelMatrix, sizeof( def.motionPrevMatrix ) );
+		memcpy( def.motionMatrix, def.modelMatrix, sizeof( def.motionMatrix ) );
+		def.motionFrame = tr.frameCount;
+	}
+	memcpy( prevModelMatrix, def.motionPrevMatrix, sizeof( def.motionPrevMatrix ) );
 }
 
 /*
@@ -640,6 +679,11 @@ void R_AddSingleModel( viewEntity_t * vEntity ) {
 	vEntity->skipMotionBlur = renderEntity->skipMotionBlur;
 
 	memcpy( vEntity->modelMatrix, entityDef->modelMatrix, sizeof( vEntity->modelMatrix ) );
+	if ( viewDef->rayTracing.gbuffer ) {
+		R_EntityMotion( *entityDef, vEntity->prevModelMatrix );
+	} else {
+		memcpy( vEntity->prevModelMatrix, entityDef->modelMatrix, sizeof( vEntity->prevModelMatrix ) );
+	}
 	R_MatrixMultiply( entityDef->modelMatrix, viewDef->worldSpace.modelViewMatrix, vEntity->modelViewMatrix );
 
 	idRenderMatrix viewMat;
