@@ -82,6 +82,7 @@ public:
 	void							EndGBuffer() override;
 	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) override;
 	[[nodiscard]] bool				UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats ) override;
+	void							DrawRayTracingDebug( const rtDebugView_t & view, const renderRect_t & viewport ) override;
 	void							EndLevelLoad() override;			// r_d3d12CheckImages 1: d3d12_checkImages
 
 	bufferHandle_t					CreateBuffer( bufferType_t type, bufferUsage_t usage, int size, const void * data ) override;

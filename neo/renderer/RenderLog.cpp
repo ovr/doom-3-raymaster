@@ -100,6 +100,8 @@ static constexpr const char * RenderPassName( const renderLogMainBlock_t pass ) 
 		case MRB_CAPTURE_COLORBUFFER:		return "Framebuffer copies";
 		case MRB_POSTPROCESS:				return "Post process";
 		case MRB_HDR:						return "HDR resolve";
+		case MRB_RT_SCENE:					return "Ray tracing scene";
+		case MRB_RAY_TRACING:				return "Ray tracing";
 		case MRB_GPU_SYNC:					return "GPU sync";
 		case MRB_END_FRAME:					return "End frame";
 		case MRB_BINK_FRAME:				return "Bink frame";

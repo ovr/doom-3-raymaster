@@ -2877,6 +2877,25 @@ static hdrExposureStep_t RB_HdrExposureStep( const viewDef_t & viewDef, int ster
 	return step;
 }
 
+// The eye is where clip x, y and w are 0: column 2 of the inverse, whatever the projection (an eye of a stereo pair too).
+static rtDebugView_t RB_RayTracingDebugView( const viewDef_t & viewDef ) {
+	rtDebugView_t view;
+	view.mode = viewDef.rayTracing.rtDebug;
+	idRenderMatrix clipToWorld;
+	idRenderMatrix::Inverse( viewDef.worldSpace.mvp, clipToWorld );
+	for ( int row = 0; row < 4; row++ ) {
+		for ( int column = 0; column < 4; column++ ) {
+			view.clipToWorld[row][column] = clipToWorld[row][column];
+		}
+	}
+	const float w = ( clipToWorld[3][2] != 0.0f ) ? clipToWorld[3][2] : 1.0f;
+	for ( int i = 0; i < 3; i++ ) {
+		view.origin[i] = clipToWorld[i][2] / w;
+	}
+	view.pixelSpread = 2.0f * idMath::Tan( DEG2RAD( viewDef.renderView.fov_y ) * 0.5f ) / static_cast<float>( Max( 1, static_cast<int>( viewDef.viewport.GetHeight() ) ) );
+	return view;
+}
+
 void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	const drawSurfsCommand_t * cmd = (const drawSurfsCommand_t *)data;
 
@@ -2895,7 +2914,9 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	// R15: the GPU scene before anything of the view traces it; the second eye sends the same update again.
 	// Only the main view sends: a world gathered for another view leaves a gap, and the next delta is refused.
 	if ( hdrMainView && backEnd.viewDef->gpuScene != nullptr ) {
+		renderLog.OpenMainBlock( MRB_RT_SCENE );
 		RB_UpdateGpuScene( *backEnd.viewDef->gpuScene );
+		renderLog.CloseMainBlock();
 	}
 
 	// render the scene
@@ -2915,6 +2936,11 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		backEnd.hdrGamma = false;
 		if ( backEnd.gbufferView ) {
 			renderBackend->DrawGBufferDebug( backEnd.viewDef->rayTracing.gbufferDebug, { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
+		}
+		if ( backEnd.viewDef->rayTracing.rtDebug != rtDebug_t::NONE && backEnd.viewDef->gpuScene != nullptr ) {
+			renderLog.OpenMainBlock( MRB_RAY_TRACING );
+			renderBackend->DrawRayTracingDebug( RB_RayTracingDebugView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
+			renderLog.CloseMainBlock();
 		}
 		RB_RenderDebugTools( (drawSurf_t **)&backEnd.viewDef->drawSurfs[0], backEnd.viewDef->numDrawSurfs );
 	}

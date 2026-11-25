@@ -139,7 +139,8 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	graph( device, *this, barriers, resourcePool, srvPool, rtvPool, constants, computeRootSignature ),
 	hdr( device, *this, computeRootSignature, passes, samplers, srvPool ),
 	gpuScene( device, *this, graveyard, srvPool, barriers, uploader, textures ),
-	rayTracing( device, *this, graveyard, srvPool, barriers, uploader, buffers ) {
+	rayTracing( device, *this, graveyard, srvPool, barriers, uploader, buffers ),
+	rtPasses( passes, samplers, buffers ) {
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -175,6 +176,7 @@ void idD3D12Context::CreateDefaults() {
 	passes.CreateDefaults();
 	hdr.CreateDefaults();
 	rayTracing.CreateDefaults( passes.Stage( "internal_rtSkin" ), computeRootSignature );
+	rtPasses.CreateDefaults();
 	buffers.CreateDefaults();
 	shaders.Prebuild();
 }
@@ -428,6 +430,15 @@ bool idD3D12Context::UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneSt
 	}
 	recorder.Invalidate();
 	return applied;
+}
+
+void idD3D12Context::DrawRayTracingDebug( const rtDebugView_t & view, const renderRect_t & viewport ) {
+	if ( view.mode == rtDebug_t::NONE || device.IsLost() ) {
+		return;
+	}
+	recorder.EndPass();
+	rtPasses.Debug( graph, scene, rayTracing, gpuScene, view, viewport, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	recorder.Invalidate();
 }
 
 void idD3D12Context::DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {

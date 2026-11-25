@@ -83,6 +83,8 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "gbufferDebug", shaderStageType_t::FRAGMENT, "internal_gbufferDebug", nullptr },
 	{ "gbufferDebug", shaderStageType_t::FRAGMENT, "internal_gbufferDebug_msaa", "MULTISAMPLED=1" },
 	{ "rtSkin", shaderStageType_t::COMPUTE, "internal_rtSkin", nullptr },
+	{ "rtDebug", shaderStageType_t::FRAGMENT, "internal_rtDebug", nullptr },
+	{ "rtDebug", shaderStageType_t::FRAGMENT, "internal_rtDebug_msaa", "MULTISAMPLED=1" },
 };
 
 }	// namespace

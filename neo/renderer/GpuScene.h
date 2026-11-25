@@ -34,7 +34,7 @@ struct viewDef_t;
 enum class gpuSceneTexture_t : uint8 { DIFFUSE, BUMP, SPECULAR, EMISSIVE, ALPHA, COUNT };
 constexpr int GPU_SCENE_TEXTURES = static_cast<int>( gpuSceneTexture_t::COUNT );
 
-// One surface of an instance as include/gpuScene.hlsli reads it. On the GPU textures[] are the backend's view
+// One surface of an instance as include/raytracing.hlsli reads it. On the GPU textures[] are the backend's view
 // indices; shared code sends the textureHandle_t of each beside the record (gpuSceneWrite_t).
 struct gpuSceneGeometry_t {
 	static constexpr uint32	GEO_OPAQUE = 1u << 0;		// no alpha test: any hit is the hit
@@ -226,6 +226,7 @@ private:
 	idList<sent_t>			sent;				// by geometry index: what the GPU holds since the last full update
 	idGpuSceneRanges		geometries;
 	idList<gpuSceneWrite_t>	writes;				// this frame's, before the copy into frame memory
+	idList<gpuSceneWrite_t>	building;			// BuildSlot's records before the slot knows how many it holds
 	idList<gpuSceneInstance_t>	instances;
 	idList<int>				seenFrame;			// by slot: the frame it was last taken in
 	uint32					id;

@@ -9,6 +9,8 @@
 	normal and the tangent are normalized and encoded as the vertex cache encodes them; the rest is copied.
 */
 
+#include "../include/raytracing.hlsli"
+
 cbuffer SkinParms : register( b1 ) {
 	uint sourceSrv;			// the static vertex buffer, raw
 	uint sourceOffset;		// bytes of the geometry's first vertex
@@ -19,10 +21,6 @@ cbuffer SkinParms : register( b1 ) {
 	uint targetOffset;		// bytes of the geometry's first skinned vertex
 	uint unused;
 };
-
-float3 DecodeDirection( uint packed ) {
-	return float3( packed & 0xFF, ( packed >> 8 ) & 0xFF, ( packed >> 16 ) & 0xFF ) * ( 2.0 / 255.0 ) - 1.0;
-}
 
 // VERTEX_FLOAT_TO_BYTE per component; the fourth byte (the tangent's sign) stays.
 uint EncodeDirection( float3 direction, uint packed ) {
@@ -53,8 +51,8 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 	}
 	const float4 position = float4( asfloat( head.xyz ), 1.0 );
 	const float3 skinned = float3( dot( rows[0], position ), dot( rows[1], position ), dot( rows[2], position ) );
-	const float3 normal = DecodeDirection( tail.x );
-	const float3 tangent = DecodeDirection( tail.y );
+	const float3 normal = RtDecodeDirection( tail.x );
+	const float3 tangent = RtDecodeDirection( tail.y );
 	const float3 skinnedNormal = normalize( float3( dot( rows[0].xyz, normal ), dot( rows[1].xyz, normal ), dot( rows[2].xyz, normal ) ) );
 	const float3 skinnedTangent = normalize( float3( dot( rows[0].xyz, tangent ), dot( rows[1].xyz, tangent ), dot( rows[2].xyz, tangent ) ) );
 
