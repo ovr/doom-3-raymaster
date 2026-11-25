@@ -209,9 +209,14 @@ bool idRenderBackendD3D12::UpdateGpuScene( const gpuSceneUpdate_t & update, gpuS
 	return context->UpdateGpuScene( update, stats );
 }
 
-void idRenderBackendD3D12::DrawRayTracingDebug( const rtDebugView_t & view, const renderRect_t & viewport ) {
+void idRenderBackendD3D12::DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport ) {
 	assert( IsOwnerThread() && inFrame );
-	context->DrawRayTracingDebug( view, viewport );
+	context->DrawRayTracingDebug( mode, view, viewport );
+}
+
+void idRenderBackendD3D12::DrawRayTracedReflections( const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & viewport ) {
+	assert( IsOwnerThread() && inFrame );
+	context->DrawRayTracedReflections( settings, view, viewport );
 }
 
 std::optional<hdrExposure_t> idRenderBackendD3D12::LastHdrExposure() const {

@@ -1334,6 +1334,11 @@ void RB_DrawElementsWithCounters( const drawSurf_t *surf, primitive_t topology =
 // The texture matrix of a material stage and its colour times lightColor, clamped as the interactions clamp it.
 void RB_SetupInteractionStage( const shaderStage_t *surfaceStage, const float *surfaceRegs, const float lightColor[4],
 								idVec4 matrix[2], float color[4] );
+// A light stage's texture matrix, and that matrix baked into the S, T and Q planes of a projection.
+void RB_GetShaderTextureMatrix( const float *shaderRegisters, const textureStage_t *texture, float matrix[16] );
+void RB_BakeTextureMatrixIntoTexgen( idPlane lightProject[3], const float *textureMatrix );
+// The view as its rays see it (R15).
+rtView_t RB_RayTracingView( const viewDef_t & viewDef );
 void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool debugTools = true );
 // hdrMainView: the view whose end resolves the HDR scene; its debug tools draw after the resolve.
 void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView = false );

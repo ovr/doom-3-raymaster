@@ -218,7 +218,7 @@ void RB_DrawElementsWithCounters( const drawSurf_t *surf, primitive_t topology )
 RB_GetShaderTextureMatrix
 ======================
 */
-static void RB_GetShaderTextureMatrix( const float *shaderRegisters, const textureStage_t *texture, float matrix[16] ) {
+void RB_GetShaderTextureMatrix( const float *shaderRegisters, const textureStage_t *texture, float matrix[16] ) {
 	matrix[0*4+0] = shaderRegisters[ texture->matrix[0][0] ];
 	matrix[1*4+0] = shaderRegisters[ texture->matrix[0][1] ];
 	matrix[2*4+0] = 0.0f;
@@ -287,7 +287,7 @@ static void RB_LoadShaderTextureMatrix( const float *shaderRegisters, const text
 RB_BakeTextureMatrixIntoTexgen
 =====================
 */
-static void RB_BakeTextureMatrixIntoTexgen( idPlane lightProject[3], const float *textureMatrix ) {
+void RB_BakeTextureMatrixIntoTexgen( idPlane lightProject[3], const float *textureMatrix ) {
 	float genMatrix[16];
 	float final[16];
 
@@ -2620,6 +2620,15 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool d
 	//-------------------------------------------------
 	RB_DrawInteractions();
 
+	// R15: the mirror reflections add to the lights in linear, before the passes that blend in gamma
+	if ( backEnd.gbufferView && viewDef->rayTracing.reflection.enabled && viewDef->gpuScene != nullptr ) {
+		renderLog.OpenMainBlock( MRB_RAY_TRACING );
+		const idScreenRect & v = viewDef->viewport;
+		renderBackend->DrawRayTracedReflections( viewDef->rayTracing.reflection, RB_RayTracingView( *viewDef ),
+			{ v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
+		renderLog.CloseMainBlock();
+	}
+
 	// in HDR the lights add in linear, what follows blends in gamma as in the retail frame
 	RB_SetHdrGamma( r_hdrGammaBlend.GetBool() );
 
@@ -2878,9 +2887,8 @@ static hdrExposureStep_t RB_HdrExposureStep( const viewDef_t & viewDef, int ster
 }
 
 // The eye is where clip x, y and w are 0: column 2 of the inverse, whatever the projection (an eye of a stereo pair too).
-static rtDebugView_t RB_RayTracingDebugView( const viewDef_t & viewDef ) {
-	rtDebugView_t view;
-	view.mode = viewDef.rayTracing.rtDebug;
+rtView_t RB_RayTracingView( const viewDef_t & viewDef ) {
+	rtView_t view;
 	idRenderMatrix clipToWorld;
 	idRenderMatrix::Inverse( viewDef.worldSpace.mvp, clipToWorld );
 	for ( int row = 0; row < 4; row++ ) {
@@ -2937,9 +2945,10 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		if ( backEnd.gbufferView ) {
 			renderBackend->DrawGBufferDebug( backEnd.viewDef->rayTracing.gbufferDebug, { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
 		}
-		if ( backEnd.viewDef->rayTracing.rtDebug != rtDebug_t::NONE && backEnd.viewDef->gpuScene != nullptr ) {
+		const rtDebug_t rtDebug = backEnd.viewDef->rayTracing.rtDebug;
+		if ( rtDebug != rtDebug_t::NONE && rtDebug != rtDebug_t::REFLECTION && backEnd.viewDef->gpuScene != nullptr ) {
 			renderLog.OpenMainBlock( MRB_RAY_TRACING );
-			renderBackend->DrawRayTracingDebug( RB_RayTracingDebugView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
+			renderBackend->DrawRayTracingDebug( rtDebug, RB_RayTracingView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
 			renderLog.CloseMainBlock();
 		}
 		RB_RenderDebugTools( (drawSurf_t **)&backEnd.viewDef->drawSurfs[0], backEnd.viewDef->numDrawSurfs );

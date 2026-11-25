@@ -21,6 +21,9 @@
 	leaves a gap in the sequence, which the backend refuses. A full update (the first, a new set of static buffers,
 	a refused update) drops every slot and sends the records of the frame's instances. Out for now: geometry of the frame's
 	vertex cache (particles, deforms, decals, CPU skinning), translucent surfaces, the weapon and the player's body.
+
+	Every update also holds all the lights of the same areas, not only the view's (a reflected surface behind the
+	eye is lit by lights the view culled): one per enabled light stage, without fog and blend lights.
 */
 
 class idImage;
@@ -41,7 +44,7 @@ struct gpuSceneGeometry_t {
 	static constexpr uint32	GEO_SKINNED = 1u << 1;		// the vertices are the instance's skinned ones of the frame
 	static constexpr uint32	GEO_TWO_SIDED = 1u << 2;
 	static constexpr uint32	GEO_NO_SHADING = 1u << 3;	// an occluder only: a GUI, a mirror
-	static constexpr uint32	GEO_CASTS_SHADOW = 1u << 4;
+	static constexpr uint32	GEO_CASTS_SHADOW = 1u << 4;	// without it the BLAS holds the geometry not opaque: shadow rays skip it
 
 	uint32		vertexOffset;		// bytes into the static vertex buffer: idDrawVert
 	uint32		indexOffset;		// bytes into the static index buffer: triIndex_t
@@ -56,6 +59,31 @@ struct gpuSceneGeometry_t {
 	idVec4		alphaTest;			// x the reference, y the alpha stage's colour alpha
 };
 static_assert( sizeof( gpuSceneGeometry_t ) == 288 );
+
+// A light stage as include/rtLighting.hlsli reads it, in world space; projection and falloff are the backend's views
+// on the GPU, beside the record shared code sends their textureHandle_t (gpuSceneLightWrite_t).
+struct gpuSceneLight_t {
+	static constexpr uint32	LIGHT_SHADOWS = 1u << 0;	// LightCastsShadows
+	static constexpr uint32	LIGHT_AMBIENT = 1u << 1;	// interactionAmbient's fixed direction, no shadows
+
+	idVec4		origin;				// xyz globalLightOrigin
+	idVec4		project[4];			// the S, T and Q planes of the projection, the stage's texture matrix baked in; the falloff's S
+	idVec4		color;				// r_lightScale times the stage's colour: RB_RenderInteractions' lightColor, in gamma
+	idVec4		boundsMin;			// globalLightBounds
+	idVec4		boundsMax;
+	uint32		projection;
+	uint32		falloff;
+	uint32		flags;				// LIGHT_*
+	uint32		unused;
+};
+static_assert( sizeof( gpuSceneLight_t ) == 144 );
+
+struct gpuSceneLightWrite_t {
+	gpuSceneLight_t			light;
+	const idMaterial *		material;	// the light's: EnsureNotPurged
+	idImage *				images[2];	// projection, falloff
+	textureHandle_t			textures[2];	// filled by the back end
+};
 
 // A record of this frame: the material's images become textures on the main thread.
 struct gpuSceneWrite_t {
@@ -95,6 +123,8 @@ struct gpuSceneFrame_t {
 	gpuSceneInstance_t *	instances;
 	int						numInstances;
 	int						numGeometries;		// records in live slots, for r_rtStats
+	gpuSceneLightWrite_t *	lights;				// all of the frame's
+	int						numLights;
 };
 
 // What UpdateGpuScene gets: the frame with its static buffers.
@@ -214,6 +244,7 @@ private:
 	void					BuildSlot( slot_t & slot, const idRenderEntityLocal & def, const idRenderModel & model, bool skinned );
 	void					FreeSlot( slot_t & slot );
 	void					Emit( const gpuSceneWrite_t & write );	// a write only when it differs from the held record
+	void					GatherLights( idRenderWorldLocal & world, const viewDef_t & view );
 
 	struct sent_t {
 		gpuSceneGeometry_t	record;
@@ -228,7 +259,9 @@ private:
 	idList<gpuSceneWrite_t>	writes;				// this frame's, before the copy into frame memory
 	idList<gpuSceneWrite_t>	building;			// BuildSlot's records before the slot knows how many it holds
 	idList<gpuSceneInstance_t>	instances;
+	idList<gpuSceneLightWrite_t>	lights;
 	idList<int>				seenFrame;			// by slot: the frame it was last taken in
+	idList<int>				lightSeenFrame;		// by lightDef
 	uint32					id;
 	uint32					sequence = 0;
 	int						staticGeneration = -1;
