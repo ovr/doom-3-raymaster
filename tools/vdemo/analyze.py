@@ -345,10 +345,11 @@ def make_video(frames, steps, path, fps):
     ordered = sorted(frames.values(), key=lambda f: f.tic * steps + f.step)
     if not ordered or shutil.which("ffmpeg") is None:
         return False
+    # ffmpeg reads relative paths of the list against the list's folder, a temp one
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as listing:
         for f in ordered:
-            listing.write(f"file '{f.path.as_posix()}'\nduration {1.0 / fps:.6f}\n")
-        listing.write(f"file '{ordered[-1].path.as_posix()}'\n")
+            listing.write(f"file '{f.path.resolve().as_posix()}'\nduration {1.0 / fps:.6f}\n")
+        listing.write(f"file '{ordered[-1].path.resolve().as_posix()}'\n")
         list_path = listing.name
     try:
         result = subprocess.run(
