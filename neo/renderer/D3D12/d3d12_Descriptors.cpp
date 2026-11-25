@@ -92,6 +92,15 @@ void idD3D12DescriptorPool::CreateUav( d3d12Descriptor_t slot, ID3D12Resource & 
 	Mirror( slot );
 }
 
+void idD3D12DescriptorPool::CreateAccelerationStructureSrv( d3d12Descriptor_t slot, D3D12_GPU_VIRTUAL_ADDRESS address ) {
+	D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+	desc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+	desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	desc.RaytracingAccelerationStructure.Location = address;
+	device.Get().CreateShaderResourceView( nullptr, &desc, Cpu( slot ) );
+	Mirror( slot );
+}
+
 void idD3D12DescriptorPool::Mirror( d3d12Descriptor_t slot ) {
 	if ( visible ) {
 		D3D12_CPU_DESCRIPTOR_HANDLE destination = visibleStart;

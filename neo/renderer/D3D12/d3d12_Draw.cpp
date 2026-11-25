@@ -50,7 +50,7 @@ idD3D12DrawRecorder::idD3D12DrawRecorder( const idD3D12Device & owner, idD3D12Su
 	samplers( samplerHeap ) {
 }
 
-void idD3D12DrawRecorder::BeginPass( ID3D12GraphicsCommandList1 & list ) {
+void idD3D12DrawRecorder::BeginPass( ID3D12GraphicsCommandList4 & list ) {
 	idD3D12SceneTarget::surface_t & color = scene.Color( hdr );
 	idD3D12SceneTarget::surface_t & depth = scene.Depth();
 	barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
@@ -109,7 +109,7 @@ void idD3D12DrawRecorder::Clear( const renderLatch_t & latch, const clearDesc_t 
 	}
 
 	if ( mask == 0xF || depthStencil != 0 ) {
-		ID3D12GraphicsCommandList1 & list = submitter.List();
+		ID3D12GraphicsCommandList4 & list = submitter.List();
 		if ( !bound.passOpen ) {
 			BeginPass( list );
 		}
@@ -264,7 +264,7 @@ idD3D12DrawRecorder::reserved_t idD3D12DrawRecorder::Reserve( const prepared_t &
 }
 
 // The draw's barriers go into the list with the pass's, in one batch, before anything is bound.
-void idD3D12DrawRecorder::Record( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const reserved_t & reserved,
+void idD3D12DrawRecorder::Record( ID3D12GraphicsCommandList4 & list, const prepared_t & prepared, const reserved_t & reserved,
 	const renderLatch_t & latch, const drawCall_t & dc, const d3d12Program_t & program ) {
 	const used_t used = Use( prepared, dc, program );
 	if ( !bound.passOpen ) {
@@ -293,7 +293,7 @@ std::array<int, 4> idD3D12DrawRecorder::SceneScissor( const renderLatch_t & latc
 }
 
 // GL's rectangles in GL row order are the scene's; the scissor is cut to the scene, as D3D12 asks.
-void idD3D12DrawRecorder::BindDynamicState( ID3D12GraphicsCommandList1 & list, const renderLatch_t & latch, primitive_t topology ) {
+void idD3D12DrawRecorder::BindDynamicState( ID3D12GraphicsCommandList4 & list, const renderLatch_t & latch, primitive_t topology ) {
 	if ( bound.topology != topology ) {
 		list.IASetPrimitiveTopology( ( topology == primitive_t::LINES ) ? D3D_PRIMITIVE_TOPOLOGY_LINELIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 		bound.topology = topology;
@@ -331,7 +331,7 @@ void idD3D12DrawRecorder::BindDynamicState( ID3D12GraphicsCommandList1 & list, c
 }
 
 // R7: reuseParms keeps the spans of the draw before. A stage without parms reads the zero block.
-void idD3D12DrawRecorder::BindParms( ID3D12GraphicsCommandList1 & list, const reserved_t & reserved, const renderLatch_t & latch,
+void idD3D12DrawRecorder::BindParms( ID3D12GraphicsCommandList4 & list, const reserved_t & reserved, const renderLatch_t & latch,
 	const drawCall_t & dc, const d3d12Program_t & program ) {
 	if ( !reserved.parms ) {
 		return;
@@ -376,7 +376,7 @@ idD3D12DrawRecorder::used_t idD3D12DrawRecorder::Use( const prepared_t & prepare
 }
 
 // Root CBV b2, which the JOINT buffer's zero tail keeps readable for all 408 vectors; nothing for other programs.
-void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList1 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints ) {
+void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList4 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints ) {
 	if ( joints && bound.joints != joints ) {
 		list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), *joints );
 		bound.joints = joints;
@@ -384,7 +384,7 @@ void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList1 & list, std::op
 }
 
 // A program that neither samples nor reads the colour constants does not read b3, so it keeps what the last one set.
-void idD3D12DrawRecorder::BindResources( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const d3d12Program_t & program ) {
+void idD3D12DrawRecorder::BindResources( ID3D12GraphicsCommandList4 & list, const prepared_t & prepared, const d3d12Program_t & program ) {
 	if ( ( program.info.samplerMask != 0 || program.colorConstants ) && bound.resources != prepared.resources ) {
 		list.SetGraphicsRoot32BitConstants( D3D12_Root( d3d12RootSlot_t::DRAW_RESOURCES ), d3d12DrawResources_t::COUNT,
 			prepared.resources.indices.data(), 0 );
@@ -393,7 +393,7 @@ void idD3D12DrawRecorder::BindResources( ID3D12GraphicsCommandList1 & list, cons
 	}
 }
 
-void idD3D12DrawRecorder::BindGeometry( ID3D12GraphicsCommandList1 & list, const prepared_t & prepared, const drawCall_t & dc, const used_t & used ) {
+void idD3D12DrawRecorder::BindGeometry( ID3D12GraphicsCommandList4 & list, const prepared_t & prepared, const drawCall_t & dc, const used_t & used ) {
 	const std::pair<bufferHandle_t, uint8> vertexBuffer( dc.vertexBuffer, static_cast<uint8>( dc.layout ) );
 	if ( bound.vertexBuffer != vertexBuffer ) {
 		const D3D12_VERTEX_BUFFER_VIEW view = { used.vertex->gpu, static_cast<UINT>( used.vertex->size ), vertexLayouts[dc.layout].stride };

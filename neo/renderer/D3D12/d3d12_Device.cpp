@@ -85,6 +85,15 @@ idStr ShaderModelText( D3D_SHADER_MODEL model ) {
 	return va( "%d.%d", ( model >> 4 ) & 0xF, model & 0xF );
 }
 
+const char * RaytracingTierText( D3D12_RAYTRACING_TIER tier ) {
+	switch ( tier ) {
+		case D3D12_RAYTRACING_TIER_NOT_SUPPORTED:	return "none";
+		case D3D12_RAYTRACING_TIER_1_0:				return "tier 1.0 (no inline ray queries: off)";
+		case D3D12_RAYTRACING_TIER_1_1:				return "tier 1.1";
+		default:									return "tier 1.2 or newer";
+	}
+}
+
 idStr AdapterName( IDXGIAdapter1 & adapter ) {
 	DXGI_ADAPTER_DESC1 desc = {};
 	adapter.GetDesc1( &desc );
@@ -191,7 +200,7 @@ int EnableDebugLayers( const idD3D12Library & library, int debugLevel ) {
 }
 
 template<typename T>
-bool Feature( ID3D12Device2 & device, D3D12_FEATURE feature, T & data ) {
+bool Feature( ID3D12Device5 & device, D3D12_FEATURE feature, T & data ) {
 	return D3D12_CheckFeature( device, feature, &data, sizeof( data ) );
 }
 
@@ -345,17 +354,19 @@ std::expected<idD3D12Device, idStr> idD3D12Device::Create( const idD3D12Library 
 			return std::unexpected( idStr( va( "%s; %s%s.", REQUIREMENT, LevelOf( library, *created.adapter.Get() ).c_str(),
 				warp ? " (the system's WARP: d3d10warp.dll of the WARP package next to the exe has 12_2)" : "" ) ) );
 		}
-		return std::unexpected( idStr( va( "D3D12CreateDevice (ID3D12Device2, feature level 12_2) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
+		return std::unexpected( idStr( va( "D3D12CreateDevice (ID3D12Device5, feature level 12_2) failed: %s", D3D12_ErrorText( hr ).c_str() ) ) );
 	}
 	created.device->SetName( L"doom3 device" );
 	created.ReadFeatures();
 	D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
 	const bool bindingTier3 = Feature( created.Get(), D3D12_FEATURE_D3D12_OPTIONS, options )
 		&& options.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3;
-	if ( created.features.shaderModel < REQUIRED_SHADER_MODEL || !bindingTier3 ) {
-		return std::unexpected( idStr( va( "%s; %s has shader model %s%s (a newer driver may have it).", REQUIREMENT,
+	// 12_2 includes ray tracing tier 1.1 (inline ray queries); a driver that says otherwise is refused like the others
+	const bool rayQueries = created.features.raytracingTier >= D3D12_RAYTRACING_TIER_1_1;
+	if ( created.features.shaderModel < REQUIRED_SHADER_MODEL || !bindingTier3 || !rayQueries ) {
+		return std::unexpected( idStr( va( "%s; %s has shader model %s%s%s (a newer driver may have it).", REQUIREMENT,
 			created.features.adapterName.c_str(), ShaderModelText( created.features.shaderModel ).c_str(),
-			bindingTier3 ? "" : " and resource binding below tier 3" ) ) );
+			bindingTier3 ? "" : ", resource binding below tier 3", rayQueries ? "" : ", ray tracing below tier 1.1" ) ) );
 	}
 
 	if ( created.debugLevel > 0 && SUCCEEDED( created.device.As( &created.infoQueue ) ) ) {
@@ -393,7 +404,7 @@ void idD3D12Device::ReadFeatures() {
 	if ( SUCCEEDED( adapter->CheckInterfaceSupport( __uuidof( IDXGIDevice ), &umdVersion ) ) ) {
 		features.driverVersion = static_cast<uint64>( umdVersion.QuadPart );
 	}
-	ID3D12Device2 & d3d = *device.Get();
+	ID3D12Device5 & d3d = *device.Get();
 	// a runtime older than the headers rejects a model it does not know: ask again one lower
 	D3D12_FEATURE_DATA_SHADER_MODEL model = { D3D_HIGHEST_SHADER_MODEL };
 	while ( !Feature( d3d, D3D12_FEATURE_SHADER_MODEL, model ) && model.HighestShaderModel > D3D_SHADER_MODEL_6_0 ) {
@@ -427,6 +438,10 @@ void idD3D12Device::ReadFeatures() {
 	}
 	D3D12_FEATURE_DATA_D3D12_OPTIONS19 options19 = {};
 	features.anisoPointMip = Feature( d3d, D3D12_FEATURE_D3D12_OPTIONS19, options19 ) && options19.AnisoFilterWithPointMipSupported;
+	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+	if ( Feature( d3d, D3D12_FEATURE_D3D12_OPTIONS5, options5 ) ) {
+		features.raytracingTier = options5.RaytracingTier;
+	}
 	BOOL tearing = FALSE;
 	features.tearing = SUCCEEDED( factory->CheckFeatureSupport( DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof( tearing ) ) ) && tearing;
 }
@@ -468,6 +483,7 @@ void idD3D12Device::FillCaps( renderCaps_t & caps ) const {
 	caps.quadBufferStereo = false;
 	caps.adaptiveSync = false;
 	caps.debugGroups = true;
+	caps.rayTracing = features.raytracingTier >= D3D12_RAYTRACING_TIER_1_1;
 }
 
 int idD3D12Device::DrainMessages() const {
@@ -563,12 +579,7 @@ void idD3D12Device::ReportDred() const {
 }
 
 void idD3D12Device::RemoveDevice() const {
-	idComPtr<ID3D12Device5> device5;
-	if ( FAILED( device.As( &device5 ) ) ) {
-		common->Printf( "d3d12: the device has no ID3D12Device5::RemoveDevice\n" );
-		return;
-	}
-	device5->RemoveDevice();
+	device->RemoveDevice();
 }
 
 d3d12VideoMemory_t idD3D12Device::VideoMemory() const {
@@ -596,6 +607,7 @@ void idD3D12Device::PrintInfo() const {
 	common->Printf( "D3D12 MSAA sample counts:%s\n", samples.c_str() );
 	common->Printf( "D3D12 features: depth bounds %d, unaligned BC blocks %d, GPU upload heap %d, dynamic depth bias %d, aniso with point mip %d, tearing %d\n",
 		features.depthBounds, features.unalignedBlocks, features.gpuUploadHeap, features.dynamicDepthBias, features.anisoPointMip, features.tearing );
+	common->Printf( "D3D12 ray tracing: %s\n", RaytracingTierText( features.raytracingTier ) );
 	common->Printf( "D3D12 debug level: %d%s\n", debugLevel, ( debugLevel > 0 && !dxgiInfoQueue ) ? " (no DXGI debug layer)" : "" );
 }
 
@@ -729,7 +741,7 @@ idD3D12CommandStream::idD3D12CommandStream( const idD3D12Device & owner, idD3D12
 	queue( commandQueue ) {
 }
 
-ID3D12GraphicsCommandList1 & idD3D12CommandStream::Open() {
+ID3D12GraphicsCommandList4 & idD3D12CommandStream::Open() {
 	assert( !open );
 	if ( !retired.empty() && retired.front().fence <= queue.Waited() ) {
 		current = std::move( retired.front().allocator );
@@ -749,7 +761,7 @@ ID3D12GraphicsCommandList1 & idD3D12CommandStream::Open() {
 	return *list.Get();
 }
 
-ID3D12GraphicsCommandList1 & idD3D12CommandStream::List() {
+ID3D12GraphicsCommandList4 & idD3D12CommandStream::List() {
 	assert( open );
 	return *list.Get();
 }

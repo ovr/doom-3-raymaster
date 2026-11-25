@@ -281,7 +281,7 @@ public:
 	idTestGpu( const idTestGpu & ) = delete;
 	idTestGpu & operator=( const idTestGpu & ) = delete;
 
-	ID3D12GraphicsCommandList1 & List() override { return commands.IsOpen() ? commands.List() : commands.Open(); }
+	ID3D12GraphicsCommandList4 & List() override { return commands.IsOpen() ? commands.List() : commands.Open(); }
 	uint64 SubmitChunk() override {
 		if ( !commands.IsOpen() ) {
 			return queue.LastSignaled();
@@ -796,7 +796,7 @@ d3d12Bytecode_t idTestSampler::Compile( const char * entry, const char * profile
 }
 
 idTestSampler::idTestSampler( idTestGpu & owner ) : gpu( owner ) {
-	ID3D12Device2 & device = gpu.device.Get();
+	ID3D12Device5 & device = gpu.device.Get();
 	D3D12_DESCRIPTOR_RANGE1 views = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 0 };
 	D3D12_DESCRIPTOR_RANGE1 samplers = { D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, 0 };
 	std::array<D3D12_ROOT_PARAMETER1, 3> parameters = {};
@@ -882,7 +882,7 @@ std::vector<idVec4> idTestSampler::Sample( d3d12Descriptor_t view, textureKind_t
 		Check( false, "the test sampler is not ready" );
 		return {};
 	}
-	ID3D12Device2 & device = gpu.device.Get();
+	ID3D12Device5 & device = gpu.device.Get();
 	const UINT increment = device.GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	const UINT slot = ( kind == textureKind_t::TEX_CUBE ) ? 1 : 0;
 	D3D12_CPU_DESCRIPTOR_HANDLE views = viewHeap->GetCPUDescriptorHandleForHeapStart();
@@ -903,7 +903,7 @@ std::vector<idVec4> idTestSampler::Sample( d3d12Descriptor_t view, textureKind_t
 
 	gpu.barriers.Transition( *target.Get(), targetState, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	gpu.barriers.Flush();
-	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12GraphicsCommandList4 & list = gpu.List();
 	ID3D12DescriptorHeap * heaps[] = { viewHeap.Get(), samplerHeap.Get() };
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( root.Get() );
@@ -2729,7 +2729,7 @@ idTestRaster::idTestRaster( idTestGpu & owner ) :
 	root( owner.device, owner.library ),
 	factory( owner.device, root, nullptr, nullptr ),
 	dsvPool( owner.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV ) {
-	ID3D12Device2 & device = gpu.device.Get();
+	ID3D12Device5 & device = gpu.device.Get();
 	D3D12_HEAP_PROPERTIES defaultHeap = {};
 	defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
 	D3D12_RESOURCE_DESC colorDesc = {};
@@ -2889,7 +2889,7 @@ void idTestRaster::Draw( d3d12Program_t & program, const draw_t & draw, std::spa
 	const D3D12_INDEX_BUFFER_VIEW indexView = { Put( indexes.data(), indexes.size_bytes() ), static_cast<UINT>( indexes.size_bytes() ), DXGI_FORMAT_R16_UINT };
 
 	Target( D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12GraphicsCommandList4 & list = gpu.List();
 	ID3D12DescriptorHeap * heaps[] = { viewHeap.Get(), samplerHeap.Get() };
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( root.Get() );
@@ -3441,7 +3441,7 @@ idTestCopies::~idTestCopies() {
 }
 
 void idTestCopies::Bind() {
-	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12GraphicsCommandList4 & list = gpu.List();
 	ID3D12DescriptorHeap * heaps[] = { gpu.srvPool.ShaderVisibleHeap(), gpu.samplers.Heap() };
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( root.Get() );
@@ -3957,7 +3957,7 @@ programHandle_t idTestRecorder::Program( const char * name ) {
 }
 
 void idTestRecorder::NewList() {
-	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12GraphicsCommandList4 & list = gpu.List();
 	ID3D12DescriptorHeap * heaps[] = { gpu.srvPool.ShaderVisibleHeap(), gpu.samplers.Heap() };
 	list.SetDescriptorHeaps( 2, heaps );
 	list.SetGraphicsRootSignature( root.Get() );
@@ -4233,7 +4233,7 @@ void Test_DxcCompile() {
 void DxcBindless( idTestGpu & gpu ) {
 	constexpr UINT POINTS = 16;			// a row of 16 float4 is the 256-byte pitch a texture copy needs
 	constexpr UINT VALUES_SLOT = 5;		// not 0: the index must reach the shader
-	ID3D12Device2 & device = gpu.device.Get();
+	ID3D12Device5 & device = gpu.device.Get();
 	Check( gpu.device.Features().shaderModel >= D3D_SHADER_MODEL_6_6, "the device runs shader model 6.6" );
 	printf( "  %s\n", gpu.device.Features().versionString.c_str() );
 
@@ -4332,7 +4332,7 @@ void DxcBindless( idTestGpu & gpu ) {
 	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
 	device.CreateRenderTargetView( target.Get(), nullptr, rtv );
 
-	ID3D12GraphicsCommandList1 & list = gpu.List();
+	ID3D12GraphicsCommandList4 & list = gpu.List();
 	ID3D12DescriptorHeap * heaps[] = { viewHeap.Get() };
 	list.SetDescriptorHeaps( 1, heaps );	// before the root signature: it indexes the heap set at that moment
 	list.SetGraphicsRootSignature( root.Get() );
@@ -4713,6 +4713,487 @@ void ColorSpace( idTestGpu & gpu ) {
 		Check( worst[3] < 4e-6, va( "decode then encode gives the input back (%g)", worst[3] ) );
 	}
 	gpu.srvPool.Free( uav );
+	CheckNoLayerErrors( gpu );
+}
+
+// ---- WARP: inline ray queries (DXR 1.1) ----------------------------------------------------------------------
+
+// An UPLOAD buffer holding bytes; nullptr only on a lost device.
+template<typename T, size_t N>
+[[nodiscard]] idComPtr<ID3D12Resource> UploadBytes( idTestGpu & gpu, const std::array<T, N> & values, const wchar_t * name ) {
+	idComPtr<ID3D12Resource> buffer = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_UPLOAD, sizeof( values ), D3D12_RESOURCE_STATE_GENERIC_READ, name );
+	void * mapped = nullptr;
+	const D3D12_RANGE nothingRead = { 0, 0 };
+	if ( buffer && gpu.device.Check( buffer->Map( 0, &nothingRead, &mapped ), "Map (test upload)" ) ) {
+		memcpy( mapped, values.data(), sizeof( values ) );
+		buffer->Unmap( 0, nullptr );
+	}
+	return buffer;
+}
+
+struct testAccelerationStructure_t {
+	idComPtr<ID3D12Resource>		data;		// always in RAYTRACING_ACCELERATION_STRUCTURE
+	idComPtr<ID3D12Resource>		scratch;
+	d3d12ResourceState_t			scratchState;
+};
+
+// Records the build into the open list, then the UAV barrier the next build or query waits on.
+[[nodiscard]] testAccelerationStructure_t BuildAccelerationStructure( idTestGpu & gpu, const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS & inputs,
+	const wchar_t * name ) {
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+	gpu.device.Get().GetRaytracingAccelerationStructurePrebuildInfo( &inputs, &info );
+	testAccelerationStructure_t built;
+	built.data = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+		name, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	built.scratch = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, Max( info.ScratchDataSizeInBytes, 256ull ), D3D12_RESOURCE_STATE_COMMON,
+		L"test AS scratch", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	if ( !Check( built.data && built.scratch && info.ResultDataMaxSizeInBytes > 0, "the acceleration structure and its scratch" ) ) {
+		return {};
+	}
+	built.scratchState.decays = true;
+	gpu.barriers.Transition( *built.scratch.Get(), built.scratchState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+	gpu.barriers.Flush();
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build = {};
+	build.Inputs = inputs;
+	build.DestAccelerationStructureData = built.data->GetGPUVirtualAddress();
+	build.ScratchAccelerationStructureData = built.scratch->GetGPUVirtualAddress();
+	gpu.List().BuildRaytracingAccelerationStructure( &build, 0, nullptr );
+	gpu.barriers.Uav( *built.data.Get() );
+	gpu.barriers.Flush();
+	return built;
+}
+
+// Rows 0-3 trace every instance, rows 4-7 the same rays with mask 1. A non-opaque candidate left of x = 10 is
+// not committed: the hole an alpha test makes.
+constexpr const char * RAY_QUERY_COMPUTE =
+	"cbuffer Parms : register( b0 ) { uint results; uint scene; uint width; uint unused; };\n"
+	"[numthreads( 8, 8, 1 )]\n"
+	"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+	"	RWByteAddressBuffer output = ResourceDescriptorHeap[results];\n"
+	"	RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[scene];\n"
+	"	RayDesc ray;\n"
+	"	ray.Origin = float3( id.x + 0.25, ( id.y & 3 ) + 0.75, 10.0 );\n"
+	"	ray.Direction = float3( 0.0, 0.0, -1.0 );\n"
+	"	ray.TMin = 0.0;\n"
+	"	ray.TMax = 100.0;\n"
+	"	RayQuery<RAY_FLAG_NONE> query;\n"
+	"	query.TraceRayInline( tlas, RAY_FLAG_NONE, ( id.y < 4 ) ? 0xFF : 0x01, ray );\n"
+	"	while ( query.Proceed() ) {\n"
+	"		if ( query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE && ray.Origin.x >= 10.0 ) {\n"
+	"			query.CommitNonOpaqueTriangleHit();\n"
+	"		}\n"
+	"	}\n"
+	"	const uint offset = ( id.y * width + id.x ) * 32;\n"
+	"	if ( query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ) {\n"
+	"		output.Store4( offset, uint4( query.CommittedInstanceID(), query.CommittedInstanceIndex(), query.CommittedPrimitiveIndex(),\n"
+	"			asuint( query.CommittedRayT() ) ) );\n"
+	"		output.Store4( offset + 16, uint4( asuint( query.CommittedTriangleBarycentrics() ), query.CommittedTriangleFrontFace() ? 1 : 0, 1 ) );\n"
+	"	} else {\n"
+	"		output.Store4( offset, uint4( 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0 ) );\n"
+	"		output.Store4( offset + 16, uint4( 0, 0, 0, 0 ) );\n"
+	"	}\n"
+	"}\n";
+
+/*
+	A BLAS of one quad of idDrawVerts (stride 32, 16-bit indexes: the vertex cache's layout), 4 x 4 at z = 0:
+	triangle 0 below the diagonal, 1 above. The TLAS holds it twice:
+
+	  instance 0   InstanceID 10, mask 1, opaque               at the origin
+	  instance 1   InstanceID 20, mask 2, forced non-opaque    moved by ( 8, 0, -2 )
+
+	16 x 8 rays straight down from z = 10, off the diagonal and the edges; the query reads the TLAS from the heap.
+*/
+class idTestRayScene {
+public:
+	static constexpr uint32			WIDTH = 16;
+	static constexpr uint32			HEIGHT = 8;
+	static constexpr uint32			BYTES = WIDTH * HEIGHT * 32;
+	static constexpr std::array<triIndex_t, 6>	INDEXES = { 0, 1, 2, 0, 2, 3 };
+
+	explicit						idTestRayScene( idTestGpu & gpu );
+									~idTestRayScene();
+									idTestRayScene( const idTestRayScene & ) = delete;
+	idTestRayScene &				operator=( const idTestRayScene & ) = delete;
+	[[nodiscard]] bool				Ready() const { return ready; }
+	// Point at this object's geometry.
+	[[nodiscard]] D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS	BottomInputs() const;
+	[[nodiscard]] static D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS	TopInputs( D3D12_GPU_VIRTUAL_ADDRESS instances );
+	[[nodiscard]] static std::array<D3D12_RAYTRACING_INSTANCE_DESC, 2>	Instances( D3D12_GPU_VIRTUAL_ADDRESS bottom );
+	// The trace pass into the results, the TLAS's heap index from the pass's context.
+	void							AddTrace( std::function<uint32( idD3D12GraphContext & )> scene, std::initializer_list<d3d12GraphUse_t> reads );
+	void							CheckResults( const char * label );
+
+	idTestGpu &						gpu;
+	idTestCopies					fixture;
+	idD3D12ComputeRootSignature		computeRoot;
+	idD3D12ResourcePool				pool;
+	idD3D12RenderGraph				graph;
+	d3d12ComputePipeline_t			pipeline;
+	idComPtr<ID3D12Resource>		vertexBuffer;
+	idComPtr<ID3D12Resource>		indexBuffer;
+	idComPtr<ID3D12Resource>		results;
+	d3d12ResourceState_t			resultsState;
+	d3d12Descriptor_t				resultsUav;
+	D3D12_RAYTRACING_GEOMETRY_DESC	geometry = {};
+
+private:
+	bool							ready = false;
+};
+
+idTestRayScene::idTestRayScene( idTestGpu & owner ) :
+	gpu( owner ),
+	fixture( owner, 1 ),
+	computeRoot( owner.device, owner.library ),
+	pool( owner.device, owner.graveyard, owner.srvPool, owner.rtvPool ),
+	graph( owner.device, owner, owner.barriers, pool, owner.srvPool, owner.rtvPool, fixture.constants, computeRoot ) {
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	Check( gpu.device.Features().raytracingTier >= D3D12_RAYTRACING_TIER_1_1, "ray tracing tier 1.1" );
+	d3d12HlslSource_t source;
+	source.name = "test_rayquery";
+	source.path = "shaders/test_rayquery.hlsl";
+	source.text = RAY_QUERY_COMPUTE;
+	const auto built = fixture.hlslCompiler.Build( source, shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	if ( !Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		return;
+	}
+	pipeline = D3D12_CreateComputePipeline( gpu.device, computeRoot, built->code, built->reflection, L"test ray query" );
+
+	std::array<idDrawVert, 4> vertices;
+	const idVec3 corners[4] = { idVec3( 0.0f, 0.0f, 0.0f ), idVec3( 4.0f, 0.0f, 0.0f ), idVec3( 4.0f, 4.0f, 0.0f ), idVec3( 0.0f, 4.0f, 0.0f ) };
+	for ( size_t i = 0; i < vertices.size(); i++ ) {
+		vertices[i].Clear();
+		vertices[i].xyz = corners[i];
+	}
+	vertexBuffer = UploadBytes( gpu, vertices, L"test ray vertices" );
+	indexBuffer = UploadBytes( gpu, INDEXES, L"test ray indexes" );
+	results = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, BYTES, D3D12_RESOURCE_STATE_COMMON, L"test ray results",
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	if ( !Check( pipeline && vertexBuffer && indexBuffer && results, "the pipeline, the geometry and the results" ) ) {
+		return;
+	}
+	geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+	geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+	geometry.Triangles.IndexFormat = DXGI_FORMAT_R16_UINT;
+	geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+	geometry.Triangles.IndexCount = static_cast<UINT>( INDEXES.size() );
+	geometry.Triangles.VertexCount = static_cast<UINT>( vertices.size() );
+	geometry.Triangles.IndexBuffer = indexBuffer->GetGPUVirtualAddress();
+	geometry.Triangles.VertexBuffer = { vertexBuffer->GetGPUVirtualAddress() + DRAWVERT_XYZ_OFFSET, sizeof( idDrawVert ) };
+
+	resultsState.decays = true;
+	resultsUav = gpu.srvPool.Allocate();
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+	uavDesc.Buffer.NumElements = BYTES / 4;
+	uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+	gpu.srvPool.CreateUav( resultsUav, *results.Get(), uavDesc );
+	ready = true;
+}
+
+idTestRayScene::~idTestRayScene() {
+	if ( !gpu.device.IsLost() ) {
+		gpu.WaitIdle();
+	}
+	if ( resultsUav.IsValid() ) {
+		gpu.srvPool.Free( resultsUav );
+	}
+}
+
+D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS idTestRayScene::BottomInputs() const {
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+	inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+	inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+	inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+	inputs.NumDescs = 1;
+	inputs.pGeometryDescs = &geometry;
+	return inputs;
+}
+
+D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS idTestRayScene::TopInputs( D3D12_GPU_VIRTUAL_ADDRESS instances ) {
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+	inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+	inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+	inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+	inputs.NumDescs = 2;
+	inputs.InstanceDescs = instances;
+	return inputs;
+}
+
+std::array<D3D12_RAYTRACING_INSTANCE_DESC, 2> idTestRayScene::Instances( D3D12_GPU_VIRTUAL_ADDRESS bottom ) {
+	std::array<D3D12_RAYTRACING_INSTANCE_DESC, 2> instances = {};
+	for ( size_t i = 0; i < instances.size(); i++ ) {
+		D3D12_RAYTRACING_INSTANCE_DESC & instance = instances[i];
+		instance.Transform[0][0] = instance.Transform[1][1] = instance.Transform[2][2] = 1.0f;
+		instance.InstanceID = ( i == 0 ) ? 10 : 20;
+		instance.InstanceMask = ( i == 0 ) ? 0x01 : 0x02;
+		instance.Flags = ( i == 0 ) ? D3D12_RAYTRACING_INSTANCE_FLAG_NONE : D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE;
+		instance.AccelerationStructure = bottom;
+	}
+	instances[1].Transform[0][3] = 8.0f;
+	instances[1].Transform[2][3] = -2.0f;
+	return instances;
+}
+
+void idTestRayScene::AddTrace( std::function<uint32( idD3D12GraphContext & )> scene, std::initializer_list<d3d12GraphUse_t> reads ) {
+	const d3d12GraphResource_t output = graph.Import( "test ray results", { results.Get(), &resultsState, {}, resultsUav, {}, BYTES, 1 } );
+	std::vector<d3d12GraphUse_t> uses( reads );
+	uses.push_back( { output, d3d12GraphAccess_t::UAV } );
+	graph.AddPass( "trace", d3d12GraphPass_t::COMPUTE, uses, [this, output, scene]( idD3D12GraphContext & context ) {
+		const std::array<uint32, 4> parms = { context.Uav( output ), scene( context ), WIDTH, 0 };
+		const d3d12UploadSpan_t span = context.Parms( parms );
+		context.Dispatch( pipeline, &span, WIDTH, HEIGHT );
+	} );
+}
+
+void idTestRayScene::CheckResults( const char * label ) {
+	const std::vector<byte> read = gpu.Read( *results.Get(), &resultsState, 0, BYTES );
+	if ( !Check( read.size() == BYTES, va( "%s: the results are read", label ) ) ) {
+		return;
+	}
+	struct hit_t {
+		uint32	instanceId, instanceIndex, primitive;
+		float	t, u, v;
+		uint32	frontFace, hit;
+	};
+	static_assert( sizeof( hit_t ) == 32 );
+	int wrong = 0;
+	int hits = 0;
+	int frontFaces = 0;
+	idStr first;
+	for ( uint32 y = 0; y < HEIGHT; y++ ) {
+		for ( uint32 x = 0; x < WIDTH; x++ ) {
+			hit_t got;
+			memcpy( &got, &read[( y * WIDTH + x ) * 32], sizeof( got ) );
+			const float ox = x + 0.25f;
+			const float oy = ( y & 3 ) + 0.75f;
+			const uint32 mask = ( y < 4 ) ? 0xFF : 0x01;
+			const bool hit0 = x < 4 && ( mask & 1 ) != 0;
+			const bool hit1 = !hit0 && ( mask & 2 ) != 0 && x >= 8 && x < 12 && ox >= 10.0f;
+			bool right = ( got.hit != 0 ) == ( hit0 || hit1 );
+			if ( right && ( hit0 || hit1 ) ) {
+				const float lx = hit0 ? ox : ox - 8.0f;
+				const uint32 primitive = ( oy < lx ) ? 0 : 1;
+				// barycentrics are the weights of the triangle's second and third vertex
+				const float u = ( primitive == 0 ) ? ( lx - oy ) / 4.0f : lx / 4.0f;
+				const float v = ( primitive == 0 ) ? oy / 4.0f : ( oy - lx ) / 4.0f;
+				right = got.instanceId == ( hit0 ? 10u : 20u ) && got.instanceIndex == ( hit0 ? 0u : 1u ) && got.primitive == primitive
+					&& idMath::Fabs( got.t - ( hit0 ? 10.0f : 12.0f ) ) < 1e-4f && idMath::Fabs( got.u - u ) < 1e-5f && idMath::Fabs( got.v - v ) < 1e-5f;
+				hits++;
+				frontFaces += ( got.frontFace != 0 ) ? 1 : 0;
+			}
+			if ( !right && wrong++ == 0 ) {
+				first = va( "( %u, %u ): hit %u, id %u, index %u, primitive %u, t %g, barycentrics %g %g", x, y, got.hit, got.instanceId,
+					got.instanceIndex, got.primitive, got.t, got.u, got.v );
+			}
+		}
+	}
+	Check( wrong == 0, va( "%s: %d of %u rays wrong, the first %s", label, wrong, WIDTH * HEIGHT, first.c_str() ) );
+	Check( hits == 4 * 4 * 2 + 2 * 4, va( "%s: %d hits, not 40", label, hits ) );
+	// the facing convention is the scene's question; one quad seen from one side faces one way
+	Check( frontFaces == 0 || frontFaces == hits, va( "%s: %d of %d hits front-facing", label, frontFaces, hits ) );
+}
+
+// The structures built straight into the list, the TLAS read through a view of the test's own.
+void RayQuery( idTestGpu & gpu ) {
+	idTestRayScene scene( gpu );
+	if ( !scene.Ready() ) {
+		return;
+	}
+	const testAccelerationStructure_t bottom = BuildAccelerationStructure( gpu, scene.BottomInputs(), L"test BLAS" );
+	if ( !bottom.data ) {
+		return;
+	}
+	const idComPtr<ID3D12Resource> instanceBuffer = UploadBytes( gpu, idTestRayScene::Instances( bottom.data->GetGPUVirtualAddress() ),
+		L"test ray instances" );
+	if ( !Check( instanceBuffer != nullptr, "the instance buffer" ) ) {
+		return;
+	}
+	const testAccelerationStructure_t top = BuildAccelerationStructure( gpu, idTestRayScene::TopInputs( instanceBuffer->GetGPUVirtualAddress() ),
+		L"test TLAS" );
+	if ( !top.data ) {
+		return;
+	}
+	const d3d12Descriptor_t sceneSrv = gpu.srvPool.Allocate();
+	gpu.srvPool.CreateAccelerationStructureSrv( sceneSrv, top.data->GetGPUVirtualAddress() );
+	scene.fixture.Bind();
+	scene.AddTrace( [sceneSrv]( idD3D12GraphContext & ) { return sceneSrv.index; }, {} );
+	scene.graph.Execute();
+	scene.CheckResults( "direct builds" );
+	gpu.WaitIdle();
+	gpu.srvPool.Free( sceneSrv );
+	CheckNoLayerErrors( gpu );
+}
+
+/*
+	The same scene as graph passes, built twice as two frames would build it:
+
+	  blas      an imported BLAS ← the quad                    AS_WRITE, scratch a
+	  tlas      a pooled TLAS ← the two instances of the BLAS  AS_READ of the BLAS, AS_WRITE, scratch b (a's resource)
+	  unused    a TLAS nothing reads                            culled
+	  trace     the rays against the TLAS                       AS_READ through the pool's view
+*/
+void RenderGraphAs( idTestGpu & gpu ) {
+	idTestRayScene scene( gpu );
+	if ( !scene.Ready() ) {
+		return;
+	}
+	const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottomInputs = scene.BottomInputs();
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO bottomInfo = {};
+	gpu.device.Get().GetRaytracingAccelerationStructurePrebuildInfo( &bottomInputs, &bottomInfo );
+	const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS topSizeInputs = idTestRayScene::TopInputs( 0 );
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO topInfo = {};
+	gpu.device.Get().GetRaytracingAccelerationStructurePrebuildInfo( &topSizeInputs, &topInfo );
+	const auto aligned = []( uint64 bytes ) {
+		constexpr uint64 ALIGN = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+		return static_cast<uint32>( ( bytes + ALIGN - 1 ) & ~( ALIGN - 1 ) );
+	};
+	const idComPtr<ID3D12Resource> bottom = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, aligned( bottomInfo.ResultDataMaxSizeInBytes ),
+		D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"test graph BLAS", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	if ( !Check( bottom != nullptr, "the BLAS buffer" ) ) {
+		return;
+	}
+	d3d12ResourceState_t bottomState;
+	bottomState.current = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+	const d3d12PoolDesc_t topDesc = { .kind = d3d12PoolDesc_t::kind_t::ACCELERATION_STRUCTURE, .width = aligned( topInfo.ResultDataMaxSizeInBytes ) };
+	// one scratch description for both builds, so the second takes the first's resource
+	const d3d12PoolDesc_t scratchDesc = { .kind = d3d12PoolDesc_t::kind_t::BUFFER,
+		.width = aligned( Max( Max( bottomInfo.ScratchDataSizeInBytes, topInfo.ScratchDataSizeInBytes ), 256ull ) ), .unorderedAccess = true };
+	bool unusedRecorded = false;
+
+	const auto build = [&]() {
+		using access = d3d12GraphAccess_t;
+		using pass = d3d12GraphPass_t;
+		const d3d12GraphResource_t blas = scene.graph.Import( "test BLAS", { bottom.Get(), &bottomState, {}, {}, {}, 0, 0 } );
+		const d3d12GraphResource_t tlas = scene.graph.Create( "test TLAS", topDesc );
+		const d3d12GraphResource_t unused = scene.graph.Create( "test unused TLAS", topDesc );
+		const d3d12GraphResource_t scratchA = scene.graph.Create( "test scratch a", scratchDesc );
+		const d3d12GraphResource_t scratchB = scene.graph.Create( "test scratch b", scratchDesc );
+		const d3d12GraphResource_t scratchC = scene.graph.Create( "test scratch c", scratchDesc );
+		scene.graph.AddPass( "blas", pass::AS_BUILD, { { blas, access::AS_WRITE }, { scratchA, access::UAV } }, [&, blas, scratchA]( idD3D12GraphContext & context ) {
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
+			desc.Inputs = bottomInputs;
+			desc.DestAccelerationStructureData = context.Address( blas );
+			desc.ScratchAccelerationStructureData = context.Address( scratchA );
+			context.List().BuildRaytracingAccelerationStructure( &desc, 0, nullptr );
+		} );
+		const auto buildTop = [blas]( d3d12GraphResource_t target, d3d12GraphResource_t scratch ) {
+			return [blas, target, scratch]( idD3D12GraphContext & context ) {
+				const d3d12UploadSpan_t instances = context.Parms( idTestRayScene::Instances( context.Address( blas ) ) );
+				D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
+				desc.Inputs = idTestRayScene::TopInputs( instances.gpu );
+				desc.DestAccelerationStructureData = context.Address( target );
+				desc.ScratchAccelerationStructureData = context.Address( scratch );
+				context.List().BuildRaytracingAccelerationStructure( &desc, 0, nullptr );
+			};
+		};
+		scene.graph.AddPass( "tlas", pass::AS_BUILD, { { blas, access::AS_READ }, { tlas, access::AS_WRITE }, { scratchB, access::UAV } },
+			buildTop( tlas, scratchB ) );
+		scene.graph.AddPass( "unused", pass::AS_BUILD, { { blas, access::AS_READ }, { unused, access::AS_WRITE }, { scratchC, access::UAV } },
+			[&unusedRecorded]( idD3D12GraphContext & ) { unusedRecorded = true; } );
+		scene.AddTrace( [tlas]( idD3D12GraphContext & context ) { return context.Srv( tlas ); }, { { tlas, access::AS_READ } } );
+	};
+
+	for ( int frame = 1; frame <= 2; frame++ ) {
+		scene.fixture.Bind();
+		build();
+		scene.graph.Execute();
+		const idD3D12RenderGraph::stats_t & stats = scene.graph.LastStats();
+		Check( stats.passes == 3 && stats.culled == 1 && stats.transients == 3, va( "frame %d: %d passes, %d culled, %d transients: not 3, 1, 3",
+			frame, stats.passes, stats.culled, stats.transients ) );
+		Check( !unusedRecorded, va( "frame %d: the culled build was recorded", frame ) );
+		scene.CheckResults( va( "frame %d", frame ) );
+		Check( scene.pool.Num() == 2 && scene.pool.CreatedThisFrame() == ( ( frame == 1 ) ? 2 : 0 ), va( "frame %d: %d pooled, %d created: not 2 and %d",
+			frame, scene.pool.Num(), scene.pool.CreatedThisFrame(), ( frame == 1 ) ? 2 : 0 ) );
+		scene.pool.EndFrame();
+	}
+	CheckNoLayerErrors( gpu );
+}
+
+// The scene depth (a different value per 4 x 4 block) read by a compute pass as DEPTH_READ, then cleared and read
+// again: the graph moves it out of DEPTH_WRITE and the clear moves it back.
+constexpr const char * DEPTH_READ_COMPUTE =
+	"cbuffer Parms : register( b0 ) { uint depth; uint results; uint width; uint unused; };\n"
+	"[numthreads( 8, 8, 1 )]\n"
+	"void CSMain( uint3 id : SV_DispatchThreadID ) {\n"
+	"	Texture2D<float> input = ResourceDescriptorHeap[depth];\n"
+	"	RWByteAddressBuffer output = ResourceDescriptorHeap[results];\n"
+	"	output.Store( ( id.y * width + id.x ) * 4, asuint( input.Load( int3( id.xy, 0 ) ) ) );\n"
+	"}\n";
+
+void RenderGraphDepth( idTestGpu & gpu ) {
+	idTestCopies fixture( gpu, 1 );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	d3d12HlslSource_t source;
+	source.name = "test_depthread";
+	source.path = "shaders/test_depthread.hlsl";
+	source.text = DEPTH_READ_COMPUTE;
+	const auto built = fixture.hlslCompiler.Build( source, shaderStageType_t::COMPUTE, hlslParms_t::ANY );
+	if ( !Check( built.has_value(), built ? "" : built.error().c_str() ) ) {
+		return;
+	}
+	const d3d12ComputePipeline_t pipeline = D3D12_CreateComputePipeline( gpu.device, computeRoot, built->code, built->reflection, L"test depth read" );
+	constexpr uint32 SIZE = idTestCopies::SIZE;
+	constexpr uint32 BYTES = SIZE * SIZE * 4;
+	const idComPtr<ID3D12Resource> results = D3D12_CreateBuffer( gpu.device, D3D12_HEAP_TYPE_DEFAULT, BYTES, D3D12_RESOURCE_STATE_COMMON,
+		L"test depth results", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	if ( !Check( pipeline && results, "the pipeline and the results" ) ) {
+		return;
+	}
+	d3d12ResourceState_t resultsState;
+	resultsState.decays = true;
+	const d3d12Descriptor_t resultsUav = gpu.srvPool.Allocate();
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+	uavDesc.Buffer.NumElements = BYTES / 4;
+	uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+	gpu.srvPool.CreateUav( resultsUav, *results.Get(), uavDesc );
+
+	idD3D12SceneTarget::surface_t & depth = fixture.scene.Depth();
+	for ( int round = 1; round <= 2; round++ ) {
+		fixture.Bind();
+		fixture.FillDepth();
+		const d3d12GraphResource_t depths = graph.Import( "test depth", { depth.resource.Get(), &depth.state, depth.srv, {}, {}, SIZE, SIZE } );
+		const d3d12GraphResource_t output = graph.Import( "test depth results", { results.Get(), &resultsState, {}, resultsUav, {}, BYTES, 1 } );
+		graph.AddPass( "read depth", d3d12GraphPass_t::COMPUTE, { { depths, d3d12GraphAccess_t::DEPTH_READ }, { output, d3d12GraphAccess_t::UAV } },
+			[&, depths, output]( idD3D12GraphContext & context ) {
+				const std::array<uint32, 4> parms = { context.Srv( depths ), context.Uav( output ), SIZE, 0 };
+				const d3d12UploadSpan_t span = context.Parms( parms );
+				context.Dispatch( pipeline, &span, SIZE, SIZE );
+			} );
+		graph.Execute();
+		Check( gpu.barriers.Current( depth.state ) == ( D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE ),
+			va( "round %d: the depth is left in DEPTH_READ and shader resource", round ) );
+		const std::vector<byte> read = gpu.Read( *results.Get(), &resultsState, 0, BYTES );
+		if ( !Check( read.size() == BYTES, va( "round %d: the depths are read", round ) ) ) {
+			break;
+		}
+		int wrong = 0;
+		idStr first;
+		for ( uint32 row = 0; row < SIZE; row++ ) {
+			for ( uint32 column = 0; column < SIZE; column++ ) {
+				float got = 0.0f;
+				memcpy( &got, &read[( row * SIZE + column ) * 4], sizeof( got ) );
+				// the clear stores 24-bit unorm
+				constexpr double MAX24 = 16777215.0;
+				const float expected = static_cast<float>( std::round( idTestCopies::DepthAt( column, row ) * MAX24 ) / MAX24 );
+				if ( idMath::Fabs( got - expected ) > 1e-7f && wrong++ == 0 ) {
+					first = va( "( %u, %u ) %.9g, not %.9g", column, row, got, expected );
+				}
+			}
+		}
+		Check( wrong == 0, va( "round %d: %d of %u depths wrong, the first %s", round, wrong, SIZE * SIZE, first.c_str() ) );
+	}
+	gpu.WaitIdle();
+	gpu.srvPool.Free( resultsUav );
 	CheckNoLayerErrors( gpu );
 }
 
@@ -5946,6 +6427,11 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_DrawBindless", OnGpu<DrawBindless> },
 	{ "Gpu_DrawFrameBuffers", OnGpu<DrawFrameBufferPlacements> },
 	{ "Warp_RenderGraph", OnWarp<RenderGraph> },
+	{ "Warp_RayQuery", OnWarp<RayQuery> },
+	{ "Gpu_RayQuery", OnGpu<RayQuery> },
+	{ "Warp_RenderGraphAs", OnWarp<RenderGraphAs> },
+	{ "Gpu_RenderGraphAs", OnGpu<RenderGraphAs> },
+	{ "Warp_RenderGraphDepth", OnWarp<RenderGraphDepth> },
 	{ "Gpu_RenderGraph", OnGpu<RenderGraph> },
 	{ "Hdr_Settings", Test_HdrSettings },
 	{ "Warp_HdrScene", OnWarp<HdrScene> },

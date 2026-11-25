@@ -187,7 +187,7 @@ d3d12UploadSpan_t idD3D12InternalPasses::Parms() {
 	return *parms;
 }
 
-void idD3D12InternalPasses::Record( ID3D12GraphicsCommandList1 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
+void idD3D12InternalPasses::Record( ID3D12GraphicsCommandList4 & list, D3D12_CPU_DESCRIPTOR_HANDLE target, ID3D12PipelineState & pso,
 	const renderRect_t & viewport, const d3d12UploadSpan_t & parms, const d3d12DrawResources_t * resources ) {
 	barriers.Flush();
 	list.OMSetRenderTargets( 1, &target, FALSE, nullptr );

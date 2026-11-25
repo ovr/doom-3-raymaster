@@ -26,9 +26,9 @@ public:
 									idD3D12GpuTimers( const idD3D12Device & device, const idD3D12Queue & queue );
 	[[nodiscard]] bool				Available() const { return heap != nullptr; }	// caps.gpuTimer, caps.timestamps
 	[[nodiscard]] uint64			Frequency() const { return frequency; }
-	void							BeginFrame( ID3D12GraphicsCommandList1 & list );
-	void							Write( ID3D12GraphicsCommandList1 & list, int set, int index );
-	void							EndFrame( ID3D12GraphicsCommandList1 & list );	// the end stamp and the resolves; submit next
+	void							BeginFrame( ID3D12GraphicsCommandList4 & list );
+	void							Write( ID3D12GraphicsCommandList4 & list, int set, int index );
+	void							EndFrame( ID3D12GraphicsCommandList4 & list );	// the end stamp and the resolves; submit next
 	[[nodiscard]] bool				Ready( int set, int index ) const;
 	void							Read( int set, std::span<uint64> nanoseconds ) const;	// zeros unless the set is ready
 	// The frame EndFrame resolved last, once its list was waited for (Present does): never blocks; 0 before.
@@ -50,7 +50,7 @@ private:
 	};
 
 	[[nodiscard]] static constexpr UINT	Slot( int set, int index ) { return FIRST_SET + static_cast<UINT>( set * SLOTS_PER_SET + index ); }
-	void							Resolve( ID3D12GraphicsCommandList1 & list, UINT first, UINT count ) const;
+	void							Resolve( ID3D12GraphicsCommandList4 & list, UINT first, UINT count ) const;
 	[[nodiscard]] bool				CopyTicks( UINT first, std::span<uint64> ticks ) const;
 
 	const idD3D12Device &			device;
@@ -81,16 +81,16 @@ public:
 	static constexpr int			MAX_DEPTH = 64;		// caps.maxDebugGroupDepth
 	static constexpr int			MAX_NAME = 64;		// characters with the terminator; longer names are cut
 
-	void							Push( ID3D12GraphicsCommandList1 & list, const char * name );
-	void							Pop( ID3D12GraphicsCommandList1 * list );	// nullptr: no list is open
-	void							CloseAll( ID3D12GraphicsCommandList1 & list );
-	void							Reopen( ID3D12GraphicsCommandList1 & list );
+	void							Push( ID3D12GraphicsCommandList4 & list, const char * name );
+	void							Pop( ID3D12GraphicsCommandList4 * list );	// nullptr: no list is open
+	void							CloseAll( ID3D12GraphicsCommandList4 & list );
+	void							Reopen( ID3D12GraphicsCommandList4 & list );
 	[[nodiscard]] int				Depth() const { return depth; }
 	[[nodiscard]] int				PushedThisFrame() const { return pushed; }
 	void							ResetFrameCounters() { pushed = 0; }
 
 private:
-	void							Begin( ID3D12GraphicsCommandList1 & list, int level ) const;
+	void							Begin( ID3D12GraphicsCommandList4 & list, int level ) const;
 
 	std::array<std::array<wchar_t, MAX_NAME>, MAX_DEPTH>	names = {};
 	int								depth = 0;

@@ -22,6 +22,8 @@ public:
 	// written again: the GPU reads the heap when it runs the list.
 	void							CreateSrv( d3d12Descriptor_t slot, ID3D12Resource & resource, const D3D12_SHADER_RESOURCE_VIEW_DESC & desc );
 	void							CreateUav( d3d12Descriptor_t slot, ID3D12Resource & resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC & desc );
+	// An acceleration structure's view names its GPU address and no resource.
+	void							CreateAccelerationStructureSrv( d3d12Descriptor_t slot, D3D12_GPU_VIRTUAL_ADDRESS address );
 	// The slot in the shader-visible heap: ClearUnorderedAccessView* takes it beside the slot's own handle.
 	[[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE	VisibleGpu( d3d12Descriptor_t slot ) const;
 	[[nodiscard]] ID3D12DescriptorHeap *	ShaderVisibleHeap() const { return visible.Get(); }
