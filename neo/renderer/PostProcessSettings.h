@@ -65,7 +65,7 @@ struct postProcessSettings_t {
 	float							shadowsMax = 0.09f;
 	float							highlightsMin = 0.5f;
 	hdrTonemapper_t					tonemapper = hdrTonemapper_t::AGX;
-	uint8							agxLook = 1;
+	uint8							agxLook = 0;
 	bool							dither = true;		// ±0.5 of the output's last bit before it is quantized
 	uint8							bloomQuality = 5;	// 0 none, 1..5: 2..6 levels
 	float							bloomIntensity = 0.1f;

@@ -60,6 +60,19 @@ extern idCVar s_volume_dB;
 extern idCVar r_lightScale;
 extern idCVar r_windowWidth;
 extern idCVar r_windowHeight;
+extern idCVar r_hdrTonemap;
+extern idCVar r_hdrAgxLook;
+
+// r_hdrTonemap's values in its order, then r_hdrAgxLook's
+constexpr const char * TONEMAP_LABELS[] = { "Off", "AgX", "Film" };
+constexpr const char * COLOR_LOOK_LABELS[] = { "Base", "Punchy" };
+constexpr int NUM_TONEMAPS = static_cast<int>( std::size( TONEMAP_LABELS ) );
+constexpr int NUM_COLOR_LOOKS = static_cast<int>( std::size( COLOR_LOOK_LABELS ) );
+constexpr int TONEMAP_AGX = 1;
+
+[[nodiscard]] static int NextChoice( int current, int count, int adjustment ) {
+	return ( ( idMath::ClampInt( 0, count - 1, current ) + adjustment ) % count + count ) % count;
+}
 
 // changing the window mode does a vid_restart, so don't let a held key repeat it
 static const int WINDOW_MODE_REPEAT_TIME = 1000000;
@@ -86,22 +99,32 @@ static windowMode_t GetWindowMode() {
 	return WINDOW_MODE_FULLSCREEN;
 }
 
-/*
-========================
-UpdateResolutionControl
-
-A borderless window always uses the desktop resolution, so the
-resolution control is shown disabled (dimmed, without arrows).
-========================
-*/
-static void UpdateResolutionControl( idMenuWidget_DynamicList * options ) {
-	if ( options == NULL || options->GetChildren().Num() <= idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::SYSTEM_FIELD_RESOLUTION ) {
+static void SetControlDisabled( idMenuWidget_DynamicList & options, int field, bool disabled ) {
+	if ( field >= options.GetChildren().Num() ) {
 		return;
 	}
-	idMenuWidget_ControlButton * const control = dynamic_cast< idMenuWidget_ControlButton * >( &options->GetChildByIndex( idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::SYSTEM_FIELD_RESOLUTION ) );
-	if ( control != NULL ) {
-		control->SetDisabled( GetWindowMode() == WINDOW_MODE_BORDERLESS );
+	if ( auto * const control = dynamic_cast< idMenuWidget_ControlButton * >( &options.GetChildByIndex( field ) ) ) {
+		control->SetDisabled( disabled );
 	}
+}
+
+/*
+========================
+UpdateDisabledControls
+
+Controls that cannot apply are shown dimmed, without arrows: the resolution of a borderless window
+(always the desktop's), the tonemap without an HDR scene, the look of a curve other than AgX.
+========================
+*/
+static void UpdateDisabledControls( idMenuWidget_DynamicList * options ) {
+	if ( options == nullptr ) {
+		return;
+	}
+	using fields_t = idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings;
+	const bool hdr = renderSystem->HasHdrScene();
+	SetControlDisabled( *options, fields_t::SYSTEM_FIELD_RESOLUTION, GetWindowMode() == WINDOW_MODE_BORDERLESS );
+	SetControlDisabled( *options, fields_t::SYSTEM_FIELD_TONEMAP, !hdr );
+	SetControlDisabled( *options, fields_t::SYSTEM_FIELD_COLORLOOK, !hdr || r_hdrTonemap.GetInteger() != TONEMAP_AGX );
 }
 
 /*
@@ -202,6 +225,22 @@ void idMenuScreen_Shell_SystemOptions::Initialize( idMenuHandler * data ) {
 	options->AddChild( control );
 
 	control = new (TAG_SWF) idMenuWidget_ControlButton();
+	control->SetOptionType( OPTION_SLIDER_TEXT );
+	control->SetLabel( "Tonemapping" );
+	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP );
+	control->SetupEvents( DEFAULT_REPEAT_TIME, options->GetChildren().Num() );
+	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP );
+	options->AddChild( control );
+
+	control = new (TAG_SWF) idMenuWidget_ControlButton();
+	control->SetOptionType( OPTION_SLIDER_TEXT );
+	control->SetLabel( "Color Look" );
+	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK );
+	control->SetupEvents( DEFAULT_REPEAT_TIME, options->GetChildren().Num() );
+	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK );
+	options->AddChild( control );
+
+	control = new (TAG_SWF) idMenuWidget_ControlButton();
 	control->SetOptionType( OPTION_SLIDER_BAR );
 	control->SetLabel( "#str_02163" );	// Volume
 	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_VOLUME );
@@ -279,7 +318,7 @@ idMenuScreen_Shell_SystemOptions::ShowScreen
 void idMenuScreen_Shell_SystemOptions::ShowScreen( const mainMenuTransition_t transitionType ) {
 	
 	systemData.LoadData();
-	UpdateResolutionControl( options );
+	UpdateDisabledControls( options );
 
 	idMenuScreen::ShowScreen( transitionType );
 }
@@ -366,10 +405,11 @@ bool idMenuScreen_Shell_SystemOptions::HandleAction( idWidgetAction & action, co
 				}
 				return true;
 			}
-			if ( widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE ) {
-				// the resolution row depends on the window mode, so update the whole list
-				systemData.AdjustField( idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE, parms[0].ToInteger() );
-				UpdateResolutionControl( options );
+			if ( widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE ||
+					widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP ) {
+				// the resolution row depends on the window mode, the look on the tonemap: update the whole list
+				systemData.AdjustField( widget->GetDataSourceFieldIndex(), parms[0].ToInteger() );
+				UpdateDisabledControls( options );
 				if ( options != NULL ) {
 					options->Update();
 				}
@@ -403,7 +443,7 @@ bool idMenuScreen_Shell_SystemOptions::HandleAction( idWidgetAction & action, co
 				}
 				default: {
 					systemData.AdjustField( parms[0].ToInteger(), 1 );
-					UpdateResolutionControl( options );
+					UpdateDisabledControls( options );
 					options->Update();
 				}
 			}
@@ -454,6 +494,8 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadData
 	originalMotionBlur = r_motionBlur.GetInteger();
 	originalVsync = r_swapInterval.GetInteger();
 	originalBrightness = r_lightScale.GetFloat();
+	originalTonemap = r_hdrTonemap.GetInteger();
+	originalColorLook = r_hdrAgxLook.GetInteger();
 	originalVolume = s_volume_dB.GetFloat();
 	originalFullscreen = r_fullscreen.GetInteger();
 	originalBorderless = r_borderless.GetBool();
@@ -602,6 +644,18 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 			r_lightScale.SetFloat( LinearAdjust( clamped, 0.0f, 100.0f, 2.0f, 4.0f ) );
 			break;
 		}
+		case SYSTEM_FIELD_TONEMAP: {
+			if ( renderSystem->HasHdrScene() ) {
+				r_hdrTonemap.SetInteger( NextChoice( r_hdrTonemap.GetInteger(), NUM_TONEMAPS, adjustAmount ) );
+			}
+			break;
+		}
+		case SYSTEM_FIELD_COLORLOOK: {
+			if ( renderSystem->HasHdrScene() && r_hdrTonemap.GetInteger() == TONEMAP_AGX ) {
+				r_hdrAgxLook.SetInteger( NextChoice( r_hdrAgxLook.GetInteger(), NUM_COLOR_LOOKS, adjustAmount ) );
+			}
+			break;
+		}
 		case SYSTEM_FIELD_VOLUME: {
 			const float percent = 100.0f * Square( 1.0f - ( s_volume_dB.GetFloat() / DB_SILENCE ) );
 			const float adjusted = percent + (float)adjustAmount;
@@ -682,6 +736,10 @@ idSWFScriptVar idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings
 			return LinearAdjust( r_lodBias.GetFloat(), -1.0f, 1.0f, 0.0f, 100.0f );
 		case SYSTEM_FIELD_BRIGHTNESS:
 			return LinearAdjust( r_lightScale.GetFloat(), 2.0f, 4.0f, 0.0f, 100.0f );
+		case SYSTEM_FIELD_TONEMAP:
+			return TONEMAP_LABELS[idMath::ClampInt( 0, NUM_TONEMAPS - 1, r_hdrTonemap.GetInteger() )];
+		case SYSTEM_FIELD_COLORLOOK:
+			return COLOR_LOOK_LABELS[idMath::ClampInt( 0, NUM_COLOR_LOOKS - 1, r_hdrAgxLook.GetInteger() )];
 		case SYSTEM_FIELD_VOLUME: {
 			return 100.0f * Square( 1.0f - ( s_volume_dB.GetFloat() / DB_SILENCE ) );
 		}
@@ -716,6 +774,9 @@ bool idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsDataCh
 		return true;
 	}
 	if ( originalBrightness != r_lightScale.GetFloat() ) {
+		return true;
+	}
+	if ( originalTonemap != r_hdrTonemap.GetInteger() || originalColorLook != r_hdrAgxLook.GetInteger() ) {
 		return true;
 	}
 	if ( originalVolume != s_volume_dB.GetFloat() ) {

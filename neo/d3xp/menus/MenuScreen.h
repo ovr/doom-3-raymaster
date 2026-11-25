@@ -1194,6 +1194,8 @@ public:
 			SYSTEM_FIELD_MOTIONBLUR,
 			SYSTEM_FIELD_LODBIAS,
 			SYSTEM_FIELD_BRIGHTNESS,
+			SYSTEM_FIELD_TONEMAP,
+			SYSTEM_FIELD_COLORLOOK,
 			SYSTEM_FIELD_VOLUME,
 			SYSTEM_FIELD_RENDERAPI,
 			MAX_SYSTEM_FIELDS
@@ -1228,6 +1230,8 @@ public:
 		int originalMotionBlur;
 		int originalVsync;
 		float originalBrightness;
+		int originalTonemap;
+		int originalColorLook;
 		float originalVolume;
 		idStr originalRenderApi;	// the one this run draws with: the cvar is read once at startup
 

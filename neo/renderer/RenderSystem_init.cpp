@@ -127,8 +127,8 @@ idCVar r_lightScale( "r_lightScale", "3", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_FL
 
 // PostProcessSettings.h: the front end copies them into every view, the back end resolves the main view's
 idCVar r_hdr( "r_hdr", "1", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_BOOL, "1 = the 3D view is lit in linear HDR and tonemapped (where the render API has it), 0 = the LDR frame" );
-idCVar r_hdrTonemap( "r_hdrTonemap", "1", CVAR_RENDERER | CVAR_INTEGER, "HDR tonemapper: 0 = clamp, 1 = AgX, 2 = a film curve in ACEScg", 0, 2 );
-idCVar r_hdrAgxLook( "r_hdrAgxLook", "1", CVAR_RENDERER | CVAR_INTEGER, "AgX look: 0 = base, 1 = punchy", 0, 1 );
+idCVar r_hdrTonemap( "r_hdrTonemap", "1", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "HDR tonemapper: 0 = clamp, 1 = AgX, 2 = a film curve in ACEScg", 0, 2 );
+idCVar r_hdrAgxLook( "r_hdrAgxLook", "0", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "AgX look: 0 = base, 1 = punchy (deeper blacks, more saturated light)", 0, 1 );
 idCVar r_hdrExposureCompensation( "r_hdrExposureCompensation", "0", CVAR_RENDERER | CVAR_FLOAT, "EV added to the HDR exposure", -8.0f, 8.0f );
 idCVar r_hdrWhiteTemp( "r_hdrWhiteTemp", "6500", CVAR_RENDERER | CVAR_FLOAT, "HDR white balance temperature in kelvin, 6500 = neutral", 1500.0f, 15000.0f );
 idCVar r_hdrWhiteTint( "r_hdrWhiteTint", "0", CVAR_RENDERER | CVAR_FLOAT, "HDR white balance tint, -1 = green .. 1 = magenta", -1.0f, 1.0f );
@@ -1802,6 +1802,10 @@ idRenderSystemLocal::IsOpenGLRunning
 */
 const char * idRenderSystemLocal::GetRenderApi() const {
 	return renderApiInUse.c_str();
+}
+
+bool idRenderSystemLocal::HasHdrScene() const {
+	return renderBackend != nullptr && renderBackend->Caps().hdrScene && r_hdr.GetBool();
 }
 
 bool idRenderSystemLocal::IsOpenGLRunning() const {
