@@ -76,6 +76,8 @@ constexpr int TONEMAP_AGX = 1;
 
 // changing the window mode does a vid_restart, so don't let a held key repeat it
 static const int WINDOW_MODE_REPEAT_TIME = 1000000;
+// a choice of two or three values: a held arrow must not cycle through them
+static const int CHOICE_REPEAT_TIME = 1000000;
 
 enum windowMode_t {
 	WINDOW_MODE_WINDOWED,		// window with borders
@@ -228,7 +230,7 @@ void idMenuScreen_Shell_SystemOptions::Initialize( idMenuHandler * data ) {
 	control->SetOptionType( OPTION_SLIDER_TEXT );
 	control->SetLabel( "Tonemapping" );
 	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP );
-	control->SetupEvents( DEFAULT_REPEAT_TIME, options->GetChildren().Num() );
+	control->SetupEvents( CHOICE_REPEAT_TIME, options->GetChildren().Num() );
 	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP );
 	options->AddChild( control );
 
@@ -236,7 +238,7 @@ void idMenuScreen_Shell_SystemOptions::Initialize( idMenuHandler * data ) {
 	control->SetOptionType( OPTION_SLIDER_TEXT );
 	control->SetLabel( "Color Look" );
 	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK );
-	control->SetupEvents( DEFAULT_REPEAT_TIME, options->GetChildren().Num() );
+	control->SetupEvents( CHOICE_REPEAT_TIME, options->GetChildren().Num() );
 	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK );
 	options->AddChild( control );
 
@@ -405,10 +407,19 @@ bool idMenuScreen_Shell_SystemOptions::HandleAction( idWidgetAction & action, co
 				}
 				return true;
 			}
-			if ( widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE ||
-					widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP ) {
-				// the resolution row depends on the window mode, the look on the tonemap: update the whole list
-				systemData.AdjustField( widget->GetDataSourceFieldIndex(), parms[0].ToInteger() );
+			if ( widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP ) {
+				// only the two rows: a whole list update while an arrow is held loses the release that stops the repeat
+				systemData.AdjustField( idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP, parms[0].ToInteger() );
+				UpdateDisabledControls( options );
+				widget->Update();
+				if ( options != NULL && idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK < options->GetChildren().Num() ) {
+					options->GetChildByIndex( idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK ).Update();
+				}
+				return true;
+			}
+			if ( widget->GetDataSourceFieldIndex() == idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE ) {
+				// the resolution row depends on the window mode, so update the whole list
+				systemData.AdjustField( idMenuDataSource_SystemSettings::SYSTEM_FIELD_WINDOWMODE, parms[0].ToInteger() );
 				UpdateDisabledControls( options );
 				if ( options != NULL ) {
 					options->Update();
