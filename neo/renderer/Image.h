@@ -132,6 +132,7 @@ public:
 	bool		IsCompressed() const { return ( opts.format == FMT_DXT1 || opts.format == FMT_DXT5 ); }
 
 	bool		IsLoaded() const { return handle != textureHandle_t::NONE; }
+	textureHandle_t	Handle() const { return handle; }	// changes when the image is purged and loaded again
 
 	// Filtering and addressing from filter, repeat and usage: the only reader of
 	// r_useTrilinearFiltering, r_maxAnisotropicFiltering and r_lodBias.

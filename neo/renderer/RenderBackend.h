@@ -148,6 +148,11 @@ If you have questions concerning this license or the applicable additional terms
 		motion in pixels of the scene since the previous frame (rows count up from the bottom, as GL's).
 		Only the gbuffer programs draw there, and nothing clears. The G-buffer has the scene's size and
 		sample count and holds until the next BeginGBuffer; DrawGBufferDebug shows one target in the output.
+	R15	With caps.rayTracing, in a frame: UpdateGpuScene writes the frame's geometry records (GpuScene.h) into
+		the backend's persistent copy of the scene and takes its instances for the frame. It applies a full update,
+		or the one after the update it applied last (same scene, sequence + 1), and the same one again as a no-op;
+		otherwise, after a texture a record names was destroyed, or on a lost device it returns false, keeps nothing
+		the passes may trace this frame, and shared code sends a full update next.
 
 ===============================================================================
 */
@@ -160,6 +165,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <expected>
 
 class idImageOpts;
+struct gpuSceneUpdate_t;
 
 // r_debugMaxDraws and r_hashDrawStream for every backend. The cvars are read once a frame, so with
 // both off a draw pays one compare.
@@ -240,6 +246,8 @@ public:
 	virtual void			EndGBuffer() {}
 	// After the resolve: the target r_gbufferDebug names, over the viewport of the output.
 	virtual void			DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {}
+	// R15, in a frame, with caps.rayTracing. Ends the pass of a pipeline backend.
+	[[nodiscard]] virtual bool	UpdateGpuScene( const gpuSceneUpdate_t & update ) { return false; }
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,

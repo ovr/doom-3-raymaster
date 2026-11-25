@@ -9,6 +9,7 @@
 #include "../renderer/D3D12/d3d12_Buffers.h"
 #include "../renderer/D3D12/d3d12_Copies.h"
 #include "../renderer/D3D12/d3d12_Draw.h"
+#include "../renderer/D3D12/d3d12_GpuScene.h"
 #include "../renderer/D3D12/d3d12_Hdr.h"
 #include "../renderer/D3D12/d3d12_Dxc.h"
 #include "../renderer/D3D12/d3d12_HlslCompiler.h"
@@ -5761,6 +5762,152 @@ void MotionVectors( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+/*
+================================================================================================
+
+the GPU scene (R15)
+
+================================================================================================
+*/
+
+// First fit, merging of the neighbours on both sides, and growth that takes a free range at the end along.
+void Test_GpuSceneRanges() {
+	idGpuSceneRanges ranges;
+	Check( ranges.Allocate( 10 ) == 0 && ranges.Capacity() == 1024, "the first range at 0, the capacity 1024" );
+	Check( ranges.Allocate( 20 ) == 10, "the next after it" );
+	Check( ranges.Allocate( 30 ) == 30, "and the next" );
+	ranges.Free( 10, 20 );
+	Check( ranges.Allocate( 15 ) == 10, "first fit takes the hole" );
+	Check( ranges.Allocate( 6 ) == 60, "6 does not fit the 5 left of the hole" );
+	Check( ranges.Allocate( 5 ) == 25, "5 fills it" );
+	ranges.Free( 0, 10 );
+	ranges.Free( 25, 5 );
+	ranges.Free( 10, 15 );
+	Check( ranges.NumFreeRanges() == 2, va( "0..30 merged into one free range before the end: %d ranges", ranges.NumFreeRanges() ) );
+	Check( ranges.Allocate( 30 ) == 0, "the merged range" );
+	Check( ranges.Used() == 66, va( "66 used, not %d", ranges.Used() ) );
+	const int big = ranges.Allocate( 2000 );
+	Check( big == 66 && ranges.Capacity() == 2066, va( "growth takes the free end along: at %d, capacity %d", big, ranges.Capacity() ) );
+	ranges.Free( 0, 66 );
+	ranges.Free( 66, 2000 );
+	Check( ranges.Used() == 0 && ranges.NumFreeRanges() == 1, "all free: one range" );
+	ranges.Clear();
+	Check( ranges.Capacity() == 0 && ranges.Allocate( 1 ) == 0, "Clear starts over" );
+}
+
+struct gpuSceneTestFrame_t {
+	std::vector<gpuSceneWrite_t>	writes;
+	std::vector<gpuSceneInstance_t>	instances;
+	gpuSceneFrame_t					frame = {};
+
+	gpuSceneTestFrame_t( uint32 sceneId, uint32 sequence, bool full, int capacity ) {
+		frame.sceneId = sceneId;
+		frame.sequence = sequence;
+		frame.full = full;
+		frame.staticGeneration = 1;
+		frame.geometryCapacity = capacity;
+	}
+	// A record whose bytes say its index and this frame's sequence.
+	void Write( int index, textureHandle_t diffuse, textureHandle_t bump ) {
+		gpuSceneWrite_t & write = writes.emplace_back();
+		memset( &write, 0, sizeof( write ) );
+		write.index = index;
+		write.record.vertexOffset = static_cast<uint32>( index * 32 );
+		write.record.numIndexes = frame.sequence;
+		write.record.flags = gpuSceneGeometry_t::GEO_OPAQUE;
+		write.record.colors[0].Set( static_cast<float>( index ), 0.5f, 0.25f, 1.0f );
+		write.textures[static_cast<int>( gpuSceneTexture_t::DIFFUSE )] = diffuse;
+		write.textures[static_cast<int>( gpuSceneTexture_t::BUMP )] = bump;
+	}
+	gpuSceneUpdate_t Update() {
+		frame.writes = writes.data();
+		frame.numWrites = static_cast<int>( writes.size() );
+		gpuSceneInstance_t & instance = instances.emplace_back();
+		memset( &instance, 0, sizeof( instance ) );
+		instance.numGeometries = 1;
+		frame.instances = instances.data();
+		frame.numInstances = static_cast<int>( instances.size() );
+		return { &frame, bufferHandle_t::NONE, bufferHandle_t::NONE };
+	}
+};
+
+// Writes in runs, the views of SAMPLED textures (the fallback for the rest), growth by a GPU copy, the same update
+// again as a no-op, and the refusals of R15: a gap, another scene, a destroyed texture; a full update recovers.
+void GpuScene( idTestGpu & gpu ) {
+	constexpr int DIFFUSE = static_cast<int>( gpuSceneTexture_t::DIFFUSE );
+	constexpr int BUMP = static_cast<int>( gpuSceneTexture_t::BUMP );
+	const textureHandle_t sampled = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test scene a" );
+	const textureHandle_t doomed = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test scene b" );
+	const textureHandle_t copy = gpu.textures.Create( Opts( FMT_RGBA8, 4, 4, 1 ), textureRole_t::COLOR_COPY, POINT_CLAMP, "test scene copy" );
+	const uint32 sampledView = gpu.textures.SampledView( sampled, textureKind_t::TEX_2D ).index;
+	const uint32 doomedView = gpu.textures.SampledView( doomed, textureKind_t::TEX_2D ).index;
+	const uint32 fallback = gpu.textures.Fallback( textureKind_t::TEX_2D ).index;
+
+	idD3D12GpuScene scene( gpu.device, gpu, gpu.graveyard, gpu.srvPool, gpu.barriers, gpu.uploader, gpu.textures );
+	auto readRecord = [&]( int index ) {
+		gpuSceneGeometry_t record;
+		const std::vector<byte> bytes = gpu.Read( *scene.Buffer(), &scene.BufferState(), static_cast<uint64>( index ) * sizeof( record ), sizeof( record ) );
+		memset( &record, 0, sizeof( record ) );
+		if ( bytes.size() == sizeof( record ) ) {
+			memcpy( &record, bytes.data(), sizeof( record ) );
+		}
+		return record;
+	};
+	auto matches = [&]( int index, uint32 sequence, uint32 diffuseView, uint32 bumpView ) {
+		const gpuSceneGeometry_t record = readRecord( index );
+		const bool ok = record.vertexOffset == static_cast<uint32>( index * 32 ) && record.numIndexes == sequence
+			&& record.colors[0].x == static_cast<float>( index ) && record.textures[DIFFUSE] == diffuseView && record.textures[BUMP] == bumpView
+			&& memcmp( &record, &scene.Geometries()[static_cast<size_t>( index )], sizeof( record ) ) == 0;
+		return Check( ok, va( "record %d: offset %u, sequence %u, views %u %u (want %u %u)", index, record.vertexOffset, record.numIndexes,
+			record.textures[DIFFUSE], record.textures[BUMP], diffuseView, bumpView ) );
+	};
+
+	gpuSceneTestFrame_t first( 7, 1, true, 4 );
+	first.Write( 0, sampled, copy );
+	first.Write( 1, doomed, textureHandle_t::NONE );
+	first.Write( 3, sampled, sampled );
+	Check( scene.Update( first.Update() ) && scene.Valid(), "a full update applies" );
+	Check( scene.LastStats().copies == 2 && scene.LastStats().writes == 3, va( "two runs, %d copies", scene.LastStats().copies ) );
+	Check( scene.Instances().size() == 1, "the frame's instance" );
+	matches( 0, 1, sampledView, fallback );
+	matches( 1, 1, doomedView, fallback );
+	matches( 3, 1, sampledView, sampledView );
+	Check( scene.Update( first.Update() ), "the same update again (the second eye) is a no-op" );
+
+	gpuSceneTestFrame_t second( 7, 2, false, 2048 );
+	second.Write( 1, sampled, sampled );
+	second.Write( 1500, doomed, doomed );
+	Check( scene.Update( second.Update() ) && scene.Capacity() >= 2048, va( "the next one grows the buffer to %d", scene.Capacity() ) );
+	matches( 0, 1, sampledView, fallback );
+	matches( 1, 2, sampledView, sampledView );
+	matches( 3, 1, sampledView, sampledView );
+	matches( 1500, 2, doomedView, doomedView );
+
+	gpuSceneTestFrame_t gap( 7, 4, false, 2048 );
+	Check( !scene.Update( gap.Update() ) && !scene.Valid() && scene.Instances().empty(), "a gap is refused and nothing is traced" );
+	gpuSceneTestFrame_t recover( 7, 5, true, 2048 );
+	recover.Write( 2, sampled, sampled );
+	Check( scene.Update( recover.Update() ) && scene.Valid(), "a full update recovers" );
+	matches( 1500, 2, doomedView, doomedView );
+	gpuSceneTestFrame_t other( 8, 6, false, 2048 );
+	Check( !scene.Update( other.Update() ), "a delta of another scene is refused" );
+	gpuSceneTestFrame_t again( 8, 6, true, 2048 );
+	Check( scene.Update( again.Update() ), "its full one applies" );
+
+	gpu.textures.Destroy( doomed );
+	gpuSceneTestFrame_t afterDestroy( 8, 7, false, 2048 );
+	Check( !scene.Update( afterDestroy.Update() ) && !scene.Valid(), "a destroyed SAMPLED texture is refused" );
+	gpuSceneTestFrame_t rebuilt( 8, 8, true, 2048 );
+	rebuilt.Write( 1500, doomed, sampled );
+	Check( scene.Update( rebuilt.Update() ), "the full update after it applies" );
+	matches( 1500, 8, fallback, sampledView );
+
+	gpu.WaitIdle();
+	gpu.textures.Destroy( sampled );
+	gpu.textures.Destroy( copy );
+	CheckNoLayerErrors( gpu );
+}
+
 // A float copy of the HDR scene keeps its values; an LDR copy of the output into the same texture is UNORM as
 // before; switching between the two formats swaps the spare in and creates nothing.
 void HdrCopies( idTestGpu & gpu, UINT samples ) {
@@ -6837,6 +6984,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_HdrScene", OnWarp<HdrScene> },
 	{ "Warp_GBuffer", OnWarp<GBuffer> },
 	{ "Warp_MotionVectors", OnWarp<MotionVectors> },
+	{ "GpuScene_Ranges", Test_GpuSceneRanges },
+	{ "Warp_GpuScene", OnWarp<GpuScene> },
 	{ "Gpu_HdrScene", OnGpu<HdrScene> },
 	{ "Warp_HdrCopies", OnWarp<HdrCopiesAllSamples> },
 	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },

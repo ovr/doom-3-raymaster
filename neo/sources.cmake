@@ -262,6 +262,7 @@ set(D3D12_SOURCES
 	renderer/D3D12/d3d12_Draw.cpp
 	renderer/D3D12/d3d12_Dxc.cpp
 	renderer/D3D12/d3d12_Formats.cpp
+	renderer/D3D12/d3d12_GpuScene.cpp
 	renderer/D3D12/d3d12_Hdr.cpp
 	renderer/D3D12/d3d12_HlslCompiler.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
@@ -342,6 +343,7 @@ set(ENGINE_SOURCES
 	renderer/DXT/DXTEncoder_SSE2.cpp
 	renderer/Font.cpp
 	renderer/GLMatrix.cpp
+	renderer/GpuScene.cpp
 	renderer/GuiModel.cpp
 	renderer/Image_files.cpp
 	renderer/Image_intrinsic.cpp

@@ -202,6 +202,7 @@ void idD3D12TextureStore::Destroy( textureHandle_t handle ) {
 		barriers.Flush();
 	}
 	d3d12Texture_t dead = table.Remove( handle );
+	sampledDestroyed += ( dead.role == textureRole_t::SAMPLED ) ? 1 : 0;
 	BurySurface( dead.surface );
 	BurySurface( dead.spare );
 	samplers.Release( dead.samplerSlot );

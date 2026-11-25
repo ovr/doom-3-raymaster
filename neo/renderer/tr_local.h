@@ -89,6 +89,7 @@ SURFACES
 
 class idRenderWorldLocal;
 struct viewEntity_t;
+struct gpuSceneFrame_t;
 struct viewLight_t;
 
 // drawSurf_t structures command the back end to render surfaces
@@ -444,6 +445,7 @@ struct viewDef_t {
 	idScreenRect		viewport;				// in real pixels and proper Y flip
 	postProcessSettings_t	postProcess;		// R_DefaultPostProcessSettings; the back end reads the main view's
 	rayTracingSettings_t	rayTracing;			// R_DefaultRayTracingSettings; the same
+	gpuSceneFrame_t *	gpuScene;				// rayTracing.scene, the main view: the GPU scene's update of the frame
 
 	idScreenRect		scissor;
 	// for scissor clipping, local inside renderView viewport
@@ -568,6 +570,7 @@ enum frameAllocType_t {
 	FRAME_ALLOC_SHADER_REGISTER,
 	FRAME_ALLOC_DRAW_SURFACE_POINTER,
 	FRAME_ALLOC_DRAW_COMMAND,
+	FRAME_ALLOC_GPU_SCENE,
 	FRAME_ALLOC_UNKNOWN,
 	FRAME_ALLOC_MAX
 };
@@ -1008,6 +1011,8 @@ extern idCVar r_debugRenderToTexture;
 extern idCVar stereoRender_deGhost;			// subtract from opposite eye to reduce ghosting
 
 extern idCVar r_useGPUSkinning;
+extern idCVar r_rtStats;					// GpuScene.cpp
+extern idCVar r_skipInteractionFastPath;	// tr_backend_draw.cpp
 
 /*
 ====================================================================
@@ -1326,6 +1331,9 @@ TR_BACKEND_DRAW
 */
 
 void RB_DrawElementsWithCounters( const drawSurf_t *surf, primitive_t topology = primitive_t::TRIANGLES );
+// The texture matrix of a material stage and its colour times lightColor, clamped as the interactions clamp it.
+void RB_SetupInteractionStage( const shaderStage_t *surfaceStage, const float *surfaceRegs, const float lightColor[4],
+								idVec4 matrix[2], float color[4] );
 void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool debugTools = true );
 // hdrMainView: the view whose end resolves the HDR scene; its debug tools draw after the resolve.
 void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView = false );
@@ -1373,6 +1381,7 @@ void R_AddViewDebugTools( const viewDef_t * viewDef );
 #include "BufferObject.h"
 #include "RenderProgs.h"
 #include "RenderBackend.h"
+#include "GpuScene.h"
 #include "RenderWorld_local.h"
 #include "GuiModel.h"
 #include "VertexCache.h"

@@ -183,6 +183,8 @@ public:
 	idList<idRenderEntityLocal*, TAG_ENTITY>	entityDefs;
 	idList<idRenderLightLocal*, TAG_LIGHT>		lightDefs;
 
+	idGpuScene				gpuScene;				// the ray traced passes' view of the entityDefs (GpuScene.h)
+
 	idBlockAlloc<areaReference_t, 1024> areaReferenceAllocator;
 	idBlockAlloc<idInteraction, 256>	interactionAllocator;
 

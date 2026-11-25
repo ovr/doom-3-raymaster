@@ -826,7 +826,7 @@ const int INTERACTION_TEXUNIT_SPECULAR		= 4;
 RB_SetupInteractionStage
 ==================
 */
-static void RB_SetupInteractionStage( const shaderStage_t *surfaceStage, const float *surfaceRegs, const float lightColor[4],
+void RB_SetupInteractionStage( const shaderStage_t *surfaceStage, const float *surfaceRegs, const float lightColor[4],
 									idVec4 matrix[2], float color[4] ) {
 
 	if ( surfaceStage->texture.hasMatrix ) {
@@ -2891,6 +2891,12 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	}
 
 	backEnd.pc.c_surfaces += backEnd.viewDef->numDrawSurfs;
+
+	// R15: the GPU scene before anything of the view traces it; the second eye sends the same update again.
+	// Only the main view sends: a world gathered for another view leaves a gap, and the next delta is refused.
+	if ( hdrMainView && backEnd.viewDef->gpuScene != nullptr ) {
+		RB_UpdateGpuScene( *backEnd.viewDef->gpuScene );
+	}
 
 	// render the scene
 	backEnd.gbufferView = hdrMainView && backEnd.hdrPhase && backEnd.viewDef->rayTracing.gbuffer;

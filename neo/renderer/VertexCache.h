@@ -187,6 +187,11 @@ public:
 
 	void			BeginBackEnd();
 
+	// Bumped by Init and FreeStaticData: static offsets of an older generation point at nothing (the GPU scene).
+	[[nodiscard]] int	StaticGeneration() const { return staticGeneration; }
+	[[nodiscard]] bufferHandle_t	StaticVertexBuffer() const { return staticData.vertexBuffer.GetHandle(); }
+	[[nodiscard]] bufferHandle_t	StaticIndexBuffer() const { return staticData.indexBuffer.GetHandle(); }
+
 public:
 	int				currentFrame;	// for determining the active buffers
 	int				listNum;		// currentFrame % VERTCACHE_NUM_FRAMES
@@ -204,6 +209,8 @@ public:
 	vertCacheHandle_t	ActuallyAlloc( geoBufferSet_t & vcs, const void * data, int bytes, cacheType_t type );
 
 private:
+	int				staticGeneration = 0;
+
 	// the back end draws the frame before the one being written
 	bool			IsDrawnFrame( const vertCacheHandle_t handle ) const {
 		const uint64 frameNum = (int)( handle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;

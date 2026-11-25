@@ -40,6 +40,7 @@ idRenderWorldLocal::FreeWorld
 void idRenderWorldLocal::FreeWorld() {
 	// this will free all the lightDefs and entityDefs
 	FreeDefs();
+	gpuScene.Reset();
 
 	// free all the portals and check light/model references
 	for ( int i = 0; i < numPortalAreas; i++ ) {
