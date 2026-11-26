@@ -257,6 +257,9 @@ void idGpuScene::GatherLights( idRenderWorldLocal & world, const viewDef_t & vie
 				continue;
 			}
 			lightSeen[light.index] = gatherCount;
+			if ( !GpuScene_LightReaches( light.areaNum, view.connectedAreas ) ) {
+				continue;
+			}
 			const idMaterial * shader = light.lightShader;
 			const renderLight_t & parms = light.parms;
 			if ( shader == nullptr || shader->IsFogLight() || shader->IsBlendLight() || light.falloffImage == nullptr ) {
