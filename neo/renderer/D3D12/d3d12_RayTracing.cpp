@@ -148,21 +148,25 @@ void idD3D12RayTracing::ReadCompactedSizes() {
 	}
 	void * mapped = nullptr;
 	const D3D12_RANGE everything = { 0, MAX_SIZES * sizeof( uint64 ) };
-	if ( device.Check( sizesReadback->Map( 0, &everything, &mapped ), "Map (rt blas sizes)" ) ) {
-		const uint64 * read = static_cast<const uint64 *>( mapped );
-		for ( const pendingSize_t & size : pending ) {
-			auto found = cache.find( size.key );
-			if ( found == cache.end() || found->second.builtAt != size.builtAt ) {
-				continue;
-			}
-			blas_t & entry = found->second;
-			entry.asked = false;
-			if ( read[size.slot] > 0 && Align( read[size.slot] ) < entry.bytes ) {
-				entry.compactedBytes = read[size.slot];
-			} else {
-				entry.compacted = true;		// nothing to gain
-			}
+	// a failed map answers nothing: its entries are asked again
+	const uint64 * read = device.Check( sizesReadback->Map( 0, &everything, &mapped ), "Map (rt blas sizes)" ) ? static_cast<const uint64 *>( mapped ) : nullptr;
+	for ( const pendingSize_t & size : pending ) {
+		auto found = cache.find( size.key );
+		if ( found == cache.end() || found->second.builtAt != size.builtAt ) {
+			continue;
 		}
+		blas_t & entry = found->second;
+		entry.asked = false;
+		if ( read == nullptr ) {
+			continue;
+		}
+		if ( read[size.slot] > 0 && Align( read[size.slot] ) < entry.bytes ) {
+			entry.compactedBytes = read[size.slot];
+		} else {
+			entry.compacted = true;		// nothing to gain
+		}
+	}
+	if ( read != nullptr ) {
 		const D3D12_RANGE nothingWritten = { 0, 0 };
 		sizesReadback->Unmap( 0, &nothingWritten );
 	}
@@ -478,13 +482,13 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		desc.InstanceID = instance.firstGeometry & 0xFFFFFF;
 		desc.InstanceMask = instance.mask & 0xFF;
 		// Doom 3 draws the side that winds clockwise in GL's window: DXR's back face, unless flipped. The rays cull
-		// back faces; an instance with a two-sided geometry culls none (include/raytracing.hlsli)
+		// back faces, and an instance culls as a whole: its geometries are all two-sided or none is (R15)
 		desc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_FRONT_COUNTERCLOCKWISE;
-		for ( const gpuSceneGeometry_t & geometry : geometries.subspan( instance.firstGeometry, instance.numGeometries ) ) {
-			if ( ( geometry.flags & gpuSceneGeometry_t::GEO_TWO_SIDED ) != 0 ) {
-				desc.Flags |= D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
-				break;
-			}
+		const std::span<const gpuSceneGeometry_t> records = geometries.subspan( instance.firstGeometry, instance.numGeometries );
+		const auto twoSided = []( const gpuSceneGeometry_t & geometry ) { return ( geometry.flags & gpuSceneGeometry_t::GEO_TWO_SIDED ) != 0; };
+		assert( std::ranges::all_of( records, twoSided ) || std::ranges::none_of( records, twoSided ) );
+		if ( !records.empty() && twoSided( records.front() ) ) {
+			desc.Flags |= D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
 		}
 		desc.AccelerationStructure = ( *placed[entry.sceneInstance].buffer )->GetGPUVirtualAddress() + placed[entry.sceneInstance].offset;
 	}

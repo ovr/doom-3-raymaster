@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include <algorithm>
+#include <span>
+
 #include "RenderBackendTypes.h"
 
 /*
@@ -17,10 +20,16 @@
 	    (gpuSceneFrame_t, frame memory)
 
 	A slot is built again when its entity changes (model, parms, a material that is not constant), and a record goes
-	out only when it differs from what the GPU holds at its index. Only the main view sends; a frame that is not sent
-	leaves a gap in the sequence, which the backend refuses. A full update (the first, a new set of static buffers,
-	a refused update) drops every slot and sends the records of the frame's instances. Out for now: geometry of the frame's
-	vertex cache (particles, deforms, decals, CPU skinning), translucent surfaces, the weapon and the player's body.
+	out only when it differs from what the GPU holds at its index. A slot's one-sided and two-sided surfaces are an
+	instance each, since an instance culls as a whole. A full update (the first, a new set of static buffers, a
+	refused update) drops every slot and sends the records of the frame's instances. Out for now: geometry of the
+	frame's vertex cache (particles, deforms, decals, CPU skinning), translucent surfaces, the weapon and the
+	player's body.
+
+	Every view of a frame that sees other areas gathers again (a portal sky's view comes before the player's): its
+	update has its own instances and lights and every write of the frame so far (base, the last sequence of the
+	frame before), so whichever one the main view sends applies. A frame that is not sent leaves a gap, which the
+	backend refuses.
 
 	Every update also holds all the lights of the same areas, not only the view's (a reflected surface behind the
 	eye is lit by lights the view culled): one per enabled light stage, without fog and blend lights.
@@ -94,7 +103,7 @@ struct gpuSceneWrite_t {
 	textureHandle_t			textures[GPU_SCENE_TEXTURES];	// filled by the back end
 };
 
-// An entity in this frame's acceleration structure.
+// An entity's one-sided or two-sided surfaces in this frame's acceleration structure: its geometries cull alike.
 struct gpuSceneInstance_t {
 	static constexpr uint32	MASK_VISIBLE = 1u << 0;		// reflection and debug rays
 	static constexpr uint32	MASK_SHADOW = 1u << 1;		// shadow rays
@@ -114,7 +123,8 @@ struct gpuSceneInstance_t {
 // What a frame sends (frame memory; the back end fills the textures and joint buffers).
 struct gpuSceneFrame_t {
 	uint32					sceneId;			// of the render world's scene
-	uint32					sequence;			// one more than the frame before of the scene
+	uint32					sequence;			// one more per gather of the scene
+	uint32					base;				// the update the writes follow: the last one of the frame before
 	bool					full;				// every slot was dropped: the writes are the whole scene
 	int						staticGeneration;	// idVertexCache's: the static buffers the offsets point into
 	int						geometryCapacity;	// records the buffer holds; it only grows
@@ -145,6 +155,59 @@ struct gpuSceneStats_t {
 	int						skinnedVerts = 0;
 	uint64					blasBytes = 0;		// of the static BLAS
 	uint64					frameBytes = 0;		// the TLAS, the skinned BLAS and vertices, the scratch
+};
+
+// A slot's records in the order of its instances: the one-sided, then the two-sided, each half counting its skinned
+// vertices from 0 into skinnedVerts. Returns how many are one-sided.
+[[nodiscard]] inline int GpuScene_OrderBySide( std::span<gpuSceneWrite_t> writes, int skinnedVerts[2] ) {
+	const auto oneSided = []( const gpuSceneWrite_t & write ) { return ( write.record.flags & gpuSceneGeometry_t::GEO_TWO_SIDED ) == 0; };
+	const int numOneSided = static_cast<int>( std::stable_partition( writes.begin(), writes.end(), oneSided ) - writes.begin() );
+	skinnedVerts[0] = skinnedVerts[1] = 0;
+	for ( int i = 0; i < static_cast<int>( writes.size() ); i++ ) {
+		gpuSceneGeometry_t & record = writes[i].record;
+		int & verts = skinnedVerts[( i < numOneSided ) ? 0 : 1];
+		record.skinnedOffset = static_cast<uint32>( verts * sizeof( idDrawVert ) );
+		verts += ( record.flags & gpuSceneGeometry_t::GEO_SKINNED ) != 0 ? static_cast<int>( record.numVerts ) : 0;
+	}
+	return numOneSided;
+}
+
+// The key of a static BLAS of these records: their positions and what the BLAS holds opaque. Never 0, a skinned one's.
+[[nodiscard]] inline uint64 GpuScene_BlasKey( std::span<const gpuSceneWrite_t> writes ) {
+	uint64 key = 0xcbf29ce484222325ull;
+	const auto hash = [&key]( uint32 value ) {
+		for ( int i = 0; i < 4; i++ ) {
+			key ^= ( value >> ( i * 8 ) ) & 0xff;
+			key *= 0x100000001b3ull;
+		}
+	};
+	for ( const gpuSceneWrite_t & write : writes ) {
+		const gpuSceneGeometry_t & record = write.record;
+		hash( record.vertexOffset );
+		hash( record.indexOffset );
+		hash( record.numIndexes );
+		hash( record.numVerts );
+		hash( record.flags & ( gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_CASTS_SHADOW ) );
+	}
+	return key | 1;
+}
+
+// Which refused updates ask the front end for a full one: a scene's first and a refused full one. The deltas gathered
+// before the front end saw the request are refused too; asking again would send a second full update.
+struct gpuSceneRecovery_t {
+	uint32					awaiting = 0;		// the scene whose full update is asked for and not applied yet
+
+	[[nodiscard]] bool		Asks( uint32 sceneId, bool full, bool applied ) {
+		if ( applied ) {
+			awaiting = ( full && awaiting == sceneId ) ? 0 : awaiting;
+			return false;
+		}
+		if ( !full && awaiting == sceneId ) {
+			return false;
+		}
+		awaiting = sceneId;
+		return true;
+	}
 };
 
 // First fit over [0, capacity), free ranges sorted and merged. A failed fit grows the capacity (at least double).
@@ -222,8 +285,8 @@ inline void idGpuSceneRanges::Free( int first, int count ) {
 class idGpuScene {
 public:
 							idGpuScene();
-	// The main view after R_AddModels: this frame's update into frame memory and view.gpuScene. A second view of
-	// the same frame gets the same update.
+	// A view after R_AddModels: its update into frame memory and view.gpuScene. A view of the same frame that
+	// gathers the same (the second eye) gets the same update.
 	void					Gather( idRenderWorldLocal & world, viewDef_t & view );
 	void					FreeEntity( int index );	// FreeEntityDef
 	void					Reset();					// the next Gather sends a full update
@@ -235,10 +298,16 @@ private:
 		int					modified = 0;			// the entity's lastModifiedFrameNum then
 		int					firstGeometry = 0;
 		int					numGeometries = 0;
-		int					skinnedVerts = 0;
-		uint64				blasKey = 0;
+		int					numOneSided = 0;		// the first records; the rest are two-sided: an instance each
+		int					skinnedVerts[2] = {};	// of each half
+		uint64				blasKey[2] = {};
 		bool				animated = false;		// a material that is not constant: built again every frame
 		bool				skinned = false;
+	};
+	// A gather of this frame, by the view it was made for.
+	struct gather_t {
+		const viewDef_t *	view;
+		gpuSceneFrame_t *	out;
 	};
 
 	void					BuildSlot( slot_t & slot, const idRenderEntityLocal & def, const idRenderModel & model, bool skinned );
@@ -256,18 +325,21 @@ private:
 	idList<slot_t>			slots;				// by entityDef index
 	idList<sent_t>			sent;				// by geometry index: what the GPU holds since the last full update
 	idGpuSceneRanges		geometries;
-	idList<gpuSceneWrite_t>	writes;				// this frame's, before the copy into frame memory
+	idList<gpuSceneWrite_t>	writes;				// this frame's so far, before the copy into frame memory
 	idList<gpuSceneWrite_t>	building;			// BuildSlot's records before the slot knows how many it holds
 	idList<gpuSceneInstance_t>	instances;
 	idList<gpuSceneLightWrite_t>	lights;
-	idList<int>				seenFrame;			// by slot: the frame it was last taken in
-	idList<int>				lightSeenFrame;		// by lightDef
+	idList<int>				seen;				// by slot: the gather it was last taken in
+	idList<int>				lightSeen;			// by lightDef
+	idList<gather_t>		gathers;			// of gatherFrame
 	uint32					id;
 	uint32					sequence = 0;
+	uint32					frameBase = 0;		// the sequence before gatherFrame's first gather
 	int						staticGeneration = -1;
-	bool					full = true;
+	bool					full = true;		// the next gather drops every slot
+	bool					frameFull = false;	// a gather of gatherFrame did: its updates are full
 	int						gatherFrame = -1;
-	gpuSceneFrame_t *		gathered = nullptr;	// the frame's update, while gatherFrame is the frame
+	int						gatherCount = 0;
 };
 
 // The back end's half, on the main thread: textures and joints, then the backend; a failure asks for a full one.

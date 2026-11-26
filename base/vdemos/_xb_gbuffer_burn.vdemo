@@ -1,0 +1,17 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# _xb_gbuffer_burn: an imp and a wraith die and burn away in the cpuboss arena under the G-buffer's normals: the two
+# alpha-tested burn stages write depth at two polygon offsets, and both have to land in the G-buffer.
+map game/cpuboss
+set ui_showGun 0
+set r_gbufferDebug 1
+at 0 god
+at 0 notarget
+at 1 setviewpos -32 1850 188 90
+at 5 spawn monster_demon_imp origin "-80 2010 130" angle 270 name imp1
+at 5 spawn monster_demon_wraith origin "40 2030 130" angle 270 name wraith1
+at 60 damage imp1 300
+at 60 damage wraith1 500
+end 480
+capture 60 480 every=12 fps=60

@@ -152,25 +152,17 @@ static void R_GpuSceneMaterial( const idMaterial & shader, const float * regs, g
 	}
 }
 
-static uint64 R_GpuSceneHash( uint64 hash, uint32 value ) {
-	for ( int i = 0; i < 4; i++ ) {
-		hash ^= ( value >> ( i * 8 ) ) & 0xff;
-		hash *= 0x100000001b3ull;
-	}
-	return hash;
-}
-
 void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, const idRenderModel & model, bool skinned ) {
 	slot.model = &model;
 	slot.modified = def.lastModifiedFrameNum;
 	slot.skinned = skinned;
 	slot.animated = false;
-	slot.skinnedVerts = 0;
 
 	// the records first: the registers decide which surfaces are drawn, so how many the slot holds this frame
 	building.SetNum( 0 );
-	uint64 key = 0xcbf29ce484222325ull;
 	float scratch[MAX_EXPRESSION_REGISTERS];
+	float generated[MAX_ENTITY_SHADER_PARMS];
+	const float * shaderParms = R_EntityShaderParms( def.parms, *tr.viewDef, generated );
 	for ( int i = 0; i < model.NumSurfaces(); i++ ) {
 		const modelSurface_t & surf = *model.Surface( i );
 		const idMaterial * shader = R_RemapShaderBySkin( surf.shader, def.parms.customSkin, def.parms.customShader );
@@ -179,7 +171,7 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 		}
 		const float * regs = shader->ConstantRegisters();
 		if ( regs == nullptr ) {
-			shader->EvaluateRegisters( scratch, def.parms.shaderParms, tr.viewDef->renderView.shaderParms,
+			shader->EvaluateRegisters( scratch, shaderParms, tr.viewDef->renderView.shaderParms,
 				tr.viewDef->renderView.time[def.parms.timeGroup] * 0.001f, def.parms.referenceSound );
 			regs = scratch;
 			slot.animated = true;
@@ -207,16 +199,14 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 			| ( shader->GetCullType() == CT_TWO_SIDED ? gpuSceneGeometry_t::GEO_TWO_SIDED : 0 )
 			| ( ( shader->HasGui() || subview ) ? gpuSceneGeometry_t::GEO_NO_SHADING : 0 )
 			| ( shader->SurfaceCastsShadow() ? gpuSceneGeometry_t::GEO_CASTS_SHADOW : 0 );
-		record.skinnedOffset = static_cast<uint32>( slot.skinnedVerts * sizeof( idDrawVert ) );
-		slot.skinnedVerts += skinned ? tri.numVerts : 0;
 		R_GpuSceneMaterial( *shader, regs, write );
-
-		key = R_GpuSceneHash( key, record.vertexOffset );
-		key = R_GpuSceneHash( key, record.indexOffset );
-		key = R_GpuSceneHash( key, record.numIndexes );
-		key = R_GpuSceneHash( key, record.numVerts );
-		key = R_GpuSceneHash( key, record.flags & ( gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_CASTS_SHADOW ) );
 	}
+	// an instance culls as a whole: the two-sided surfaces go last, an instance of their own
+	const std::span<gpuSceneWrite_t> records( building.Ptr(), static_cast<size_t>( building.Num() ) );
+	slot.numOneSided = GpuScene_OrderBySide( records, slot.skinnedVerts );
+	const size_t numOneSided = static_cast<size_t>( slot.numOneSided );
+	slot.blasKey[0] = skinned ? 0 : GpuScene_BlasKey( records.first( numOneSided ) );
+	slot.blasKey[1] = skinned ? 0 : GpuScene_BlasKey( records.subspan( numOneSided ) );
 	if ( building.Num() != slot.numGeometries ) {
 		geometries.Free( slot.firstGeometry, slot.numGeometries );
 		slot.firstGeometry = ( building.Num() > 0 ) ? geometries.Allocate( building.Num() ) : 0;
@@ -226,7 +216,6 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 		building[k].index = slot.firstGeometry + k;
 		Emit( building[k] );
 	}
-	slot.blasKey = skinned ? 0 : ( key | 1 );
 }
 
 void idGpuScene::Emit( const gpuSceneWrite_t & write ) {
@@ -252,9 +241,8 @@ void idGpuScene::Emit( const gpuSceneWrite_t & write ) {
 // The lights of the gathered areas: R_AddSingleLight's suppression and registers, not its culling against the view.
 void idGpuScene::GatherLights( idRenderWorldLocal & world, const viewDef_t & view ) {
 	lights.SetNum( 0 );
-	const int frame = tr.frameCount;
-	while ( lightSeenFrame.Num() < world.lightDefs.Num() ) {
-		lightSeenFrame.Append( -1 );
+	while ( lightSeen.Num() < world.lightDefs.Num() ) {
+		lightSeen.Append( -1 );
 	}
 	const float lightScale = r_lightScale.GetFloat();
 	float scratch[MAX_EXPRESSION_REGISTERS];
@@ -265,10 +253,10 @@ void idGpuScene::GatherLights( idRenderWorldLocal & world, const viewDef_t & vie
 		const portalArea_t & portalArea = world.portalAreas[area];
 		for ( const areaReference_t * ref = portalArea.lightRefs.areaNext; ref != &portalArea.lightRefs; ref = ref->areaNext ) {
 			const idRenderLightLocal & light = *ref->light;
-			if ( lightSeenFrame[light.index] == frame ) {
+			if ( lightSeen[light.index] == gatherCount ) {
 				continue;
 			}
-			lightSeenFrame[light.index] = frame;
+			lightSeen[light.index] = gatherCount;
 			const idMaterial * shader = light.lightShader;
 			const renderLight_t & parms = light.parms;
 			if ( shader == nullptr || shader->IsFogLight() || shader->IsBlendLight() || light.falloffImage == nullptr ) {
@@ -340,11 +328,33 @@ static const idRenderModelStatic * R_GpuSceneJoints( const idRenderModel & model
 	return nullptr;
 }
 
+// Whether two views of a frame gather the same update: everything Gather reads of a view.
+static bool R_GpuSceneSameView( const viewDef_t & a, const viewDef_t & b, int numAreas ) {
+	const renderView_t & viewA = a.renderView;
+	const renderView_t & viewB = b.renderView;
+	if ( viewA.viewID != viewB.viewID || memcmp( viewA.time, viewB.time, sizeof( viewA.time ) ) != 0
+			|| memcmp( viewA.shaderParms, viewB.shaderParms, sizeof( viewA.shaderParms ) ) != 0 ) {
+		return false;
+	}
+	if ( a.connectedAreas == nullptr || b.connectedAreas == nullptr ) {
+		return a.connectedAreas == b.connectedAreas;
+	}
+	return memcmp( a.connectedAreas, b.connectedAreas, numAreas * sizeof( bool ) ) == 0;
+}
+
 void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
-	const int frame = tr.frameCount;
-	if ( gatherFrame == frame && gathered != nullptr ) {
-		view.gpuScene = gathered;
-		return;
+	if ( gatherFrame != tr.frameCount ) {
+		gatherFrame = tr.frameCount;
+		gathers.SetNum( 0 );
+		writes.SetNum( 0 );
+		frameBase = sequence;
+		frameFull = false;
+	}
+	for ( int i = 0; i < gathers.Num(); i++ ) {
+		if ( R_GpuSceneSameView( *gathers[i].view, view, world.numPortalAreas ) ) {
+			view.gpuScene = gathers[i].out;
+			return;
+		}
 	}
 	uint32 lost = id;
 	if ( gpuSceneLost.compare_exchange_strong( lost, 0 ) || staticGeneration != vertexCache.StaticGeneration() ) {
@@ -353,16 +363,20 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 	staticGeneration = vertexCache.StaticGeneration();
 	if ( full ) {
 		slots.Clear();
-		seenFrame.Clear();
+		seen.Clear();
 		geometries.Clear();
 		sent.Clear();
+		writes.SetNum( 0 );
+		frameFull = true;
+		full = false;
 	}
-	writes.SetNum( 0 );
+	// another view of the frame (a portal sky's before the player's) keeps the frame's writes and adds its own
+	gatherCount++;
 	instances.SetNum( 0 );
 	const int numDefs = world.entityDefs.Num();
 	while ( slots.Num() < numDefs ) {
 		slots.Append( slot_t() );
-		seenFrame.Append( -1 );
+		seen.Append( -1 );
 	}
 
 	const bool gpuSkinning = r_useGPUSkinning.GetBool();
@@ -375,10 +389,10 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 		for ( const areaReference_t * ref = portalArea.entityRefs.areaNext; ref != &portalArea.entityRefs; ref = ref->areaNext ) {
 			const idRenderEntityLocal & def = *ref->entity;
 			const int index = def.index;
-			if ( seenFrame[index] == frame ) {
+			if ( seen[index] == gatherCount ) {
 				continue;
 			}
-			seenFrame[index] = frame;
+			seen[index] = gatherCount;
 
 			// as the view would draw it: not the weapon, nothing only another view sees, no xray
 			const renderEntity_t & parms = def.parms;
@@ -410,32 +424,48 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 			}
 			numGeometries += slot.numGeometries;
 
-			gpuSceneInstance_t & instance = instances.Alloc();
-			memset( &instance, 0, sizeof( instance ) );
-			for ( int r = 0; r < 3; r++ ) {
-				for ( int c = 0; c < 4; c++ ) {
-					instance.transform[r][c] = def.modelMatrix[c * 4 + r];
+			// the one-sided records, then the two-sided ones
+			const int counts[2] = { slot.numOneSided, slot.numGeometries - slot.numOneSided };
+			for ( int side = 0, first = slot.firstGeometry; side < 2; first += counts[side], side++ ) {
+				if ( counts[side] == 0 ) {
+					continue;
 				}
-			}
-			instance.firstGeometry = static_cast<uint32>( slot.firstGeometry );
-			instance.numGeometries = static_cast<uint32>( slot.numGeometries );
-			instance.mask = gpuSceneInstance_t::MASK_VISIBLE | ( parms.noShadow ? 0 : gpuSceneInstance_t::MASK_SHADOW );
-			instance.skinnedVerts = static_cast<uint32>( slot.skinnedVerts );
-			instance.blasKey = slot.blasKey;
-			if ( skinned ) {
-				instance.jointCache = joints->jointsInvertedBuffer;
-				instance.numJoints = joints->numInvertedJoints;
+				gpuSceneInstance_t & instance = instances.Alloc();
+				memset( &instance, 0, sizeof( instance ) );
+				for ( int r = 0; r < 3; r++ ) {
+					for ( int c = 0; c < 4; c++ ) {
+						instance.transform[r][c] = def.modelMatrix[c * 4 + r];
+					}
+				}
+				instance.firstGeometry = static_cast<uint32>( first );
+				instance.numGeometries = static_cast<uint32>( counts[side] );
+				instance.mask = gpuSceneInstance_t::MASK_VISIBLE | ( parms.noShadow ? 0 : gpuSceneInstance_t::MASK_SHADOW );
+				instance.skinnedVerts = static_cast<uint32>( slot.skinnedVerts[side] );
+				instance.blasKey = slot.blasKey[side];
+				if ( skinned ) {
+					instance.jointCache = joints->jointsInvertedBuffer;
+					instance.numJoints = joints->numInvertedJoints;
+				}
 			}
 		}
 	}
 
 	GatherLights( world, view );
 
-	std::sort( writes.Ptr(), writes.Ptr() + writes.Num(), []( const gpuSceneWrite_t & a, const gpuSceneWrite_t & b ) { return a.index < b.index; } );
+	// in index order; of a record two gathers of the frame wrote, the later write stands
+	std::stable_sort( writes.Ptr(), writes.Ptr() + writes.Num(), []( const gpuSceneWrite_t & a, const gpuSceneWrite_t & b ) { return a.index < b.index; } );
+	int kept = 0;
+	for ( int i = 0; i < writes.Num(); i++ ) {
+		if ( i + 1 == writes.Num() || writes[i + 1].index != writes[i].index ) {
+			writes[kept++] = writes[i];
+		}
+	}
+	writes.SetNum( kept );
 	gpuSceneFrame_t * out = static_cast<gpuSceneFrame_t *>( R_ClearedFrameAlloc( sizeof( *out ), FRAME_ALLOC_GPU_SCENE ) );
 	out->sceneId = id;
 	out->sequence = ++sequence;
-	out->full = full;
+	out->base = frameBase;
+	out->full = frameFull;
 	out->staticGeneration = staticGeneration;
 	out->geometryCapacity = geometries.Capacity();
 	out->numWrites = writes.Num();
@@ -449,9 +479,7 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 	out->lights = static_cast<gpuSceneLightWrite_t *>( R_FrameAlloc( Max( 1, lights.Num() ) * sizeof( gpuSceneLightWrite_t ), FRAME_ALLOC_GPU_SCENE ) );
 	memcpy( out->lights, lights.Ptr(), lights.Num() * sizeof( gpuSceneLightWrite_t ) );
 
-	full = false;
-	gatherFrame = frame;
-	gathered = out;
+	gathers.Append( { &view, out } );
 	view.gpuScene = out;
 }
 
@@ -463,24 +491,31 @@ The back end
 ================================================================================================
 */
 
+// An image's texture. It may be purged although its material is not, and a record may name one no draw has bound
+// yet: Bind loads on demand, so must this.
+static textureHandle_t RB_GpuSceneTexture( idImage * image ) {
+	if ( image == nullptr ) {
+		return textureHandle_t::NONE;
+	}
+	if ( !image->IsLoaded() ) {
+		image->ActuallyLoadImage();
+	}
+	return image->Handle();
+}
+
 void RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 	for ( int i = 0; i < frame.numWrites; i++ ) {
 		gpuSceneWrite_t & write = frame.writes[i];
 		const_cast<idMaterial *>( write.material )->EnsureNotPurged();
 		for ( int t = 0; t < GPU_SCENE_TEXTURES; t++ ) {
-			write.textures[t] = ( write.images[t] != nullptr ) ? write.images[t]->Handle() : textureHandle_t::NONE;
+			write.textures[t] = RB_GpuSceneTexture( write.images[t] );
 		}
 	}
-	// a light's images may be purged although its material is not: Bind loads them on demand, so must this
 	for ( int i = 0; i < frame.numLights; i++ ) {
 		gpuSceneLightWrite_t & write = frame.lights[i];
 		const_cast<idMaterial *>( write.material )->EnsureNotPurged();
 		for ( int t = 0; t < 2; t++ ) {
-			idImage * image = write.images[t];
-			if ( image != nullptr && !image->IsLoaded() ) {
-				image->ActuallyLoadImage();
-			}
-			write.textures[t] = ( image != nullptr ) ? image->Handle() : textureHandle_t::NONE;
+			write.textures[t] = RB_GpuSceneTexture( write.images[t] );
 		}
 	}
 	for ( int i = 0; i < frame.numInstances; i++ ) {
@@ -494,10 +529,11 @@ void RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 	gpuSceneStats_t stats;
 	const bool applied = renderBackend->UpdateGpuScene( update, stats );
 	static int refused = 0;
-	if ( !applied ) {
+	static gpuSceneRecovery_t recovery;
+	if ( recovery.Asks( frame.sceneId, frame.full, applied ) ) {
 		gpuSceneLost.store( frame.sceneId );
-		refused++;
 	}
+	refused += applied ? 0 : 1;
 
 	static int lastPrint = 0;
 	if ( r_rtStats.GetBool() && Sys_Milliseconds() - lastPrint >= 1000 ) {

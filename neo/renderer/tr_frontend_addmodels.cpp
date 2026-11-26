@@ -396,6 +396,23 @@ idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def ) {
 R_SetupDrawSurfShader
 ===================
 */
+// The shader parms an entity's surfaces are evaluated with: its own, or with a reference shader parm0-2 from the
+// colour of that shader's first stage (in generated), so a light's model and flares follow the light's flashing table.
+const float * R_EntityShaderParms( const renderEntity_t & renderEntity, const viewDef_t & view, float generated[MAX_ENTITY_SHADER_PARMS] ) {
+	if ( likely( renderEntity.referenceShader == nullptr ) ) {
+		return renderEntity.shaderParms;
+	}
+	float refRegs[MAX_EXPRESSION_REGISTERS];
+	renderEntity.referenceShader->EvaluateRegisters( refRegs, renderEntity.shaderParms, view.renderView.shaderParms,
+		view.renderView.time[renderEntity.timeGroup] * 0.001f, renderEntity.referenceSound );
+	const shaderStage_t * pStage = renderEntity.referenceShader->GetStage( 0 );
+	memcpy( generated, renderEntity.shaderParms, sizeof( renderEntity.shaderParms ) );
+	for ( int i = 0; i < 3; i++ ) {
+		generated[i] = refRegs[pStage->color.registers[i]];
+	}
+	return generated;
+}
+
 void R_SetupDrawSurfShader( drawSurf_t * drawSurf, const idMaterial * shader, const renderEntity_t * renderEntity ) {
 	drawSurf->material = shader;
 	drawSurf->sort = shader->GetSort();
@@ -406,30 +423,8 @@ void R_SetupDrawSurfShader( drawSurf_t * drawSurf, const idMaterial * shader, co
 		// shader only uses constant values
 		drawSurf->shaderRegisters = constRegs;
 	} else {
-		// by default evaluate with the entityDef's shader parms
-		const float * shaderParms = renderEntity->shaderParms;
-
-		// a reference shader will take the calculated stage color value from another shader
-		// and use that for the parm0-parm3 of the current shader, which allows a stage of
-		// a light model and light flares to pick up different flashing tables from
-		// different light shaders
 		float generatedShaderParms[MAX_ENTITY_SHADER_PARMS];
-		if ( unlikely( renderEntity->referenceShader != NULL ) ) {
-			// evaluate the reference shader to find our shader parms
-			float refRegs[MAX_EXPRESSION_REGISTERS];
-			renderEntity->referenceShader->EvaluateRegisters( refRegs, renderEntity->shaderParms,
-																tr.viewDef->renderView.shaderParms,
-																tr.viewDef->renderView.time[renderEntity->timeGroup] * 0.001f, renderEntity->referenceSound );
-
-			const shaderStage_t * pStage = renderEntity->referenceShader->GetStage( 0 );
-
-			memcpy( generatedShaderParms, renderEntity->shaderParms, sizeof( generatedShaderParms ) );
-			generatedShaderParms[0] = refRegs[ pStage->color.registers[0] ];
-			generatedShaderParms[1] = refRegs[ pStage->color.registers[1] ];
-			generatedShaderParms[2] = refRegs[ pStage->color.registers[2] ];
-
-			shaderParms = generatedShaderParms;
-		}
+		const float * shaderParms = R_EntityShaderParms( *renderEntity, *tr.viewDef, generatedShaderParms );
 
 		// allocte frame memory for the shader register values
 		float * regs = (float *)R_FrameAlloc( shader->GetNumRegisters() * sizeof( float ), FRAME_ALLOC_SHADER_REGISTER );
@@ -448,18 +443,19 @@ R_SetupDrawSurfJoints
 */
 // The drawn joints, then those of the frame before: the block the model was last drawn with, when that was in the
 // frame before; else the drawn ones again (no motion). A model rebuilt within a frame keeps the frame's previous.
-static const idJointMat * R_JointsWithMotion( idRenderModelStatic & model, int bytes ) {
+static const idJointMat * R_JointsWithMotion( idRenderModelStatic & model, const jointMotionLayout_t & layout ) {
 	if ( model.jointsMotion == nullptr ) {
-		model.jointsMotion = static_cast<idJointMat *>( Mem_ClearedAlloc( bytes * 2, TAG_JOINTMAT ) );
+		model.jointsMotion = static_cast<idJointMat *>( Mem_ClearedAlloc( layout.bytes, TAG_JOINTMAT ) );
 		model.jointsMotionFrame = -1;
 	}
 	byte * const current = reinterpret_cast<byte *>( model.jointsMotion );
+	byte * const previous = current + layout.jointBytes;
 	if ( model.jointsMotionFrame != tr.frameCount ) {
 		const bool drawnBefore = ( model.jointsMotionFrame == tr.frameCount - 1 );
-		memcpy( current + bytes, drawnBefore ? current : reinterpret_cast<const byte *>( model.jointsInverted ), bytes );
+		memcpy( previous, drawnBefore ? current : reinterpret_cast<const byte *>( model.jointsInverted ), layout.jointBytes );
 		model.jointsMotionFrame = tr.frameCount;
 	}
-	memcpy( current, model.jointsInverted, bytes );
+	memcpy( current, model.jointsInverted, layout.jointBytes );
 	return model.jointsMotion;
 }
 
@@ -476,12 +472,13 @@ void R_SetupDrawSurfJoints( drawSurf_t * drawSurf, const srfTriangles_t * tri, c
 	// 0 = changed since the upload (InstantiateDynamicModel); CacheIsCurrent takes it for frame 0 of the 15-bit counter
 	if ( model->jointsInvertedBuffer == 0 || !vertexCache.CacheIsCurrent( model->jointsInvertedBuffer ) ) {
 		const int alignment = renderBackend->Caps().uniformBufferOffsetAlignment;
-		const int bytes = ALIGN( model->numInvertedJoints * static_cast<int>( sizeof( idJointMat ) ), alignment );
 		if ( tr.viewDef->rayTracing.gbuffer ) {
-			// the skinned programs read the first block as before; gbuffer_skinned the second too (R14)
-			model->jointsInvertedBuffer = vertexCache.AllocJoint( R_JointsWithMotion( *model, bytes ), bytes * 2 );
-			model->jointsMotionRow = bytes / static_cast<int>( sizeof( idVec4 ) );
+			// the skinned programs read the first joints as before; gbuffer_skinned those after them too (R14)
+			const jointMotionLayout_t layout = R_JointMotionLayout( model->numInvertedJoints, alignment );
+			model->jointsInvertedBuffer = vertexCache.AllocJoint( R_JointsWithMotion( *model, layout ), layout.bytes );
+			model->jointsMotionRow = layout.motionRow;
 		} else {
+			const int bytes = ALIGN( model->numInvertedJoints * static_cast<int>( sizeof( idJointMat ) ), alignment );
 			model->jointsInvertedBuffer = vertexCache.AllocJoint( model->jointsInverted, bytes );
 			model->jointsMotionRow = 0;
 		}

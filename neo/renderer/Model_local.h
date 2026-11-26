@@ -120,8 +120,8 @@ public:
 	int							numInvertedJoints;
 	idJointMat *				jointsInverted;
 	vertCacheHandle_t			jointsInvertedBuffer;
-	// the G-buffer's motion (R_SetupDrawSurfJoints): the drawn joints, then those of the frame before, one
-	// aligned block each, uploaded together; jointsMotionFrame is the tr.frameCount of the first block
+	// the G-buffer's motion (R_SetupDrawSurfJoints): the drawn joints, then those of the frame before right after
+	// them, uploaded as one block (R_JointMotionLayout); jointsMotionFrame is the tr.frameCount of the drawn ones
 	idJointMat *				jointsMotion = nullptr;
 	int							jointsMotionFrame = -1;
 	int							jointsMotionRow = 0;	// the uploaded buffer's row of the previous joints, 0 = no motion

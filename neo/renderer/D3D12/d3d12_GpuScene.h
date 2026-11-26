@@ -8,8 +8,8 @@
 	The GPU scene's persistent half (R15): the geometry records in a DEFAULT buffer with a raw view, kept up to date
 	by the writes of each update, and a CPU copy for the acceleration structures. The buffer only grows; a bigger one
 	gets the old records by a GPU copy. A record's textures are the views of SAMPLED textures (the black fallback for
-	anything else), so destroying one invalidates the scene until the next full update. The lights are written whole
-	by every applied update into a buffer of their own, which only grows too.
+	anything else), so destroying one a record views invalidates the scene until the next full update. The lights are
+	written whole by every applied update into a buffer of their own, which only grows too.
 */
 
 #include <array>
@@ -65,6 +65,7 @@ public:
 
 private:
 	[[nodiscard]] bool				Reserve( int records );
+	[[nodiscard]] bool				RecordTexturesLive();
 	[[nodiscard]] bool				WriteLights( std::span<const gpuSceneLightWrite_t> lights );
 	// The view a record holds of texture; sampled the texture when it is SAMPLED, else NONE (the fallback's view).
 	[[nodiscard]] uint32			View( textureHandle_t texture, textureHandle_t & sampled );

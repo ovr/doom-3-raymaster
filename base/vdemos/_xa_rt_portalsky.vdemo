@@ -1,0 +1,15 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# _xa_rt_portalsky: d3xpdm4, the retail map with a portal sky: its sky view is drawn first each frame, and the ray traced
+# passes must still see the rooms around the player. A turn with the rays against the depth, then one with the diffuse colours.
+map game/mp/d3xpdm4
+set ui_showGun 0
+set r_rtDebug 2
+at 0 god
+at 0 notarget
+move 10 250 yaw=90
+at 260 r_rtDebug 4
+move 260 500 yaw=90
+end 510
+capture 30 500 every=30 fps=60

@@ -1174,12 +1174,21 @@ void idVisualDemoLocal::BeginDemo() {
 	}
 	const idStr name = queue[nextDemo];
 
+	// whatever becomes of this run, the frames and the summary of an earlier one must not pass for its own
+	idFileList * old = fileSystem->ListFiles( va( "vdemos/%s", name.c_str() ), ".png" );
+	for ( int i = 0; i < old->GetNumFiles(); i++ ) {
+		remove( fileSystem->RelativePathToOSPath( va( "vdemos/%s/%s", name.c_str(), old->GetFile( i ) ), "fs_savepath" ) );
+	}
+	fileSystem->FreeFileList( old );
+	remove( fileSystem->RelativePathToOSPath( va( "vdemos/%s/vdemo.json", name.c_str() ), "fs_savepath" ) );
+
+	nextTic = 0;
+	stateStartTime = Sys_Milliseconds();
 	result_t result;
 	result.name = name;
 	if ( !LoadDemo( name, demo ) ) {
-		result.status = "bad timeline";
 		results.push_back( result );
-		nextDemo++;
+		EndDemo( "bad timeline" );
 		return;
 	}
 	result.map = demo.map;
@@ -1211,18 +1220,9 @@ idVisualDemoLocal::LoadMap
 void idVisualDemoLocal::LoadMap() {
 	const idStr & name = demo.name;
 	if ( demo.build && !BuildMap( demo.map ) ) {
-		results.back().status = "build failed";
-		nextDemo++;
-		state = state_t::NEXT_DEMO;
+		EndDemo( "build failed" );
 		return;
 	}
-
-	// frames of an earlier run with other capture windows would mix in
-	idFileList * old = fileSystem->ListFiles( va( "vdemos/%s", name.c_str() ), ".png" );
-	for ( int i = 0; i < old->GetNumFiles(); i++ ) {
-		remove( fileSystem->RelativePathToOSPath( va( "vdemos/%s/%s", name.c_str(), old->GetFile( i ) ), "fs_savepath" ) );
-	}
-	fileSystem->FreeFileList( old );
 
 	common->Printf( "vdemo %s: loading %s\n", name.c_str(), demo.map.c_str() );
 	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "map %s\n", demo.map.c_str() ) );

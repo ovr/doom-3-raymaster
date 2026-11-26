@@ -937,22 +937,29 @@ static void RB_SetGBufferSpace( const viewEntity_t & space, const idRenderMatrix
 	SetVertexParms( RENDERPARM_PREVMVPMATRIX_X, prevMvp[0], 4 );
 }
 
-// The depth pass's polygon offset of a surface its generic path draws, and whether that path draws it at all.
-static bool RB_GBufferDepthOffset( const idMaterial & shader, const float * regs, uint64 & stateBits ) {
+// A polygon offset the depth pass writes a surface's depth at.
+struct gbufferOffset_t {
+	bool	enabled;
+	float	units;
+	bool	operator==( const gbufferOffset_t & ) const = default;
+};
+using gbufferOffsets_t = idStaticList<gbufferOffset_t, 8>;
+
+// The polygon offsets the depth pass's generic path writes a surface at: the material's, or of a perforated surface
+// those of the alpha-tested stages it draws, each once (a monster's two burn stages differ). None: it draws nothing.
+static void RB_GBufferDepthOffsets( const idMaterial & shader, const float * regs, gbufferOffsets_t & offsets ) {
+	offsets.Clear();
 	int stage = 0;
 	while ( stage < shader.GetNumStages() && regs[shader.GetStage( stage )->conditionRegister] == 0 ) {
 		stage++;
 	}
 	if ( stage == shader.GetNumStages() ) {
-		return false;
+		return;
 	}
-	bool offset = shader.TestMaterialFlag( MF_POLYGONOFFSET );
-	float units = shader.GetPolygonOffset();
+	const gbufferOffset_t whole = { shader.TestMaterialFlag( MF_POLYGONOFFSET ), shader.GetPolygonOffset() };
+	bool tried = false;
 	if ( shader.Coverage() == MC_PERFORATED ) {
-		// the first alpha-tested stage it draws; none drawn of those it tried is no depth at all
-		bool tried = false;
-		bool drawn = false;
-		for ( stage = 0; stage < shader.GetNumStages() && !drawn; stage++ ) {
+		for ( stage = 0; stage < shader.GetNumStages(); stage++ ) {
 			const shaderStage_t * pStage = shader.GetStage( stage );
 			if ( !pStage->hasAlphaTest || regs[pStage->conditionRegister] == 0 ) {
 				continue;
@@ -961,21 +968,16 @@ static bool RB_GBufferDepthOffset( const idMaterial & shader, const float * regs
 			if ( regs[pStage->color.registers[3]] <= 0.0f ) {
 				continue;
 			}
-			drawn = true;
-			if ( pStage->privatePolygonOffset ) {
-				offset = true;
-				units = pStage->privatePolygonOffset;
+			const gbufferOffset_t own = pStage->privatePolygonOffset ? gbufferOffset_t{ true, pStage->privatePolygonOffset } : whole;
+			if ( offsets.FindIndex( own ) < 0 && offsets.Num() < offsets.Max() ) {
+				offsets.Append( own );
 			}
 		}
-		if ( tried && !drawn ) {
-			return false;
-		}
 	}
-	if ( offset ) {
-		stateBits |= GLS_POLYGON_OFFSET;
-		renderBackend->PolygonOffset( r_offsetFactor.GetFloat(), r_offsetUnits.GetFloat() * units );
+	// without an alpha-tested stage that it tried, it draws the surface solid
+	if ( !tried ) {
+		offsets.Append( whole );
 	}
-	return true;
 }
 
 /*
@@ -983,8 +985,8 @@ static bool RB_GBufferDepthOffset( const idMaterial & shader, const float * regs
 RB_FillGBuffer
 
 The surfaces of the depth pass again, depth-equal without depth writes, into the thin G-buffer: each with the
-depth pass's matrix, cull and polygon offset lands on its own depth. The motion is from the previous frame's
-camera and model matrix (and joints) to this one's.
+depth pass's matrix, cull and polygon offsets (one draw per offset) lands on its own depth. The motion is from the
+previous frame's camera and model matrix (and joints) to this one's.
 =====================
 */
 static void RB_FillGBuffer( drawSurf_t ** drawSurfs, int numDrawSurfs ) {
@@ -1013,8 +1015,14 @@ static void RB_FillGBuffer( drawSurf_t ** drawSurfs, int numDrawSurfs ) {
 		}
 		const float * regs = surf->shaderRegisters;
 		const bool subview = ( shader.GetSort() == static_cast<float>( SS_SUBVIEW ) );
-		uint64 stateBits = GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL;
-		if ( ( subview || shader.Coverage() == MC_PERFORATED ) && !RB_GBufferDepthOffset( shader, regs, stateBits ) ) {
+		// the fast path of the depth pass draws without an offset
+		gbufferOffsets_t offsets;
+		if ( subview || shader.Coverage() == MC_PERFORATED ) {
+			RB_GBufferDepthOffsets( shader, regs, offsets );
+		} else {
+			offsets.Append( { false, 0.0f } );
+		}
+		if ( offsets.Num() == 0 ) {
 			continue;
 		}
 		if ( surf->space != backEnd.currentSpace ) {
@@ -1044,10 +1052,16 @@ static void RB_FillGBuffer( drawSurf_t ** drawSurfs, int numDrawSurfs ) {
 		}
 		material.bump->Bind( 0 );
 		material.specular->Bind( 1 );
-		renderBackend->State( stateBits );
 
 		renderLog.OpenBlock( shader.GetName() );
-		RB_DrawElementsWithCounters( surf );
+		for ( int o = 0; o < offsets.Num(); o++ ) {
+			const gbufferOffset_t & offset = offsets[o];
+			if ( offset.enabled ) {
+				renderBackend->PolygonOffset( r_offsetFactor.GetFloat(), r_offsetUnits.GetFloat() * offset.units );
+			}
+			renderBackend->State( GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL | ( offset.enabled ? GLS_POLYGON_OFFSET : 0 ) );
+			RB_DrawElementsWithCounters( surf );
+		}
 		renderLog.CloseBlock();
 	}
 	renderBackend->EndGBuffer();
