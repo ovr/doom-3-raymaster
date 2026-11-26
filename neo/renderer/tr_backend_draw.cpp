@@ -1011,10 +1011,9 @@ static void RB_FillGBuffer( drawSurf_t ** drawSurfs, int numDrawSurfs ) {
 	renderLog.OpenMainBlock( MRB_GBUFFER );
 	renderLog.OpenBlock( "RB_FillGBuffer" );
 
-	// the camera of the main view's last G-buffer when that was the frame before, else this one: no camera motion
-	gbufferLastView_t & last = backEnd.gbufferLast[( viewDef->renderView.viewEyeBuffer == 1 ) ? 1 : 0];
-	const bool moving = last.valid && last.viewID == viewDef->renderView.viewID && last.frame == viewDef->rayTracing.frameCount - 1
-		&& last.width == v.GetWidth() && last.height == v.GetHeight();
+	// the camera of the eye's main view of the frame before when this one follows it, else this one: no camera motion
+	const gbufferLastView_t & last = backEnd.gbufferLast[( viewDef->renderView.viewEyeBuffer == 1 ) ? 1 : 0];
+	const bool moving = backEnd.viewFollows;
 	const idRenderMatrix & prevProjection = moving ? last.projection : viewDef->projectionRenderMatrix;
 	const float * prevWorldModelView = moving ? last.worldModelView : viewDef->worldSpace.modelViewMatrix;
 
@@ -1082,14 +1081,6 @@ static void RB_FillGBuffer( drawSurf_t ** drawSurfs, int numDrawSurfs ) {
 		renderLog.CloseBlock();
 	}
 	renderBackend->EndGBuffer();
-
-	last.projection = viewDef->projectionRenderMatrix;
-	memcpy( last.worldModelView, viewDef->worldSpace.modelViewMatrix, sizeof( last.worldModelView ) );
-	last.viewID = viewDef->renderView.viewID;
-	last.frame = viewDef->rayTracing.frameCount;
-	last.width = v.GetWidth();
-	last.height = v.GetHeight();
-	last.valid = true;
 
 	renderLog.CloseBlock();
 	renderLog.CloseMainBlock();
@@ -1830,7 +1821,10 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 
 	renderLog.OpenMainBlock( MRB_LIGHT_INTERACTIONS );
 	renderLog.OpenBlock( "Traced Lights" );
+	// with a history every frame takes other points of the disks (R18); without one each frame the same
+	const rtShadowSettings_t & shadow = backEnd.viewDef->rayTracing.shadow;
 	tracedLight_t traced = {};
+	traced.noise = shadow.history ? static_cast<int>( backEnd.viewSequence & 0xFFFFu ) : 0;
 	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		if ( !RB_LightTracesShadows( *vLight ) ) {
 			continue;
@@ -1844,8 +1838,8 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 		RB_RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, &traced );
 		traced.mask = gpuSceneInstance_t::MASK_SHADOW;
 		RB_RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, &traced );
-		// each light its own points of the disk: two lights of a pixel do not share their noise
-		traced.noise++;
+		// each light its own points of the disk: two lights of a pixel do not share their noise, nor within a history
+		traced.noise += 97;
 		renderLog.CloseBlock();
 	}
 	renderLog.CloseBlock();
@@ -1853,7 +1847,7 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 	renderBackend->EndTracedLights();
 
 	renderLog.OpenMainBlock( MRB_RAY_TRACING );
-	renderBackend->ResolveTracedShadows( backEnd.viewDef->rayTracing.shadow, viewport );
+	renderBackend->ResolveTracedShadows( shadow, RB_RayTracingView( *backEnd.viewDef ), viewport );
 	renderLog.CloseMainBlock();
 	return true;
 }
@@ -2983,16 +2977,60 @@ static hdrExposureStep_t RB_HdrExposureStep( const viewDef_t & viewDef, int ster
 	return step;
 }
 
+static gbufferLastView_t & RB_LastMainView( const viewDef_t & viewDef ) {
+	return backEnd.gbufferLast[( viewDef.renderView.viewEyeBuffer == 1 ) ? 1 : 0];
+}
+
+// The HDR main view's place in its eye's history (R14, R18): it follows the frame before when that drew the same
+// view at the same size and no later time; else a new epoch starts, and nothing of before may be read.
+static void RB_BeginMainViewHistory( const viewDef_t & viewDef ) {
+	const gbufferLastView_t & last = RB_LastMainView( viewDef );
+	const idScreenRect & v = viewDef.viewport;
+	backEnd.viewFollows = last.valid && last.viewID == viewDef.renderView.viewID && last.frame == viewDef.rayTracing.frameCount - 1
+		&& last.width == v.GetWidth() && last.height == v.GetHeight() && viewDef.renderView.time[0] >= last.time;
+	backEnd.viewEpoch = backEnd.viewFollows ? last.epoch : ++backEnd.historyEpochs;
+	backEnd.viewSequence = backEnd.viewFollows ? last.sequence + 1 : 0;
+}
+
+// A screenshot draws between two frames of the history: it reads it as the next frame will, and leaves the camera
+// and the sequence of the frame before for that one.
+static void RB_EndMainViewHistory( const viewDef_t & viewDef ) {
+	gbufferLastView_t & last = RB_LastMainView( viewDef );
+	if ( tr.takingScreenshot && backEnd.viewFollows ) {
+		last.frame = viewDef.rayTracing.frameCount;
+		return;
+	}
+	last.projection = viewDef.projectionRenderMatrix;
+	memcpy( last.worldModelView, viewDef.worldSpace.modelViewMatrix, sizeof( last.worldModelView ) );
+	last.mvp = viewDef.worldSpace.mvp;
+	last.viewID = viewDef.renderView.viewID;
+	last.frame = viewDef.rayTracing.frameCount;
+	last.width = viewDef.viewport.GetWidth();
+	last.height = viewDef.viewport.GetHeight();
+	last.time = viewDef.renderView.time[0];
+	last.epoch = backEnd.viewEpoch;
+	last.sequence = backEnd.viewSequence;
+	last.valid = true;
+}
+
 // The eye is where clip x, y and w are 0: column 2 of the inverse, whatever the projection (an eye of a stereo pair too).
+// The history's part is the HDR main view's, between RB_BeginMainViewHistory and RB_EndMainViewHistory.
 rtView_t RB_RayTracingView( const viewDef_t & viewDef ) {
 	rtView_t view;
 	idRenderMatrix clipToWorld;
 	idRenderMatrix::Inverse( viewDef.worldSpace.mvp, clipToWorld );
+	const idRenderMatrix & prevMvp = backEnd.viewFollows ? RB_LastMainView( viewDef ).mvp : viewDef.worldSpace.mvp;
 	for ( int row = 0; row < 4; row++ ) {
 		for ( int column = 0; column < 4; column++ ) {
 			view.clipToWorld[row][column] = clipToWorld[row][column];
+			view.worldToClip[row][column] = viewDef.worldSpace.mvp[row][column];
+			view.prevWorldToClip[row][column] = prevMvp[row][column];
 		}
 	}
+	view.epoch = backEnd.viewEpoch;
+	view.sequence = backEnd.viewSequence;
+	view.eye = ( viewDef.renderView.viewEyeBuffer == 1 ) ? 1 : 0;
+	view.store = !tr.takingScreenshot;
 	const float w = ( clipToWorld[3][2] != 0.0f ) ? clipToWorld[3][2] : 1.0f;
 	for ( int i = 0; i < 3; i++ ) {
 		view.origin[i] = clipToWorld[i][2] / w;
@@ -3028,6 +3066,11 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	// render the scene; a frame that cannot trace every caster draws its stencil shadows
 	backEnd.gbufferView = hdrMainView && backEnd.hdrPhase && backEnd.viewDef->rayTracing.gbuffer;
 	backEnd.tracedShadows = hdrMainView && backEnd.hdrPhase && traceable && backEnd.viewDef->rayTracing.shadow.enabled;
+	const bool history = hdrMainView && backEnd.hdrPhase;
+	backEnd.viewFollows = false;
+	if ( history ) {
+		RB_BeginMainViewHistory( *backEnd.viewDef );
+	}
 	RB_DrawViewInternal( cmd->viewDef, stereoEye, !hdrMainView );
 
 	// motion blur is in HDR: the resolve comes after it
@@ -3045,7 +3088,8 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 			renderBackend->DrawGBufferDebug( backEnd.viewDef->rayTracing.gbufferDebug, { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
 		}
 		const rtDebug_t rtDebug = backEnd.viewDef->rayTracing.rtDebug;
-		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS );	// drawn before the resolve
+		// drawn before the resolve
+		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS || rtDebug == rtDebug_t::HISTORY );
 		if ( rtDebug != rtDebug_t::NONE && !inScene && backEnd.viewDef->gpuScene != nullptr ) {
 			renderLog.OpenMainBlock( MRB_RAY_TRACING );
 			renderBackend->DrawRayTracingDebug( rtDebug, RB_RayTracingView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
@@ -3053,8 +3097,12 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		}
 		RB_RenderDebugTools( (drawSurf_t **)&backEnd.viewDef->drawSurfs[0], backEnd.viewDef->numDrawSurfs );
 	}
+	if ( history ) {
+		RB_EndMainViewHistory( *backEnd.viewDef );
+	}
 	backEnd.gbufferView = false;
 	backEnd.tracedShadows = false;
+	backEnd.viewFollows = false;
 
 	// optionally draw a box colored based on the eye number
 	if ( r_drawEyeColor.GetBool() ) {

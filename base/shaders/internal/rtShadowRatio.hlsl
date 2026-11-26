@@ -38,11 +38,13 @@ float4 PSMain( float4 position : SV_Position ) : SV_Target {
 	const float3 sum = max( scene.Load( int3( pixel, 0 ) ).rgb, 0.0 );
 	const float3 taken = max( lights.Load( int3( pixel, 0 ) ).rgb, 0.0 );
 #endif
-	// the difference first: all of a light taken is 0 to the bit, whatever the division makes of x / x
+	// The difference first: all of a light taken is 0 to the bit, and none of it 1. A driver's x / x may be a bit
+	// under 1, which the store into a half float drops to the value below it.
 	const float3 weights = float3( 0.2126, 0.7152, 0.0722 );
 	const float3 kept = max( sum - taken, 0.0 );
 	const float luminance = dot( sum, weights );
-	const float all = ( luminance > 0.0 ) ? saturate( dot( kept, weights ) / luminance ) : 1.0;
-	const float3 left = select( sum > 0.0, saturate( kept / max( sum, 1e-20 ) ), all );
+	const float keptLuminance = dot( kept, weights );
+	const float all = ( keptLuminance < luminance ) ? saturate( keptLuminance / luminance ) : 1.0;
+	const float3 left = select( sum > 0.0, select( kept < sum, saturate( kept / max( sum, 1e-20 ) ), 1.0 ), all );
 	return float4( left, min( luminance, HALF_MAX ) );
 }

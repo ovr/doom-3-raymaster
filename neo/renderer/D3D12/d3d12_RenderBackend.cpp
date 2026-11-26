@@ -203,9 +203,9 @@ void idRenderBackendD3D12::EndTracedLights() {
 	context->EndTracedLights();
 }
 
-void idRenderBackendD3D12::ResolveTracedShadows( const rtShadowSettings_t & settings, const renderRect_t & viewport ) {
+void idRenderBackendD3D12::ResolveTracedShadows( const rtShadowSettings_t & settings, const rtView_t & view, const renderRect_t & viewport ) {
 	assert( IsOwnerThread() && inFrame );
-	context->ResolveTracedShadows( settings, viewport );
+	context->ResolveTracedShadows( settings, view, viewport );
 }
 
 void idRenderBackendD3D12::DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {

@@ -47,7 +47,8 @@
 	      ├── idD3D12HdrPipeline              R13: the HDR scene's resolve on the graph, the combine LUT, the tonemap
 	      ├── idD3D12GpuScene                 R15: the geometry records in a DEFAULT buffer, kept by the updates
 	      ├── idD3D12RayTracing               R15: the BLAS cache, the skinned BLAS and the TLAS, built on the graph
-	      └── idD3D12RtPasses                 R15: the passes that trace them (r_rtDebug)
+	      ├── idD3D12RtPasses                 R15: the passes that trace them (r_rtDebug)
+	      └── idD3D12RtHistory                R18: what the traced passes keep per eye for the next frame
 
 	Sync points: every wait is explicit, and everything that frees or reuses memory reads
 	idD3D12Queue::Waited(), never the fence, so two runs record the same commands.
@@ -57,6 +58,8 @@
 	  ReadOutputPixels               a signal after the copy       the CPU reads the readback buffer
 	  a full ring                    the fence of its oldest chunk  that room is taken again
 	  Resize, Shutdown               a signal after the last Present  ResizeBuffers and releasing a back buffer need an idle queue
+
+	Resize and EndLevelLoad drop what one frame keeps for the next: the eye adaptation's readbacks and the history.
 
 	vid_restart only changes the window (R_SetNewMode( false )) and reaches the context as a Resize; the
 	device, the sample count and every resource but the swap chain buffers and the scene target live on.
@@ -74,6 +77,7 @@
 #include "d3d12_Programs.h"
 #include "d3d12_RayTracing.h"
 #include "d3d12_RenderGraph.h"
+#include "d3d12_RtHistory.h"
 #include "d3d12_RtPasses.h"
 #include "d3d12_Textures.h"
 #include "d3d12_Timers.h"
@@ -122,8 +126,9 @@ public:
 	// R16, in the HDR scene's linear phase: rect of the light target cleared, then the draws go to the scene and to it.
 	[[nodiscard]] bool				BeginTracedLights( const renderRect_t & rect );
 	void							EndTracedLights();
-	// After the bracket: the light target's part of viewport of SceneColor taken out of it (r_rtShadows).
-	void							ResolveTracedShadows( const rtShadowSettings_t & settings, const renderRect_t & viewport );
+	// After the bracket: the light target's part of viewport of SceneColor taken out of it (r_rtShadows), filtered
+	// over view's history when the settings say so (R18).
+	void							ResolveTracedShadows( const rtShadowSettings_t & settings, const rtView_t & view, const renderRect_t & viewport );
 	// After the resolve: one target of the G-buffer over viewport of the output (r_gbufferDebug).
 	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport );
 	// R15, in a frame: ends the pass; an applied update builds the acceleration structures.
@@ -176,6 +181,7 @@ public:
 	idD3D12GpuScene					gpuScene;
 	idD3D12RayTracing				rayTracing;
 	idD3D12RtPasses					rtPasses;
+	idD3D12RtHistory				rtHistory;
 
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );
