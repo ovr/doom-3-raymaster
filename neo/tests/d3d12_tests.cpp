@@ -5833,18 +5833,20 @@ void Test_GpuSceneRanges() {
 	Check( ranges.Capacity() == 0 && ranges.Allocate( 1 ) == 0, "Clear starts over" );
 }
 
-// A slot's records are ordered one-sided first, each half an instance of its own: its skinned vertices count from 0
-// and its BLAS key is of its own records.
+// A slot's records are ordered by group, the side and then MF_NOSELFSHADOW, each group an instance of its own: its
+// skinned vertices count from 0, its BLAS key is of its own records and its mask says whose shadow rays meet it.
 void Test_GpuSceneSides() {
 	constexpr uint32 TWO_SIDED = gpuSceneGeometry_t::GEO_TWO_SIDED;
 	constexpr uint32 SKINNED = gpuSceneGeometry_t::GEO_SKINNED;
 	constexpr uint32 OPAQUE_BIT = gpuSceneGeometry_t::GEO_OPAQUE;
+	constexpr uint32 LOCAL = gpuSceneGeometry_t::GEO_NO_SELF_SHADOW;
 	struct surface_t {
 		uint32	flags;
 		uint32	numVerts;
 	};
-	const std::array<surface_t, 5> surfaces = { { { SKINNED, 10 }, { SKINNED | TWO_SIDED, 7 }, { SKINNED, 5 }, { TWO_SIDED | OPAQUE_BIT, 100 }, { OPAQUE_BIT, 40 } } };
-	std::array<gpuSceneWrite_t, 5> writes;
+	const std::array<surface_t, 8> surfaces = { { { SKINNED, 10 }, { SKINNED | TWO_SIDED, 7 }, { SKINNED | LOCAL, 3 }, { SKINNED, 5 },
+		{ TWO_SIDED | OPAQUE_BIT, 100 }, { OPAQUE_BIT, 40 }, { SKINNED | TWO_SIDED | LOCAL, 9 }, { SKINNED | LOCAL, 6 } } };
+	std::array<gpuSceneWrite_t, 8> writes;
 	memset( writes.data(), 0, sizeof( writes ) );
 	for ( size_t i = 0; i < writes.size(); i++ ) {
 		writes[i].record.vertexOffset = static_cast<uint32>( i * 1000 );
@@ -5853,37 +5855,56 @@ void Test_GpuSceneSides() {
 		writes[i].record.flags = surfaces[i].flags;
 		writes[i].record.skinnedOffset = 0xdead;
 	}
-	int skinnedVerts[2] = { -1, -1 };
-	const int numOneSided = GpuScene_OrderBySide( writes, skinnedVerts );
-	Check( numOneSided == 3 && skinnedVerts[0] == 15 && skinnedVerts[1] == 7,
-		va( "3 one-sided with 15 skinned vertices, then 7: %d, %d, %d", numOneSided, skinnedVerts[0], skinnedVerts[1] ) );
-	// surfaces 0, 2, 4, then 1, 3: each half keeps its order
-	const std::array<uint32, 5> order = { 0, 2000, 4000, 1000, 3000 };
-	const std::array<uint32, 5> offsets = { 0, 10, 15, 0, 7 };
+	const gpuSceneGroups_t groups = GpuScene_OrderByGroup( writes );
+	Check( groups.count[0] == 3 && groups.count[1] == 2 && groups.count[2] == 2 && groups.count[3] == 1,
+		va( "3 one-sided, 2 of them local besides, 2 two-sided, 1 local: %d, %d, %d, %d", groups.count[0], groups.count[1], groups.count[2], groups.count[3] ) );
+	Check( groups.skinnedVerts[0] == 15 && groups.skinnedVerts[1] == 9 && groups.skinnedVerts[2] == 7 && groups.skinnedVerts[3] == 9,
+		va( "their skinned vertices 15, 9, 7, 9: %d, %d, %d, %d", groups.skinnedVerts[0], groups.skinnedVerts[1], groups.skinnedVerts[2], groups.skinnedVerts[3] ) );
+	// surfaces 0, 3, 5, then 2, 7, then 1, 4, then 6: each group keeps its order
+	const std::array<uint32, 8> order = { 0, 3000, 5000, 2000, 7000, 1000, 4000, 6000 };
+	const std::array<uint32, 8> offsets = { 0, 10, 15, 0, 3, 0, 7, 0 };
+	const std::array<int, 8> group = { 0, 0, 0, 1, 1, 2, 2, 3 };
 	for ( size_t i = 0; i < writes.size(); i++ ) {
 		const gpuSceneGeometry_t & record = writes[i].record;
-		Check( record.vertexOffset == order[i] && record.skinnedOffset == offsets[i] * sizeof( idDrawVert )
-			&& ( ( record.flags & TWO_SIDED ) != 0 ) == ( i >= 3 ),
-			va( "record %d: surface %u at skinned vertex %u", static_cast<int>( i ), record.vertexOffset / 1000,
-				record.skinnedOffset / static_cast<uint32>( sizeof( idDrawVert ) ) ) );
+		Check( record.vertexOffset == order[i] && record.skinnedOffset == offsets[i] * sizeof( idDrawVert ) && GpuScene_Group( record.flags ) == group[i],
+			va( "record %d: surface %u at skinned vertex %u of group %d", static_cast<int>( i ), record.vertexOffset / 1000,
+				record.skinnedOffset / static_cast<uint32>( sizeof( idDrawVert ) ), GpuScene_Group( record.flags ) ) );
 	}
 
 	const std::span<const gpuSceneWrite_t> all( writes );
-	const uint64 oneSided = GpuScene_BlasKey( all.first( 3 ) );
-	const uint64 twoSided = GpuScene_BlasKey( all.subspan( 3 ) );
-	Check( oneSided != twoSided && ( oneSided & 1 ) != 0 && ( twoSided & 1 ) != 0 && GpuScene_BlasKey( {} ) != 0, "a key per half, none 0" );
-	std::array<gpuSceneWrite_t, 2> other = { writes[3], writes[4] };
+	const std::array<uint64, 4> keys = { GpuScene_BlasKey( all.first( 3 ) ), GpuScene_BlasKey( all.subspan( 3, 2 ) ), GpuScene_BlasKey( all.subspan( 5, 2 ) ),
+		GpuScene_BlasKey( all.subspan( 7 ) ) };
+	bool distinct = GpuScene_BlasKey( {} ) != 0;
+	for ( size_t i = 0; i < keys.size(); i++ ) {
+		distinct &= ( keys[i] & 1 ) != 0;
+		for ( size_t k = i + 1; k < keys.size(); k++ ) {
+			distinct &= keys[i] != keys[k];
+		}
+	}
+	Check( distinct, "a key per group, none 0" );
+	std::array<gpuSceneWrite_t, 2> other = { writes[5], writes[6] };
 	other[0].record.colors[0].Set( 1.0f, 2.0f, 3.0f, 4.0f );
-	other[0].record.flags ^= TWO_SIDED;		// how an instance culls is not the BLAS's
-	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).first( 1 ) ) == GpuScene_BlasKey( all.subspan( 3, 1 ) ), "the key is of the geometry alone" );
+	other[0].record.flags ^= TWO_SIDED | LOCAL;		// how an instance culls and whose rays meet it is not the BLAS's
+	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).first( 1 ) ) == GpuScene_BlasKey( all.subspan( 5, 1 ) ), "the key is of the geometry alone" );
 	other[0].record.flags ^= OPAQUE_BIT;
-	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).first( 1 ) ) != GpuScene_BlasKey( all.subspan( 3, 1 ) ), "and of what the BLAS holds opaque" );
+	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).first( 1 ) ) != GpuScene_BlasKey( all.subspan( 5, 1 ) ), "and of what the BLAS holds opaque" );
 	other[1].record.indexOffset += 2;
-	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).subspan( 1 ) ) != GpuScene_BlasKey( all.subspan( 4 ) ), "other indexes, another key" );
+	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).subspan( 1 ) ) != GpuScene_BlasKey( all.subspan( 6, 1 ) ), "other indexes, another key" );
 
-	// nothing two-sided: one instance, as before
-	int plainVerts[2];
-	Check( GpuScene_OrderBySide( std::span( writes ).first( 3 ), plainVerts ) == 3 && plainVerts[0] == 15 && plainVerts[1] == 0, "a slot without two-sided surfaces" );
+	// nothing two-sided or local: one instance, the order as it was
+	const gpuSceneGroups_t plain = GpuScene_OrderByGroup( std::span( writes ).first( 3 ) );
+	Check( plain.count[0] == 3 && plain.count[1] == 0 && plain.count[2] == 0 && plain.count[3] == 0 && plain.skinnedVerts[0] == 15
+		&& writes[0].record.vertexOffset == 0 && writes[1].record.vertexOffset == 3000 && writes[2].record.vertexOffset == 5000, "a slot of one group" );
+
+	// every group is seen; a local one's shadow does not fall on local surfaces, a noShadow entity's on none
+	constexpr uint32 VISIBLE = gpuSceneInstance_t::MASK_VISIBLE;
+	constexpr uint32 SHADOW = gpuSceneInstance_t::MASK_SHADOW;
+	constexpr uint32 GLOBAL = gpuSceneInstance_t::MASK_SHADOW_GLOBAL;
+	Check( GpuScene_InstanceMask( 0, true ) == ( VISIBLE | SHADOW | GLOBAL ) && GpuScene_InstanceMask( 2, true ) == ( VISIBLE | SHADOW | GLOBAL ),
+		"a caster that is not local meets every shadow ray" );
+	Check( GpuScene_InstanceMask( 1, true ) == ( VISIBLE | SHADOW ) && GpuScene_InstanceMask( 3, true ) == ( VISIBLE | SHADOW ),
+		"a local caster not the shadow rays of local surfaces" );
+	Check( GpuScene_InstanceMask( 0, false ) == VISIBLE && GpuScene_InstanceMask( 3, false ) == VISIBLE, "a noShadow entity no shadow ray" );
 }
 
 // The lights an update holds: not the one whose own area the view is not connected to. A light's emitter is its
@@ -6472,7 +6493,8 @@ void RtSkin( idTestGpu & gpu ) {
 }
 
 // Rays through include/raytracing.hlsli: per ray 32 dwords (hit, record, t, front face; position, instance index;
-// normal; face normal, area; the diffuse's uv, footprint; RtDiffuse, its alpha; specular), then the record DUMP_RECORD.
+// normal; face normal, area; the diffuse's uv, footprint; RtDiffuse, its alpha; specular; RtOccluded for a surface that
+// is not local and for a local one, RtShadowMask of both), then the record DUMP_RECORD.
 constexpr const char * RT_HIT_COMPUTE =
 	"#include \"../include/raytracing.hlsli\"\n"
 	"cbuffer Parms : register( b0 ) { uint results; uint tlas; uint records; uint instances; uint vertices; uint indexes;\n"
@@ -6506,9 +6528,12 @@ constexpr const char * RT_HIT_COMPUTE =
 	"	ray.TMin = DIRECTIONS[id.x].w;\n"
 	"	ray.TMax = 100.0;\n"
 	"	const float spread = ORIGINS[id.x].w;\n"
-	"	const RtHit hit = RtTrace( heap, ray, 0xFF, spread, linearSampler );\n"
+	"	const RtHit hit = RtTrace( heap, ray, RT_MASK_VISIBLE, spread, linearSampler );\n"
 	"	const uint at = id.x * 128;\n"
 	"	output.Store4( at, uint4( hit.hit ? 1 : 0, hit.record, asuint( hit.t ), hit.frontFace ? 1 : 0 ) );\n"
+	"	const uint localMask = RtShadowMask( RT_GEO_NO_SELF_SHADOW );\n"
+	"	output.Store4( at + 112, uint4( RtOccluded( heap, ray.Origin, ray.Direction, ray.TMax, 0.01, linearSampler, RtShadowMask( 0 ) ) ? 1 : 0,\n"
+	"		RtOccluded( heap, ray.Origin, ray.Direction, ray.TMax, 0.01, linearSampler, localMask ) ? 1 : 0, RtShadowMask( 0 ), localMask ) );\n"
 	"	if ( !hit.hit ) { return; }\n"
 	"	const RtGeometry g = RtLoadGeometry( heap, hit.record );\n"
 	"	const RtSurface s = RtSurfaceOf( heap, g, hit.instanceIndex, hit.primitive, hit.barycentrics, hit.objectToWorld, hit.worldToObject );\n"
@@ -6523,7 +6548,7 @@ constexpr const char * RT_HIT_COMPUTE =
 	"}\n";
 
 /*
-	idTestRtScene's quads under eight instances; every quad's vertex normals are +z, and the side Doom 3 draws faces -z.
+	idTestRtScene's quads under fourteen instances; every quad's vertex normals are +z, and the side Doom 3 draws faces -z.
 	Records 10 to 52 are two-sided:
 
 	  0  record 10   the quad at the origin
@@ -6536,6 +6561,10 @@ constexpr const char * RT_HIT_COMPUTE =
 	  7  record 55   the one-sided quad at ( 70, 0, 0 ), opaque: the same
 	  8  record 54   at ( 60, 0, 0 ) as 6, the two-sided surface of the same entity, tested as 52: it culls nothing
 	  9  record 56   two-sided and opaque at ( 72, 0, -1 ), half under 7: hit from both sides, through 7's back face
+
+	Instances 0 to 9 are only seen. Record 56 once more per mask, at x = 80, 90, 100 and 110: a caster that is not local
+	(every shadow ray meets it), a local one (not the shadow rays of a local surface), a noShadow entity (no shadow ray),
+	and one only the shadow rays meet (RtTrace misses it).
 */
 void RtHit( idTestGpu & gpu ) {
 	idTestRtScene scene( gpu );
@@ -6550,10 +6579,12 @@ void RtHit( idTestGpu & gpu ) {
 		uint32	record;
 		float	t;
 		float	tMin = 0.0f;
+		bool	shadowed = false;		// RtOccluded for a surface that is not local
+		bool	shadowedLocal = false;	// and for a local one
 	};
 	const idVec3 down( 0.0f, 0.0f, -1.0f );
 	const idVec3 up( 0.0f, 0.0f, 1.0f );
-	const std::array<ray_t, 19> rays = { {
+	const std::array<ray_t, 23> rays = { {
 		{ idVec3( 1.25f, 0.75f, 10.0f ), down, 0.001f, 0, 10, 10.0f },
 		{ idVec3( 13.25f, 0.75f, 10.0f ), down, 0.001f, 1, 30, 9.0f },
 		{ idVec3( 51.25f, -5.0f, 0.75f ), idVec3( 0.0f, 1.0f, 0.0f ), 0.001f, 2, 11, 10.0f },
@@ -6576,8 +6607,13 @@ void RtHit( idTestGpu & gpu ) {
 		// an opaque back face never reaches the candidate loop: its instance has to cull it, the two-sided one's not
 		{ idVec3( 73.0f, 0.5f, 10.0f ), down, 0.001f, 9, 56, 11.0f },
 		{ idVec3( 75.0f, 0.5f, -10.0f ), up, 0.001f, 9, 56, 9.0f },
+		// the masks: who sees an instance and whose shadow rays it stops
+		{ idVec3( 81.0f, 0.5f, 10.0f ), down, 0.001f, 10, 56, 10.0f, 0.0f, true, true },
+		{ idVec3( 91.0f, 0.5f, 10.0f ), down, 0.001f, 11, 56, 10.0f, 0.0f, true, false },
+		{ idVec3( 101.0f, 0.5f, 10.0f ), down, 0.001f, 12, 56, 10.0f },
+		{ idVec3( 111.0f, 0.5f, 10.0f ), down, 0.001f, -1, 0, 0.0f, 0.0f, true, true },
 	} };
-	constexpr size_t INSTANCES = 10;
+	constexpr size_t INSTANCES = 14;
 	std::array<idMat3, INSTANCES> axes;
 	axes.fill( mat3_identity );
 	axes[2] = idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f );
@@ -6585,7 +6621,8 @@ void RtHit( idTestGpu & gpu ) {
 	const idVec3 skinOffset( 2.0f, 0.0f, 0.0f );
 	const std::array<idVec3, INSTANCES> origins = { vec3_origin, idVec3( 10.0f, 0.0f, 1.0f ), idVec3( 50.0f, 5.0f, 0.0f ), idVec3( 20.0f, 0.0f, 0.0f ),
 		idVec3( 30.0f, 0.0f, 0.0f ), idVec3( 40.0f, 0.0f, 0.0f ), idVec3( 60.0f, 0.0f, 0.0f ), idVec3( 70.0f, 0.0f, 0.0f ),
-		idVec3( 60.0f, 0.0f, 0.0f ), idVec3( 72.0f, 0.0f, -1.0f ) };
+		idVec3( 60.0f, 0.0f, 0.0f ), idVec3( 72.0f, 0.0f, -1.0f ), idVec3( 80.0f, 0.0f, 0.0f ), idVec3( 90.0f, 0.0f, 0.0f ),
+		idVec3( 100.0f, 0.0f, 0.0f ), idVec3( 110.0f, 0.0f, 0.0f ) };
 	// as the instance's transform rows: idMat3 * idVec3 would take the transpose
 	const auto place = [&]( int instance, const idVec3 & point ) {
 		const idMat3 & m = axes[instance];
@@ -6691,10 +6728,18 @@ void RtHit( idTestGpu & gpu ) {
 			write.record.flags |= gpuSceneGeometry_t::GEO_TWO_SIDED;
 		}
 	}
-	const std::array<uint32, INSTANCES> firstRecords = { 10, 30, 11, 50, 51, 52, 53, 55, 54, 56 };
-	const std::array<uint64, INSTANCES> blasKeys = { 0x100, 0, 0x100, 0x500, 0x510, 0x520, 0x530, 0x550, 0x540, 0x560 };
+	const std::array<uint32, INSTANCES> firstRecords = { 10, 30, 11, 50, 51, 52, 53, 55, 54, 56, 56, 56, 56, 56 };
+	const std::array<uint64, INSTANCES> blasKeys = { 0x100, 0, 0x100, 0x500, 0x510, 0x520, 0x530, 0x550, 0x540, 0x560, 0x560, 0x560, 0x560, 0x560 };
+	constexpr uint32 SEEN = gpuSceneInstance_t::MASK_VISIBLE;
+	constexpr uint32 CASTS = gpuSceneInstance_t::MASK_SHADOW | gpuSceneInstance_t::MASK_SHADOW_GLOBAL;
+	std::array<uint32, INSTANCES> masks;
+	masks.fill( SEEN );
+	masks[10] = GpuScene_InstanceMask( 2, true );
+	masks[11] = GpuScene_InstanceMask( 3, true );
+	masks[12] = GpuScene_InstanceMask( 2, false );
+	masks[13] = CASTS;
 	for ( size_t i = 0; i < firstRecords.size(); i++ ) {
-		gpuSceneInstance_t & instance = frame.Instance( firstRecords[i], gpuSceneInstance_t::MASK_VISIBLE, blasKeys[i], origins[i] );
+		gpuSceneInstance_t & instance = frame.Instance( firstRecords[i], masks[i], blasKeys[i], origins[i] );
 		for ( int row = 0; row < 3; row++ ) {
 			for ( int column = 0; column < 3; column++ ) {
 				instance.transform[row][column] = axes[i][row][column];
@@ -6758,6 +6803,12 @@ void RtHit( idTestGpu & gpu ) {
 			memcpy( head, &read[i * 128], sizeof( head ) );
 			memcpy( got, &read[i * 128], sizeof( got ) );
 			const bool hit = ray.instance >= 0;
+			uint32 shadow[4];
+			memcpy( shadow, &read[i * 128 + 112], sizeof( shadow ) );
+			Check( ( shadow[0] != 0 ) == ray.shadowed && ( shadow[1] != 0 ) == ray.shadowedLocal && shadow[2] == gpuSceneInstance_t::MASK_SHADOW
+				&& shadow[3] == gpuSceneInstance_t::MASK_SHADOW_GLOBAL,
+				va( "ray %d: occluded %u, for a local surface %u (want %d, %d); the masks %u, %u", static_cast<int>( i ), shadow[0], shadow[1],
+					ray.shadowed ? 1 : 0, ray.shadowedLocal ? 1 : 0, shadow[2], shadow[3] ) );
 			if ( !Check( ( head[0] != 0 ) == hit, va( "ray %d: %s, not %s", static_cast<int>( i ), head[0] ? "a hit" : "a miss", hit ? "a hit" : "a miss" ) ) || !hit ) {
 				continue;
 			}
@@ -6832,7 +6883,8 @@ void RtHit( idTestGpu & gpu ) {
 	  panel     z = 10, x -30..30, y -30..-15, emissive ( 1, 0.25, 0 ), lit by nothing
 
 	The composite adds the hit's radiance times preExposure 2; with alone the sum replaces the colour; without
-	shadows S darkens nothing.
+	shadows S darkens nothing. Then with local surfaces (MF_NOSELFSHADOW): a local S darkens the ceiling but not a
+	local ceiling, which an S that is not local does darken.
 */
 void RtReflection( idTestGpu & gpu ) {
 	idTestRtScene scene( gpu );
@@ -6880,34 +6932,11 @@ void RtReflection( idTestGpu & gpu ) {
 		return;
 	}
 
-	rtTestFrame_t frame( 1, true );
 	constexpr int DIFFUSE = static_cast<int>( gpuSceneTexture_t::DIFFUSE );
 	constexpr int BUMP = static_cast<int>( gpuSceneTexture_t::BUMP );
 	constexpr int EMISSIVE = static_cast<int>( gpuSceneTexture_t::EMISSIVE );
-	const auto quad = [&]( int record, uint32 flags, float x0, float x1, float y0, float y1, float z, uint64 blasKey ) -> gpuSceneWrite_t & {
-		frame.Write( record, 0, 6, flags );
-		gpuSceneWrite_t & write = frame.writes.back();
-		write.record.flags = flags;
-		for ( auto & rows : write.record.matrices ) {
-			rows[0] = idVec4( 1.0f, 0.0f, 0.0f, 0.0f );
-			rows[1] = idVec4( 0.0f, 1.0f, 0.0f, 0.0f );
-		}
-		gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), gpuSceneInstance_t::MASK_VISIBLE | gpuSceneInstance_t::MASK_SHADOW,
-			blasKey, idVec3( x0, y0, z ) );
-		instance.transform[0][0] = ( x1 - x0 ) * 0.25f;
-		instance.transform[1][1] = ( y1 - y0 ) * 0.25f;
-		return write;
-	};
 	constexpr uint32 CASTER = gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_CASTS_SHADOW;
-	gpuSceneWrite_t & ceiling = quad( 0, CASTER, -30.0f, 30.0f, 0.0f, 30.0f, 10.0f, 0x700 );
-	ceiling.textures[DIFFUSE] = diffuse;
-	ceiling.textures[BUMP] = bump;
-	ceiling.record.colors[0] = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
-	quad( 1, CASTER, -14.0f, -6.0f, 11.0f, 19.0f, 7.5f, 0x700 );
-	quad( 2, gpuSceneGeometry_t::GEO_OPAQUE, 6.0f, 14.0f, 11.0f, 19.0f, 7.5f, 0x710 );
-	gpuSceneWrite_t & panel = quad( 3, CASTER, -30.0f, 30.0f, -30.0f, -15.0f, 10.0f, 0x700 );
-	panel.textures[EMISSIVE] = white;
-	panel.record.colors[2] = idVec4( 1.0f, 0.25f, 0.0f, 1.0f );
+	constexpr uint32 LOCAL = gpuSceneGeometry_t::GEO_NO_SELF_SHADOW;
 
 	// a point light of radius 30: its projection and falloff map its bounds onto [0, 1]
 	gpuSceneLightWrite_t light;
@@ -6924,14 +6953,43 @@ void RtReflection( idTestGpu & gpu ) {
 	light.light.flags = gpuSceneLight_t::LIGHT_SHADOWS;
 	light.textures[0] = white;
 	light.textures[1] = white;
-	frame.frame.lights = &light;
-	frame.frame.numLights = 1;
 
-	gpuSceneStats_t stats;
-	fixture.Bind();
-	if ( !Check( scene.gpuScene.Update( frame.Update( vertexBuffer, indexBuffer ) ) && scene.gpuScene.NumLights() == 1
+	// The scene as a full update, an instance per quad with its group's mask; the ceiling and S may be local.
+	const auto apply = [&]( uint32 sequence, bool localCeiling, bool localCaster ) {
+		rtTestFrame_t frame( sequence, true );
+		const auto quad = [&]( int record, uint32 flags, float x0, float x1, float y0, float y1, float z, uint64 blasKey ) -> gpuSceneWrite_t & {
+			frame.Write( record, 0, 6, flags );
+			gpuSceneWrite_t & write = frame.writes.back();
+			write.record.flags = flags;
+			for ( auto & rows : write.record.matrices ) {
+				rows[0] = idVec4( 1.0f, 0.0f, 0.0f, 0.0f );
+				rows[1] = idVec4( 0.0f, 1.0f, 0.0f, 0.0f );
+			}
+			gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), GpuScene_InstanceMask( GpuScene_Group( flags ), true ),
+				blasKey, idVec3( x0, y0, z ) );
+			instance.transform[0][0] = ( x1 - x0 ) * 0.25f;
+			instance.transform[1][1] = ( y1 - y0 ) * 0.25f;
+			return write;
+		};
+		gpuSceneWrite_t & ceiling = quad( 0, CASTER | ( localCeiling ? LOCAL : 0 ), -30.0f, 30.0f, 0.0f, 30.0f, 10.0f, 0x700 );
+		ceiling.textures[DIFFUSE] = diffuse;
+		ceiling.textures[BUMP] = bump;
+		ceiling.record.colors[0] = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+		quad( 1, CASTER | ( localCaster ? LOCAL : 0 ), -14.0f, -6.0f, 11.0f, 19.0f, 7.5f, 0x700 );
+		quad( 2, gpuSceneGeometry_t::GEO_OPAQUE, 6.0f, 14.0f, 11.0f, 19.0f, 7.5f, 0x710 );
+		gpuSceneWrite_t & panel = quad( 3, CASTER, -30.0f, 30.0f, -30.0f, -15.0f, 10.0f, 0x700 );
+		panel.textures[EMISSIVE] = white;
+		panel.record.colors[2] = idVec4( 1.0f, 0.25f, 0.0f, 1.0f );
+		frame.frame.lights = &light;
+		frame.frame.numLights = 1;
+
+		gpuSceneStats_t stats;
+		fixture.Bind();
+		return Check( scene.gpuScene.Update( frame.Update( vertexBuffer, indexBuffer ) ) && scene.gpuScene.NumLights() == 1
 			&& scene.rt.Build( scene.rays.graph, scene.gpuScene, nullptr, stats ) && stats.tlasInstances == 4 && stats.waiting == 0,
-			va( "the update and the build: %s", RtStats( stats ).c_str() ) ) ) {
+			va( "update %u and its build: %s", sequence, RtStats( stats ).c_str() ) );
+	};
+	if ( !apply( 1, false, false ) ) {
 		return;
 	}
 
@@ -7026,7 +7084,7 @@ void RtReflection( idTestGpu & gpu ) {
 		v.pixelSpread = 0.001f;
 		return v;
 	}();
-	const auto run = [&]( const char * label, bool alone, bool shadows ) {
+	const auto run = [&]( const char * label, bool alone, bool shadows, bool casts = true ) {
 		prepare();
 		rtReflectionSettings_t settings;
 		settings.enabled = true;
@@ -7046,7 +7104,7 @@ void RtReflection( idTestGpu & gpu ) {
 			idVec4 worstGot, worstWant;
 			for ( int row = region.row0; row <= region.row1; row++ ) {
 				for ( int column = region.column0; column <= region.column1; column++ ) {
-					const idVec3 added = region.reflects ? reflected( column, row, shadows && region.shadowed ) * PRE_EXPOSURE : vec3_zero;
+					const idVec3 added = region.reflects ? reflected( column, row, shadows && casts && region.shadowed ) * PRE_EXPOSURE : vec3_zero;
 					const idVec4 want = alone ? idVec4( added.x, added.y, added.z, base.w )
 						: idVec4( base.x + added.x, base.y + added.y, base.z + added.z, base.w );
 					const idVec4 & got = texels[static_cast<size_t>( row ) * SIZE + column];
@@ -7066,6 +7124,16 @@ void RtReflection( idTestGpu & gpu ) {
 	run( "added", false, true );
 	run( "alone", true, true );
 	run( "no shadows", false, false );
+	// the stencil shadows draw the local interactions after the global shadows and before the local ones
+	if ( apply( 2, false, true ) ) {
+		run( "a local caster", false, true );
+	}
+	if ( apply( 3, true, true ) ) {
+		run( "a local caster over a local ceiling", false, true, false );
+	}
+	if ( apply( 4, true, false ) ) {
+		run( "a local ceiling", false, true );
+	}
 
 	gpu.WaitIdle();
 	gpu.buffers.Destroy( vertexBuffer );

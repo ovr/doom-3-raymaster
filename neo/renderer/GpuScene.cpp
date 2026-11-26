@@ -198,15 +198,18 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 			| ( skinned ? gpuSceneGeometry_t::GEO_SKINNED : 0 )
 			| ( shader->GetCullType() == CT_TWO_SIDED ? gpuSceneGeometry_t::GEO_TWO_SIDED : 0 )
 			| ( ( shader->HasGui() || subview ) ? gpuSceneGeometry_t::GEO_NO_SHADING : 0 )
-			| ( shader->SurfaceCastsShadow() ? gpuSceneGeometry_t::GEO_CASTS_SHADOW : 0 );
+			| ( shader->SurfaceCastsShadow() ? gpuSceneGeometry_t::GEO_CASTS_SHADOW : 0 )
+			| ( shader->TestMaterialFlag( MF_NOSELFSHADOW ) ? gpuSceneGeometry_t::GEO_NO_SELF_SHADOW : 0 );
 		R_GpuSceneMaterial( *shader, regs, write );
 	}
-	// an instance culls as a whole: the two-sided surfaces go last, an instance of their own
+	// an instance culls and casts as a whole: each group of the records is one
 	const std::span<gpuSceneWrite_t> records( building.Ptr(), static_cast<size_t>( building.Num() ) );
-	slot.numOneSided = GpuScene_OrderBySide( records, slot.skinnedVerts );
-	const size_t numOneSided = static_cast<size_t>( slot.numOneSided );
-	slot.blasKey[0] = skinned ? 0 : GpuScene_BlasKey( records.first( numOneSided ) );
-	slot.blasKey[1] = skinned ? 0 : GpuScene_BlasKey( records.subspan( numOneSided ) );
+	slot.groups = GpuScene_OrderByGroup( records );
+	for ( size_t group = 0, first = 0; group < GPU_SCENE_GROUPS; group++ ) {
+		const size_t count = static_cast<size_t>( slot.groups.count[group] );
+		slot.blasKey[group] = skinned ? 0 : GpuScene_BlasKey( records.subspan( first, count ) );
+		first += count;
+	}
 	if ( building.Num() != slot.numGeometries ) {
 		geometries.Free( slot.firstGeometry, slot.numGeometries );
 		slot.firstGeometry = ( building.Num() > 0 ) ? geometries.Allocate( building.Num() ) : 0;
@@ -428,10 +431,10 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 			}
 			numGeometries += slot.numGeometries;
 
-			// the one-sided records, then the two-sided ones
-			const int counts[2] = { slot.numOneSided, slot.numGeometries - slot.numOneSided };
-			for ( int side = 0, first = slot.firstGeometry; side < 2; first += counts[side], side++ ) {
-				if ( counts[side] == 0 ) {
+			// an instance per group of the slot's records
+			const int * counts = slot.groups.count;
+			for ( int group = 0, first = slot.firstGeometry; group < GPU_SCENE_GROUPS; first += counts[group], group++ ) {
+				if ( counts[group] == 0 ) {
 					continue;
 				}
 				gpuSceneInstance_t & instance = instances.Alloc();
@@ -442,10 +445,10 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 					}
 				}
 				instance.firstGeometry = static_cast<uint32>( first );
-				instance.numGeometries = static_cast<uint32>( counts[side] );
-				instance.mask = gpuSceneInstance_t::MASK_VISIBLE | ( parms.noShadow ? 0 : gpuSceneInstance_t::MASK_SHADOW );
-				instance.skinnedVerts = static_cast<uint32>( slot.skinnedVerts[side] );
-				instance.blasKey = slot.blasKey[side];
+				instance.numGeometries = static_cast<uint32>( counts[group] );
+				instance.mask = GpuScene_InstanceMask( group, !parms.noShadow );
+				instance.skinnedVerts = static_cast<uint32>( slot.groups.skinnedVerts[group] );
+				instance.blasKey = slot.blasKey[group];
 				if ( skinned ) {
 					instance.jointCache = joints->jointsInvertedBuffer;
 					instance.numJoints = joints->numInvertedJoints;

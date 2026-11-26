@@ -143,7 +143,8 @@ If you have questions concerning this license or the applicable additional terms
 		An applied update builds the acceleration structures of its instances (an instance whose BLAS waits for
 		a later frame is left out) and fills stats; the no-op builds nothing. A triangle's front face is the side
 		Doom 3 draws (clockwise in GL's window); the geometries of an instance are all two-sided (no ray culls
-		a face of it) or all one-sided. After the resolve, DrawRayTracingDebug traces a ray per pixel of the
+		a face of it) or all one-sided, and all local (MF_NOSELFSHADOW) or none: its mask says which rays meet
+		it (gpuSceneInstance_t::MASK_*). After the resolve, DrawRayTracingDebug traces a ray per pixel of the
 		main view against what the last applied update built and draws what it hits over the output.
 		DrawRayTracedReflections, in the linear phase after the lights, reads the G-buffer and the depth of the
 		main view, traces a mirror ray per pixel that may reflect, lights its hit with the update's lights and

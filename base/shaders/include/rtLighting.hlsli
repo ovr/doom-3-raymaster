@@ -139,7 +139,7 @@ float3 RtShade( RtHeap heap, RtLighting lighting, RtHit hit, RayDesc ray, float 
 			const float3 origin = s.position + side * ( 0.02 + 0.1 * footprint );
 			const float3 path = light.origin - origin;
 			const float distance = length( path );
-			if ( distance > 0.0 && RtOccluded( heap, origin, path / distance, distance, footprint, lighting.linearSampler ) ) {
+			if ( distance > 0.0 && RtOccluded( heap, origin, path / distance, distance, footprint, lighting.linearSampler, RtShadowMask( g.flags ) ) ) {
 				continue;
 			}
 		}
