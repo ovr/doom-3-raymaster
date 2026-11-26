@@ -81,14 +81,18 @@ idD3D12SceneTarget::idD3D12SceneTarget( const idD3D12Device & owner, idD3D12Grav
 // The RTVs and the DSV are rewritten in their slots, a recorded list keeps what it was given. A submitted list
 // reads the SRVs from the shader-visible heap when it runs: each new resource takes new SRV slots.
 void idD3D12SceneTarget::Create( int newWidth, int newHeight, UINT sampleCount ) {
-	for ( surface_t * surface : { &color, &depth, &resolved, &hdrColor, &hdrResolved, &gbuffer[0], &gbuffer[1], &gbuffer[2] } ) {
-		graveyard.Bury( std::move( surface->resource ) );
-		if ( surface->srv.IsValid() ) {
-			graveyard.Bury( srvPool, surface->srv );
-			surface->srv = {};
+	const auto bury = [this]( surface_t & surface ) {
+		graveyard.Bury( std::move( surface.resource ) );
+		if ( surface.srv.IsValid() ) {
+			graveyard.Bury( srvPool, surface.srv );
+			surface.srv = {};
 		}
-		surface->state = {};
+		surface.state = {};
+	};
+	for ( surface_t * surface : { &color, &depth, &resolved, &hdrColor, &hdrResolved } ) {
+		bury( *surface );
 	}
+	std::ranges::for_each( gbuffer, bury );
 	width = Max( newWidth, 1 );
 	height = Max( newHeight, 1 );
 	samples = sampleCount;
@@ -129,7 +133,8 @@ void idD3D12SceneTarget::EnsureHdr( idD3D12Barriers & barriers, idD3D12Submitter
 
 // Not cleared here: BeginGBuffer clears the viewport it draws.
 bool idD3D12SceneTarget::EnsureGBuffer() {
-	static constexpr const wchar_t * NAMES[] = { L"doom3 G-buffer normal", L"doom3 G-buffer F0 roughness", L"doom3 G-buffer motion" };
+	static constexpr const wchar_t * NAMES[] = { L"doom3 G-buffer normal", L"doom3 G-buffer F0 roughness", L"doom3 G-buffer motion",
+		L"doom3 G-buffer albedo" };
 	static_assert( std::size( NAMES ) == GBUFFER_TARGETS );
 	for ( size_t i = 0; i < GBUFFER_TARGETS; i++ ) {
 		if ( gbuffer[i].resource ) {

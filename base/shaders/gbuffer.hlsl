@@ -26,6 +26,8 @@ cbuffer VertexParms : register( b0 ) {
 	float4 rpPrevMVPmatrixW;
 	float4 rpBumpMatrixS;
 	float4 rpBumpMatrixT;
+	float4 rpDiffuseMatrixS;
+	float4 rpDiffuseMatrixT;
 	float4 rpSpecularMatrixS;
 	float4 rpSpecularMatrixT;
 	float4 rpGlobalEyePos;
@@ -34,16 +36,20 @@ cbuffer VertexParms : register( b0 ) {
 #endif
 };
 
-// rpGBufferParms: x the gloss scale, y flags (1 may reflect, 2 two-sided), zw half the viewport in pixels
+// rpGBufferParms: x the gloss scale, y flags (1 may reflect, 2 two-sided, 4 the weapon's depth hack), zw half the
+// viewport in pixels
 cbuffer PixelParms : register( b1 ) {
+	float4 rpDiffuseModifier;
 	float4 rpSpecularModifier;
 	float4 rpGBufferParms;
 };
 
 TEXTURE2D( Texture2D, bumpMap, 0 );
 TEXTURE2D( Texture2D, specularMap, 1 );
+TEXTURE2D( Texture2D, diffuseMap, 2 );
 SAMPLER( bumpSampler, 0 );
 SAMPLER( specularSampler, 1 );
+SAMPLER( diffuseSampler, 2 );
 
 struct VSInput {
 	float4 position : POSITION;
@@ -65,6 +71,7 @@ struct VSOutput {
 	float3 toEye : TEXCOORD4;
 	float3 clip : TEXCOORD5;			// GL clip xyw of this frame
 	float3 prevClip : TEXCOORD6;		// and of the previous one
+	float2 diffuseUV : TEXCOORD7;
 };
 
 float3 ModelToWorld( float3 v ) {
@@ -110,6 +117,8 @@ VSOutput VSMain( VSInput input ) {
 	output.uv.y = dot4( input.texcoord.xy, rpBumpMatrixT );
 	output.uv.z = dot4( input.texcoord.xy, rpSpecularMatrixS );
 	output.uv.w = dot4( input.texcoord.xy, rpSpecularMatrixT );
+	output.diffuseUV.x = dot4( input.texcoord.xy, rpDiffuseMatrixS );
+	output.diffuseUV.y = dot4( input.texcoord.xy, rpDiffuseMatrixT );
 
 	output.tangent = ModelToWorld( tangent );
 	output.binormal = ModelToWorld( binormal );
@@ -124,6 +133,7 @@ struct PSOutput {
 	float2 normal : SV_Target0;
 	float4 material : SV_Target1;
 	float2 motion : SV_Target2;
+	float4 albedo : SV_Target3;
 };
 
 PSOutput PSMain( VSOutput input ) {
@@ -149,6 +159,10 @@ PSOutput PSMain( VSOutput input ) {
 	const float3 f0 = ( ( flags & 1 ) != 0 ) ? saturate( specMap.rgb * rpSpecularModifier.rgb ) : float3( 0.0, 0.0, 0.0 );
 	const float gloss = saturate( sqrt( dot( f0, float3( 0.2126, 0.7152, 0.0722 ) ) ) * rpGBufferParms.x );
 	output.material = float4( f0, 1.0 - gloss );
+
+	// interaction.hlsl's diffuse without the light; the vertex colour white, as for a traced hit
+	const float3 diffuse = DecodeColor( ConvertYCoCgToRGB( diffuseMap.Sample( diffuseSampler, input.diffuseUV ) ) );
+	output.albedo = float4( saturate( diffuse * rpDiffuseModifier.rgb ), ( ( flags & 4 ) != 0 ) ? GBUFFER_WEAPON : 1.0 );
 
 	output.motion = float2( 0.0, 0.0 );
 	if ( input.prevClip.z > 0.0 ) {

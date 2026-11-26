@@ -129,9 +129,10 @@ If you have questions concerning this license or the applicable additional terms
 		A resolve moves the eye adaptation by its step; LastHdrExposure is what a resolve the CPU has
 		read back chose (a frame or more late).
 	R14	In the HDR scene's linear phase: BeginGBuffer clears the viewport's rectangle of the
-		thin G-buffer (all zero) and sends the draws until EndGBuffer into its three targets with the scene's
+		thin G-buffer (all zero) and sends the draws until EndGBuffer into its four targets with the scene's
 		depth instead of the scene: GB0 the octahedral world normal, GB1 F0 (sRGB) and roughness, GB2 the
-		motion in pixels of the scene since the previous frame (rows count up from the bottom, as GL's).
+		motion in pixels of the scene since the previous frame (rows count up from the bottom, as GL's),
+		GB3 the albedo (sRGB) and in alpha what was drawn: 0 nothing, 1 a surface, 0.5 the weapon.
 		Only the gbuffer programs draw there, and nothing clears. The G-buffer has the scene's size and
 		sample count and holds until the next BeginGBuffer; DrawGBufferDebug shows one target in the output.
 	R15	With caps.rayTracing, in a frame: UpdateGpuScene writes the frame's geometry records (GpuScene.h) into

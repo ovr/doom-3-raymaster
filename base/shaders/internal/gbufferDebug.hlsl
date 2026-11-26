@@ -11,7 +11,8 @@ cbuffer DebugParms : register( b1 ) {
 	uint normalSrv;
 	uint materialSrv;
 	uint motionSrv;
-	uint mode;			// gbufferDebug_t: 1 normal, 2 F0, 3 roughness, 4 motion
+	uint albedoSrv;
+	uint mode;			// gbufferDebug_t: 1 normal, 2 F0, 3 roughness, 4 motion, 5 albedo
 };
 
 static const float MOTION_FULL = 8.0;	// pixels of motion at full brightness
@@ -49,6 +50,8 @@ float4 PSMain( float4 position : SV_Position ) : SV_Target {
 		const float pixels = sqrt( dot( motion, motion ) );
 		const float angle = ( pixels > 0.0 ) ? atan2( motion.y, motion.x ) : 0.0;
 		c = Hue( angle / 6.28318530718 + 0.5 ) * saturate( pixels / MOTION_FULL );
+	} else if ( mode == 5 ) {
+		c = LinearToSRGB( Fetch( albedoSrv, p ).rgb );
 	}
 	return float4( c, 1.0 );
 }

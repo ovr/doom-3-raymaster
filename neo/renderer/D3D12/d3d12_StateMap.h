@@ -10,7 +10,7 @@
 
 // Raster bits 3-5 and 7 of pipelineKey_t: the sRGB view, the sample count and the float HDR scene (R13) of the
 // scene target. The HDR scene has no sRGB view: its value 8 + samples is one per sample count, and 9 + samples
-// is the thin G-buffer (R14), three targets with the scene's depth.
+// is the thin G-buffer (R14), four targets with the scene's depth.
 struct d3d12TargetId_t {
 	uint8							value = 0;
 	[[nodiscard]] static constexpr d3d12TargetId_t	Of( bool srgb, UINT samples, bool hdr = false ) {	// samples 1, 2, 4 or 8
@@ -32,9 +32,9 @@ struct d3d12TargetId_t {
 	static constexpr int			COUNT = 16;
 	static constexpr DXGI_FORMAT	DEPTH = DXGI_FORMAT_D24_UNORM_S8_UINT;
 	static constexpr DXGI_FORMAT	HDR_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
-	// include/gbuffer.hlsli: the octahedral normal, F0 and roughness, the motion
-	static constexpr std::array<DXGI_FORMAT, 3>	GBUFFER_FORMATS = { DXGI_FORMAT_R16G16_SNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-		DXGI_FORMAT_R16G16_FLOAT };
+	// include/gbuffer.hlsli: the octahedral normal, F0 and roughness, the motion, the albedo and what was drawn
+	static constexpr std::array<DXGI_FORMAT, 4>	GBUFFER_FORMATS = { DXGI_FORMAT_R16G16_SNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+		DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB };
 };
 
 /*
@@ -77,7 +77,7 @@ struct d3d12TargetId_t {
 	                                   y, so GL's counter-clockwise front faces are clockwise in D3D12
 	  raster bit 2 (lines)             LINE topology, and no culling, wireframe or depth bias, as GL_LINES has none
 	  raster bits 3-5, 7               d3d12TargetId_t: the colour view, the sample count, the float HDR scene or
-	                                   the G-buffer, whose three targets take the one blend of the key
+	                                   the G-buffer, whose four targets take the one blend of the key
 	  a dst alpha factor ONE           BLEND_OP_MAX for alpha into the float scene: a UNORM target clamps an
 	    into the HDR scene             add at 1, and the DST_ALPHA stages after it read 0..1
 	  depthBias slot                   DepthBias lround( units ), SlopeScaledDepthBias factor: D24 has GL's r = 2^-24
@@ -116,7 +116,7 @@ struct d3d12PipelineDesc_t {
 	D3D12_RASTERIZER_DESC			raster;
 	D3D12_DEPTH_STENCIL_DESC1		depthStencil;
 	D3D12_PRIMITIVE_TOPOLOGY_TYPE	topology;
-	std::array<DXGI_FORMAT, 3>		colorFormats;	// the first numTargets, d3d12TargetId_t::Format
+	std::array<DXGI_FORMAT, d3d12TargetId_t::GBUFFER_FORMATS.size()>	colorFormats;	// the first numTargets, d3d12TargetId_t::Format
 	uint32							numTargets;
 	DXGI_SAMPLE_DESC				sample;
 	std::array<D3D12_INPUT_ELEMENT_DESC, 12>	inputs;	// slot 0: what the layout has; slot 1: what it lacks

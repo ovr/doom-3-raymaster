@@ -367,8 +367,12 @@ void idD3D12InternalPasses::GBufferDebug( std::span<const d3d12Descriptor_t, idD
 		}
 	}
 	const d3d12UploadSpan_t parms = Parms();
-	const uint32 values[4] = { gbufferSrvs[0].index, gbufferSrvs[1].index, gbufferSrvs[2].index, static_cast<uint32>( mode ) };
-	memcpy( parms.cpu, values, sizeof( values ) );
+	std::array<uint32, idD3D12SceneTarget::GBUFFER_TARGETS + 1> values;
+	for ( size_t i = 0; i < gbufferSrvs.size(); i++ ) {
+		values[i] = gbufferSrvs[i].index;
+	}
+	values.back() = static_cast<uint32>( mode );
+	memcpy( parms.cpu, values.data(), sizeof( values ) );
 	Record( submitter.List(), target, *pso.Get(), viewport, parms, nullptr );
 }
 

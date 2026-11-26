@@ -16,6 +16,7 @@ enum class gbufferDebug_t : uint8 {
 	F0,			// the reflectance at normal incidence
 	ROUGHNESS,
 	MOTION,		// direction as hue, length as brightness (8 pixels = full)
+	ALBEDO,		// the diffuse map times its stage colour
 	COUNT
 };
 
