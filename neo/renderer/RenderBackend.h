@@ -150,16 +150,18 @@ If you have questions concerning this license or the applicable additional terms
 		sample count and holds until the next BeginGBuffer; DrawGBufferDebug shows one target in the output.
 	R15	With caps.rayTracing, in a frame: UpdateGpuScene writes the frame's geometry records (GpuScene.h) into
 		the backend's persistent copy of the scene and takes its instances for the frame. It applies a full update,
-		or the one after the update it applied last (same scene, sequence + 1), and the same one again as a no-op;
-		otherwise, after a texture a record names was destroyed, or on a lost device it returns false, keeps nothing
-		the passes may trace this frame, and shared code sends a full update next. An applied update builds the
-		acceleration structures of its instances (an instance whose BLAS waits for a later frame is left out) and
-		fills stats; the no-op builds nothing. A triangle's front face is the side Doom 3 draws (clockwise in
-		GL's window). After the resolve, DrawRayTracingDebug traces a ray per pixel of the main view against
-		what the last applied update built and draws what it hits over the output. DrawRayTracedReflections,
-		in the linear phase after the lights, reads the G-buffer and the depth of the main view, traces a mirror
-		ray per pixel that may reflect, lights its hit with the update's lights and adds it to the scene (or
-		replaces the scene's colour with it, settings.alone). Both draw nothing while the scene is refused.
+		or one whose writes follow the update it applied last (same scene, base that sequence), and the same one
+		again as a no-op; otherwise, after a texture a held record views was destroyed, or on a lost device it
+		returns false, keeps nothing the passes may trace this frame, and shared code sends a full update next.
+		An applied update builds the acceleration structures of its instances (an instance whose BLAS waits for
+		a later frame is left out) and fills stats; the no-op builds nothing. A triangle's front face is the side
+		Doom 3 draws (clockwise in GL's window); the geometries of an instance are all two-sided (no ray culls
+		a face of it) or all one-sided. After the resolve, DrawRayTracingDebug traces a ray per pixel of the
+		main view against what the last applied update built and draws what it hits over the output.
+		DrawRayTracedReflections, in the linear phase after the lights, reads the G-buffer and the depth of the
+		main view, traces a mirror ray per pixel that may reflect, lights its hit with the update's lights and
+		adds it to the scene (or replaces the scene's colour with it, settings.alone). Both draw nothing while
+		the scene is refused.
 
 ===============================================================================
 */

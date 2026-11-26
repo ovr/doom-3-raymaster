@@ -412,7 +412,7 @@ bool idMenuScreen_Shell_SystemOptions::HandleAction( idWidgetAction & action, co
 				systemData.AdjustField( idMenuDataSource_SystemSettings::SYSTEM_FIELD_TONEMAP, parms[0].ToInteger() );
 				UpdateDisabledControls( options );
 				widget->Update();
-				if ( options != NULL && idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK < options->GetChildren().Num() ) {
+				if ( options != nullptr && idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK < options->GetChildren().Num() ) {
 					options->GetChildByIndex( idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK ).Update();
 				}
 				return true;

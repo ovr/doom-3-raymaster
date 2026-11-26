@@ -1155,8 +1155,21 @@ bool R_IssueEntityDefCallback( idRenderEntityLocal *def );
 idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def );
 void R_ClearEntityDefDynamicModel( idRenderEntityLocal *def );
 
+const float * R_EntityShaderParms( const renderEntity_t & renderEntity, const viewDef_t & view, float generated[MAX_ENTITY_SHADER_PARMS] );
 void R_SetupDrawSurfShader( drawSurf_t * drawSurf, const idMaterial * shader, const renderEntity_t * renderEntity );
 void R_SetupDrawSurfJoints( drawSurf_t * drawSurf, const srfTriangles_t * tri, const idMaterial * shader );
+
+// The joint block of a model drawn into the G-buffer (R14): its joints, then those of the frame before right after
+// them, the whole aligned. gbuffer_skinned declares 816 rows: twice the 136 joints of the skinned programs.
+struct jointMotionLayout_t {
+	int		jointBytes;		// of each of the two copies
+	int		bytes;			// of the block
+	int		motionRow;		// the float4 row of the previous joints
+};
+[[nodiscard]] constexpr jointMotionLayout_t R_JointMotionLayout( int numJoints, int alignment ) {
+	const int jointBytes = numJoints * static_cast<int>( sizeof( idJointMat ) );
+	return { jointBytes, ALIGN( jointBytes * 2, alignment ), jointBytes / static_cast<int>( sizeof( idVec4 ) ) };
+}
 void R_LinkDrawSurfToView( drawSurf_t * drawSurf, viewDef_t * viewDef );
 
 void R_AddModels();

@@ -5648,13 +5648,17 @@ void GBuffer( idTestGpu & gpu ) {
 
 /*
 	gbuffer_skinned depth-equal over the depth of depth_skinned with the same joints, so the two skin to the bit.
-	One block of joints: the current one (the identity) at row 0, the previous one a quarter of clip space to the
-	left at row 16. Stripe 0 names row 16: 8 pixels of motion to the right; stripe 1 names row 0: none.
+	One block of the most joints a skinned program takes, laid out as the front end does (R_JointMotionLayout): the
+	current ones (the identity), then the previous ones, the last of them a quarter of clip space to the left, in
+	the last rows gbuffer_skinned declares. Stripe 0 is skinned by that joint and names the previous joints' row:
+	8 pixels of motion to the right; stripe 1 is skinned by joint 0 and names row 0: none.
 */
 void MotionVectors( idTestGpu & gpu ) {
 	constexpr int SIZE = idTestRecorder::SIZE;
 	constexpr int STRIPE = SIZE / gbufferQuads_t::STRIPES;
-	constexpr int PREVIOUS_ROW = 16;
+	constexpr int JOINTS = 136;
+	constexpr jointMotionLayout_t LAYOUT = R_JointMotionLayout( JOINTS, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT );
+	constexpr int PREVIOUS_ROW = LAYOUT.motionRow;
 	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD );
 	if ( !fixture.Ready() ) {
 		return;
@@ -5666,14 +5670,18 @@ void MotionVectors( idTestGpu & gpu ) {
 			|| !Check( linked->info.usesJoints, "gbuffer_skinned reads joints" ) ) {
 		return;
 	}
-	const gbufferQuads_t quads;
-	std::array<idVec4, 2 * PREVIOUS_ROW> joints;
-	joints.fill( vec4_zero );
+	gbufferQuads_t quads;
+	for ( int i = 0; i < 4; i++ ) {
+		quads.verts[i].color[0] = JOINTS - 1;
+	}
+	std::vector<idVec4> joints( LAYOUT.bytes / sizeof( idVec4 ), vec4_zero );
 	for ( int block = 0; block < 2; block++ ) {
-		idVec4 * rows = &joints[block * PREVIOUS_ROW];
-		rows[0].Set( 1.0f, 0.0f, 0.0f, ( block == 0 ) ? 0.0f : -0.25f );
-		rows[1].Set( 0.0f, 1.0f, 0.0f, 0.0f );
-		rows[2].Set( 0.0f, 0.0f, 1.0f, 0.0f );
+		for ( int joint = 0; joint < JOINTS; joint++ ) {
+			idVec4 * rows = &joints[block * PREVIOUS_ROW + joint * 3];
+			rows[0].Set( 1.0f, 0.0f, 0.0f, ( block == 1 && joint == JOINTS - 1 ) ? -0.25f : 0.0f );
+			rows[1].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+			rows[2].Set( 0.0f, 0.0f, 1.0f, 0.0f );
+		}
 	}
 	fixture.NewList();
 	fixture.scene.EnsureHdr( gpu.barriers, gpu );
@@ -5681,7 +5689,7 @@ void MotionVectors( idTestGpu & gpu ) {
 		quads.verts.data() );
 	const bufferHandle_t indexBuffer = fixture.buffers.Create( bufferType_t::INDEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( quads.indexes ) ),
 		quads.indexes.data() );
-	const bufferHandle_t jointBuffer = fixture.buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, static_cast<int>( sizeof( joints ) ), joints.data() );
+	const bufferHandle_t jointBuffer = fixture.buffers.Create( bufferType_t::JOINT, bufferUsage_t::FRAME, LAYOUT.bytes, joints.data() );
 	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && jointBuffer != bufferHandle_t::NONE, "the buffers" ) ) {
 		return;
 	}
@@ -5702,7 +5710,7 @@ void MotionVectors( idTestGpu & gpu ) {
 	dc.vertexBuffer = vertexBuffer;
 	dc.indexBuffer = indexBuffer;
 	dc.jointBuffer = jointBuffer;
-	dc.numJoints = 2;
+	dc.numJoints = JOINTS;
 	dc.numIndexes = 6;
 	dc.layout = LAYOUT_DRAW_VERT;
 	dc.topology = primitive_t::TRIANGLES;
@@ -5797,14 +5805,113 @@ void Test_GpuSceneRanges() {
 	Check( ranges.Capacity() == 0 && ranges.Allocate( 1 ) == 0, "Clear starts over" );
 }
 
+// A slot's records are ordered one-sided first, each half an instance of its own: its skinned vertices count from 0
+// and its BLAS key is of its own records.
+void Test_GpuSceneSides() {
+	constexpr uint32 TWO_SIDED = gpuSceneGeometry_t::GEO_TWO_SIDED;
+	constexpr uint32 SKINNED = gpuSceneGeometry_t::GEO_SKINNED;
+	constexpr uint32 OPAQUE_BIT = gpuSceneGeometry_t::GEO_OPAQUE;
+	struct surface_t {
+		uint32	flags;
+		uint32	numVerts;
+	};
+	const std::array<surface_t, 5> surfaces = { { { SKINNED, 10 }, { SKINNED | TWO_SIDED, 7 }, { SKINNED, 5 }, { TWO_SIDED | OPAQUE_BIT, 100 }, { OPAQUE_BIT, 40 } } };
+	std::array<gpuSceneWrite_t, 5> writes;
+	memset( writes.data(), 0, sizeof( writes ) );
+	for ( size_t i = 0; i < writes.size(); i++ ) {
+		writes[i].record.vertexOffset = static_cast<uint32>( i * 1000 );
+		writes[i].record.numIndexes = 6;
+		writes[i].record.numVerts = surfaces[i].numVerts;
+		writes[i].record.flags = surfaces[i].flags;
+		writes[i].record.skinnedOffset = 0xdead;
+	}
+	int skinnedVerts[2] = { -1, -1 };
+	const int numOneSided = GpuScene_OrderBySide( writes, skinnedVerts );
+	Check( numOneSided == 3 && skinnedVerts[0] == 15 && skinnedVerts[1] == 7,
+		va( "3 one-sided with 15 skinned vertices, then 7: %d, %d, %d", numOneSided, skinnedVerts[0], skinnedVerts[1] ) );
+	// surfaces 0, 2, 4, then 1, 3: each half keeps its order
+	const std::array<uint32, 5> order = { 0, 2000, 4000, 1000, 3000 };
+	const std::array<uint32, 5> offsets = { 0, 10, 15, 0, 7 };
+	for ( size_t i = 0; i < writes.size(); i++ ) {
+		const gpuSceneGeometry_t & record = writes[i].record;
+		Check( record.vertexOffset == order[i] && record.skinnedOffset == offsets[i] * sizeof( idDrawVert )
+			&& ( ( record.flags & TWO_SIDED ) != 0 ) == ( i >= 3 ),
+			va( "record %d: surface %u at skinned vertex %u", static_cast<int>( i ), record.vertexOffset / 1000,
+				record.skinnedOffset / static_cast<uint32>( sizeof( idDrawVert ) ) ) );
+	}
+
+	const std::span<const gpuSceneWrite_t> all( writes );
+	const uint64 oneSided = GpuScene_BlasKey( all.first( 3 ) );
+	const uint64 twoSided = GpuScene_BlasKey( all.subspan( 3 ) );
+	Check( oneSided != twoSided && ( oneSided & 1 ) != 0 && ( twoSided & 1 ) != 0 && GpuScene_BlasKey( {} ) != 0, "a key per half, none 0" );
+	std::array<gpuSceneWrite_t, 2> other = { writes[3], writes[4] };
+	other[0].record.colors[0].Set( 1.0f, 2.0f, 3.0f, 4.0f );
+	other[0].record.flags ^= TWO_SIDED;		// how an instance culls is not the BLAS's
+	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).first( 1 ) ) == GpuScene_BlasKey( all.subspan( 3, 1 ) ), "the key is of the geometry alone" );
+	other[0].record.flags ^= OPAQUE_BIT;
+	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).first( 1 ) ) != GpuScene_BlasKey( all.subspan( 3, 1 ) ), "and of what the BLAS holds opaque" );
+	other[1].record.indexOffset += 2;
+	Check( GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( other ).subspan( 1 ) ) != GpuScene_BlasKey( all.subspan( 4 ) ), "other indexes, another key" );
+
+	// nothing two-sided: one instance, as before
+	int plainVerts[2];
+	Check( GpuScene_OrderBySide( std::span( writes ).first( 3 ), plainVerts ) == 3 && plainVerts[0] == 15 && plainVerts[1] == 0, "a slot without two-sided surfaces" );
+}
+
+// A refused delta asks for a full update once; the deltas the front end gathered before it saw that are refused
+// without asking again, a refused full update asks again.
+void Test_GpuSceneRecovery() {
+	gpuSceneRecovery_t recovery;
+	Check( !recovery.Asks( 7, true, true ) && !recovery.Asks( 7, false, true ), "applied updates ask for nothing" );
+	Check( recovery.Asks( 7, false, false ), "the first refused delta asks" );
+	Check( !recovery.Asks( 7, false, false ) && !recovery.Asks( 7, false, false ), "the deltas gathered before the full one do not" );
+	Check( !recovery.Asks( 7, true, true ) && recovery.awaiting == 0, "the full update ends the wait" );
+	Check( recovery.Asks( 7, false, false ), "a later refusal asks again" );
+	Check( recovery.Asks( 7, true, false ), "a refused full update asks again" );
+	Check( recovery.Asks( 8, false, false ) && recovery.awaiting == 8, "another scene's refusal is its own" );
+	Check( !recovery.Asks( 7, true, true ) && recovery.awaiting == 8, "which another scene's full update does not end" );
+}
+
+// The joint block of the G-buffer's motion: the previous joints right after the drawn ones, so that the most joints
+// the skinned programs take still fit the rows gbuffer_skinned declares and the tail every joint buffer has.
+void Test_JointMotionLayout() {
+	const auto rowsOf = []( const char * file ) {
+		const std::optional<idStr> text = ReadDiskText( RepoPath( file ) );
+		const int at = text ? text->Find( "#define JOINT_VECTORS " ) : -1;
+		return ( at >= 0 ) ? atoi( text->c_str() + at + 22 ) : 0;
+	};
+	const int skinnedRows = rowsOf( "base/shaders/include/skinning.hlsli" );
+	const int gbufferRows = rowsOf( "base/shaders/gbuffer.hlsl" );
+	if ( !Check( skinnedRows > 0 && skinnedRows % 3 == 0 && gbufferRows > 0, va( "JOINT_VECTORS of skinning.hlsli (%d) and gbuffer.hlsl (%d)", skinnedRows, gbufferRows ) ) ) {
+		return;
+	}
+	Check( gbufferRows * static_cast<int>( sizeof( idVec4 ) ) <= idD3D12BufferStore::JOINT_TAIL, "the joint buffers' tail covers gbuffer_skinned's rows" );
+	const int maxJoints = skinnedRows / 3;
+	int wrong = 0;
+	int beyond = 0;
+	for ( const int alignment : { 16, 64, 256 } ) {
+		for ( int joints = 1; joints <= maxJoints; joints++ ) {
+			const jointMotionLayout_t layout = R_JointMotionLayout( joints, alignment );
+			wrong += ( layout.jointBytes == joints * static_cast<int>( sizeof( idJointMat ) ) && layout.bytes >= layout.jointBytes * 2
+				&& layout.bytes % alignment == 0 && layout.bytes - layout.jointBytes * 2 < alignment
+				&& layout.motionRow * static_cast<int>( sizeof( idVec4 ) ) == layout.jointBytes ) ? 0 : 1;
+			beyond += ( layout.motionRow + joints * 3 <= gbufferRows ) ? 0 : 1;
+		}
+	}
+	Check( wrong == 0, va( "%d layouts are not two copies and the alignment's padding", wrong ) );
+	Check( beyond == 0, va( "%d layouts of up to %d joints read beyond gbuffer_skinned's %d rows", beyond, maxJoints, gbufferRows ) );
+}
+
 struct gpuSceneTestFrame_t {
 	std::vector<gpuSceneWrite_t>	writes;
 	std::vector<gpuSceneInstance_t>	instances;
 	gpuSceneFrame_t					frame = {};
 
+	// One gather a frame: its writes follow the update before.
 	gpuSceneTestFrame_t( uint32 sceneId, uint32 sequence, bool full, int capacity ) {
 		frame.sceneId = sceneId;
 		frame.sequence = sequence;
+		frame.base = sequence - 1;
 		frame.full = full;
 		frame.staticGeneration = 1;
 		frame.geometryCapacity = capacity;
@@ -5834,7 +5941,8 @@ struct gpuSceneTestFrame_t {
 };
 
 // Writes in runs, the views of SAMPLED textures (the fallback for the rest), growth by a GPU copy, the same update
-// again as a no-op, and the refusals of R15: a gap, another scene, a destroyed texture; a full update recovers.
+// again as a no-op, a frame's later gather, and the refusals of R15: a gap, an older update, another scene, a
+// destroyed texture that a held record views (no other one); a full update recovers.
 void GpuScene( idTestGpu & gpu ) {
 	constexpr int DIFFUSE = static_cast<int>( gpuSceneTexture_t::DIFFUSE );
 	constexpr int BUMP = static_cast<int>( gpuSceneTexture_t::BUMP );
@@ -5894,15 +6002,52 @@ void GpuScene( idTestGpu & gpu ) {
 	gpuSceneTestFrame_t other( 8, 6, false, 2048 );
 	Check( !scene.Update( other.Update() ), "a delta of another scene is refused" );
 	gpuSceneTestFrame_t again( 8, 6, true, 2048 );
+	again.Write( 0, sampled, sampled );
+	again.Write( 1500, doomed, sampled );
 	Check( scene.Update( again.Update() ), "its full one applies" );
 
+	// a frame of three gathers (a portal sky's view, then an eye each): every one holds the frame's writes since 6
+	gpuSceneTestFrame_t firstEye( 8, 8, false, 2048 );
+	firstEye.frame.base = 6;
+	firstEye.Write( 2, sampled, sampled );
+	Check( scene.Update( firstEye.Update() ) && scene.Valid(), "the second gather of a frame applies without the first" );
+	matches( 2, 8, sampledView, sampledView );
+	gpuSceneTestFrame_t secondEye( 8, 9, false, 2048 );
+	secondEye.frame.base = 6;
+	secondEye.Write( 2, sampled, sampled );
+	secondEye.Write( 3, sampled, sampled );
+	Check( scene.Update( secondEye.Update() ) && scene.Valid(), "and the third after the second" );
+	matches( 2, 9, sampledView, sampledView );
+	matches( 3, 9, sampledView, sampledView );
+	Check( !scene.Update( firstEye.Update() ) && !scene.Valid(), "an update older than the one applied is refused" );
+	gpuSceneTestFrame_t afterOlder( 8, 10, true, 2048 );
+	afterOlder.Write( 0, sampled, sampled );
+	afterOlder.Write( 1500, doomed, sampled );
+	Check( scene.Update( afterOlder.Update() ), "the full update after it applies" );
+
+	// only a texture that a held record views ends the scene
+	const textureHandle_t unrelated = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test scene c" );
+	gpu.textures.Destroy( unrelated );
+	gpuSceneTestFrame_t afterUnrelated( 8, 11, false, 2048 );
+	Check( scene.Update( afterUnrelated.Update() ) && scene.Valid(), "a destroyed SAMPLED texture that no record views changes nothing" );
 	gpu.textures.Destroy( doomed );
-	gpuSceneTestFrame_t afterDestroy( 8, 7, false, 2048 );
-	Check( !scene.Update( afterDestroy.Update() ) && !scene.Valid(), "a destroyed SAMPLED texture is refused" );
-	gpuSceneTestFrame_t rebuilt( 8, 8, true, 2048 );
+	gpuSceneTestFrame_t afterDestroy( 8, 12, false, 2048 );
+	Check( !scene.Update( afterDestroy.Update() ) && !scene.Valid(), "one that a record views is refused" );
+	gpuSceneTestFrame_t rebuilt( 8, 13, true, 2048 );
 	rebuilt.Write( 1500, doomed, sampled );
 	Check( scene.Update( rebuilt.Update() ), "the full update after it applies" );
-	matches( 1500, 8, fallback, sampledView );
+	matches( 1500, 13, fallback, sampledView );
+
+	// a full update forgets what the records it does not write viewed: they are of no live slot
+	const textureHandle_t stale = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, "test scene d" );
+	gpuSceneTestFrame_t holds( 8, 14, false, 2048 );
+	holds.Write( 5, stale, stale );
+	gpuSceneTestFrame_t fresh( 8, 15, true, 2048 );
+	fresh.Write( 0, sampled, sampled );
+	Check( scene.Update( holds.Update() ) && scene.Update( fresh.Update() ), "a record of a texture, then a full update without it" );
+	gpu.textures.Destroy( stale );
+	gpuSceneTestFrame_t afterStale( 8, 16, false, 2048 );
+	Check( scene.Update( afterStale.Update() ) && scene.Valid(), "its texture destroyed is none of the scene's" );
 
 	gpu.WaitIdle();
 	gpu.textures.Destroy( sampled );
@@ -5926,6 +6071,7 @@ struct rtTestFrame_t {
 	rtTestFrame_t( uint32 sequence, bool full, int generation = 1 ) {
 		frame.sceneId = 3;
 		frame.sequence = sequence;
+		frame.base = sequence - 1;
 		frame.full = full;
 		frame.staticGeneration = generation;
 		frame.geometryCapacity = 64;
@@ -6343,9 +6489,10 @@ constexpr const char * RT_HIT_COMPUTE =
 	  3  record 50   the st quad at ( 20, 0, 0 ): a 4 x 4 diffuse under a swapped stage matrix, a specular of a colour per mip
 	  4  record 51   the st quad at ( 30, 0, 0 ), alpha-tested: alpha 0 left of x = 2, 1 right of it
 	  5  record 52   the same at ( 40, 0, 0 ) under a colour alpha of 0.25, which no texel passes
-	  6  53, 54      at ( 60, 0, 0 ): 53 one-sided and tested as 51, 54 two-sided and tested as 52; the instance culls
-	                 nothing, so the candidate loop has to reject 53's back face
-	  7  record 55   the one-sided quad at ( 70, 0, 0 ), opaque: the ray culls its back face
+	  6  record 53   at ( 60, 0, 0 ), one-sided and tested as 51: the ray culls its back face
+	  7  record 55   the one-sided quad at ( 70, 0, 0 ), opaque: the same
+	  8  record 54   at ( 60, 0, 0 ) as 6, the two-sided surface of the same entity, tested as 52: it culls nothing
+	  9  record 56   two-sided and opaque at ( 72, 0, -1 ), half under 7: hit from both sides, through 7's back face
 */
 void RtHit( idTestGpu & gpu ) {
 	idTestRtScene scene( gpu );
@@ -6363,7 +6510,7 @@ void RtHit( idTestGpu & gpu ) {
 	};
 	const idVec3 down( 0.0f, 0.0f, -1.0f );
 	const idVec3 up( 0.0f, 0.0f, 1.0f );
-	const std::array<ray_t, 17> rays = { {
+	const std::array<ray_t, 19> rays = { {
 		{ idVec3( 1.25f, 0.75f, 10.0f ), down, 0.001f, 0, 10, 10.0f },
 		{ idVec3( 13.25f, 0.75f, 10.0f ), down, 0.001f, 1, 30, 9.0f },
 		{ idVec3( 51.25f, -5.0f, 0.75f ), idVec3( 0.0f, 1.0f, 0.0f ), 0.001f, 2, 11, 10.0f },
@@ -6381,15 +6528,21 @@ void RtHit( idTestGpu & gpu ) {
 		// the back faces of one-sided quads are missed, as the raster culls them
 		{ idVec3( 63.0f, 0.5f, 10.0f ), down, 0.001f, -1, 0, 0.0f },
 		{ idVec3( 63.0f, 0.5f, -10.0f ), up, 0.001f, 6, 53, 10.0f },
-		{ idVec3( 73.0f, 0.5f, 10.0f ), down, 0.001f, -1, 0, 0.0f },
-		{ idVec3( 73.0f, 0.5f, -10.0f ), up, 0.001f, 7, 55, 10.0f },
+		{ idVec3( 71.0f, 0.5f, 10.0f ), down, 0.001f, -1, 0, 0.0f },
+		{ idVec3( 71.0f, 0.5f, -10.0f ), up, 0.001f, 7, 55, 10.0f },
+		// an opaque back face never reaches the candidate loop: its instance has to cull it, the two-sided one's not
+		{ idVec3( 73.0f, 0.5f, 10.0f ), down, 0.001f, 9, 56, 11.0f },
+		{ idVec3( 75.0f, 0.5f, -10.0f ), up, 0.001f, 9, 56, 9.0f },
 	} };
-	const std::array<idMat3, 8> axes = { mat3_identity, mat3_identity, idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f ),
-		mat3_identity, mat3_identity, mat3_identity, mat3_identity, mat3_identity };
+	constexpr size_t INSTANCES = 10;
+	std::array<idMat3, INSTANCES> axes;
+	axes.fill( mat3_identity );
+	axes[2] = idMat3( 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f );
 	// the skinned quad: its joints move it by skinOffset, its instance by the rest of ( 12, 0, 1 )
 	const idVec3 skinOffset( 2.0f, 0.0f, 0.0f );
-	const std::array<idVec3, 8> origins = { vec3_origin, idVec3( 10.0f, 0.0f, 1.0f ), idVec3( 50.0f, 5.0f, 0.0f ), idVec3( 20.0f, 0.0f, 0.0f ),
-		idVec3( 30.0f, 0.0f, 0.0f ), idVec3( 40.0f, 0.0f, 0.0f ), idVec3( 60.0f, 0.0f, 0.0f ), idVec3( 70.0f, 0.0f, 0.0f ) };
+	const std::array<idVec3, INSTANCES> origins = { vec3_origin, idVec3( 10.0f, 0.0f, 1.0f ), idVec3( 50.0f, 5.0f, 0.0f ), idVec3( 20.0f, 0.0f, 0.0f ),
+		idVec3( 30.0f, 0.0f, 0.0f ), idVec3( 40.0f, 0.0f, 0.0f ), idVec3( 60.0f, 0.0f, 0.0f ), idVec3( 70.0f, 0.0f, 0.0f ),
+		idVec3( 60.0f, 0.0f, 0.0f ), idVec3( 72.0f, 0.0f, -1.0f ) };
 	// as the instance's transform rows: idMat3 * idVec3 would take the transpose
 	const auto place = [&]( int instance, const idVec3 & point ) {
 		const idMat3 & m = axes[instance];
@@ -6489,13 +6642,14 @@ void RtHit( idTestGpu & gpu ) {
 	writeQuad( 54, 0 ).textures[ALPHA] = alpha;
 	frame.writes.back().record.alphaTest = idVec4( 0.5f, 0.25f, 0.0f, 0.0f );
 	writeQuad( 55, gpuSceneGeometry_t::GEO_OPAQUE );
+	writeQuad( 56, gpuSceneGeometry_t::GEO_OPAQUE );
 	for ( gpuSceneWrite_t & write : frame.writes ) {
 		if ( write.index != 53 && write.index != 55 ) {
 			write.record.flags |= gpuSceneGeometry_t::GEO_TWO_SIDED;
 		}
 	}
-	const std::array<uint32, 8> firstRecords = { 10, 30, 11, 50, 51, 52, 53, 55 };
-	const std::array<uint64, 8> blasKeys = { 0x100, 0, 0x100, 0x500, 0x510, 0x520, 0x530, 0x550 };
+	const std::array<uint32, INSTANCES> firstRecords = { 10, 30, 11, 50, 51, 52, 53, 55, 54, 56 };
+	const std::array<uint64, INSTANCES> blasKeys = { 0x100, 0, 0x100, 0x500, 0x510, 0x520, 0x530, 0x550, 0x540, 0x560 };
 	for ( size_t i = 0; i < firstRecords.size(); i++ ) {
 		gpuSceneInstance_t & instance = frame.Instance( firstRecords[i], gpuSceneInstance_t::MASK_VISIBLE, blasKeys[i], origins[i] );
 		for ( int row = 0; row < 3; row++ ) {
@@ -6507,10 +6661,9 @@ void RtHit( idTestGpu & gpu ) {
 	frame.instances[1].skinnedVerts = 4;
 	frame.instances[1].numJoints = 2;
 	frame.instances[1].jointBuffer = joints;
-	frame.instances[6].numGeometries = 2;
 
 	gpuSceneStats_t stats;
-	if ( !Check( joints != bufferHandle_t::NONE && scene.Apply( frame, stats ) && stats.tlasInstances == 8 && stats.waiting == 0,
+	if ( !Check( joints != bufferHandle_t::NONE && scene.Apply( frame, stats ) && stats.tlasInstances == static_cast<int>( INSTANCES ) && stats.waiting == 0,
 		va( "the build: %s", RtStats( stats ).c_str() ) ) ) {
 		return;
 	}
@@ -7956,7 +8109,10 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_HdrScene", OnWarp<HdrScene> },
 	{ "Warp_GBuffer", OnWarp<GBuffer> },
 	{ "Warp_MotionVectors", OnWarp<MotionVectors> },
+	{ "GBuffer_JointLayout", Test_JointMotionLayout },
 	{ "GpuScene_Ranges", Test_GpuSceneRanges },
+	{ "GpuScene_Sides", Test_GpuSceneSides },
+	{ "GpuScene_Recovery", Test_GpuSceneRecovery },
 	{ "Warp_GpuScene", OnWarp<GpuScene> },
 	{ "Warp_RtTlas", OnWarp<RtTlas> },
 	{ "Gpu_RtTlas", OnGpu<RtTlas> },

@@ -397,7 +397,8 @@ idD3D12DrawRecorder::used_t idD3D12DrawRecorder::Use( const prepared_t & prepare
 	return used;
 }
 
-// Root CBV b2, which the JOINT buffer's zero tail keeps readable for all 408 vectors; nothing for other programs.
+// Root CBV b2, which the JOINT buffer's zero tail (JOINT_TAIL) keeps readable for every row a program declares;
+// nothing for other programs.
 void idD3D12DrawRecorder::BindJoints( ID3D12GraphicsCommandList4 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints ) {
 	if ( joints && bound.joints != joints ) {
 		list.SetGraphicsRootConstantBufferView( D3D12_Root( d3d12RootSlot_t::JOINTS ), *joints );

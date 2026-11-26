@@ -144,6 +144,21 @@ bool idD3D12GpuScene::Reserve( int records ) {
 	return true;
 }
 
+// A destroyed SAMPLED texture ends the scene only when a held record views it: a video or GUI image made again at
+// another size must not drop every reflection.
+bool idD3D12GpuScene::RecordTexturesLive() {
+	if ( textures.SampledDestroyed() == sampledDestroyed ) {
+		return true;
+	}
+	for ( const auto & [handle, uses] : textureUses ) {
+		if ( textures.Find( handle ) == nullptr ) {
+			return false;
+		}
+	}
+	sampledDestroyed = textures.SampledDestroyed();
+	return true;
+}
+
 bool idD3D12GpuScene::Update( const gpuSceneUpdate_t & update ) {
 	const gpuSceneFrame_t & frame = *update.frame;
 	if ( device.IsLost() ) {
@@ -153,8 +168,9 @@ bool idD3D12GpuScene::Update( const gpuSceneUpdate_t & update ) {
 	if ( valid && frame.sceneId == sceneId && frame.sequence == sequence ) {
 		return true;
 	}
-	const bool follows = valid && frame.sceneId == sceneId && frame.sequence == sequence + 1
-		&& frame.staticGeneration == staticGeneration && textures.SampledDestroyed() == sampledDestroyed;
+	// its writes are all since base: they follow that update and any earlier one of its own frame (the first eye's)
+	const bool follows = valid && frame.sceneId == sceneId && frame.base <= sequence && sequence < frame.sequence
+		&& frame.staticGeneration == staticGeneration && RecordTexturesLive();
 	if ( ( !frame.full && !follows ) || !Reserve( frame.geometryCapacity ) || !WriteLights( std::span( frame.lights, static_cast<size_t>( frame.numLights ) ) ) ) {
 		valid = false;
 		instances.clear();
@@ -164,6 +180,11 @@ bool idD3D12GpuScene::Update( const gpuSceneUpdate_t & update ) {
 	if ( frame.full ) {
 		staticGeneration = frame.staticGeneration;
 		sampledDestroyed = textures.SampledDestroyed();
+		// the records it does not write are of no live slot: what they viewed may be dead
+		for ( auto & held : recordTextures ) {
+			held.fill( textureHandle_t::NONE );
+		}
+		textureUses.clear();
 	}
 
 	// one copy per run of consecutive records

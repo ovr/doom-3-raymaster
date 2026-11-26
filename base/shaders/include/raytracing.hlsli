@@ -7,7 +7,8 @@
 
 	  TLAS        InstanceID the instance's first geometry record, InstanceIndex its row of the instance table,
 	              GeometryIndex the record after the first; mask bit 0 rays that see, bit 1 shadow rays; the front
-	              face is the side Doom 3 draws, and only a two-sided geometry is hit from behind
+	              face is the side Doom 3 draws, and only a two-sided geometry is hit from behind: an instance
+	              holds two-sided geometries only (it culls nothing) or none
 	  records     GpuScene.h's gpuSceneGeometry_t, 288 bytes; textures[] are SRV indices of 2D views
 	  instances   d3d12RtInstance_t, 16 bytes: first record, count, the bytes of its skinned vertices, scene instance
 	  vertices    idDrawVert, 32 bytes: xyz, st as halves, normal and tangent as bytes, two colours; a skinned
@@ -233,15 +234,11 @@ float3 RtDiffuse( RtGeometry g, RtSurface s, float footprint, uint samplerIndex 
 	return ConvertYCoCgToRGB( RtSample( g, RT_TEXTURE_DIFFUSE, s, footprint, samplerIndex ) ) * g.colors[0].rgb;
 }
 
-// A candidate the BLAS holds not opaque, as the ray sees it: the side it is drawn from; then whole, or alpha-tested.
-// A shadow ray takes the side that faces the light, the back face from where it starts, and nothing that casts no
-// shadow.
-bool RtCandidatePasses( RtHeap heap, uint record, uint instanceIndex, uint primitive, float2 barycentrics, bool frontFace,
+// A candidate the BLAS holds not opaque, as the ray sees it: whole, or alpha-tested; for a shadow ray nothing that
+// casts no shadow. The side is the instance's and the ray's business: the traversal has culled it.
+bool RtCandidatePasses( RtHeap heap, uint record, uint instanceIndex, uint primitive, float2 barycentrics,
 	float3x4 objectToWorld, float3x4 worldToObject, float t, float pixelSpread, float3 direction, uint samplerIndex, bool shadow ) {
 	const RtGeometry g = RtLoadGeometry( heap, record );
-	if ( ( shadow ? frontFace : !frontFace ) && ( g.flags & RT_GEO_TWO_SIDED ) == 0 ) {
-		return false;
-	}
 	if ( shadow && ( g.flags & RT_GEO_CASTS_SHADOW ) == 0 ) {
 		return false;
 	}
@@ -276,14 +273,13 @@ RtHit RtTrace( RtHeap heap, RayDesc ray, uint mask, float pixelSpread, uint samp
 	from.Origin = ray.Origin + ray.Direction * start;
 	from.TMin = 0.0;
 	from.TMax = ray.TMax - start;
-	// back faces are culled as the raster culls them; an instance with a two-sided geometry culls nothing, and
-	// the loop rejects the back faces of its one-sided perforated ones
+	// back faces are culled as the raster culls them; an instance of two-sided geometry culls nothing
 	RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
 	query.TraceRayInline( tlas, RAY_FLAG_NONE, mask, from );
 	while ( query.Proceed() ) {
 		if ( query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE
 			&& RtCandidatePasses( heap, query.CandidateInstanceID() + query.CandidateGeometryIndex(), query.CandidateInstanceIndex(),
-				query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), query.CandidateTriangleFrontFace(),
+				query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(),
 				query.CandidateObjectToWorld3x4(), query.CandidateWorldToObject3x4(), start + query.CandidateTriangleRayT(),
 				pixelSpread, ray.Direction, samplerIndex, false ) ) {
 			query.CommitNonOpaqueTriangleHit();
@@ -319,7 +315,7 @@ bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float
 		// a cone of the footprint's width all along: the level stays the origin's
 		if ( query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE
 			&& RtCandidatePasses( heap, query.CandidateInstanceID() + query.CandidateGeometryIndex(), query.CandidateInstanceIndex(),
-				query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), query.CandidateTriangleFrontFace(),
+				query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(),
 				query.CandidateObjectToWorld3x4(), query.CandidateWorldToObject3x4(), 1.0, footprint, direction, samplerIndex, true ) ) {
 			query.CommitNonOpaqueTriangleHit();
 		}

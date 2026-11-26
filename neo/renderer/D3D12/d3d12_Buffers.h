@@ -51,7 +51,7 @@ public:
 	// For a read by shaders or an acceleration structure build: a STAGED buffer transitions (batched) into
 	// ALL_SHADER_RESOURCE, the mapped ones are read where they lie. nullptr for a dead handle.
 	const d3d12Buffer_t *			UseForShaders( bufferHandle_t buffer );
-	// For a program with usesJoints and no joint buffer: 6528 zero bytes.
+	// For a program with usesJoints and no joint buffer: JOINT_TAIL zero bytes.
 	[[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS	ZeroJoints() const;
 	// Stride 0, (0,0,0,1) as four floats: GL's current value of an attribute the layout lacks.
 	[[nodiscard]] D3D12_VERTEX_BUFFER_VIEW	DefaultAttribs() const;
