@@ -79,6 +79,30 @@ constexpr UINT JOINTS = 2;
 	return std::nullopt;
 }
 
+// b4 as rtDraw.hlsli declares it: uints in d3d12TraceResources_t's order.
+[[nodiscard]] std::optional<idStr> TraceResourcesMismatch( ID3D12ShaderReflection & reflection, const char * block ) {
+	constexpr std::array<const char *, d3d12TraceResources_t::COUNT> MEMBERS = { "rtTlas", "rtRecords", "rtInstances", "rtVertices", "rtIndexes",
+		"rtSkinned", "rtNoise", "rtSampler", "rtFlags" };
+	ID3D12ShaderReflectionConstantBuffer * buffer = reflection.GetConstantBufferByName( block );
+	D3D12_SHADER_BUFFER_DESC desc = {};
+	if ( buffer == nullptr || FAILED( buffer->GetDesc( &desc ) ) || desc.Variables != d3d12TraceResources_t::COUNT ) {
+		return idStr( va( "cbuffer %s at b4 is not the one of include/rtDraw.hlsli", block ) );
+	}
+	for ( UINT v = 0; v < desc.Variables; v++ ) {
+		ID3D12ShaderReflectionVariable * variable = buffer->GetVariableByIndex( v );
+		D3D12_SHADER_VARIABLE_DESC variableDesc = {};
+		D3D12_SHADER_TYPE_DESC type = {};
+		if ( FAILED( variable->GetDesc( &variableDesc ) ) || FAILED( variable->GetType()->GetDesc( &type ) ) ) {
+			return idStr( va( "no reflection of member %u of cbuffer %s", v, block ) );
+		}
+		if ( idStr::Cmp( variableDesc.Name, MEMBERS[v] ) != 0 || variableDesc.StartOffset != v * sizeof( uint32 ) || type.Class != D3D_SVC_SCALAR
+				|| type.Type != D3D_SVT_UINT ) {
+			return idStr( va( "%s in cbuffer %s at b4: include/rtDraw.hlsli has %s there", variableDesc.Name, block, MEMBERS[v] ) );
+		}
+	}
+	return std::nullopt;
+}
+
 // A compute stage of the compute root signature: cbuffers b0 (a root CBV) and b1 (root constants) only.
 [[nodiscard]] std::expected<shaderStageInfo_t, idStr> ReadComputeBindings( ID3D12ShaderReflection & reflection, const D3D12_SHADER_DESC & desc,
 	const char * name ) {
@@ -124,19 +148,25 @@ constexpr UINT JOINTS = 2;
 		}
 		const bool cbuffer = ( bind.Type == D3D_SIT_CBUFFER );
 		const bool resources = cbuffer && bind.BindPoint == d3d12DrawResources_t::REGISTER;
-		const bool fits = ( bind.Space == 0 ) && cbuffer && ( bind.BindPoint == own || resources || ( vertex && bind.BindPoint == JOINTS ) );
+		const bool trace = cbuffer && bind.BindPoint == d3d12TraceResources_t::REGISTER;
+		if ( trace && bind.Space == 0 && ( vertex || parms != hlslParms_t::TRACING ) ) {
+			return std::unexpected( idStr( va( "%s: %s binds %s at b4: only the pixel stage of a program the table marks as tracing reads the GPU "
+				"scene (include/rtDraw.hlsli)", name, vertex ? "VSMain" : "PSMain", bind.Name ) ) );
+		}
+		const bool fits = ( bind.Space == 0 ) && cbuffer && ( bind.BindPoint == own || resources || trace || ( vertex && bind.BindPoint == JOINTS ) );
 		if ( !fits ) {
 			return std::unexpected( idStr( va( "%s: %s binds %s at register %u space %u: the %s stage has b%u%s and b3, and takes textures and "
 				"samplers through TEXTURE2D, TEXTURECUBE and SAMPLER (include/bindless.hlsli)", name, vertex ? "VSMain" : "PSMain", bind.Name,
 				bind.BindPoint, bind.Space, vertex ? "vertex" : "pixel", own, vertex ? ", b2" : "" ) ) );
 		}
-		if ( resources ) {
-			if ( const std::optional<idStr> mismatch = DrawResourcesMismatch( reflection, bind.Name ) ) {
+		if ( resources || trace ) {
+			if ( const std::optional<idStr> mismatch = resources ? DrawResourcesMismatch( reflection, bind.Name )
+					: TraceResourcesMismatch( reflection, bind.Name ) ) {
 				return std::unexpected( idStr( va( "%s: %s", name, mismatch->c_str() ) ) );
 			}
 			continue;
 		}
-		if ( !cbuffer || bind.BindPoint != own || parms != hlslParms_t::RENDER_PARMS ) {
+		if ( !cbuffer || bind.BindPoint != own || parms == hlslParms_t::ANY ) {
 			continue;
 		}
 		ID3D12ShaderReflectionConstantBuffer * block = reflection.GetConstantBufferByName( bind.Name );
@@ -372,7 +402,7 @@ std::vector<d3d12HlslResult_t> idD3D12HlslCompiler::BuildAll( std::span<const d3
 		// a draw fills sampler<n> from the texture at n, as GL samples a unit with its own sampler; the backend's
 		// own passes fill b3 themselves
 		const uint16 lone = results[i]->reflection.samplerReads & static_cast<uint16>( ~results[i]->reflection.samplerMask );
-		if ( requests[i].parms == hlslParms_t::RENDER_PARMS && lone != 0 ) {
+		if ( requests[i].parms != hlslParms_t::ANY && lone != 0 ) {
 			const int slot = std::countr_zero( lone );
 			results[i] = std::unexpected( idStr( va( "%s: SAMPLER( ..., %d ) is read without a TEXTURE2D or TEXTURECUBE of slot %d", name, slot, slot ) ) );
 		}

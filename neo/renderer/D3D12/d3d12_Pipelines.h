@@ -12,15 +12,17 @@
 #include "d3d12_StateMap.h"
 
 /*
-	The one root signature of every program and every internal pass, version 1.1, 32 DWORDs, with both heaps
+	The one root signature of every program and every internal pass, version 1.1, 41 DWORDs, with both heaps
 	directly indexed (SM 6.6 ResourceDescriptorHeap and SamplerDescriptorHeap):
 
-	  0  VERTEX_PARMS    root CBV b0, vertex shader     the program's vertex parms (GL's _va_[])
-	  1  FRAGMENT_PARMS  root CBV b1, pixel shader      the program's fragment parms (GL's _fa_[])
-	  2  JOINTS          root CBV b2, vertex shader     the joint block at the draw's joint offset
-	  3  DRAW_RESOURCES  26 constants b3, all stages    d3d12DrawResources_t: the heap indices of the slots'
-	                                                    views and samplers (base/shaders/include/bindless.hlsli),
-	                                                    colorFlags and preExposure (include/colorspace.hlsli)
+	  0  VERTEX_PARMS     root CBV b0, vertex shader     the program's vertex parms (GL's _va_[])
+	  1  FRAGMENT_PARMS   root CBV b1, pixel shader      the program's fragment parms (GL's _fa_[])
+	  2  JOINTS           root CBV b2, vertex shader     the joint block at the draw's joint offset
+	  3  DRAW_RESOURCES   26 constants b3, all stages    d3d12DrawResources_t: the heap indices of the slots'
+	                                                     views and samplers (base/shaders/include/bindless.hlsli),
+	                                                     colorFlags and preExposure (include/colorspace.hlsli)
+	  4  TRACE_RESOURCES  9 constants b4, pixel shader   d3d12TraceResources_t: what a tracing program's rays read
+	                                                     (base/shaders/include/rtDraw.hlsli)
 */
 class idD3D12RootSignature {
 public:
@@ -128,7 +130,7 @@ struct d3d12PipelineName_t {
 // other.
 class idD3D12PipelineLibrary {
 public:
-	static constexpr uint32			VERSION = 4;	// bump when the root signature or the pipeline stream changes
+	static constexpr uint32			VERSION = 5;	// bump when the root signature or the pipeline stream changes
 
 	// nullopt: the adapter keeps no pipeline library. A file of another driver, adapter or VERSION, or a corrupt
 	// one, gives an empty library, whose Write then replaces the file.

@@ -316,6 +316,7 @@ void idD3D12DrawRecorder::Record( ID3D12GraphicsCommandList4 & list, const prepa
 	BindParms( list, reserved, latch, dc, program );
 	BindJoints( list, used.joints );
 	BindResources( list, prepared, program );
+	BindTrace( list, used.trace );
 	BindGeometry( list, prepared, dc, used );
 	list.DrawIndexedInstanced( static_cast<UINT>( dc.numIndexes ), 1, static_cast<UINT>( dc.indexOffset / static_cast<int>( sizeof( triIndex_t ) ) ),
 		dc.baseVertex, 0 );
@@ -408,6 +409,10 @@ idD3D12DrawRecorder::used_t idD3D12DrawRecorder::Use( const prepared_t & prepare
 			textures.MakeReadable( texture );
 		}
 	}
+	// after the draw's own buffers: the rays read the static ones too, in the same state
+	if ( program.traces ) {
+		used.trace = traceSource ? traceSource() : d3d12TraceResources_t();
+	}
 	return used;
 }
 
@@ -427,6 +432,14 @@ void idD3D12DrawRecorder::BindResources( ID3D12GraphicsCommandList4 & list, cons
 			prepared.resources.indices.data(), 0 );
 		bound.resources = prepared.resources;
 		stats.resourceBinds++;
+	}
+}
+
+// Only a program that traces reads b4, so every other one keeps what the last one set.
+void idD3D12DrawRecorder::BindTrace( ID3D12GraphicsCommandList4 & list, const std::optional<d3d12TraceResources_t> & trace ) {
+	if ( trace && bound.trace != trace ) {
+		list.SetGraphicsRoot32BitConstants( D3D12_Root( d3d12RootSlot_t::TRACE_RESOURCES ), d3d12TraceResources_t::COUNT, trace->indices.data(), 0 );
+		bound.trace = trace;
 	}
 }
 

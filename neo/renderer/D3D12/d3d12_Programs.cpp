@@ -56,9 +56,14 @@ namespace {
 
 }	// namespace
 
+hlslParms_t D3D12_ProgramParms( const char * stageName ) {
+	const std::optional<renderProgStage_t> found = R_FindRenderProg( stageName );
+	return ( found && found->program->traces ) ? hlslParms_t::TRACING : hlslParms_t::RENDER_PARMS;
+}
+
 std::expected<d3d12ShaderStage_t, idStr> D3D12_BuildHlslStage( idD3D12HlslCompiler & compiler, shaderStageType_t type, const char * name,
-	const d3d12HlslSource_t & source ) {
-	return StageOf( type, name, compiler.Build( source, type ) );
+	const d3d12HlslSource_t & source, std::optional<hlslParms_t> parms ) {
+	return StageOf( type, name, compiler.Build( source, type, parms.value_or( D3D12_ProgramParms( name ) ) ) );
 }
 
 // GL reflects the linked program: the masks of the PS, the inputs and the joints of the VS of the pair.
@@ -75,6 +80,7 @@ std::expected<d3d12Program_t, idStr> D3D12_LinkProgram( const d3d12ShaderStage_t
 		program.info.samplerMask = fragment->reflection.samplerMask;
 		program.info.cubeMask = fragment->reflection.cubeMask;
 		program.colorConstants = fragment->reflection.colorConstants;
+		program.traces = fragment->reflection.traces;
 	}
 	program.colorConstants = program.colorConstants || vertex.reflection.colorConstants;
 	program.info.attribMask = vertex.reflection.attribMask;
@@ -89,6 +95,7 @@ void idD3D12ShaderLibrary::Prebuild() {
 		size_t							index;
 		size_t							source;
 		shaderStageType_t				type;
+		hlslParms_t						parms;
 	};
 	std::vector<d3d12HlslSource_t> sources;
 	std::vector<stage_t> wanted;
@@ -105,14 +112,15 @@ void idD3D12ShaderLibrary::Prebuild() {
 			sources.push_back( std::move( *source ) );
 			for ( const shaderStageType_t type : { shaderStageType_t::VERTEX, shaderStageType_t::FRAGMENT } ) {
 				if ( type == shaderStageType_t::VERTEX || program.fragment ) {
-					wanted.push_back( { PrebuiltIndex( { &program, skinned }, type ), sources.size() - 1, type } );
+					wanted.push_back( { PrebuiltIndex( { &program, skinned }, type ), sources.size() - 1, type,
+						program.traces ? hlslParms_t::TRACING : hlslParms_t::RENDER_PARMS } );
 				}
 			}
 		}
 	}
 	std::vector<d3d12HlslRequest_t> requests;
 	for ( const stage_t & stage : wanted ) {
-		requests.push_back( { &sources[stage.source], stage.type } );
+		requests.push_back( { &sources[stage.source], stage.type, stage.parms } );
 	}
 	std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
 	prebuilt.clear();
@@ -271,7 +279,7 @@ int idD3D12ShaderLibrary::CompileAll( bool verbose ) {
 	}
 	std::vector<d3d12HlslRequest_t> requests;
 	for ( size_t i = 0; i < entries.size(); i++ ) {
-		requests.push_back( { &entries[i].source, entries[i].stage, ( i < numPrograms ) ? hlslParms_t::RENDER_PARMS : hlslParms_t::ANY } );
+		requests.push_back( { &entries[i].source, entries[i].stage, ( i < numPrograms ) ? D3D12_ProgramParms( entries[i].source.name ) : hlslParms_t::ANY } );
 	}
 	std::vector<d3d12HlslResult_t> built = compiler.BuildAll( requests );
 	for ( size_t i = 0; i < entries.size(); i++ ) {

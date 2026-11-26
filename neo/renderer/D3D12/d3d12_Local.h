@@ -46,7 +46,7 @@ struct d3d12MemFree_t { void operator()( byte * p ) const { Mem_Free( p ); } };
 using idD3D12CpuBlock = std::unique_ptr<byte[], d3d12MemFree_t>;
 
 // The root parameter indices of the one root signature.
-enum class d3d12RootSlot_t : UINT { VERTEX_PARMS, FRAGMENT_PARMS, JOINTS, DRAW_RESOURCES, COUNT };
+enum class d3d12RootSlot_t : UINT { VERTEX_PARMS, FRAGMENT_PARMS, JOINTS, DRAW_RESOURCES, TRACE_RESOURCES, COUNT };
 [[nodiscard]] constexpr UINT D3D12_Root( d3d12RootSlot_t slot ) { return static_cast<UINT>( slot ); }
 
 // The compute root signature of the backend's own compute passes: root CBV b0, then root constants b1.
@@ -84,6 +84,27 @@ struct d3d12DrawResources_t {
 		indices[FLAGS] = flags;
 		indices[PRE_EXPOSURE] = std::bit_cast<uint32>( preExposure );
 	}
+};
+
+// The root constants b4 of base/shaders/include/rtDraw.hlsli, in its member order, for the pixel stage of a render
+// program that traces: the heap indices of what a ray of the GPU scene reads (R15), of the blue noise and of the
+// sampler of the perforated casters, then flags. All zero while nothing may be traced.
+struct d3d12TraceResources_t {
+	static constexpr UINT			REGISTER = 4;
+	static constexpr uint32			TLAS = 0;
+	static constexpr uint32			RECORDS = 1;
+	static constexpr uint32			INSTANCES = 2;
+	static constexpr uint32			VERTICES = 3;		// the static vertex buffer
+	static constexpr uint32			INDEXES = 4;		// the static index buffer
+	static constexpr uint32			SKINNED = 5;		// the frame's skinned vertices
+	static constexpr uint32			NOISE = 6;			// renderer/BlueNoise.h as a texture
+	static constexpr uint32			SAMPLER = 7;		// linear, repeating
+	static constexpr uint32			FLAGS = 8;
+	static constexpr uint32			COUNT = 9;
+	static constexpr uint32			VALID = 1u << 0;	// of FLAGS: the indices name what the last applied update built
+	std::array<uint32, COUNT>		indices = {};
+	constexpr bool					operator==( const d3d12TraceResources_t & ) const = default;
+	[[nodiscard]] constexpr bool	Valid() const { return ( indices[FLAGS] & VALID ) != 0; }
 };
 
 // "0x887A0005 DXGI_ERROR_DEVICE_REMOVED", or the bare value for a code without a name here.

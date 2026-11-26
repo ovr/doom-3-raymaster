@@ -6,6 +6,7 @@
 #include "../idlib/precompiled.h"
 
 #include "../renderer/tr_local.h"
+#include "../renderer/BlueNoise.h"
 #include "../renderer/D3D12/d3d12_Buffers.h"
 #include "../renderer/D3D12/d3d12_Copies.h"
 #include "../renderer/D3D12/d3d12_Draw.h"
@@ -42,7 +43,7 @@
 	stores and the sampler heap run on a WARP device with the debug layer. The texture tests that a
 	driver could get wrong (Q3's border, RGB565, BC decoding) also run on the GPU, when there is one.
 	DXC compiles every stage of the repo's base/shaders, and the reflection of every program is held
-	to what GL reported on mars_city1 (neo/tests/d3d12_golden/renderProgInfo-gl.txt).
+	to neo/tests/d3d12_golden/renderProgInfo.txt (id's programs as GL reported them on mars_city1).
 	The pipeline state map runs per GLS family and on random keys; the PSO factory, the journal replayed
 	into the next run, the pipeline library and the render graph's compute and raster passes on WARP. The screen
 	copies run on a 64 x 64 scene target with one and four samples, on WARP and the GPU, and so do the
@@ -1527,6 +1528,76 @@ void Test_HlslBindless() {
 		"float4 PSMain( float4 position : SV_Position ) : SV_Target { return map.Sample( mapSampler, position.xy ); }\n" ),
 		shaderStageType_t::FRAGMENT );
 	Check( !lone && lone.error().Find( "SAMPLER( ..., 0 )" ) >= 0, lone ? "sampler 0 with texture 1 compiled" : lone.error().c_str() );
+
+	// b4 is the GPU scene, for the pixel stage of a program the table marks as tracing and for nothing else
+	const char * tracing =
+		"#include \"include/rtDraw.hlsli\"\n"
+		"float4 PSMain( float4 position : SV_Position ) : SV_Target { return RtDrawValid() ? float4( rtNoise, 0.0, 0.0, 1.0 ) : 0.0; }\n";
+	for ( const hlslParms_t parms : { hlslParms_t::RENDER_PARMS, hlslParms_t::ANY } ) {
+		const auto refused = compiler.Build( source( tracing ), shaderStageType_t::FRAGMENT, parms );
+		Check( !refused && refused.error().Find( "marks as tracing" ) >= 0, refused ? "b4 compiled without the mark" : refused.error().c_str() );
+	}
+	const auto traced = compiler.Build( source( tracing ), shaderStageType_t::FRAGMENT, hlslParms_t::TRACING );
+	Check( traced.has_value() && traced->reflection.traces, traced ? "b4 is not reflected as tracing" : traced.error().c_str() );
+	if ( built ) {
+		Check( !built->reflection.traces, "a stage without b4 does not trace" );
+	}
+	const auto vertexTrace = compiler.Build( source(
+		"#include \"include/rtDraw.hlsli\"\n"
+		"float4 VSMain( float4 position : POSITION ) : SV_Position { return RtDrawValid() ? position : 0.0; }\n" ),
+		shaderStageType_t::VERTEX, hlslParms_t::TRACING );
+	Check( !vertexTrace && vertexTrace.error().Find( "marks as tracing" ) >= 0, vertexTrace ? "b4 compiled in a vertex stage" : vertexTrace.error().c_str() );
+	const auto shifted = compiler.Build( source(
+		"cbuffer TraceResources : register( b4 ) { uint rtTlas; uint rtFlags; };\n"
+		"float4 PSMain( float4 position : SV_Position ) : SV_Target { return float4( rtTlas, rtFlags, 0.0, 1.0 ); }\n" ),
+		shaderStageType_t::FRAGMENT, hlslParms_t::TRACING );
+	Check( !shifted && shifted.error().Find( "rtDraw.hlsli" ) >= 0, shifted ? "another b4 layout compiled" : shifted.error().c_str() );
+}
+
+// renderer/BlueNoise.h: each channel holds every value 16 times, its means over 8 x 8 blocks are flat (white noise:
+// a variance of 85.3) and its neighbours far apart (white noise: 85.3 on average); the two channels are two textures.
+void Test_NoiseTable() {
+	constexpr int SIZE = BLUE_NOISE_SIZE;
+	std::array<double, 2> means = {};
+	for ( int channel = 0; channel < 2; channel++ ) {
+		const auto at = [channel]( int x, int y ) { return static_cast<int>( blueNoise[( ( y & ( SIZE - 1 ) ) * SIZE + ( x & ( SIZE - 1 ) ) ) * 2 + channel] ); };
+		std::array<int, 256> counts = {};
+		double step = 0.0;
+		for ( int y = 0; y < SIZE; y++ ) {
+			for ( int x = 0; x < SIZE; x++ ) {
+				counts[at( x, y )]++;
+				step += abs( at( x, y ) - at( x + 1, y ) ) + abs( at( x, y ) - at( x, y + 1 ) );
+				means[channel] += at( x, y );
+			}
+		}
+		step /= 2.0 * SIZE * SIZE;
+		means[channel] /= SIZE * SIZE;
+		Check( std::ranges::all_of( counts, []( int count ) { return count == SIZE * SIZE / 256; } ), va( "channel %d: every value %d times", channel, SIZE * SIZE / 256 ) );
+		double variance = 0.0;
+		for ( int by = 0; by < SIZE; by += 8 ) {
+			for ( int bx = 0; bx < SIZE; bx += 8 ) {
+				double block = 0.0;
+				for ( int i = 0; i < 64; i++ ) {
+					block += at( bx + ( i & 7 ), by + ( i >> 3 ) );
+				}
+				variance += Square( block / 64.0 - means[channel] );
+			}
+		}
+		variance /= ( SIZE / 8 ) * ( SIZE / 8 );
+		Check( variance < 20.0, va( "channel %d: the variance of the 8 x 8 means is %.2f", channel, variance ) );
+		Check( step > 95.0, va( "channel %d: neighbours differ by %.2f on average", channel, step ) );
+	}
+	double covariance = 0.0;
+	std::array<double, 2> spread = {};
+	for ( int i = 0; i < SIZE * SIZE; i++ ) {
+		const double a = blueNoise[i * 2] - means[0];
+		const double b = blueNoise[i * 2 + 1] - means[1];
+		covariance += a * b;
+		spread[0] += a * a;
+		spread[1] += b * b;
+	}
+	const double correlation = covariance / sqrt( spread[0] * spread[1] );
+	Check( fabs( correlation ) < 0.1, va( "the channels correlate by %.3f", correlation ) );
 }
 
 // The preprocess sees the stage's profile: a file that parts its stages by __SHADER_TARGET_STAGE builds both.
@@ -1691,7 +1762,7 @@ void Test_HlslSourcesCompile() {
 				Check( output->warnings.IsEmpty(), va( "%s %s: %s", source.name.c_str(), entryPoint, output->warnings.c_str() ) );
 				Check( D3D12_DxilSigned( output->code ), va( "%s %s: signed", source.name.c_str(), entryPoint ) );
 			}
-			const auto built = compiler.Build( source, type );
+			const auto built = compiler.Build( source, type, D3D12_ProgramParms( source.name ) );
 			Check( built.has_value(), va( "%s %s: %s", source.name.c_str(), entryPoint, built ? "" : built.error().c_str() ) );
 		}
 	}
@@ -1699,12 +1770,13 @@ void Test_HlslSourcesCompile() {
 	Check( stages > 0, "base/shaders has stages" );
 }
 
-// GL's renderProgInfo of mars_city1 against base/shaders: every program has its stages there, with the same parms
-// in the same order, masks and joints, attribMask a superset, and the PS reads what the VS writes.
-void Test_HlslProgramsMatchGl() {
+// renderProgInfo.txt against base/shaders: every program has its stages there, with the same parms in the same
+// order, masks, joints and tracing, and the PS reads what the VS writes. id's programs are there as GL reported
+// them on mars_city1 (attribMask a superset of GL's), ours as they were reviewed (attribMask the same).
+void Test_HlslProgramInterfaces() {
 	const std::unique_ptr<idD3D12Library> library = LoadLibraries();
-	const std::optional<idStr> reference = ReadDiskText( RepoPath( "neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) );
-	if ( !library || !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) ) {
+	const std::optional<idStr> reference = ReadDiskText( RepoPath( "neo/tests/d3d12_golden/renderProgInfo.txt" ) );
+	if ( !library || !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo.txt" ) ) {
 		return;
 	}
 	idD3D12HlslCompiler compiler( *library, RepoReader(), false );
@@ -1731,22 +1803,27 @@ void Test_HlslProgramsMatchGl() {
 		}
 		const programInfo_t & info = program->info;
 		const uint16 glAttribs = static_cast<uint16>( strtoul( InfoField( line, "attribMask" ), nullptr, 16 ) );
-		const idStr d3d12 = va( "samplerMask=0x%04x cubeMask=0x%04x usesJoints=%d vsParms=%s fsParms=%s", info.samplerMask, info.cubeMask,
-			info.usesJoints ? 1 : 0, ParmList( vertex->info ).c_str(), fragment ? ParmList( fragment->info ).c_str() : "-" );
-		const idStr gl = va( "samplerMask=%s cubeMask=%s usesJoints=%s vsParms=%s fsParms=%s", InfoField( line, "samplerMask" ).c_str(),
+		const idStr d3d12 = va( "samplerMask=0x%04x cubeMask=0x%04x usesJoints=%d vsParms=%s fsParms=%s traces=%d", info.samplerMask, info.cubeMask,
+			info.usesJoints ? 1 : 0, ParmList( vertex->info ).c_str(), fragment ? ParmList( fragment->info ).c_str() : "-", program->traces ? 1 : 0 );
+		const idStr traces = InfoField( line, "traces" );
+		const idStr held = va( "samplerMask=%s cubeMask=%s usesJoints=%s vsParms=%s fsParms=%s traces=%s", InfoField( line, "samplerMask" ).c_str(),
 			InfoField( line, "cubeMask" ).c_str(), InfoField( line, "usesJoints" ).c_str(), InfoField( line, "vsParms" ).c_str(),
-			InfoField( line, "fsParms" ).c_str() );
-		Check( d3d12 == gl, va( "%s|%s: HLSL %s, GL %s", vertexName.c_str(), fragmentName.c_str(), d3d12.c_str(), gl.c_str() ) );
-		Check( ( info.attribMask & glAttribs ) == glAttribs, va( "%s|%s: attribMask 0x%04x lacks some of GL's 0x%04x", vertexName.c_str(),
-			fragmentName.c_str(), info.attribMask, glAttribs ) );
+			InfoField( line, "fsParms" ).c_str(), traces.IsEmpty() ? "0" : traces.c_str() );
+		Check( d3d12 == held, va( "%s|%s: HLSL %s, the file %s", vertexName.c_str(), fragmentName.c_str(), d3d12.c_str(), held.c_str() ) );
+		const std::optional<renderProgStage_t> row = R_FindRenderProg( fragmentName != "-" ? fragmentName.c_str() : vertexName.c_str() );
+		Check( row && row->program->traces == program->traces, va( "%s: the table and the pixel stage agree on tracing", vertexName.c_str() ) );
+		// GL listed the attributes its compiler kept; a program of our own is held to its exact set
+		const bool exact = row && row->program->own;
+		Check( exact ? info.attribMask == glAttribs : ( info.attribMask & glAttribs ) == glAttribs, va( "%s|%s: attribMask 0x%04x %s the file's 0x%04x",
+			vertexName.c_str(), fragmentName.c_str(), info.attribMask, exact ? "is not" : "lacks some of", glAttribs ) );
 	}
 	printf( "  %d programs\n", programs );
-	Check( programs == 43, va( "renderProgInfo-gl.txt has %d programs, 43 expected", programs ) );
+	Check( programs == 47, va( "renderProgInfo.txt has %d programs, 47 expected", programs ) );
 }
 
-// The program table against base/shaders and GL: each program has its file with exactly the stages and the
-// skinned variant the table lists, each file is a program, each builtin is made once, and every stage GL
-// loaded on mars_city1 is in the table.
+// The program table against base/shaders and the interface file: each program has its file with exactly the
+// stages and the skinned variant the table lists, each file is a program, each builtin is made once, and every
+// stage of the interface file is in the table.
 void Test_HlslProgramTable() {
 	const std::optional<renderProgStage_t> skinned = R_FindRenderProg( "INTERACTION_skinned.vfp" );
 	Check( skinned && skinned->skinned && idStr::Cmp( skinned->program->name, "interaction" ) == 0, "a skinned name, case ignored" );
@@ -1799,25 +1876,38 @@ void Test_HlslProgramTable() {
 		}
 	}
 
-	const std::optional<idStr> reference = ReadDiskText( RepoPath( "neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) );
-	if ( !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo-gl.txt" ) ) {
+	const std::optional<idStr> reference = ReadDiskText( RepoPath( "neo/tests/d3d12_golden/renderProgInfo.txt" ) );
+	if ( !Check( reference.has_value(), "no neo/tests/d3d12_golden/renderProgInfo.txt" ) ) {
 		return;
 	}
 	const idStr text = WithoutCarriageReturns( *reference );
-	int glPrograms = 0;
+	int held = 0;
+	std::set<std::string> heldRows;
 	for ( int start = 0, newline; ( newline = text.Find( '\n', start ) ) >= 0; start = newline + 1 ) {
 		const idStr line = text.Mid( start, newline - start );
 		if ( line.IsEmpty() || line[0] == '#' ) {
 			continue;
 		}
-		glPrograms++;
+		held++;
 		const idStr vertex = InfoField( line, "vs" );
 		const idStr fragment = InfoField( line, "fs" );
-		Check( R_RenderProgHasStage( vertex.c_str(), shaderStageType_t::VERTEX ), va( "GL's %s is no vertex stage of the table", vertex.c_str() ) );
+		Check( R_RenderProgHasStage( vertex.c_str(), shaderStageType_t::VERTEX ), va( "%s of the file is no vertex stage of the table", vertex.c_str() ) );
 		Check( fragment == "-" || R_RenderProgHasStage( fragment.c_str(), shaderStageType_t::FRAGMENT ),
-			va( "GL's %s is no fragment stage of the table", fragment.c_str() ) );
+			va( "%s of the file is no fragment stage of the table", fragment.c_str() ) );
+		if ( const std::optional<renderProgStage_t> row = R_FindRenderProg( vertex.c_str() ) ) {
+			heldRows.insert( R_RenderProgStageName( *row->program, row->skinned ).c_str() );
+		}
 	}
-	printf( "  %d programs in the table, the stages of GL's %d in it\n", static_cast<int>( R_RenderProgs().size() ), glPrograms );
+	// a program of ours has no GL to be held to: its interface is reviewed in the file
+	for ( const renderProgDef_t & program : R_RenderProgs() ) {
+		for ( const bool skinned : { false, true } ) {
+			if ( program.own && ( !skinned || program.skinned != renderProgBuiltin_t::NONE ) ) {
+				const idStr stage = R_RenderProgStageName( program, skinned );
+				Check( heldRows.contains( stage.c_str() ), va( "%s is ours and has no line in renderProgInfo.txt", stage.c_str() ) );
+			}
+		}
+	}
+	printf( "  %d programs in the table, the stages of the file's %d in it\n", static_cast<int>( R_RenderProgs().size() ), held );
 }
 
 [[nodiscard]] bool SameStageInfo( const shaderStageInfo_t & a, const shaderStageInfo_t & b ) {
@@ -1846,7 +1936,7 @@ void Test_HlslBuildAll() {
 	broken.text = "float4 PSMain() : SV_Target { return undefinedName; }\n";
 	std::vector<d3d12HlslRequest_t> requests;
 	for ( const d3d12HlslEntry_t & entry : entries ) {
-		requests.push_back( { &entry.source, entry.stage } );
+		requests.push_back( { &entry.source, entry.stage, D3D12_ProgramParms( entry.source.name ) } );
 	}
 	const size_t brokenIndex = requests.size() / 2;
 	requests.insert( requests.begin() + static_cast<std::ptrdiff_t>( brokenIndex ), { &broken, shaderStageType_t::FRAGMENT } );
@@ -1862,7 +1952,7 @@ void Test_HlslBuildAll() {
 			Check( !all[i] && all[i].error().Find( "undefinedName" ) >= 0, "the broken stage fails with DXC's error" );
 			continue;
 		}
-		const d3d12HlslResult_t one = serial.Build( *requests[i].source, requests[i].stage );
+		const d3d12HlslResult_t one = serial.Build( *requests[i].source, requests[i].stage, requests[i].parms );
 		if ( !Check( all[i].has_value() && one.has_value(), va( "%s: %s", name, !all[i] ? all[i].error().c_str() : !one ? one.error().c_str() : "" ) ) ) {
 			continue;
 		}
@@ -7089,8 +7179,8 @@ void RtHit( idTestGpu & gpu ) {
 	gpu.srvPool.CreateUav( resultsUav, *results.Get(), uavDesc );
 
 	scene.rays.fixture.Bind();
-	static_cast<void>( gpu.buffers.UseForShaders( scene.vertexBuffer ) );
-	static_cast<void>( gpu.buffers.UseForShaders( scene.indexBuffer ) );
+	static_cast<void>( gpu.buffers.Use( scene.vertexBuffer ) );
+	static_cast<void>( gpu.buffers.Use( scene.indexBuffer ) );
 	idD3D12RenderGraph & graph = scene.rays.graph;
 	const d3d12GraphResource_t output = graph.Import( "results", { results.Get(), &resultsState, {}, resultsUav, {}, bytes, 1 } );
 	const d3d12GraphResource_t records = graph.Import( "records", { scene.gpuScene.Buffer(), &scene.gpuScene.BufferState(), scene.gpuScene.BufferSrv(), {}, {}, 0, 0 } );
@@ -7237,7 +7327,7 @@ void RtReflection( idTestGpu & gpu ) {
 	const textureHandle_t diffuse = texture( { 128, 128, 0, 255 }, "test reflection diffuse" );
 	const textureHandle_t bump = texture( { 128, 128, 128, 128 }, "test reflection bump" );
 	const textureHandle_t white = texture( { 255, 255, 255, 255 }, "test reflection white" );
-	idD3D12RtPasses rtPasses( gpu.device, scene.rays.computeRoot, fixture.passes, gpu.samplers, gpu.buffers );
+	idD3D12RtPasses rtPasses( gpu.device, scene.rays.computeRoot, fixture.passes, gpu.samplers, gpu.buffers, gpu.textures, gpu.barriers );
 	rtPasses.CreateDefaults();
 	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && diffuse != textureHandle_t::NONE
 			&& bump != textureHandle_t::NONE && white != textureHandle_t::NONE, "the geometry and the textures" ) ) {
@@ -7448,12 +7538,379 @@ void RtReflection( idTestGpu & gpu ) {
 	}
 
 	gpu.WaitIdle();
+	rtPasses.DestroyDefaults();
 	gpu.buffers.Destroy( vertexBuffer );
 	gpu.buffers.Destroy( indexBuffer );
 	gpu.textures.Destroy( diffuse );
 	gpu.textures.Destroy( bump );
 	gpu.textures.Destroy( white );
 	CheckNoLayerErrors( gpu );
+}
+
+/*
+	interaction_rt through the draw recorder, in the bracket of the light target, over a GPU scene whose static
+	buffers are the ones drawn. Quads whose drawn side faces down, seen from below without perspective, a pixel a
+	unit: x = column - 31.5, y = row - 31.5. The light at ( 0, 0, -16 ), then:
+
+	  floor   z = 0, x and y -32..32: drawn, and in the scene
+	  A       z = -4, x -22..-10, y -6..6, local (MF_NOSELFSHADOW)
+	  G       z = -4, x 8..20, y 4..14
+
+	A shadow ray starts 0.12 under the floor (0.02 and a tenth of the pixel), so a caster's hard shadow is its
+	rectangle seen from the light on the plane z = -0.12. The light target holds the scene's colour inside the
+	shadows and nothing outside; the scene is what interaction.vfp draws, shadowed or not.
+*/
+void RtDraw( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	constexpr float PRE_EXPOSURE = 0.5f;
+	constexpr float CASTER_Z = -4.0f;
+	constexpr float START = 0.02f + 0.1f;
+	constexpr float LIGHT_RADIUS = 6.0f;
+	struct rect_t {
+		float	x0, x1, y0, y1;
+	};
+	constexpr rect_t FLOOR = { -32.0f, 32.0f, -32.0f, 32.0f };
+	constexpr rect_t LOCAL_CASTER = { -22.0f, -10.0f, -6.0f, 6.0f };
+	constexpr rect_t GLOBAL_CASTER = { 8.0f, 20.0f, 4.0f, 14.0f };
+	const idVec3 lightOrigin( 0.0f, 0.0f, -16.0f );
+
+	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	idD3D12ComputeRootSignature computeRoot( gpu.device, gpu.library );
+	idD3D12ResourcePool pool( gpu.device, gpu.graveyard, gpu.srvPool, gpu.rtvPool );
+	idD3D12RenderGraph graph( gpu.device, gpu, gpu.barriers, pool, gpu.srvPool, gpu.rtvPool, fixture.constants, computeRoot );
+	idD3D12GpuScene gpuScene( gpu.device, gpu, gpu.graveyard, gpu.srvPool, gpu.barriers, gpu.uploader, gpu.textures );
+	idD3D12RayTracing rt( gpu.device, gpu, gpu.graveyard, gpu.srvPool, gpu.barriers, gpu.uploader, fixture.buffers );
+	idD3D12RtPasses rtPasses( gpu.device, computeRoot, fixture.passes, gpu.samplers, fixture.buffers, gpu.textures, gpu.barriers );
+	const programHandle_t traced = fixture.Program( "interaction_rt" );
+	const programHandle_t plain = fixture.Program( "interaction" );
+	if ( traced == programHandle_t::NONE || plain == programHandle_t::NONE ) {
+		return;
+	}
+	Check( fixture.shaders.Program( traced ).traces && !fixture.shaders.Program( plain ).traces, "only interaction_rt asks for the trace source" );
+
+	// the quad of corners 0..4, its drawn side -z; STATIC, so the recorder's store stages it as the vertex cache's
+	std::array<idDrawVert, 4> verts;
+	const idVec3 corners[4] = { idVec3( 0.0f, 0.0f, 0.0f ), idVec3( 4.0f, 0.0f, 0.0f ), idVec3( 4.0f, 4.0f, 0.0f ), idVec3( 0.0f, 4.0f, 0.0f ) };
+	for ( size_t i = 0; i < verts.size(); i++ ) {
+		verts[i].Clear();
+		verts[i].xyz = corners[i];
+		verts[i].SetTexCoord( corners[i].x * 0.25f, corners[i].y * 0.25f );
+		verts[i].SetNormal( idVec3( 0.0f, 0.0f, -1.0f ) );
+		verts[i].SetTangent( idVec3( 1.0f, 0.0f, 0.0f ) );
+		verts[i].SetBiTangentSign( 1.0f );
+	}
+	fixture.NewList();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	const bufferHandle_t vertexBuffer = fixture.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::STATIC, sizeof( verts ), verts.data() );
+	const bufferHandle_t indexBuffer = fixture.buffers.Create( bufferType_t::INDEX, bufferUsage_t::STATIC,
+		static_cast<int>( idTestRayScene::INDEXES.size() * sizeof( triIndex_t ) ), idTestRayScene::INDEXES.data() );
+	const auto texture = [&]( std::array<byte, 4> texel, const char * name ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, name );
+		if ( handle != textureHandle_t::NONE ) {
+			gpu.textures.Upload( handle, 0, 0, 1, 1, texel.data(), 0 );
+		}
+		return handle;
+	};
+	const textureHandle_t diffuse = texture( { 128, 128, 0, 255 }, "test rt draw diffuse" );
+	const textureHandle_t bump = texture( { 128, 128, 128, 128 }, "test rt draw bump" );
+	const textureHandle_t white = texture( { 255, 255, 255, 255 }, "test rt draw white" );
+	rt.CreateDefaults( fixture.passes.Stage( "internal_rtSkin" ), computeRoot );
+	rtPasses.CreateDefaults();
+	if ( !Check( fixture.scene.Color( true ).resource != nullptr && vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE
+			&& diffuse != textureHandle_t::NONE && bump != textureHandle_t::NONE && white != textureHandle_t::NONE,
+			va( "%u sample(s): the HDR scene, the quad and the textures", samples ) ) ) {
+		return;
+	}
+
+	constexpr uint32 CASTER = gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_CASTS_SHADOW;
+	rtTestFrame_t frame( 1, true );
+	const auto quad = [&]( int record, uint32 flags, const rect_t & rect, float z ) {
+		frame.Write( record, 0, 6, flags );
+		gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), GpuScene_InstanceMask( GpuScene_Group( flags ), true ), 0x700,
+			idVec3( rect.x0, rect.y0, z ) );
+		instance.transform[0][0] = ( rect.x1 - rect.x0 ) * 0.25f;
+		instance.transform[1][1] = ( rect.y1 - rect.y0 ) * 0.25f;
+	};
+	quad( 0, CASTER, FLOOR, 0.0f );
+	quad( 1, CASTER | gpuSceneGeometry_t::GEO_NO_SELF_SHADOW, LOCAL_CASTER, CASTER_Z );
+	quad( 2, CASTER, GLOBAL_CASTER, CASTER_Z );
+	gpuSceneStats_t stats;
+	if ( !Check( gpuScene.Update( frame.Update( vertexBuffer, indexBuffer ) ) && rt.Build( graph, gpuScene, nullptr, stats ) && stats.tlasInstances == 3
+			&& stats.waiting == 0, va( "%u sample(s): the update and its build: %s", samples, RtStats( stats ).c_str() ) ) ) {
+		return;
+	}
+	fixture.recorder.Invalidate();
+	bool traceable = true;
+	int asked = 0;
+	fixture.recorder.SetTraceSource( [&]() {
+		asked++;
+		return traceable ? rtPasses.DrawResources( rt, gpuScene ) : d3d12TraceResources_t();
+	} );
+
+	// the floor's object space is its x and y over 16; the light's images are white all over
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	parms[RENDERPARM_LOCALLIGHTORIGIN].Set( ( lightOrigin.x + 32.0f ) / 16.0f, ( lightOrigin.y + 32.0f ) / 16.0f, lightOrigin.z, 1.0f );
+	parms[RENDERPARM_LOCALVIEWORIGIN].Set( 2.0f, 2.0f, -1000.0f, 1.0f );
+	parms[RENDERPARM_LIGHTPROJECTION_Q].Set( 0.0f, 0.0f, 0.0f, 1.0f );
+	for ( const int s : { RENDERPARM_BUMPMATRIX_S, RENDERPARM_DIFFUSEMATRIX_S, RENDERPARM_SPECULARMATRIX_S } ) {
+		parms[s].Set( 1.0f, 0.0f, 0.0f, 0.0f );
+		parms[s + 1].Set( 0.0f, 1.0f, 0.0f, 0.0f );
+	}
+	parms[RENDERPARM_VERTEXCOLOR_ADD].Set( 1.0f, 1.0f, 1.0f, 1.0f );
+	parms[RENDERPARM_MVPMATRIX_X].Set( 0.5f, 0.0f, 0.0f, -1.0f );
+	parms[RENDERPARM_MVPMATRIX_Y].Set( 0.0f, 0.5f, 0.0f, -1.0f );
+	parms[RENDERPARM_MVPMATRIX_W].Set( 0.0f, 0.0f, 0.0f, 1.0f );
+	parms[RENDERPARM_MODELMATRIX_X].Set( 16.0f, 0.0f, 0.0f, -32.0f );
+	parms[RENDERPARM_MODELMATRIX_Y].Set( 0.0f, 16.0f, 0.0f, -32.0f );
+	parms[RENDERPARM_MODELMATRIX_Z].Set( 0.0f, 0.0f, 1.0f, 0.0f );
+	parms[RENDERPARM_DIFFUSEMODIFIER].Set( 0.5f, 0.25f, 0.125f, 1.0f );
+
+	renderLatch_t latch;
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	constexpr size_t TEX_2D = static_cast<size_t>( textureKind_t::TEX_2D );
+	latch.textures[0][TEX_2D] = bump;
+	latch.textures[1][TEX_2D] = white;
+	latch.textures[2][TEX_2D] = white;
+	latch.textures[3][TEX_2D] = diffuse;
+	latch.textures[4][TEX_2D] = white;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.numIndexes = 6;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	const auto draw = [&]( programHandle_t program, uint32 mask, float radius, uint32 noiseIndex ) {
+		latch.program = program;
+		latch.stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+		parms[RENDERPARM_RT_LIGHT].Set( lightOrigin.x, lightOrigin.y, lightOrigin.z, radius );
+		parms[RENDERPARM_RT_SHADOW].Set( static_cast<float>( mask ), static_cast<float>( noiseIndex ), 0.0f, 0.0f );
+		pipelineKey_t key = {};
+		key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+		key.layout = LAYOUT_DRAW_VERT;
+		fixture.recorder.Draw( latch, key, dc );
+	};
+	// The scene at zero; bracket: the light target at zero too, and open.
+	const auto begin = [&]( bool bracket ) {
+		fixture.recorder.SetLights( false );
+		fixture.recorder.SetHdr( true, PRE_EXPOSURE );
+		clearDesc_t clear = {};
+		clear.rect = latch.viewport;
+		clear.color = true;
+		clear.colorWriteMask = 0xF;
+		renderLatch_t clearLatch = latch;
+		clearLatch.stateBits = 0;
+		fixture.recorder.Clear( clearLatch, clear );
+		if ( !bracket ) {
+			return true;
+		}
+		fixture.recorder.EndPass();
+		if ( !Check( fixture.scene.EnsureLights(), va( "%u sample(s): the light target", samples ) ) ) {
+			return false;
+		}
+		fixture.scene.ClearLights( gpu.barriers, gpu.List(), { 0, 0, SIZE, SIZE } );
+		fixture.recorder.SetLights( true );
+		return true;
+	};
+	struct pair_t {
+		std::vector<idVec4>		scene, lights;
+	};
+	const auto read = [&]( bool lights ) {
+		fixture.recorder.EndPass();
+		pair_t texels;
+		texels.scene = ReadFloatSurface( gpu, fixture.scene.Color( true ) );
+		fixture.NewList();
+		if ( lights ) {
+			texels.lights = ReadFloatSurface( gpu, fixture.scene.Lights() );
+			fixture.NewList();
+		}
+		return texels;
+	};
+	// How deep ( x, y ) of the floor lies in the hard shadows of casters, in units of the floor; negative outside.
+	const auto depthIn = [&]( float x, float y, std::span<const rect_t> casters ) {
+		const float t = ( -START - CASTER_Z ) / ( -START - lightOrigin.z );
+		const float hx = x + ( lightOrigin.x - x ) * t;
+		const float hy = y + ( lightOrigin.y - y ) * t;
+		float deepest = -idMath::INFINITY;
+		for ( const rect_t & caster : casters ) {
+			deepest = Max( deepest, Min( Min( hx - caster.x0, caster.x1 - hx ), Min( hy - caster.y0, caster.y1 - hy ) ) / ( 1.0f - t ) );
+		}
+		return deepest;
+	};
+	const auto same = []( const idVec4 & a, const idVec3 & b, float tolerance ) {
+		for ( int c = 0; c < 3; c++ ) {
+			if ( idMath::Fabs( a[c] - b[c] ) > tolerance * Max( 0.01f, idMath::Fabs( b[c] ) ) ) {
+				return false;
+			}
+		}
+		return true;
+	};
+	const size_t numTexels = static_cast<size_t>( SIZE ) * SIZE;
+	// The light target is the scene inside the shadows of casters and zero outside, a quarter unit clear of their
+	// edges; the scene is times what interaction.vfp drew, and lit everywhere.
+	const auto checkHard = [&]( const char * label, const pair_t & texels, std::span<const rect_t> casters, const std::vector<idVec4> & reference,
+		float times ) {
+		if ( !Check( texels.scene.size() == numTexels && texels.lights.size() == numTexels && reference.size() == numTexels,
+				va( "%u sample(s), %s: read", samples, label ) ) ) {
+			return;
+		}
+		int wrongLights = 0, wrongScene = 0, dark = 0, shadowed = 0;
+		idStr first;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				const idVec4 & scene = texels.scene[at];
+				dark += ( scene.x > 0.0f && scene.y > 0.0f && scene.z > 0.0f ) ? 0 : 1;
+				wrongScene += same( scene, reference[at].ToVec3() * times, 2e-3f ) ? 0 : 1;
+				const float depth = depthIn( column - 31.5f, row - 31.5f, casters );
+				if ( idMath::Fabs( depth ) < 0.25f ) {
+					continue;
+				}
+				const idVec3 want = ( depth > 0.0f ) ? scene.ToVec3() : vec3_zero;
+				shadowed += ( depth > 0.0f ) ? 1 : 0;
+				if ( !same( texels.lights[at], want, 1e-3f ) && wrongLights++ == 0 ) {
+					first = va( "( %d, %d ) holds %s, not %s", column, row, texels.lights[at].ToString( 4 ), want.ToString( 4 ) );
+				}
+			}
+		}
+		Check( wrongLights == 0, va( "%u sample(s), %s: %d pixels of the light target are wrong; %s", samples, label, wrongLights, first.c_str() ) );
+		Check( wrongScene == 0 && dark == 0, va( "%u sample(s), %s: %d pixels of the scene unlike interaction.vfp's, %d dark", samples, label, wrongScene, dark ) );
+		Check( casters.empty() == ( shadowed == 0 ), va( "%u sample(s), %s: %d pixels in shadow", samples, label, shadowed ) );
+	};
+
+	constexpr rect_t BOTH[] = { LOCAL_CASTER, GLOBAL_CASTER };
+	constexpr rect_t GLOBAL[] = { GLOBAL_CASTER };
+	constexpr uint32 EVERY = gpuSceneInstance_t::MASK_SHADOW;
+	if ( !begin( false ) ) {
+		return;
+	}
+	draw( plain, EVERY, 0.0f, 0 );
+	const std::vector<idVec4> reference = read( false ).scene;
+	Check( asked == 0, "interaction.vfp does not ask for the trace source" );
+
+	if ( begin( true ) ) {
+		draw( traced, EVERY, 0.0f, 0 );
+		checkHard( "every caster", read( true ), BOTH, reference, 1.0f );
+		Check( asked == 1, va( "a traced draw asks once: %d", asked ) );
+	}
+	// a local surface takes only the shadows of the casters that are not local
+	if ( begin( true ) ) {
+		draw( traced, gpuSceneInstance_t::MASK_SHADOW_GLOBAL, 0.0f, 0 );
+		checkHard( "the casters of a local surface", read( true ), GLOBAL, reference, 1.0f );
+	}
+	// nothing built, an update refused: the draw lights and shadows nothing
+	if ( begin( true ) ) {
+		traceable = false;
+		draw( traced, EVERY, 0.0f, 0 );
+		traceable = true;
+		checkHard( "nothing to trace", read( true ), {}, reference, 1.0f );
+	}
+	// a list submitted between two draws: the buffers decay, b4 is gone, and the second draw has both again
+	if ( begin( true ) ) {
+		draw( traced, EVERY, 0.0f, 0 );
+		fixture.NextList();
+		draw( traced, EVERY, 0.0f, 0 );
+		checkHard( "two draws across a submit", read( true ), BOTH, reference, 2.0f );
+	}
+
+	// A light of radius 6 is a disk that faces the pixel: 1 where the casters stop every ray to it, -1 where none,
+	// 0 in the penumbra. The disk's image on the casters' plane is convex, so its rim decides; the casters are
+	// shrunk and grown by half a unit for the pixel's own size.
+	const auto softKind = [&]( float x, float y ) {
+		constexpr float MARGIN = 0.5f;
+		constexpr int SPOKES = 64;
+		const idVec3 origin( x, y, -START );
+		idVec3 axis = lightOrigin - idVec3( x, y, 0.0f );
+		axis.Normalize();
+		idVec3 right, up;
+		axis.NormalVectors( right, up );
+		int stopped = 0, passed = 0, rays = 0;
+		for ( int ring = 0; ring < 3; ring++ ) {
+			for ( int spoke = 0; spoke < SPOKES; spoke++ ) {
+				float s, c;
+				idMath::SinCos( spoke * idMath::TWO_PI / SPOKES, s, c );
+				const idVec3 path = lightOrigin + ( right * c + up * s ) * ( LIGHT_RADIUS * ( 1.0f - 0.5f * ring ) ) - origin;
+				const float t = ( CASTER_Z - origin.z ) / path.z;
+				const float hx = origin.x + path.x * t;
+				const float hy = origin.y + path.y * t;
+				float deepest = -idMath::INFINITY;
+				for ( const rect_t & caster : { LOCAL_CASTER, GLOBAL_CASTER } ) {
+					deepest = Max( deepest, Min( Min( hx - caster.x0, caster.x1 - hx ), Min( hy - caster.y0, caster.y1 - hy ) ) );
+				}
+				rays++;
+				stopped += ( deepest > MARGIN ) ? 1 : 0;
+				passed += ( deepest < -MARGIN ) ? 1 : 0;
+			}
+		}
+		return ( stopped == rays ) ? 1 : ( passed == rays ) ? -1 : 0;
+	};
+	// In the penumbra about half of the pixels are shadowed, and another noise index moves the pattern there only.
+	const auto soft = [&]( uint32 noiseIndex ) {
+		pair_t texels;
+		if ( begin( true ) ) {
+			draw( traced, EVERY, LIGHT_RADIUS, noiseIndex );
+			texels = read( true );
+		}
+		return texels;
+	};
+	const pair_t first = soft( 0 );
+	const pair_t again = soft( 0 );
+	const pair_t other = soft( 1 );
+	if ( Check( first.lights.size() == numTexels && again.lights.size() == numTexels && other.lights.size() == numTexels, va( "%u sample(s): the soft shadows are read", samples ) ) ) {
+		int wrong = 0, umbra = 0, edge = 0, edgeShadowed = 0, moved = 0, movedOutside = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				const int kind = softKind( column - 31.5f, row - 31.5f );
+				const bool shadowed = first.lights[at].x > 0.0f;
+				const bool differs = ( other.lights[at].x > 0.0f ) != shadowed;
+				if ( kind != 0 ) {
+					umbra += ( kind > 0 ) ? 1 : 0;
+					wrong += ( shadowed == ( kind > 0 ) ) ? 0 : 1;
+					movedOutside += differs ? 1 : 0;
+				} else {
+					edge++;
+					edgeShadowed += shadowed ? 1 : 0;
+					moved += differs ? 1 : 0;
+				}
+				// all of the light or none; under MSAA the quad's two triangles may disagree on its diagonal's pixels
+				const bool whole = !shadowed || same( first.lights[at], first.scene[at].ToVec3(), 1e-3f );
+				wrong += ( whole || ( kind == 0 && samples > 1 && column == row ) ) ? 0 : 1;
+			}
+		}
+		Check( wrong == 0 && umbra > 50, va( "%u sample(s), radius %g: %d pixels wrong outside the penumbra, %d in the umbra", samples, LIGHT_RADIUS, wrong,
+			umbra ) );
+		Check( edgeShadowed * 5 > edge && edgeShadowed * 5 < edge * 4, va( "%u sample(s), radius %g: %d of %d penumbra pixels in shadow", samples,
+			LIGHT_RADIUS, edgeShadowed, edge ) );
+		Check( moved * 10 > edge && movedOutside == 0, va( "%u sample(s): noise index 1 moves %d of %d penumbra pixels and %d others", samples, moved, edge,
+			movedOutside ) );
+		Check( first.lights == again.lights && first.scene == again.scene, va( "%u sample(s): the same noise index gives the same frame", samples ) );
+	}
+
+	fixture.recorder.SetLights( false );
+	fixture.recorder.SetTraceSource( {} );
+	fixture.recorder.EndPass();
+	gpu.WaitIdle();
+	rtPasses.DestroyDefaults();
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	gpu.textures.Destroy( diffuse );
+	gpu.textures.Destroy( bump );
+	gpu.textures.Destroy( white );
+	pool.FreeAll();
+	CheckNoLayerErrors( gpu );
+}
+
+void RtDrawAllSamples( idTestGpu & gpu ) {
+	RtDraw( gpu, 1 );
+	if ( gpu.device.Features().samples[2] ) {
+		RtDraw( gpu, 4 );
+	}
 }
 
 // A float copy of the HDR scene keeps its values; an LDR copy of the output into the same texture is UNORM as
@@ -8459,9 +8916,10 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_TextureGraves", Test_WarpTextureGraves },
 	{ "Dxc_Compile", Test_DxcCompile },
 	{ "Hlsl_Bindless", Test_HlslBindless },
+	{ "Noise_Table", Test_NoiseTable },
 	{ "Hlsl_Entries", Test_HlslEntries },
 	{ "Hlsl_SourcesCompile", Test_HlslSourcesCompile },
-	{ "Hlsl_ProgramsMatchGl", Test_HlslProgramsMatchGl },
+	{ "Hlsl_ProgramInterfaces", Test_HlslProgramInterfaces },
 	{ "Hlsl_ProgramTable", Test_HlslProgramTable },
 	{ "Hlsl_BuildAll", Test_HlslBuildAll },
 	{ "Hlsl_TargetMacros", Test_HlslTargetMacros },
@@ -8550,6 +9008,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_RtHit", OnGpu<RtHit> },
 	{ "Warp_RtReflection", OnWarp<RtReflection> },
 	{ "Gpu_RtReflection", OnGpu<RtReflection> },
+	{ "Warp_RtDraw", OnWarp<RtDrawAllSamples> },
+	{ "Gpu_RtDraw", OnGpu<RtDrawAllSamples> },
 	{ "Gpu_HdrScene", OnGpu<HdrScene> },
 	{ "Warp_HdrCopies", OnWarp<HdrCopiesAllSamples> },
 	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },

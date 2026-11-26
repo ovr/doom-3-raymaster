@@ -117,6 +117,10 @@ public:
 	[[nodiscard]] int				CopySurfacesThisFrame() const { return copySurfaces; }	// P1: 0 while the copy sizes repeat
 	// SAMPLED textures destroyed so far: views kept elsewhere (the GPU scene's records) of an older count may be dead.
 	[[nodiscard]] uint64			SampledDestroyed() const { return sampledDestroyed; }
+	// Creations, deaths, uploads, copy targets and readbacks so far: while the count stands, a texture that
+	// MakeReadable saw is still in ALL_SHADER_RESOURCE.
+	[[nodiscard]] uint64			StateChanges() const { return stateChanges; }
+	void							NoteStateChange() { stateChanges++; }	// for a client that transitions a surface itself
 	void							ResetFrameCounters() { copySurfaces = 0; }
 
 private:
@@ -143,6 +147,7 @@ private:
 	std::vector<byte>				rowScratch;
 	uint64							bytes = 0;
 	uint64							sampledDestroyed = 0;
+	uint64							stateChanges = 0;
 	int								copySurfaces = 0;	// created by PrepareCopyTarget this frame
 };
 

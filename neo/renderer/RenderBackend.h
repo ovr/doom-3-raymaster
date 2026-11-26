@@ -155,6 +155,9 @@ If you have questions concerning this license or the applicable additional terms
 		to both: a program's first colour output to the scene, its second to the light target, each through
 		the draw's one blend. Only programs with both outputs draw there, and nothing clears. The light
 		target holds until the next BeginTracedLights.
+	R17	A program whose table row traces (renderProgDef_t::traces) reads, in its pixel stage, what the last
+		applied UpdateGpuScene built, and a noise texture. While nothing may be traced (no update yet, a
+		refused one, a lost device) the draw still runs and is told so: it sends nothing to the light target.
 
 ===============================================================================
 */

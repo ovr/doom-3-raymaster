@@ -45,12 +45,10 @@ public:
 	void							Unmap( bufferHandle_t buffer, int dirtyOffset, int dirtyBytes );	// STAGED: the copy is recorded now
 	[[nodiscard]] const d3d12Buffer_t &	Get( bufferHandle_t buffer ) const { return table.Get( buffer ); }
 	[[nodiscard]] const d3d12Buffer_t *	Find( bufferHandle_t buffer ) const { return table.Find( buffer ); }
-	// For a draw of the open list: a STAGED buffer decays to COMMON in every list, so it transitions (batched)
-	// into what draws read it as. nullptr for a dead handle.
+	// For every reader of the open list (a draw, a shader, an acceleration structure build): a STAGED buffer decays
+	// to COMMON in every list, so it transitions (batched) into its one read state; the mapped ones are read where
+	// they lie. nullptr for a dead handle.
 	const d3d12Buffer_t *			Use( bufferHandle_t buffer );
-	// For a read by shaders or an acceleration structure build: a STAGED buffer transitions (batched) into
-	// ALL_SHADER_RESOURCE, the mapped ones are read where they lie. nullptr for a dead handle.
-	const d3d12Buffer_t *			UseForShaders( bufferHandle_t buffer );
 	// For a program with usesJoints and no joint buffer: JOINT_TAIL zero bytes.
 	[[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS	ZeroJoints() const;
 	// Stride 0, (0,0,0,1) as four floats: GL's current value of an attribute the layout lacks.

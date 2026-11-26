@@ -226,7 +226,7 @@ add_test(NAME idlibTests COMMAND idlibTests)
 # d3d12Tests: the ring, the handle table, the format, sampler and pipeline state tables, the uploader, buffer
 # and texture stores, the PSO factory, the debug groups, the GPU timers, the screen copies, the draw recorder and the render graph on a WARP
 # device (the texture border, decoding, timer, copy and draw tests also on the GPU), DXC and a bindless draw on SM 6.6,
-# and base/shaders against GL's reflection in neo/tests/d3d12_golden/renderProgInfo-gl.txt
+# and base/shaders against the program interfaces in neo/tests/d3d12_golden/renderProgInfo.txt
 #   bin/<config>/d3d12Tests.exe [filter]
 add_executable(d3d12Tests
 	tests/d3d12_tests.cpp

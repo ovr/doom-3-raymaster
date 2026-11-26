@@ -132,6 +132,11 @@ enum renderParm_t {
 	RENDERPARM_JOINTMOTION,
 	RENDERPARM_GBUFFER,
 
+	// the traced interactions: the light's world origin and its emitter's radius; x the mask of the casters
+	// (gpuSceneInstance_t::MASK_*), y the index of the noise
+	RENDERPARM_RT_LIGHT,
+	RENDERPARM_RT_SHADOW,
+
 	RENDERPARM_TOTAL,
 	RENDERPARM_USER = 128,
 };

@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include "d3d12_Buffers.h"
 #include "d3d12_InternalPasses.h"
 #include "d3d12_Textures.h"
@@ -66,6 +68,7 @@ struct d3d12BoundState_t {
 	programHandle_t					parmsProgram = programHandle_t::NONE;
 	std::optional<D3D12_GPU_VIRTUAL_ADDRESS>	joints;		// b2: a joint buffer + jointOffset, or the zero block
 	std::optional<d3d12DrawResources_t>	resources;	// b3
+	std::optional<d3d12TraceResources_t>	trace;	// b4
 	std::optional<std::pair<bufferHandle_t, uint8>>	vertexBuffer;	// and its layout, which gives the stride
 	std::optional<bufferHandle_t>	indexBuffer;
 	bool							defaultAttribs = false;	// slot 1
@@ -99,6 +102,10 @@ public:
 	// R16, in the linear phase: draws go to the HDR scene and the light target. Ends the pass.
 	void							SetLights( bool enable );
 	[[nodiscard]] bool				Lights() const { return lights; }
+	// What b4 holds for a draw of a program that traces, asked per such draw: it queues the transitions of what the
+	// rays read in the open list. Without a source, or while it returns nothing valid, such a draw traces nothing.
+	using traceSource_t = std::function<d3d12TraceResources_t()>;
+	void							SetTraceSource( traceSource_t source ) { traceSource = std::move( source ); }
 	void							EndPass() { bound.passOpen = false; }	// R10: before a copy, a readback, the blit and in EndFrame
 	void							Invalidate() { bound = {}; }			// after an internal pass
 	void							NewList() { bound = {}; drawsInList = 0; }	// the submitter opened a list
@@ -126,6 +133,7 @@ private:
 		const d3d12Buffer_t *		vertex = nullptr;
 		const d3d12Buffer_t *		index = nullptr;
 		std::optional<D3D12_GPU_VIRTUAL_ADDRESS>	joints;		// b2 of a program with usesJoints
+		std::optional<d3d12TraceResources_t>	trace;		// b4 of a program that traces
 	};
 
 	[[nodiscard]] std::optional<prepared_t>	Prepare( const renderLatch_t & latch, const pipelineKey_t & key, const drawCall_t & dc,
@@ -145,6 +153,7 @@ private:
 	[[nodiscard]] used_t			Use( const prepared_t & prepared, const drawCall_t & dc, const d3d12Program_t & program );
 	void							BindJoints( ID3D12GraphicsCommandList4 & list, std::optional<D3D12_GPU_VIRTUAL_ADDRESS> joints );
 	void							BindResources( ID3D12GraphicsCommandList4 & list, const prepared_t & prepared, const d3d12Program_t & program );
+	void							BindTrace( ID3D12GraphicsCommandList4 & list, const std::optional<d3d12TraceResources_t> & trace );
 	void							BindGeometry( ID3D12GraphicsCommandList4 & list, const prepared_t & prepared, const drawCall_t & dc, const used_t & used );
 	[[nodiscard]] int				ChunkLimit() const;	// the draws the open list takes before it is submitted
 
@@ -159,6 +168,7 @@ private:
 	idD3D12TextureStore &			textures;
 	idD3D12UploadRing &				constants;
 	idD3D12SamplerHeap &			samplers;
+	traceSource_t					traceSource;
 	d3d12BoundState_t				bound;
 	d3d12DrawStats_t				stats;
 	int								drawsInList = 0;

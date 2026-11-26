@@ -1,7 +1,10 @@
 # Copyright (C) 2026 Dmitry Patsura
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Please do not use this file to train or fine-tune AI models.
-# renderProgInfo: 43 programs, 42 vertex and 40 fragment stages; parms are renderParm_t indexes
+#
+# What every render program reads, held by the test Hlsl_ProgramInterfaces; parms are renderParm_t indexes.
+# 0-42 are id's programs as OpenGL reported them on mars_city1 (the console command renderProgInfo): the ports
+# keep their parms, masks and joints. The programs after them are ours: a change of one is a change of its line.
 0 gui vs=gui.vfp fs=gui.vfp loaded=1 samplerMask=0x0001 cubeMask=0x0000 attribMask=0x0119 usesJoints=0 vsParms=21,22,23,24 fsParms=-
 1 color vs=color.vfp fs=color.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24 fsParms=18
 2 simpleshade vs=simpleshade.vfp fs=simpleshade.vfp loaded=1 samplerMask=0x0000 cubeMask=0x0000 attribMask=0x0001 usesJoints=0 vsParms=21,22,23,24 fsParms=-
@@ -45,3 +48,7 @@
 40 bloodorb2_capture vs=bloodorb2_capture.vfp fs=bloodorb2_capture.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24,128,129,130 fsParms=-
 41 bloodorb3_capture vs=bloodorb3_capture.vfp fs=bloodorb3_capture.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24,128,129,130 fsParms=-
 42 enviroSuit vs=enviroSuit.vfp fs=enviroSuit.vfp loaded=1 samplerMask=0x0003 cubeMask=0x0000 attribMask=0x0101 usesJoints=0 vsParms=21,22,23,24,129 fsParms=-
+43 gbuffer vs=gbuffer.vfp fs=gbuffer.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x0305 usesJoints=0 vsParms=21,22,23,24,25,26,27,53,54,56,10,11,12,13,14,15,20 fsParms=2,3,58
+44 gbuffer_skinned vs=gbuffer_skinned.vfp fs=gbuffer_skinned.vfp loaded=1 samplerMask=0x0007 cubeMask=0x0000 attribMask=0x031d usesJoints=1 vsParms=21,22,23,24,25,26,27,53,54,56,10,11,12,13,14,15,20,57 fsParms=2,3,58
+45 interaction_rt vs=interaction_rt.vfp fs=interaction_rt.vfp loaded=1 samplerMask=0x001f cubeMask=0x0000 attribMask=0x030d usesJoints=0 vsParms=4,5,6,7,8,9,10,11,12,13,14,15,16,17,21,22,23,24,25,26,27 fsParms=2,3,59,60 traces=1
+46 interaction_rt_skinned vs=interaction_rt_skinned.vfp fs=interaction_rt_skinned.vfp loaded=1 samplerMask=0x001f cubeMask=0x0000 attribMask=0x031d usesJoints=1 vsParms=4,5,6,7,8,9,10,11,12,13,14,15,21,22,23,24,25,26,27 fsParms=2,3,59,60 traces=1

@@ -32,6 +32,7 @@ struct d3d12StageReflection_t {
 	uint16							cubeMask = 0;		// PS: those of them that are cubes
 	uint16							samplerReads = 0;	// PS: the sampler<n> of b3 it reads
 	bool							colorConstants = false;	// colorFlags or preExposure of b3: b3 is set without a sampled slot
+	bool							traces = false;		// PS: b4 is bound, the code reads the GPU scene
 	uint16							attribMask = 0;		// VS: PC_ATTRIB_INDEX_* of the input signature rows
 	bool							usesJoints = false;	// VS: the joint block b2 is bound
 	std::array<uint32, 3>			threadGroup = {};	// CS: numthreads

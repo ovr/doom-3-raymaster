@@ -301,8 +301,8 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		DropCache();
 		generation = scene.StaticGeneration();
 	}
-	const d3d12Buffer_t * vertexBuffer = buffers.UseForShaders( scene.StaticVertexBuffer() );
-	const d3d12Buffer_t * indexBuffer = buffers.UseForShaders( scene.StaticIndexBuffer() );
+	const d3d12Buffer_t * vertexBuffer = buffers.Use( scene.StaticVertexBuffer() );
+	const d3d12Buffer_t * indexBuffer = buffers.Use( scene.StaticIndexBuffer() );
 	const d3d12Descriptor_t vertexSrv = BufferSrv( scene.StaticVertexBuffer() );
 	const d3d12Descriptor_t indexSrv = BufferSrv( scene.StaticIndexBuffer() );
 	if ( vertexBuffer == nullptr || indexBuffer == nullptr || !vertexSrv.IsValid() || !indexSrv.IsValid() ) {
@@ -352,7 +352,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		if ( instance.blasKey == 0 ) {
 			// skinned: this frame's vertices, a BLAS of its own
 			const d3d12Descriptor_t jointSrv = BufferSrv( instance.jointBuffer );
-			if ( instance.skinnedVerts == 0 || !jointSrv.IsValid() || buffers.UseForShaders( instance.jointBuffer ) == nullptr ) {
+			if ( instance.skinnedVerts == 0 || !jointSrv.IsValid() || buffers.Use( instance.jointBuffer ) == nullptr ) {
 				stats.waiting++;
 				continue;
 			}
