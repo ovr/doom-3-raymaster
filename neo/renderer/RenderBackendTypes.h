@@ -215,10 +215,11 @@ struct pipelineKey_t {
 	uint64		stateBits;		// latch.stateBits & GLS_PIPELINE_BITS
 	uint16		program;		// the backend's dense program index
 	uint8		layout;			// vertexLayoutType_t
-	uint8		raster;			// bits 0-1 effective cull (0 none, 1 front, 2 back), bit 2 lines, bits 3-5 target format id,
+	uint8		raster;			// bits 0-1 effective cull (0 none, 1 front, 2 back), bit 2 lines,
 							// bit 6 strict depth test (LESS where the GLS bits say LEQUAL), see renderLatch_t
 	uint8		depthBias;		// 0 = off or dynamic, else slot + 1 in the backend's bias table
-	uint8		pad[3];
+	uint8		target;			// the backend's: what the draw's pass renders into; shared code leaves 0
+	uint8		pad[2];
 	bool		operator==( const pipelineKey_t & ) const = default;
 };
 static_assert( sizeof( pipelineKey_t ) == 16 );

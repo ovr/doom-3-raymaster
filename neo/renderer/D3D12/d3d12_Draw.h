@@ -80,7 +80,7 @@ public:
 										idD3D12UploadRing & constants, idD3D12SamplerHeap & samplers );
 	// As glClear: inside the latched scissor, through the latched write masks; a partial colour mask is a pass.
 	void							Clear( const renderLatch_t & latch, const clearDesc_t & clear );
-	// key: idRenderBackend::PipelineKey; the target and the depth bias slot are added here.
+	// key: idRenderBackend::PipelineKey; the target and the depth bias slot are set here.
 	void							Draw( const renderLatch_t & latch, const pipelineKey_t & key, const drawCall_t & dc );
 	void							SkippedDraw() { stats.skipped++; }	// R12: program NONE
 	// GL_FRAMEBUFFER_SRGB: draws and clears write through the scene's sRGB view, which blends in linear space and
@@ -93,9 +93,12 @@ public:
 	// The gamma composite: the HDR scene holds its sRGB encoding, colours are not decoded. Ends the pass.
 	void							SetHdrGamma( bool enable );
 	[[nodiscard]] bool				HdrGamma() const { return hdr && hdrGamma; }
-	// R14, in the linear phase: draws go to the G-buffer's three targets with the scene's depth. Ends the pass.
+	// R14, in the linear phase: draws go to the G-buffer's targets with the scene's depth. Ends the pass.
 	void							SetGBuffer( bool enable );
 	[[nodiscard]] bool				GBuffer() const { return gbuffer; }
+	// R16, in the linear phase: draws go to the HDR scene and the light target. Ends the pass.
+	void							SetLights( bool enable );
+	[[nodiscard]] bool				Lights() const { return lights; }
 	void							EndPass() { bound.passOpen = false; }	// R10: before a copy, a readback, the blit and in EndFrame
 	void							Invalidate() { bound = {}; }			// after an internal pass
 	void							NewList() { bound = {}; drawsInList = 0; }	// the submitter opened a list
@@ -164,5 +167,6 @@ private:
 	bool							hdr = false;
 	bool							hdrGamma = false;
 	bool							gbuffer = false;
+	bool							lights = false;
 	float							preExposure = 1.0f;
 };

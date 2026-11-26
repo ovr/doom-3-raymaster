@@ -1975,6 +1975,12 @@ constexpr d3d12DepthBias_t TEST_BIAS = { -100, -2.0f };
 	return key;
 }
 
+[[nodiscard]] pipelineKey_t TargetKey( d3d12TargetId_t target, uint64 stateBits = 0, int raster = 0 ) {
+	pipelineKey_t key = Key( stateBits, raster );
+	key.target = target.value;
+	return key;
+}
+
 [[nodiscard]] d3d12PipelineDesc_t Desc( const pipelineKey_t & key, uint16 attribs = GUI_ATTRIBS, bool depthBounds = false ) {
 	return D3D12_PipelineDescFor( D3D12_NormalizeKey( key ), attribs, TEST_BIAS, depthBounds );
 }
@@ -2206,16 +2212,22 @@ void Test_PipelineRaster() {
 		"no depth bias on lines: GL offsets polygons only" );
 	Check( D3D12_DepthBiasFor( -2.0f, -100.4f ) == d3d12DepthBias_t{ -100, -2.0f } && D3D12_DepthBiasFor( 1.5f, 2.5f ).bias == 3, "units round to an INT" );
 
-	const d3d12PipelineDesc_t plain = Desc( Key( 0, d3d12TargetId_t::Of( false, 1 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	const d3d12PipelineDesc_t plain = Desc( TargetKey( d3d12TargetId_t::Of( false, 1 ) ) );
 	Check( plain.numTargets == 1 && plain.colorFormats[0] == DXGI_FORMAT_R8G8B8A8_UNORM && plain.sample.Count == 1 && plain.sample.Quality == 0,
 		"target 0: UNORM, one sample" );
-	const d3d12PipelineDesc_t srgb = Desc( Key( 0, d3d12TargetId_t::Of( true, 4 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	const d3d12PipelineDesc_t srgb = Desc( TargetKey( d3d12TargetId_t::Of( true, 4 ) ) );
 	Check( srgb.numTargets == 1 && srgb.colorFormats[0] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && srgb.sample.Count == 4,
 		"the target id: the sRGB view, 4 samples" );
-	const d3d12PipelineDesc_t gbuffer = Desc( Key( 0, D3D12_KeyRaster( d3d12TargetId_t::GBuffer( 2 ) ) ) );
+	const d3d12PipelineDesc_t gbuffer = Desc( TargetKey( d3d12TargetId_t::GBuffer( 2 ) ) );
 	Check( gbuffer.numTargets == 4 && gbuffer.colorFormats[0] == DXGI_FORMAT_R16G16_SNORM && gbuffer.colorFormats[1] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
 		&& gbuffer.colorFormats[2] == DXGI_FORMAT_R16G16_FLOAT && gbuffer.colorFormats[3] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
 		&& gbuffer.sample.Count == 2, "the G-buffer: four targets, the scene's samples" );
+	const d3d12PipelineDesc_t lights = Desc( TargetKey( d3d12TargetId_t::Lights( 4 ), GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE ) );
+	const D3D12_RENDER_TARGET_BLEND_DESC & second = lights.blend.RenderTarget[1];
+	Check( lights.numTargets == 2 && lights.colorFormats[0] == DXGI_FORMAT_R16G16B16A16_FLOAT && lights.colorFormats[1] == DXGI_FORMAT_R16G16B16A16_FLOAT
+		&& lights.sample.Count == 4, "the scene with the light target: two float targets, the scene's samples" );
+	Check( !lights.blend.IndependentBlendEnable && second.BlendEnable && second.SrcBlend == D3D12_BLEND_ONE && second.DestBlend == D3D12_BLEND_ONE
+		&& second.BlendOpAlpha == D3D12_BLEND_OP_MAX, "the light target takes the scene's blend, alpha by MAX" );
 	Check( plain.raster.DepthClipEnable && !plain.raster.MultisampleEnable && !plain.raster.AntialiasedLineEnable, "depth clip, aliased lines" );
 }
 
@@ -2293,8 +2305,9 @@ private:
 	key.layout = static_cast<uint8>( random.OneIn( 8 ) ? random.Bits( 8 ) : 1 + random.Next() % 3 );
 	key.raster = static_cast<uint8>( random.Bits( random.OneIn( 4 ) ? 8 : 7 ) );
 	key.depthBias = static_cast<uint8>( random.OneIn( 2 ) ? 0 : random.OneIn( 4 ) ? random.Bits( 8 ) : 1 + random.Next() % 2 );
+	key.target = static_cast<uint8>( random.Bits( random.OneIn( 4 ) ? 8 : 5 ) );
 	if ( random.OneIn( 4 ) ) {
-		key.pad[random.Next() % 3] = static_cast<uint8>( random.Bits( 8 ) );
+		key.pad[random.Next() % 2] = static_cast<uint8>( random.Bits( 8 ) );
 	}
 	return key;
 }
@@ -2326,8 +2339,9 @@ void Test_PipelineNormalize() {
 		for ( const pipelineKey_t & variant : variants ) {
 			const bool sameKey = ( D3D12_NormalizeKey( variant ) == normal );
 			const bool sameBytes = ( PipelineBytes( variant ) == bytes );
-			if ( !Check( sameKey == sameBytes, va( "key %d: equal normalized keys %d, equal PSOs %d (0x%016llx %04x %02x %02x %02x vs 0x%016llx %02x)", i, sameKey,
-					sameBytes, key.stateBits, key.program, key.layout, key.raster, key.depthBias, variant.stateBits, variant.raster ) ) ) {
+			if ( !Check( sameKey == sameBytes, va( "key %d: equal normalized keys %d, equal PSOs %d (0x%016llx %04x %02x %02x %02x %02x vs 0x%016llx %02x %02x)", i,
+					sameKey, sameBytes, key.stateBits, key.program, key.layout, key.raster, key.depthBias, key.target, variant.stateBits, variant.raster,
+					variant.target ) ) ) {
 				continue;
 			}
 			compared++;
@@ -2378,7 +2392,8 @@ void Test_PipelineJournal() {
 	b.bias = d3d12DepthBias_t{ -100, -2.0f };
 	d3d12JournalEntry_t c = a;
 	c.key.layout = LAYOUT_DRAW_SHADOW_VERT;
-	c.key.raster = D3D12_KEY_LINES | ( d3d12TargetId_t::Of( true, 4 ).value << D3D12_KEY_TARGET_SHIFT );
+	c.key.raster = D3D12_KEY_LINES;
+	c.key.target = d3d12TargetId_t::Of( true, 4 ).value;
 	journal.Record( "interaction|interaction", a );
 	journal.Record( "interaction|interaction", b );
 	journal.Record( "shadow|-", c );
@@ -2409,28 +2424,52 @@ void Test_PipelineJournal() {
 	longer.push_back( 0 );
 	Check( !read.Read( longer ), "nor one with bytes after its end" );
 	Check( !read.Read( {} ), "nor no file" );
-	idD3D12PipelineJournal foreign;
-	d3d12JournalEntry_t bad = a;
-	bad.key.layout = NUM_VERTEX_LAYOUTS;
-	foreign.Record( "gui|gui", bad );
-	Check( !read.Read( foreign.Write() ), "a layout the backend has not: not a journal this code wrote" );
+	// a layout the backend has not, a raster bit that was the target's, the light target's bit without the HDR scene
+	std::array<d3d12JournalEntry_t, 3> bad = { a, a, a };
+	bad[0].key.layout = NUM_VERTEX_LAYOUTS;
+	bad[1].key.raster = 0x08;
+	bad[2].key.target = 16;
+	for ( size_t i = 0; i < bad.size(); i++ ) {
+		idD3D12PipelineJournal foreign;
+		foreign.Record( "gui|gui", bad[i] );
+		Check( !read.Read( foreign.Write() ), va( "bad entry %d: not a journal this code wrote", static_cast<int>( i ) ) );
+	}
 
-	idD3D12PipelineJournal hdr;
-	d3d12JournalEntry_t hdrEntry = a;
-	hdrEntry.key.raster = static_cast<uint8>( D3D12_KEY_STRICT_DEPTH | D3D12_KeyRaster( d3d12TargetId_t::Of( false, 4, true ) ) );
-	hdr.Record( "interaction|interaction", hdrEntry );
-	Check( read.Read( hdr.Write() ) && read.EntriesFor( "interaction|interaction" ).size() == 1
-		&& read.EntriesFor( "interaction|interaction" )[0] == hdrEntry, "the HDR scene's bit 7 is read back" );
+	const d3d12Program_t program;
+	std::vector<d3d12PipelineName_t> names;
+	idD3D12PipelineJournal targets;
+	for ( int value = 0; value < d3d12TargetId_t::COUNT; value++ ) {
+		d3d12JournalEntry_t entry = a;
+		entry.key.raster = D3D12_KEY_STRICT_DEPTH;
+		entry.key.target = static_cast<uint8>( value );
+		if ( d3d12TargetId_t{ entry.key.target }.Normalized().value != value ) {
+			continue;
+		}
+		targets.Record( "interaction|interaction", entry );
+		names.push_back( D3D12_PipelineLibraryName( program, entry, false ) );
+	}
+	const bool readBack = read.Read( targets.Write() );
+	Check( readBack && targets.NumEntries() == 20 && std::ranges::equal( read.EntriesFor( "interaction|interaction" ),
+		targets.EntriesFor( "interaction|interaction" ) ), "every target id is read back" );
+	std::ranges::sort( names );
+	Check( std::ranges::adjacent_find( names ) == names.end(), "and has a name of its own in the pipeline library" );
 }
 
-// Raster bits 3-5 and 7: every target id goes through the key and back; the HDR scene has no sRGB view, its bit is
-// the G-buffer's.
+// pipelineKey_t::target: any byte reads as one of 20 ids. The HDR scene has no sRGB view, its bit is the G-buffer's,
+// and the light target's bit counts only with the HDR scene.
 void Test_PipelineTargetIds() {
-	for ( uint8 value = 0; value < d3d12TargetId_t::COUNT; value++ ) {
-		const d3d12TargetId_t id = { value };
-		Check( D3D12_KeyTarget( D3D12_KeyRaster( id ) ) == id, va( "target id %u round trip", value ) );
-		Check( ( D3D12_KeyRaster( id ) & ~( D3D12_KEY_TARGET_BITS | D3D12_KEY_HDR_TARGET ) ) == 0, va( "target id %u stays in its bits", value ) );
+	int ids = 0;
+	for ( int value = 0; value < 256; value++ ) {
+		const d3d12TargetId_t id = { static_cast<uint8>( value ) };
+		const d3d12TargetId_t normal = id.Normalized();
+		const pipelineKey_t key = TargetKey( id );
+		Check( normal.value < d3d12TargetId_t::COUNT && normal.Normalized() == normal && D3D12_KeyTarget( key ) == normal
+			&& D3D12_NormalizeKey( key ).target == normal.value, va( "target byte %d: its id is %u", value, normal.value ) );
+		Check( normal.Samples() == id.Samples() && normal.NumTargets() == id.NumTargets() && normal.ColorView() == id.ColorView() && normal.Hdr() == id.Hdr()
+			&& normal.IsGBuffer() == id.IsGBuffer() && normal.IsLights() == id.IsLights(), va( "target byte %d reads as its id", value ) );
+		ids += ( normal == id ) ? 1 : 0;
 	}
+	Check( ids == 20, va( "%d ids: not 8 of the output and 4 each of the HDR scene, the G-buffer and the scene with the light target", ids ) );
 	for ( UINT samples : { 1u, 2u, 4u, 8u } ) {
 		const d3d12TargetId_t hdr = d3d12TargetId_t::Of( true, samples, true );
 		Check( hdr.Hdr() && !hdr.Srgb() && hdr.Samples() == samples && hdr.ColorView() == DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -2441,10 +2480,17 @@ void Test_PipelineTargetIds() {
 		const d3d12TargetId_t gbuffer = d3d12TargetId_t::GBuffer( samples );
 		Check( gbuffer.IsGBuffer() && !gbuffer.Hdr() && !gbuffer.Srgb() && gbuffer.Samples() == samples && gbuffer.NumTargets() == 4
 			&& !hdr.IsGBuffer() && !ldr.IsGBuffer() && ldr.NumTargets() == 1, va( "the G-buffer of %u samples is an id of its own", samples ) );
+		const d3d12TargetId_t lights = d3d12TargetId_t::Lights( samples );
+		Check( lights.IsLights() && lights.Hdr() && !lights.IsGBuffer() && !lights.Srgb() && lights.Samples() == samples && lights.NumTargets() == 2
+			&& lights.Format( 0 ) == DXGI_FORMAT_R16G16B16A16_FLOAT && lights.Format( 1 ) == DXGI_FORMAT_R16G16B16A16_FLOAT && lights.Normalized() == lights
+			&& !hdr.IsLights() && hdr.NumTargets() == 1 && !gbuffer.IsLights() && !ldr.IsLights(),
+			va( "the scene with the light target of %u samples: two float targets", samples ) );
+		Check( d3d12TargetId_t{ static_cast<uint8>( gbuffer.value | 16 ) }.Normalized() == gbuffer
+			&& d3d12TargetId_t{ static_cast<uint8>( ldr.value | 16 ) }.Normalized() == ldr, "the light target's bit counts only with the HDR scene" );
 	}
-	pipelineKey_t key = {};
-	key.raster = static_cast<uint8>( D3D12_KeyRaster( d3d12TargetId_t::Of( false, 2, true ) ) | ( 1 << D3D12_KEY_TARGET_SHIFT ) );
-	Check( D3D12_KeyTarget( D3D12_NormalizeKey( key ).raster ) == d3d12TargetId_t::GBuffer( 2 ), "the normalized key keeps the G-buffer's bit" );
+	pipelineKey_t key = TargetKey( d3d12TargetId_t::GBuffer( 2 ), 0, 0xFF );
+	const pipelineKey_t normal = D3D12_NormalizeKey( key );
+	Check( normal.target == key.target && normal.raster == ( D3D12_KEY_LINES | D3D12_KEY_STRICT_DEPTH ), "the raster byte holds no target" );
 }
 
 // gui and shadow.vertex alone (no PS), from the repo's base/shaders.
@@ -2469,10 +2515,11 @@ struct testPrograms_t {
 }
 
 [[nodiscard]] UINT KeySamples( const pipelineKey_t & key ) {
-	return d3d12TargetId_t{ static_cast<uint8>( ( key.raster & D3D12_KEY_TARGET_BITS ) >> D3D12_KEY_TARGET_SHIFT ) }.Samples();
+	return D3D12_KeyTarget( key ).Samples();
 }
 
-// Every family of keys, the line key with the bias of slot, and a key per sample count the adapter has.
+// Every family of keys, the line key with the bias of slot, and per sample count the adapter has a key of the
+// output and one of the scene with the light target.
 [[nodiscard]] std::vector<pipelineKey_t> TestKeys( const idTestGpu & gpu, uint8 slot ) {
 	std::vector<pipelineKey_t> keys = {
 		Key( 0, D3D12_KEY_STRICT_DEPTH ),
@@ -2488,7 +2535,8 @@ struct testPrograms_t {
 	keys[7].depthBias = slot;
 	for ( int samples = 1, index = 0; samples <= 8; samples *= 2, index++ ) {
 		if ( gpu.device.Features().samples[static_cast<size_t>( index )] ) {
-			keys.push_back( Key( 0, d3d12TargetId_t::Of( true, static_cast<UINT>( samples ) ).value << D3D12_KEY_TARGET_SHIFT ) );
+			keys.push_back( TargetKey( d3d12TargetId_t::Of( true, static_cast<UINT>( samples ) ) ) );
+			keys.push_back( TargetKey( d3d12TargetId_t::Lights( static_cast<UINT>( samples ) ), GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE ) );
 		}
 	}
 	return keys;
@@ -2499,7 +2547,8 @@ int DrawTestKeys( idD3D12PipelineFactory & factory, testPrograms_t & programs, s
 	int pipelines = 0;
 	for ( pipelineKey_t key : keys ) {
 		key.program = programs.gui.dense;
-		Check( factory.Get( programs.gui, D3D12_NormalizeKey( key ) ) != nullptr, va( "gui: key 0x%016llx raster 0x%02x", key.stateBits, key.raster ) );
+		Check( factory.Get( programs.gui, D3D12_NormalizeKey( key ) ) != nullptr, va( "gui: key 0x%016llx raster 0x%02x target %u", key.stateBits, key.raster,
+			key.target ) );
 		pipelines++;
 		pipelineKey_t shadowKey = key;
 		shadowKey.layout = LAYOUT_DRAW_SHADOW_VERT;
@@ -2884,7 +2933,8 @@ void idTestRaster::Draw( d3d12Program_t & program, const draw_t & draw, std::spa
 	pipelineKey_t key = {};
 	key.stateBits = draw.stateBits & GLS_PIPELINE_BITS;
 	key.layout = LAYOUT_DRAW_VERT;
-	key.raster = static_cast<uint8>( draw.raster | ( d3d12TargetId_t::Of( false, 1 ).value << D3D12_KEY_TARGET_SHIFT ) );
+	key.raster = draw.raster;
+	key.target = d3d12TargetId_t::Of( false, 1 ).value;
 	key.depthBias = draw.depthBias;
 	key.program = program.dense;
 	ID3D12PipelineState * pso = factory.Get( program, D3D12_NormalizeKey( key ) );
@@ -3899,7 +3949,7 @@ class idTestRecorder {
 public:
 	static constexpr int			SIZE = 64;
 
-									idTestRecorder( idTestGpu & gpu, d3d12BufferPlacement_t framePlacement );
+									idTestRecorder( idTestGpu & gpu, d3d12BufferPlacement_t framePlacement, UINT samples = 1 );
 									~idTestRecorder();
 									idTestRecorder( const idTestRecorder & ) = delete;
 	idTestRecorder &				operator=( const idTestRecorder & ) = delete;
@@ -3926,7 +3976,7 @@ private:
 	bool							ready = false;
 };
 
-idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t framePlacement ) :
+idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t framePlacement, UINT samples ) :
 	gpu( owner ),
 	hlslCompiler( owner.library, RepoReader(), false ),
 	root( owner.device, owner.library ),
@@ -3946,7 +3996,7 @@ idTestRecorder::idTestRecorder( idTestGpu & owner, d3d12BufferPlacement_t frameP
 		return;
 	}
 	buffers.CreateDefaults();
-	scene.Create( SIZE, SIZE, 1 );
+	scene.Create( SIZE, SIZE, samples );
 	passes.CreateDefaults();
 	ready = Check( scene.Color().resource && scene.Depth().resource && buffers.ZeroJoints() != 0, "the scene target and the zero joints" );
 }
@@ -4424,9 +4474,13 @@ constexpr const char * GRAPH_COMPUTE =
 constexpr const char * GRAPH_PIXEL =
 	"cbuffer Parms : register( b1 ) { uint source; uint counter; };\n"
 	"float4 PSMain( float4 position : SV_Position ) : SV_Target {\n"
+	"#if defined( FACTOR )\n"
+	"	return float4( 0.5, 2.0, 1.0, 0.25 );\n"
+	"#else\n"
 	"	Texture2D<float4> input = ResourceDescriptorHeap[source];\n"
 	"	ByteAddressBuffer count = ResourceDescriptorHeap[counter];\n"
 	"	return input.Load( int3( position.xy, 0 ) ) + float4( 0.0, 0.0, 0.0, float( count.Load( 0 ) ) );\n"
+	"#endif\n"
 	"}\n";
 
 [[nodiscard]] d3d12HlslSource_t GraphSource( const char * text, const char * define ) {
@@ -4614,6 +4668,32 @@ void RenderGraph( idTestGpu & gpu ) {
 	graph.Execute();
 	checkFrame( "frame 2" );
 	Check( pool.CreatedThisFrame() == 0 && pool.Num() == 4, va( "frame 2: %d pooled resources, %d created: not 4 and 0", pool.Num(), pool.CreatedThisFrame() ) );
+
+	// an internal pipeline that multiplies: what frame 2 drew times ( 0.5, 2, 1, 0.25 ), then that plus the factor
+	const auto factor = fixture.hlslCompiler.Build( GraphSource( GRAPH_PIXEL, "FACTOR" ), shaderStageType_t::FRAGMENT, hlslParms_t::ANY );
+	if ( Check( factor.has_value(), factor ? "" : factor.error().c_str() ) ) {
+		const std::vector<idVec4> before = ReadTexels<idVec4>( gpu, *output.Get(), outputState );
+		std::vector<idVec4> expected = before;
+		for ( const d3d12PassBlend_t blend : { d3d12PassBlend_t::MULTIPLY, d3d12PassBlend_t::ADD } ) {
+			const bool multiply = ( blend == d3d12PassBlend_t::MULTIPLY );
+			const idComPtr<ID3D12PipelineState> pso = fixture.passes.CreatePipeline( factor->code, FLOAT4, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ),
+				L"test graph blend", blend );
+			fixture.Bind();
+			const d3d12GraphResource_t outputs = graph.Import( "test output", { output.Get(), &outputState, {}, {}, gpu.rtvPool.Cpu( outputRtv ), 8, 8 } );
+			graph.AddPass( "blend", d3d12GraphPass_t::RASTER, { { outputs, d3d12GraphAccess_t::RTV } }, [&pso, outputs]( idD3D12GraphContext & context ) {
+				const d3d12UploadSpan_t span = context.Parms( std::array<uint32, 2>{} );
+				context.Draw( *pso.Get(), outputs, 0, { 0, 0, 8, 8 }, span );
+			} );
+			graph.Execute();
+			const idVec4 by( 0.5f, 2.0f, 1.0f, 0.25f );
+			for ( idVec4 & texel : expected ) {
+				texel = multiply ? idVec4( texel.x * by.x, texel.y * by.y, texel.z * by.z, texel.w * by.w ) : texel + by;
+			}
+			const std::vector<idVec4> blended = ReadTexels<idVec4>( gpu, *output.Get(), outputState );
+			Check( pso && blended == expected && blended != before, va( "%s: ( 1, 1 ) is %s, not %s", multiply ? "a pipeline that multiplies" : "one that adds",
+				blended.empty() ? "" : blended[9].ToString(), expected[9].ToString() ) );
+		}
+	}
 
 	for ( uint64 frame = 0; frame < idD3D12ResourcePool::UNUSED_FRAMES; frame++ ) {
 		pool.EndFrame();
@@ -6117,6 +6197,238 @@ void GpuScene( idTestGpu & gpu ) {
 	gpu.textures.Destroy( sampled );
 	gpu.textures.Destroy( copy );
 	CheckNoLayerErrors( gpu );
+}
+
+// ---- the light target (R16) -----------------------------------------------------------------------------------
+
+// color.hlsl with a second output: a quarter of the colour, its alpha whole.
+constexpr const char * LIGHT_PAIR_PROGRAM =
+	"#include \"include/common.hlsli\"\n"
+	"cbuffer VertexParms : register( b0 ) { float4 rpMVPmatrixX; float4 rpMVPmatrixY; float4 rpMVPmatrixZ; float4 rpMVPmatrixW; };\n"
+	"cbuffer PixelParms : register( b1 ) { float4 rpColor; };\n"
+	"struct VSInput { float4 position : POSITION; };\n"
+	"struct VSOutput { float4 position : SV_Position; };\n"
+	"struct PSOutput { float4 scene : SV_Target0; float4 lights : SV_Target1; };\n"
+	"VSOutput VSMain( VSInput input ) {\n"
+	"	VSOutput output;\n"
+	"	float4 glPosition;\n"
+	"	glPosition.x = dot4( input.position, rpMVPmatrixX );\n"
+	"	glPosition.y = dot4( input.position, rpMVPmatrixY );\n"
+	"	glPosition.z = dot4( input.position, rpMVPmatrixZ );\n"
+	"	glPosition.w = dot4( input.position, rpMVPmatrixW );\n"
+	"	precise float4 position = GLClipToD3D( glPosition );\n"
+	"	output.position = position;\n"
+	"	return output;\n"
+	"}\n"
+	"PSOutput PSMain( VSOutput input ) {\n"
+	"	PSOutput output;\n"
+	"	output.scene = SceneOutput( rpColor );\n"
+	"	output.lights = SceneOutput( rpColor * float4( 0.25, 0.25, 0.25, 1.0 ) );\n"
+	"	return output;\n"
+	"}\n";
+
+[[nodiscard]] programHandle_t LightPairProgram( idTestRecorder & fixture ) {
+	d3d12HlslSource_t source;
+	source.name = "test_lightPair";
+	source.path = "shaders/test_lightPair.hlsl";
+	source.text = LIGHT_PAIR_PROGRAM;
+	const auto vertex = D3D12_BuildHlslStage( fixture.hlslCompiler, shaderStageType_t::VERTEX, source.name.c_str(), source );
+	const auto fragment = D3D12_BuildHlslStage( fixture.hlslCompiler, shaderStageType_t::FRAGMENT, source.name.c_str(), source );
+	if ( !Check( vertex && fragment, va( "the program with two outputs builds: %s", !vertex ? vertex.error().c_str() : !fragment ? fragment.error().c_str() : "" ) ) ) {
+		return programHandle_t::NONE;
+	}
+	auto program = D3D12_LinkProgram( *vertex, &*fragment );
+	if ( !Check( program.has_value(), va( "the program with two outputs links: %s", program ? "" : program.error().c_str() ) ) ) {
+		return programHandle_t::NONE;
+	}
+	return fixture.shaders.AddProgram( std::move( *program ) );
+}
+
+// Level 0 of an RGBA16F surface; a multisampled one is averaged into a texture of one sample first.
+[[nodiscard]] std::vector<idVec4> ReadFloatSurface( idTestGpu & gpu, idD3D12SceneTarget::surface_t & surface ) {
+	D3D12_RESOURCE_DESC desc = surface.resource->GetDesc();
+	std::vector<uint64> raw;
+	if ( desc.SampleDesc.Count == 1 ) {
+		raw = ReadTexels<uint64>( gpu, *surface.resource.Get(), surface.state );
+	} else {
+		desc.SampleDesc.Count = 1;
+		desc.Alignment = 0;		// the multisampled source's is 4 MB
+		desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+		const idComPtr<ID3D12Resource> resolved = GraphTarget( gpu, desc );
+		if ( !Check( resolved != nullptr, "the resolve texture" ) ) {
+			return {};
+		}
+		d3d12ResourceState_t resolvedState;
+		gpu.barriers.Transition( *surface.resource.Get(), surface.state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE );
+		gpu.barriers.Transition( *resolved.Get(), resolvedState, D3D12_RESOURCE_STATE_RESOLVE_DEST );
+		gpu.barriers.Flush();
+		gpu.List().ResolveSubresource( resolved.Get(), 0, surface.resource.Get(), 0, desc.Format );
+		raw = ReadTexels<uint64>( gpu, *resolved.Get(), resolvedState );
+	}
+	std::vector<idVec4> texels;
+	texels.reserve( raw.size() );
+	for ( const uint64 texel : raw ) {
+		texels.push_back( HalfTexel( texel ) );
+	}
+	return texels;
+}
+
+/*
+	The bracket as idD3D12Context::BeginTracedLights opens it, preExposure 0.5, c = ( 2, 1, 0.5, 0.75 ), every draw
+	of the brackets adds c to the scene and a quarter of it to the light target; stripes of 16 columns:
+
+	  0  the scene's 1 before; c twice in the first bracket (a list submitted in between), once in the second
+	  1  c once in the first bracket; the second bracket, over the left half, clears it
+	  2  nothing in a bracket; 1 added by color.vfp after the first: the scene alone
+	  3  c once in the first bracket; outside the second one's rectangle, so it holds
+*/
+void LightTarget( idTestGpu & gpu, UINT samples ) {
+	constexpr int SIZE = idTestRecorder::SIZE;
+	constexpr int STRIPE = SIZE / gbufferQuads_t::STRIPES;
+	constexpr float PRE_EXPOSURE = 0.5f;
+	constexpr uint64 ADD = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+	constexpr uint64 REPLACE = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO;
+	const idVec4 c( 2.0f, 1.0f, 0.5f, 0.75f );
+	const idVec4 white( 1.0f, 1.0f, 1.0f, 1.0f );
+	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD, samples );
+	if ( !fixture.Ready() ) {
+		return;
+	}
+	const programHandle_t color = fixture.Program( "color" );
+	const programHandle_t pair = LightPairProgram( fixture );
+	if ( color == programHandle_t::NONE || pair == programHandle_t::NONE ) {
+		return;
+	}
+	const gbufferQuads_t quads;
+	fixture.NewList();
+	fixture.scene.EnsureHdr( gpu.barriers, gpu );
+	const bufferHandle_t vertexBuffer = fixture.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( quads.verts ) ),
+		quads.verts.data() );
+	const bufferHandle_t indexBuffer = fixture.buffers.Create( bufferType_t::INDEX, bufferUsage_t::FRAME, static_cast<int>( sizeof( quads.indexes ) ),
+		quads.indexes.data() );
+	if ( !Check( fixture.scene.Color( true ).resource != nullptr && vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE,
+			va( "%u sample(s): the HDR scene and the quads", samples ) ) ) {
+		return;
+	}
+	std::array<idVec4, MAX_RENDER_PARMS> parms;
+	parms.fill( vec4_zero );
+	for ( int row = 0; row < 4; row++ ) {
+		parms[RENDERPARM_MVPMATRIX_X + row][row] = 1.0f;
+	}
+	renderLatch_t latch;
+	latch.viewport = { 0, 0, SIZE, SIZE };
+	latch.scissor = latch.viewport;
+	drawCall_t dc = {};
+	dc.vertexBuffer = vertexBuffer;
+	dc.indexBuffer = indexBuffer;
+	dc.numIndexes = 6;
+	dc.layout = LAYOUT_DRAW_VERT;
+	dc.topology = primitive_t::TRIANGLES;
+	dc.parms = parms.data();
+	const auto draw = [&]( int stripe, programHandle_t program, uint64 blend, const idVec4 & rgba ) {
+		latch.program = program;
+		latch.stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK | blend;
+		parms[RENDERPARM_COLOR] = rgba;
+		pipelineKey_t key = {};
+		key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
+		key.layout = LAYOUT_DRAW_VERT;
+		dc.indexOffset = stripe * 6 * static_cast<int>( sizeof( triIndex_t ) );
+		fixture.recorder.Draw( latch, key, dc );
+	};
+	const auto begin = [&]( const D3D12_RECT & rect ) {
+		fixture.recorder.EndPass();
+		if ( !Check( fixture.scene.EnsureLights(), va( "%u sample(s): the light target", samples ) ) ) {
+			return false;
+		}
+		fixture.scene.ClearLights( gpu.barriers, gpu.List(), rect );
+		fixture.recorder.SetLights( true );
+		return true;
+	};
+	struct pair_t {
+		std::vector<idVec4>		scene, lights;
+	};
+	const auto read = [&]() {
+		fixture.recorder.EndPass();
+		pair_t texels;
+		texels.scene = ReadFloatSurface( gpu, fixture.scene.Color( true ) );
+		fixture.NewList();
+		texels.lights = ReadFloatSurface( gpu, fixture.scene.Lights() );
+		fixture.NewList();
+		return texels;
+	};
+	const auto checkStripe = [&]( const std::vector<idVec4> & texels, int stripe, const idVec4 & expected, const char * what ) {
+		if ( !Check( texels.size() == static_cast<size_t>( SIZE ) * SIZE, va( "%u sample(s), %s: read", samples, what ) ) ) {
+			return;
+		}
+		int wrong = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = stripe * STRIPE; column < ( stripe + 1 ) * STRIPE; column++ ) {
+				wrong += texels[static_cast<size_t>( row ) * SIZE + column].Compare( expected, 1e-3f ) ? 0 : 1;
+			}
+		}
+		const idVec4 & first = texels[static_cast<size_t>( stripe ) * STRIPE];
+		Check( wrong == 0, va( "%u sample(s), %s: %d pixels unlike %s (%s)", samples, what, wrong, expected.ToString( 4 ), first.ToString( 4 ) ) );
+	};
+
+	fixture.recorder.SetHdr( true, PRE_EXPOSURE );
+	clearDesc_t clear = {};
+	clear.rect = latch.viewport;
+	clear.color = true;
+	clear.colorWriteMask = 0xF;
+	renderLatch_t clearLatch = latch;
+	clearLatch.stateBits = 0;
+	fixture.recorder.Clear( clearLatch, clear );
+	draw( 0, color, REPLACE, white );
+	if ( !begin( { 0, 0, SIZE, SIZE } ) ) {
+		return;
+	}
+	Check( fixture.recorder.Lights(), "the bracket is open" );
+	draw( 0, pair, ADD, c );
+	fixture.NextList();
+	draw( 0, pair, ADD, c );
+	draw( 1, pair, ADD, c );
+	draw( 3, pair, ADD, c );
+	fixture.recorder.SetLights( false );
+	draw( 2, color, ADD, white );
+
+	const idVec4 once( c.x * PRE_EXPOSURE, c.y * PRE_EXPOSURE, c.z * PRE_EXPOSURE, c.w );
+	const idVec4 quarter( once.x * 0.25f, once.y * 0.25f, once.z * 0.25f, c.w );
+	const idVec4 base( PRE_EXPOSURE, PRE_EXPOSURE, PRE_EXPOSURE, 1.0f );
+	pair_t texels = read();
+	checkStripe( texels.scene, 0, idVec4( base.x + 2.0f * once.x, base.y + 2.0f * once.y, base.z + 2.0f * once.z, 1.0f ), "the scene under two draws of the bracket" );
+	checkStripe( texels.lights, 0, idVec4( 2.0f * quarter.x, 2.0f * quarter.y, 2.0f * quarter.z, c.w ), "the light target under them, across a submit" );
+	checkStripe( texels.scene, 1, once, "the scene under one draw" );
+	checkStripe( texels.lights, 1, quarter, "the light target under it" );
+	checkStripe( texels.scene, 2, base, "a draw after the bracket reaches the scene" );
+	checkStripe( texels.lights, 2, vec4_zero, "and not the light target, which the bracket cleared" );
+	checkStripe( texels.lights, 3, quarter, "the fourth stripe of the light target" );
+
+	if ( begin( { 0, 0, SIZE / 2, SIZE } ) ) {
+		draw( 0, pair, ADD, c );
+		fixture.recorder.SetLights( false );
+		texels = read();
+		checkStripe( texels.scene, 0, idVec4( base.x + 3.0f * once.x, base.y + 3.0f * once.y, base.z + 3.0f * once.z, 1.0f ), "the scene keeps what it had" );
+		checkStripe( texels.lights, 0, quarter, "the second bracket starts its rectangle of the light target at zero" );
+		checkStripe( texels.lights, 1, vec4_zero, "all of its rectangle" );
+		checkStripe( texels.lights, 3, quarter, "and nothing outside it" );
+		checkStripe( texels.scene, 3, once, "nor of the scene" );
+	}
+	if ( begin( { 0, 0, SIZE, SIZE } ) ) {
+		fixture.recorder.SetHdr( false, PRE_EXPOSURE );
+		Check( !fixture.recorder.Lights(), "the end of the HDR scene ends the bracket" );
+	}
+	fixture.recorder.EndPass();
+	gpu.WaitIdle();
+	fixture.buffers.Destroy( vertexBuffer );
+	fixture.buffers.Destroy( indexBuffer );
+	CheckNoLayerErrors( gpu );
+}
+
+void LightTargetAllSamples( idTestGpu & gpu ) {
+	LightTarget( gpu, 1 );
+	if ( gpu.device.Features().samples[2] ) {
+		LightTarget( gpu, 4 );
+	}
 }
 
 // ---- WARP: the acceleration structures of the GPU scene ---------------------------------------------------------
@@ -8219,6 +8531,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Hdr_Settings", Test_HdrSettings },
 	{ "Warp_HdrScene", OnWarp<HdrScene> },
 	{ "Warp_GBuffer", OnWarp<GBuffer> },
+	{ "Warp_LightTarget", OnWarp<LightTargetAllSamples> },
+	{ "Gpu_LightTarget", OnGpu<LightTargetAllSamples> },
 	{ "Warp_MotionVectors", OnWarp<MotionVectors> },
 	{ "GBuffer_JointLayout", Test_JointMotionLayout },
 	{ "GpuScene_Ranges", Test_GpuSceneRanges },

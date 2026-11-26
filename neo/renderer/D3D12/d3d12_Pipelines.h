@@ -96,7 +96,7 @@ struct d3d12JournalEntry_t {
 // its keys. It only grows: a key of another sample count waits for the run that has it.
 class idD3D12PipelineJournal {
 public:
-	static constexpr uint32			VERSION = 2;	// bump when the bits of pipelineKey_t change their meaning
+	static constexpr uint32			VERSION = 3;	// bump when the bits of pipelineKey_t change their meaning
 
 	void							Record( std::string_view journalName, const d3d12JournalEntry_t & entry );	// a known one is ignored
 	[[nodiscard]] std::span<const d3d12JournalEntry_t>	EntriesFor( std::string_view journalName ) const;
@@ -128,7 +128,7 @@ struct d3d12PipelineName_t {
 // other.
 class idD3D12PipelineLibrary {
 public:
-	static constexpr uint32			VERSION = 3;	// bump when the root signature or the pipeline stream changes
+	static constexpr uint32			VERSION = 4;	// bump when the root signature or the pipeline stream changes
 
 	// nullopt: the adapter keeps no pipeline library. A file of another driver, adapter or VERSION, or a corrupt
 	// one, gives an empty library, whose Write then replaces the file.

@@ -160,12 +160,13 @@ static_assert( sizeof( d3d12LibraryHeader_t ) == 32 && sizeof( d3d12PipelineName
 	entry.key.stateBits = key.stateBits;
 	entry.key.layout = key.layout;
 	entry.key.raster = key.raster;
+	entry.key.target = key.target;
 	entry.bias = biases[key.depthBias];
 	return entry;
 }
 
 [[nodiscard]] UINT TargetSamples( const pipelineKey_t & key ) {
-	return D3D12_KeyTarget( key.raster ).Samples();
+	return D3D12_KeyTarget( key ).Samples();
 }
 
 // The container's digest of the whole blob (bytes 4-19, the hash dxil.dll signs); zeros for no stage.
@@ -203,6 +204,7 @@ d3d12PipelineName_t D3D12_PipelineLibraryName( const d3d12Program_t & program, c
 	fields.Put( entry.key.stateBits );
 	fields.Put( entry.key.layout );
 	fields.Put( entry.key.raster );
+	fields.Put( entry.key.target );
 	fields.Put( entry.bias.bias );
 	fields.Put( entry.bias.slope );
 	fields.Put( static_cast<uint8>( depthBounds ? 1 : 0 ) );
@@ -343,7 +345,7 @@ std::span<const d3d12JournalEntry_t> idD3D12PipelineJournal::EntriesFor( std::st
 	return ( program != entries.end() ) ? std::span<const d3d12JournalEntry_t>( program->second ) : std::span<const d3d12JournalEntry_t>();
 }
 
-// A layout or a raster bit the backend never sets means the file is not one this code wrote.
+// A layout, a raster bit or a target the backend never sets means the file is not one this code wrote.
 bool idD3D12PipelineJournal::Read( std::span<const byte> file ) {
 	entries.clear();
 	numEntries = 0;
@@ -355,7 +357,6 @@ bool idD3D12PipelineJournal::Read( std::span<const byte> file ) {
 	if ( !reader.Get( magic ) || !reader.Get( version ) || !reader.Get( programs ) || magic != JOURNAL_MAGIC || version != VERSION ) {
 		return false;
 	}
-	constexpr uint8 RASTER_BITS = D3D12_KEY_CULL_BITS | D3D12_KEY_LINES | D3D12_KEY_TARGET_BITS | D3D12_KEY_STRICT_DEPTH | D3D12_KEY_HDR_TARGET;
 	bool valid = true;
 	for ( uint32 i = 0; i < programs && valid; i++ ) {
 		uint32 nameLength = 0;
@@ -365,8 +366,9 @@ bool idD3D12PipelineJournal::Read( std::span<const byte> file ) {
 		std::vector<d3d12JournalEntry_t> & keys = entries[name];
 		for ( uint32 k = 0; k < count && valid; k++ ) {
 			d3d12JournalEntry_t entry;
-			valid = reader.Get( entry.key.stateBits ) && reader.Get( entry.key.layout ) && reader.Get( entry.key.raster ) && reader.Get( entry.bias.bias )
-				&& reader.Get( entry.bias.slope ) && entry.key.layout < NUM_VERTEX_LAYOUTS && ( entry.key.raster & ~RASTER_BITS ) == 0;
+			valid = reader.Get( entry.key.stateBits ) && reader.Get( entry.key.layout ) && reader.Get( entry.key.raster ) && reader.Get( entry.key.target )
+				&& reader.Get( entry.bias.bias ) && reader.Get( entry.bias.slope ) && entry.key.layout < NUM_VERTEX_LAYOUTS
+				&& ( entry.key.raster & ~D3D12_KEY_RASTER_BITS ) == 0 && D3D12_KeyTarget( entry.key ).value == entry.key.target;
 			keys.push_back( entry );
 		}
 		numEntries += static_cast<int>( count );
@@ -392,6 +394,7 @@ std::vector<byte> idD3D12PipelineJournal::Write() const {
 			writer.Put( entry.key.stateBits );
 			writer.Put( entry.key.layout );
 			writer.Put( entry.key.raster );
+			writer.Put( entry.key.target );
 			writer.Put( entry.bias.bias );
 			writer.Put( entry.bias.slope );
 		}

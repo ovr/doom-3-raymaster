@@ -72,6 +72,7 @@ idD3D12SceneTarget::idD3D12SceneTarget( const idD3D12Device & owner, idD3D12Grav
 	rtvUnorm = rtvPool.Allocate();
 	rtvSrgb = rtvPool.Allocate();
 	rtvHdr = rtvPool.Allocate();
+	rtvLights = rtvPool.Allocate();
 	for ( d3d12Descriptor_t & rtv : rtvGBuffer ) {
 		rtv = rtvPool.Allocate();
 	}
@@ -89,7 +90,7 @@ void idD3D12SceneTarget::Create( int newWidth, int newHeight, UINT sampleCount )
 		}
 		surface.state = {};
 	};
-	for ( surface_t * surface : { &color, &depth, &resolved, &hdrColor, &hdrResolved } ) {
+	for ( surface_t * surface : { &color, &depth, &resolved, &hdrColor, &hdrResolved, &lights } ) {
 		bury( *surface );
 	}
 	std::ranges::for_each( gbuffer, bury );
@@ -169,6 +170,28 @@ void idD3D12SceneTarget::ClearGBuffer( idD3D12Barriers & barriers, ID3D12Graphic
 	for ( const D3D12_CPU_DESCRIPTOR_HANDLE rtv : GBufferRtvs() ) {
 		list.ClearRenderTargetView( rtv, CLEAR_COLOR, 1, &rect );
 	}
+}
+
+// Not cleared here: BeginTracedLights clears the rectangle it draws.
+bool idD3D12SceneTarget::EnsureLights() {
+	if ( lights.resource ) {
+		return true;
+	}
+	CreateColor( lights, d3d12TargetId_t::HDR_FORMAT, samples, true, L"doom3 light target" );
+	if ( !lights.resource ) {
+		return false;
+	}
+	D3D12_RENDER_TARGET_VIEW_DESC view = {};
+	view.Format = d3d12TargetId_t::HDR_FORMAT;
+	view.ViewDimension = ( samples > 1 ) ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
+	device.Get().CreateRenderTargetView( lights.resource.Get(), &view, rtvPool.Cpu( rtvLights ) );
+	return true;
+}
+
+void idD3D12SceneTarget::ClearLights( idD3D12Barriers & barriers, ID3D12GraphicsCommandList4 & list, const D3D12_RECT & rect ) {
+	barriers.Transition( *lights.resource.Get(), lights.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	barriers.Flush();
+	list.ClearRenderTargetView( rtvPool.Cpu( rtvLights ), CLEAR_COLOR, 1, &rect );
 }
 
 void idD3D12SceneTarget::CreateColor( surface_t & surface, DXGI_FORMAT format, UINT sampleCount, bool renderTarget, const wchar_t * name ) {

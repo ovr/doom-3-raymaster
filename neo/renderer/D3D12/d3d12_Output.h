@@ -16,7 +16,8 @@
 // the screen, so the rectangles of shared code are used as they are and only the present blit flips rows.
 // Colour and depth are TYPELESS (UNORM + SRGB render target views, an R24 depth shader view); MSAA adds a resolve texture.
 // The HDR scene (R13) is a second colour surface of RGBA16F with the same depth, made at its first phase; the
-// G-buffer (R14) four more, d3d12TargetId_t::GBUFFER_FORMATS, made at the first BeginGBuffer.
+// G-buffer (R14) four more, d3d12TargetId_t::GBUFFER_FORMATS, made at the first BeginGBuffer; the light target
+// (R16) one more of RGBA16F, made at the first BeginTracedLights.
 class idD3D12SceneTarget {
 public:
 	struct surface_t {
@@ -37,6 +38,13 @@ public:
 	[[nodiscard]] std::array<D3D12_CPU_DESCRIPTOR_HANDLE, GBUFFER_TARGETS>	GBufferRtvs() const;
 	// Every target to zero inside rect, which lies inside the scene; leaves them in RENDER_TARGET.
 	void							ClearGBuffer( idD3D12Barriers & barriers, ID3D12GraphicsCommandList4 & list, const D3D12_RECT & rect );
+	// The light target when it is missing; false when it could not be made (a lost device).
+	[[nodiscard]] bool				EnsureLights();
+	[[nodiscard]] surface_t &		Lights() { return lights; }
+	// The HDR scene and the light target, d3d12TargetId_t::Lights.
+	[[nodiscard]] std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2>	LightsRtvs() const { return { Rtv( false, true ), rtvPool.Cpu( rtvLights ) }; }
+	// The light target to zero inside rect, which lies inside the scene; leaves it in RENDER_TARGET.
+	void							ClearLights( idD3D12Barriers & barriers, ID3D12GraphicsCommandList4 & list, const D3D12_RECT & rect );
 	[[nodiscard]] d3d12TargetId_t	Target( bool srgb, bool hdr = false ) const { return d3d12TargetId_t::Of( srgb, samples, hdr ); }
 	[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE	Rtv( bool srgb, bool hdr = false ) const {
 		return rtvPool.Cpu( hdr ? rtvHdr : ( srgb ? rtvSrgb : rtvUnorm ) );
@@ -64,7 +72,8 @@ private:
 	surface_t						color, depth, resolved;
 	surface_t						hdrColor, hdrResolved;	// R13: none until EnsureHdr
 	std::array<surface_t, GBUFFER_TARGETS>	gbuffer;		// R14: none until EnsureGBuffer
-	d3d12Descriptor_t				rtvUnorm, rtvSrgb, rtvHdr, dsv;	// stable: Create rewrites the views, the SRVs are new
+	surface_t						lights;					// R16: none until EnsureLights
+	d3d12Descriptor_t				rtvUnorm, rtvSrgb, rtvHdr, rtvLights, dsv;	// stable: Create rewrites the views, the SRVs are new
 	std::array<d3d12Descriptor_t, GBUFFER_TARGETS>	rtvGBuffer;
 	int								width = 0;
 	int								height = 0;

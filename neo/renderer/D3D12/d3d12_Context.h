@@ -119,6 +119,9 @@ public:
 	// R14, in the HDR scene's linear phase: the viewport of the G-buffer cleared, then the draws go there.
 	[[nodiscard]] bool				BeginGBuffer( const renderRect_t & viewport );
 	void							EndGBuffer();
+	// R16, in the HDR scene's linear phase: rect of the light target cleared, then the draws go to the scene and to it.
+	[[nodiscard]] bool				BeginTracedLights( const renderRect_t & rect );
+	void							EndTracedLights();
 	// After the resolve: one target of the G-buffer over viewport of the output (r_gbufferDebug).
 	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport );
 	// R15, in a frame: ends the pass; an applied update builds the acceleration structures.
@@ -179,6 +182,8 @@ private:
 	void							Retire( uint64 waitedFence );	// ring chunks and graves up to an explicitly waited fence
 	// The scene, resolved, into the back buffer through the present blit; leaves it in RENDER_TARGET.
 	void							BlitToBackBuffer( idD3D12SwapChain::backBuffer_t & back );
+	// The part of a rectangle of shared code inside the scene; nullopt when nothing of it is.
+	[[nodiscard]] std::optional<D3D12_RECT>	SceneRect( const renderRect_t & rect ) const;
 	void							EndFrameStats();	// at Present: the counters of the frame into lastFrame
 	void							SavePipelines( bool withLibrary );	// the journal when it changed; the library too
 
