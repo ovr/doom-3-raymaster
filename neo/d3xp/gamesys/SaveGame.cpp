@@ -1413,6 +1413,8 @@ void idRestoreGame::ReadRenderLight( renderLight_t &renderLight ) {
 
 	ReadVec3( renderLight.lightRadius );
 	ReadVec3( renderLight.lightCenter );
+	// not in the save: idLight takes it from its spawn args again, every other light has the default size
+	renderLight.emitterRadius = 0.0f;
 
 	ReadVec3( renderLight.target );
 	ReadVec3( renderLight.right );

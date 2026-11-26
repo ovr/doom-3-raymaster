@@ -55,5 +55,6 @@ struct rayTracingSettings_t {
 	rtDebug_t			rtDebug = rtDebug_t::NONE;	// with scene
 	rtReflectionSettings_t	reflection;
 	float				gloss = 1.0f;		// r_gbufferGloss: sqrt( specular luminance ) times this is the gloss
+	float				lightSize = 1.0f;	// r_rtLightSize: scales every light's emitter; 0 = point lights
 	int					frameCount = 0;		// the front end's frame: the motion is against the frame before
 };

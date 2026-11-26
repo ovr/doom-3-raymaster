@@ -1215,7 +1215,8 @@ TEST( Interp_LightShapeMatches ) {
 	moved.lightId = 7;
 	moved.suppressLightInViewID = 2;
 	moved.viewAttachedID = 3;
-	CHECK( R_LightShapeMatches( from, moved, false ), "pose, shader parms, shadow flags, ids" );
+	moved.emitterRadius = 6.0f;
+	CHECK( R_LightShapeMatches( from, moved, false ), "pose, shader parms, shadow flags, ids, the emitter's size" );
 	CHECK( R_LightShapeMatches( from, from, false ), "no change" );
 
 	// every change of the volume or the shader snaps

@@ -452,6 +452,23 @@ void R_DeriveLightData( idRenderLightLocal * light, const idVec3 & origin, const
 
 /*
 =================
+R_LightEmitterRadius
+=================
+*/
+float R_LightEmitterRadius( const idRenderLightLocal & light, const float scale ) {
+	const renderLight_t & parms = light.parms;
+	const bool radial = parms.pointLight || parms.parallel;
+	const float reach = radial ? Max( parms.lightRadius.x, Max( parms.lightRadius.y, parms.lightRadius.z ) ) : parms.target.Length();
+	float radius = GpuScene_EmitterRadius( parms.emitterRadius, reach, scale );
+	if ( parms.parallel && reach > 0.0f ) {
+		// its origin is faked far away: the disk grows with the distance, so the penumbra is that of a light at its reach
+		radius *= ( light.globalLightOrigin - parms.origin ).Length() / reach;
+	}
+	return radius;
+}
+
+/*
+=================
 R_DeriveLightData
 
 Fills everything in based on light->parms

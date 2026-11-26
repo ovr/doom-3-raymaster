@@ -11,7 +11,8 @@
 	  16   project[4]       world planes: S, T and Q of the projection (texture matrix baked in), the falloff's S
 	  80   color            r_lightScale times the stage's colour, gamma
 	  96   boundsMin, Max   xyz
-	  128  projection, falloff, flags, unused: views of 2D textures, gpuSceneLight_t::LIGHT_*
+	  128  projection, falloff, flags: views of 2D textures, gpuSceneLight_t::LIGHT_*
+	  140  emitterRadius    of the disk at origin that emits, 0 a point
 
 	A light reaches a point inside its bounds, its projection's [0, 1] square in front of it and its falloff's [0, 1]
 	(the raster draws only what lies in the light's volume). Of those, the first maxLights that add light are taken,
@@ -37,6 +38,7 @@ struct RtLight {
 	uint	projection;
 	uint	falloff;
 	uint	flags;
+	float	radius;
 };
 
 // What lights a hit.
@@ -65,6 +67,7 @@ RtLight RtLoadLight( uint lights, uint index ) {
 	light.projection = views.x;
 	light.falloff = views.y;
 	light.flags = views.z;
+	light.radius = asfloat( buffer.Load( at + 140 ) );
 	return light;
 }
 

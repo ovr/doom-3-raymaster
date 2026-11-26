@@ -356,6 +356,8 @@ struct viewLight_t {
 	const idMaterial *		lightShader;				// light shader used by backend
 	const float	*			shaderRegisters;			// shader registers used by backend
 	idImage *				falloffImage;				// falloff image used by backend
+	float					emitterRadius;				// R_LightEmitterRadius: the disk a ray traced shadow samples
+	bool					castsShadows;				// the lightDef's LightCastsShadows
 
 	drawSurf_t *			globalShadows;				// shadow everything
 	drawSurf_t *			localInteractions;			// don't get local shadows
@@ -1078,6 +1080,8 @@ void R_FreeEntityDefFadedDecals( idRenderEntityLocal *def, int time );
 void R_DeriveLightData( const renderLight_t & parms, const idVec3 & origin, const idMat3 & axis, lightPose_t & pose );
 // the same into the light's derived data; at parms.origin and parms.axis it gives the bits of R_CreateLightRefs
 void R_DeriveLightData( idRenderLightLocal * light, const idVec3 & origin, const idMat3 & axis );
+// the radius of the disk at globalLightOrigin that emits, for the ray traced shadows; scale is r_rtLightSize
+float R_LightEmitterRadius( const idRenderLightLocal & light, float scale );
 void R_CreateLightRefs( idRenderLightLocal *light );
 void R_FreeLightDefDerivedData( idRenderLightLocal *light );
 
