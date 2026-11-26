@@ -49,7 +49,7 @@ struct rtReflectionSettings_t {
 };
 
 struct rayTracingSettings_t {
-	bool				gbuffer = false;	// the main view writes the G-buffer: a consumer is on, caps.gbuffer, HDR
+	bool				gbuffer = false;	// the main view writes the G-buffer: a consumer is on, HDR
 	bool				scene = false;		// the main view gathers the GPU scene: a consumer is on, caps.rayTracing, HDR
 	gbufferDebug_t		gbufferDebug = gbufferDebug_t::NONE;
 	rtDebug_t			rtDebug = rtDebug_t::NONE;	// with scene

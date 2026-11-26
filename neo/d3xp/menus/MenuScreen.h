@@ -1197,7 +1197,6 @@ public:
 			SYSTEM_FIELD_TONEMAP,
 			SYSTEM_FIELD_COLORLOOK,
 			SYSTEM_FIELD_VOLUME,
-			SYSTEM_FIELD_RENDERAPI,
 			MAX_SYSTEM_FIELDS
 		};
 
@@ -1233,7 +1232,6 @@ public:
 		int originalTonemap;
 		int originalColorLook;
 		float originalVolume;
-		idStr originalRenderApi;	// the one this run draws with: the cvar is read once at startup
 
 		idList<vidMode_t>			modeList;
 	};

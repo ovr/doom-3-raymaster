@@ -277,7 +277,7 @@ void idD3D12SwapChain::AcquireBuffers() {
 	}
 }
 
-// DXGI has no adaptive vsync: ADAPTIVE presents like VSYNC (caps.adaptiveSync is false).
+// DXGI has no adaptive vsync: ADAPTIVE presents like VSYNC.
 presentResult_t idD3D12SwapChain::Present( presentMode_t mode ) {
 	const bool immediate = ( mode == presentMode_t::IMMEDIATE );
 	const UINT presentFlags = ( immediate && ( flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING ) != 0 ) ? DXGI_PRESENT_ALLOW_TEARING : 0;

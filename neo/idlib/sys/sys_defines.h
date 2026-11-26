@@ -55,8 +55,6 @@ If you have questions concerning this license or the applicable additional terms
 #error Only 64-bit Windows (x64) is supported
 #endif
 
-#define ID_OPENGL
-
 /*
 ================================================================================================
 

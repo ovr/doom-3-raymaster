@@ -124,13 +124,12 @@ void idRenderProgManager::Init() {
 
 	builtinShaders.fill( -1 );
 	// the vertex-only programs after the others, as the stage and program indexes always were; the gbuffer
-	// ones last, so every other index is the same on each backend
-	const bool gbuffer = ( renderBackend != nullptr ) && renderBackend->Caps().gbuffer;
+	// ones last, so every index of id's programs stays what the PSO journals hold
 	enum class phase_t { FRAGMENT, VERTEX_ONLY, GBUFFER };
 	for ( const phase_t phase : { phase_t::FRAGMENT, phase_t::VERTEX_ONLY, phase_t::GBUFFER } ) {
 		for ( const renderProgDef_t & program : R_RenderProgs() ) {
 			const phase_t programPhase = program.gbuffer ? phase_t::GBUFFER : ( program.fragment ? phase_t::FRAGMENT : phase_t::VERTEX_ONLY );
-			if ( program.builtin == renderProgBuiltin_t::NONE || programPhase != phase || ( program.gbuffer && !gbuffer ) ) {
+			if ( program.builtin == renderProgBuiltin_t::NONE || programPhase != phase ) {
 				continue;
 			}
 			LoadBuiltin( program, false );
@@ -338,7 +337,7 @@ int	 idRenderProgManager::FindGLSLProgram( const char * name, int vIndex, int fI
 idRenderProgManager::LoadGLSLProgram
 
 The name and the stage indexes are written only after the backend linked the program. A failed
-link in OpenGL is an error that leaves the entry without them, so no later search finds it.
+link is an error that leaves the entry without them, so no later search finds it.
 ================================================================================================
 */
 void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int vertexShaderIndex, const int fragmentShaderIndex ) {

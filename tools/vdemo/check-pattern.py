@@ -10,7 +10,7 @@ in neo/renderer/tr_backend_frame.cpp), so each PNG must equal the pattern rebuil
 of (32, 64, 96), 64x32 corners red (bottom left), green (bottom right), blue (top left) and white
 (top right), one yellow pixel at (100, 50) and a 128x64 centre rectangle whose red only was cleared
 to 255. Positions are in GL coordinates, origin at the bottom left; PNG row 0 is the top row.
---no-masked expects no centre rectangle, for a backend without caps.maskedColorClear.
+--no-masked expects no centre rectangle, for a backend that cannot clear part of the channels.
 
 Exit code 0 when every frame matches and there was at least one, 1 otherwise.
 """

@@ -69,7 +69,7 @@ enum renderLogMainBlock_t {
 
 /*
 ================================================
-GPU / CPU time per render pass and KHR_debug groups (r_pix), see RenderLog.cpp.
+GPU / CPU time per render pass and debug groups (r_pix), see RenderLog.cpp.
 These only call renderBackend on the render backend thread.
 ================================================
 */

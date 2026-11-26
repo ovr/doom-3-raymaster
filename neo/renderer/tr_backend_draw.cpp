@@ -2735,37 +2735,6 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool d
 
 /*
 ==================
-RB_ClearColorMasked
-
-Clears the colour channels the latched state writes, inside the latched scissor. A backend that
-cannot clear part of the channels gets a quad instead; that changes the program and the MVP.
-==================
-*/
-static void RB_ClearColorMasked( float r, float g, float b, float a ) {
-	if ( renderBackend->Caps().maskedColorClear ) {
-		renderBackend->Clear( true, false, false, 0, r, g, b, a );
-		return;
-	}
-
-	const uint64 stateBits = renderBackend->GetStateBits();
-	const int cullType = renderBackend->GetCull();
-
-	renderBackend->State( ( stateBits & ( GLS_COLORMASK | GLS_ALPHAMASK ) ) | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS );
-	renderBackend->Cull( CT_TWO_SIDED );
-	RB_SetMVP( renderMatrix_identity );
-	backEnd.currentSpace = nullptr;
-	renderProgManager.BindShader_Color();
-	RB_SetColor( r, g, b, a );
-	RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
-
-	renderBackend->State( stateBits );
-	if ( cullType != CULL_UNSET ) {
-		renderBackend->Cull( cullType );
-	}
-}
-
-/*
-==================
 RB_MotionBlur
 
 Experimental feature
@@ -2791,7 +2760,7 @@ void RB_MotionBlur() {
 	// clear the alpha buffer and draw only the hands + weapon into it so
 	// we can avoid blurring them
 	renderBackend->State( GLS_COLORMASK | GLS_DEPTHMASK );
-	RB_ClearColorMasked( 0, 0, 0, 1 );
+	renderBackend->Clear( true, false, false, 0, 0, 0, 0, 1 );		// only the alpha: GLS_COLORMASK
 	RB_SetColor( 0, 0, 0, 0 );
 	globalImages->blackImage->Bind( 0 );
 	backEnd.currentSpace = NULL;

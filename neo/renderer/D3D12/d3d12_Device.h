@@ -7,7 +7,7 @@
 #include "d3d12_Local.h"
 
 // d3d12.dll and dxgi.dll from System32 only, dxcompiler.dll and dxil.dll (which signs the DXIL) from the exe's folder
-// only; resolved by name, loaded only for r_renderApi d3d12.
+// only; resolved by name, loaded at Init.
 class idD3D12Library {
 public:
 	[[nodiscard]] static std::expected<idD3D12Library, idStr>	Load();

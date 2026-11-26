@@ -94,10 +94,8 @@ static void RB_DrawTestClearPattern() {
 	clearRect( 0, height - 32, 64, 32, 0, 0, 255 );
 	clearRect( width - 64, height - 32, 64, 32, 255, 255, 255 );
 	clearRect( 100, 50, 1, 1, 255, 255, 0 );
-	if ( renderBackend->Caps().maskedColorClear ) {
-		renderBackend->State( GLS_GREENMASK | GLS_BLUEMASK | GLS_ALPHAMASK );
-		clearRect( width / 2 - 64, height / 2 - 32, 128, 64, 255, 255, 255 );
-	}
+	renderBackend->State( GLS_GREENMASK | GLS_BLUEMASK | GLS_ALPHAMASK );
+	clearRect( width / 2 - 64, height / 2 - 32, 128, 64, 255, 255, 255 );
 }
 
 // R13: the 3D view the HDR scene resolves at: the last drawing one of a world before the first drawing GUI view.
@@ -201,8 +199,8 @@ static void RB_EndFrame() {
 }
 
 // The colour clear at the start of a frame, or of a stereo eye, which is always cleared (black by default).
-// r_clear 0 leaves a mono frame what the frame before left in the target, as the mono path always did:
-// GL's swap chain buffer, D3D12's scene target. r_singleArea leaves pixels unrendered, so it clears too.
+// r_clear 0 leaves a mono frame what the frame before left in the scene target, as the mono path always
+// did. r_singleArea leaves pixels unrendered, so it clears too.
 static void RB_SetBuffer( bool stereoEye ) {
 	const bool requested = r_clear.GetFloat() != 0.0f || idStr::Length( r_clear.GetString() ) != 1 || r_singleArea.GetBool();
 	if ( !requested && !stereoEye ) {
@@ -239,13 +237,12 @@ static void R_MakeStereoRenderImage( idImage *image ) {
 RB_SetStereoImageSampler
 
 A copy from the output leaves the texture linear and clamped to its edge whatever the image
-remembers, so the sampler is sent again every frame. The backend may bind the texture to do it.
+remembers, so the sampler is sent again every frame.
 ====================
 */
 static void RB_SetStereoImageSampler( idImage * image, textureFilter_t filter, textureRepeat_t repeat ) {
 	image->SetSamplerState( filter, repeat );
 	image->UpdateSampler();
-	renderBackend->ForgetTextureBindings();
 }
 
 /*
@@ -257,15 +254,6 @@ Renders the draw list twice, with slight modifications for left eye / right eye
 */
 void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds ) {
 	uint64 backEndStartTime = Sys_Microseconds();
-	
-	// If we are in a monoscopic context, this draws to the only buffer, and is
-	// the same as GL_BACK.  In a quad-buffer stereo context, this is necessary
-	// to prevent GL from forcing the rendering to go to both BACK_LEFT and
-	// BACK_RIGHT at a performance penalty.
-	// To allow stereo deghost processing, the views have to be copied to separate
-	// textures anyway, so there isn't any benefit to rendering to BACK_RIGHT for
-	// that eye.
-	renderBackend->SelectOutput( outputEye_t::LEFT );
 
 	// create the stereoRenderImage if we haven't already
 	static idImage * stereoRenderImages[2];
@@ -357,14 +345,6 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 
 	RB_SetMVP( renderMatrix_identity );
 
-	// If we are in quad-buffer pixel format but testing another 3D mode,
-	// make sure we draw to both eyes.  This is likely to be sub-optimal
-	// performance on most cards and drivers, but it is better than getting
-	// a confusing, half-ghosted view.
-	if ( renderSystem->GetStereo3DMode() != STEREO3D_QUAD_BUFFER ) {
-		renderBackend->SelectOutput( outputEye_t::BOTH );
-	}
-
 	renderBackend->State( GLS_DEPTHFUNC_ALWAYS );
 	renderBackend->Cull( CT_TWO_SIDED );
 
@@ -384,18 +364,6 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 	RB_SetColor( 1, 1, 1, 1 );
 
 	switch( renderSystem->GetStereo3DMode() ) {
-	case STEREO3D_QUAD_BUFFER:
-		renderBackend->SelectOutput( outputEye_t::RIGHT );
-		stereoRenderImages[1]->Bind( 0 );
-		stereoRenderImages[0]->Bind( 1 );
-		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
-
-		renderBackend->SelectOutput( outputEye_t::LEFT );
-		stereoRenderImages[1]->Bind( 1 );
-		stereoRenderImages[0]->Bind( 0 );
-		RB_DrawElementsWithCounters( &backEnd.unitSquareSurface );
-
-		break;
 	case STEREO3D_HDMI_720:
 		// HDMI 720P 3D
 		stereoRenderImages[1]->Bind( 0 );
@@ -502,7 +470,6 @@ void RB_StereoRenderExecuteBackEndCommands( const emptyCommand_t * const allCmds
 
 		// the image remembers linear, for the other stereo modes
 		stereoRenderImages[0]->SetSamplerState( TF_LINEAR, TR_CLAMP );
-		renderBackend->ForgetTextureBindings();
 
 		break;
 	}
@@ -552,11 +519,6 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 
 	// needed for editor rendering
 	renderBackend->SetDefaultState();
-
-	// If we have a stereo pixel format, this will draw to both
-	// the back left and back right buffers, which will have a
-	// performance penalty.
-	renderBackend->SelectOutput( outputEye_t::BOTH );
 
 	const drawSurfsCommand_t * const hdrView = RB_FindHdrMainView( cmds, 0 );
 	RB_BeginHdrScene( hdrView );

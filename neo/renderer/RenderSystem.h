@@ -49,14 +49,12 @@ enum stereo3DMode_t {
 
 	STEREO3D_INTERLACED,
 
-	// OpenGL quad buffer
-	STEREO3D_QUAD_BUFFER,
+	// 5 was OpenGL's quad buffer; stereoRender_enable keeps the numbers of the other modes
 
 	// two full resolution views stacked with a 30 pixel guard band
 	// On the PC this can be configured as a custom video timing, but
-	// it definitely isn't a consumer level task.  The quad_buffer
-	// support can handle 720P-3D with apropriate driver support.
-	STEREO3D_HDMI_720
+	// it definitely isn't a consumer level task.
+	STEREO3D_HDMI_720 = 6
 };
 
 typedef enum {
@@ -75,7 +73,7 @@ enum stereoDepthType_t {
 
 
 // The window and the display mode being run right now. What the graphics device can do is
-// renderBackend->Caps(); the OpenGL-only facts are glContext_t in renderer/OpenGL/gl_Backend.h.
+// renderBackend->Caps().
 struct screenConfig_t {
 	stereo3DMode_t		stereo3Dmode;
 	int					nativeScreenWidth; // this is the native screen width resolution of the renderer
@@ -145,7 +143,7 @@ public:
 	virtual					~idRenderSystem() {}
 
 	// set up cvars and basic data structures, but don't
-	// init OpenGL, so it can also be used for dedicated servers
+	// init the backend, so it can also be used for dedicated servers
 	virtual void			Init() = 0;
 
 	// only called before quitting
@@ -153,13 +151,12 @@ public:
 
 	virtual void			ResetGuiModels() = 0;
 
-	virtual void			InitOpenGL() = 0;
+	// the window and the device of the render backend on it
+	virtual void			InitBackend() = 0;
 
-	virtual void			ShutdownOpenGL() = 0;
+	virtual void			ShutdownBackend() = 0;
 
-	virtual bool			IsOpenGLRunning() const = 0;
-	// The r_renderApi the running backend was made from ("d3d12", "opengl"); "" before the first InitOpenGL.
-	[[nodiscard]] virtual const char *	GetRenderApi() const = 0;
+	virtual bool			IsBackendRunning() const = 0;
 	[[nodiscard]] virtual bool			HasHdrScene() const = 0;	// the backend has one and r_hdr is on: the tonemap settings apply
 
 	virtual bool			IsFullScreen() const = 0;
@@ -181,7 +178,6 @@ public:
 	virtual bool			IsStereoScopicRenderingSupported() const = 0;
 	virtual stereo3DMode_t	GetStereoScopicRenderingMode() const = 0;
 	virtual void			EnableStereoScopicRendering( const stereo3DMode_t mode ) const = 0;
-	virtual bool			HasQuadBufferSupport() const = 0;
 
 	// allocate a renderWorld to be used for drawing
 	virtual idRenderWorld *	AllocRenderWorld() = 0;

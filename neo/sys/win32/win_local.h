@@ -93,15 +93,10 @@ typedef struct Win32Vars_s {
 
 	WNDPROC			wndproc;
 
-	HINSTANCE		hinstOpenGL;	// HINSTANCE for the OpenGL library
-
 	int				desktopBitsPixel;
 	int				desktopWidth, desktopHeight;
 
 	int				cdsFullscreen;	// 0 = not fullscreen, otherwise monitor number
-
-	unsigned short	oldHardwareGamma[3][256];
-	// desktop gamma is saved here for restoration at exit
 
 	static idCVar	sys_arch;
 	static idCVar	sys_cpustring;

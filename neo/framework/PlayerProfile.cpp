@@ -150,7 +150,6 @@ bool idPlayerProfile::Serialize( idSerializer & ser ) {
 		cvarDict.Delete( "r_borderless" );
 		cvarDict.Delete( "r_multisamples" );
 		cvarDict.Delete( "com_engineHz" );
-		cvarDict.Delete( "r_renderApi" );
 		cvarSystem->SetCVarsFromDict( cvarDict );
 		common->StartupVariable( NULL );
 	}

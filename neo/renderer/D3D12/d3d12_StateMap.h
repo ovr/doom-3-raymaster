@@ -38,7 +38,7 @@ struct d3d12TargetId_t {
 };
 
 /*
-	samplerDesc_t → D3D12_SAMPLER_DESC, as GL_SetTexParameters sets it:
+	samplerDesc_t → D3D12_SAMPLER_DESC, as the removed OpenGL backend's GL_SetTexParameters set it:
 
 	  filter              D3D12 filter                                       MaxLOD
 	  NEAREST             MIN_MAG_MIP_POINT                                  0 (GL samples the base level)
@@ -59,7 +59,8 @@ struct d3d12TargetId_t {
 [[nodiscard]] D3D12_SAMPLER_DESC	D3D12_SamplerFor( uint64 packedSampler, bool anisoPointMip );
 
 /*
-	pipelineKey_t → the fixed-function state of a PSO, as gl_State.cpp and gl_Draw.cpp set GL:
+	pipelineKey_t → the fixed-function state of a PSO, as the removed OpenGL backend set GL
+	(git show d647250:neo/renderer/OpenGL/gl_State.cpp, gl_Draw.cpp):
 
 	  key                              D3D12
 	  SRCBLEND ONE + DSTBLEND ZERO     BlendEnable FALSE, as GL disables GL_BLEND
@@ -69,7 +70,7 @@ struct d3d12TargetId_t {
 	    EQUAL                          raster bit 6 (strict) makes it LESS
 	  DEPTHMASK                        DepthWriteMask ZERO
 	  POLYMODE_LINE                    FillMode WIREFRAME
-	  FUNC | front ops != 0            StencilEnable (GLS:316-322); read mask bits 28-35, write mask 0xFF, dynamic reference
+	  FUNC | front ops != 0            StencilEnable (GL's rule); read mask bits 28-35, write mask 0xFF, dynamic reference
 	  INCR DECR, INCR_WRAP DECR_WRAP   INCR_SAT DECR_SAT, INCR DECR
 	  SEPARATE_STENCIL                 BackFace from bits 48-56, else both faces the front ops
 	  raster cull 1, 2                 CULL_MODE_FRONT, BACK with FrontCounterClockwise FALSE: the vertex shader flips
