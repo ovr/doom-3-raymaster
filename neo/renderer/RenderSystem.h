@@ -158,6 +158,7 @@ public:
 
 	virtual bool			IsBackendRunning() const = 0;
 	[[nodiscard]] virtual bool			HasHdrScene() const = 0;	// the backend has one and r_hdr is on: the tonemap settings apply
+	[[nodiscard]] virtual bool			HasRayTracing() const = 0;	// an HDR scene on a GPU that traces: r_rayTracing applies
 
 	virtual bool			IsFullScreen() const = 0;
 	virtual int				GetWidth() const = 0;
