@@ -173,7 +173,8 @@ struct gpuSceneStats_t {
 	gpuSceneRefusal_t		refusal = gpuSceneRefusal_t::NONE;
 	bool					traceable = false;	// the structures of the update stand: the frame's passes and draws may trace
 	int						tlasInstances = 0;
-	int						waiting = 0;		// instances left out: their BLAS waits for the frame's build budget
+	int						waiting = 0;		// instances left out: their BLAS waits (the build budget, a buffer, a key)
+	int						lacking = 0;		// of those, what the last full update could not build either
 	int						blas = 0;			// static BLAS kept, one per distinct model
 	int						built = 0;			// static BLAS built this frame
 	int						compacted = 0;		// static BLAS copied at their compacted size this frame
@@ -267,6 +268,32 @@ struct gpuSceneRecovery_t {
 		}
 		awaiting = sceneId;
 		return true;
+	}
+};
+
+// Whether a frame traces every caster: not while what its scene's full update could not build still waits, for at
+// most LIMIT gathers. From then on those instances only lack their own shadows, as one that joins a delta does.
+struct gpuSceneSettle_t {
+	static constexpr uint32	LIMIT = 60;			// gathers after the full update
+	enum class state_t { TRACES, WAITS, GIVES_UP };	// GIVES_UP: the first update past the limit, which traces
+	uint32					fullSequence = 0;
+	bool					gaveUp = false;
+
+	// After an applied update; lacking its gpuSceneStats_t's.
+	[[nodiscard]] state_t	After( uint32 sequence, bool full, int lacking ) {
+		if ( full ) {
+			fullSequence = sequence;
+			gaveUp = false;
+		}
+		if ( lacking == 0 ) {
+			return state_t::TRACES;
+		}
+		if ( sequence - fullSequence < LIMIT ) {
+			return state_t::WAITS;
+		}
+		const bool first = !gaveUp;
+		gaveUp = true;
+		return first ? state_t::GIVES_UP : state_t::TRACES;
 	}
 };
 
@@ -406,5 +433,6 @@ private:
 };
 
 // The back end's half, on the main thread: textures and joints, then the backend; a failure asks for a full one.
-// True: the frame may trace the scene, and the casters of its last full update have their structures.
+// True: the frame may trace the scene, and the casters of its last full update have their structures (or gave up
+// waiting for them, gpuSceneSettle_t).
 [[nodiscard]] bool RB_UpdateGpuScene( gpuSceneFrame_t & frame );

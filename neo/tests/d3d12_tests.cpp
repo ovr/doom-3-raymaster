@@ -6204,6 +6204,22 @@ void Test_GpuSceneRecovery() {
 	Check( !recovery.Asks( 7, true, true ) && recovery.awaiting == 8, "which another scene's full update does not end" );
 }
 
+// What a full update could not build keeps the frames from tracing for LIMIT gathers at most, and the first one past
+// that says so once; a later full update starts again.
+void Test_GpuSceneSettle() {
+	using state_t = gpuSceneSettle_t::state_t;
+	gpuSceneSettle_t settle;
+	Check( settle.After( 10, true, 0 ) == state_t::TRACES && settle.After( 11, false, 0 ) == state_t::TRACES, "nothing lacking traces" );
+	Check( settle.After( 20, true, 2 ) == state_t::WAITS && settle.After( 21, false, 1 ) == state_t::WAITS, "what the full update lacks waits" );
+	Check( settle.After( 22, false, 0 ) == state_t::TRACES, "until it is built" );
+	Check( settle.After( 30, true, 1 ) == state_t::WAITS && settle.After( 30 + gpuSceneSettle_t::LIMIT - 1, false, 1 ) == state_t::WAITS,
+		"for LIMIT gathers" );
+	Check( settle.After( 30 + gpuSceneSettle_t::LIMIT + 1, false, 1 ) == state_t::GIVES_UP, "the first past them gives up" );
+	Check( settle.After( 30 + gpuSceneSettle_t::LIMIT + 2, false, 1 ) == state_t::TRACES, "once" );
+	Check( settle.After( 0xFFFFFFF0u, true, 1 ) == state_t::WAITS && settle.After( 4, false, 1 ) == state_t::WAITS, "a new full update, across the wrap" );
+	Check( settle.After( gpuSceneSettle_t::LIMIT - 16, false, 1 ) == state_t::GIVES_UP, "gives up again" );	// 0xFFFFFFF0 + LIMIT
+}
+
 // The joint block of the G-buffer's motion: the previous joints right after the drawn ones, so that the most joints
 // the skinned programs take still fit the rows gbuffer_skinned declares and the tail every joint buffer has.
 void Test_JointMotionLayout() {
@@ -6793,7 +6809,7 @@ void idTestRtScene::Trace() {
 }
 
 [[nodiscard]] idStr RtStats( const gpuSceneStats_t & stats ) {
-	return va( "tlas %d (%d waiting), blas %d (%d built, %d compacted, %llu bytes), skinned %d (%d verts)", stats.tlasInstances, stats.waiting,
+	return va( "tlas %d (%d waiting, %d lacking), blas %d (%d built, %d compacted, %llu bytes), skinned %d (%d verts)", stats.tlasInstances, stats.waiting, stats.lacking,
 		stats.blas, stats.built, stats.compacted, stats.blasBytes, stats.skinned, stats.skinnedVerts );
 }
 
@@ -6834,10 +6850,30 @@ void RtTlas( idTestGpu & gpu ) {
 	third.Write( 12, 0, 3, gpuSceneGeometry_t::GEO_OPAQUE );
 	third.AddRayScene();
 	third.Instance( 12, gpuSceneInstance_t::MASK_VISIBLE, 0x100, idVec3( 200.0f, 0.0f, 0.0f ) );
-	Check( scene.Apply( third, stats ) && stats.waiting == 1 && stats.tlasInstances == 3 && stats.blas == 2,
+	Check( scene.Apply( third, stats ) && stats.waiting == 1 && stats.lacking == 0 && stats.tlasInstances == 3 && stats.blas == 2,
 		va( "another model under a held key waits: %s", RtStats( stats ).c_str() ) );
 	scene.Trace();
 	scene.rays.CheckResults( "one waiting" );
+
+	// what a full update cannot build it lacks, until that is built or gone
+	const auto withHeldKey = [&]( uint32 sequence, bool full, bool collides ) {
+		rtTestFrame_t frame( sequence, full );
+		if ( full ) {
+			frame.WriteQuads();
+			frame.Write( 12, 0, 3, gpuSceneGeometry_t::GEO_OPAQUE );
+		}
+		frame.AddRayScene();
+		if ( collides ) {
+			frame.Instance( 12, gpuSceneInstance_t::MASK_VISIBLE, 0x100, idVec3( 200.0f, 0.0f, 0.0f ) );
+		}
+		return scene.Apply( frame, stats );
+	};
+	Check( withHeldKey( 4, true, true ) && stats.waiting == 1 && stats.lacking == 1, va( "a full update lacks it: %s", RtStats( stats ).c_str() ) );
+	Check( withHeldKey( 5, false, true ) && stats.waiting == 1 && stats.lacking == 1, va( "and so do the deltas: %s", RtStats( stats ).c_str() ) );
+	Check( withHeldKey( 6, false, false ) && stats.waiting == 0 && stats.lacking == 0, va( "until it is gone: %s", RtStats( stats ).c_str() ) );
+	Check( withHeldKey( 7, false, true ) && stats.waiting == 1 && stats.lacking == 0, va( "back in a delta, it only waits: %s", RtStats( stats ).c_str() ) );
+	scene.Trace();
+	scene.rays.CheckResults( "lacking" );
 	CheckNoLayerErrors( gpu );
 }
 
@@ -6922,7 +6958,7 @@ void RtBlasCache( idTestGpu & gpu ) {
 		frame.Instance( 13, gpuSceneInstance_t::MASK_VISIBLE, 0x130, idVec3( 400.0f, 0.0f, 0.0f ) );
 		return batches.Apply( frame, stats );
 	};
-	Check( delta( 2, true ) && stats.built == 1 && stats.waiting == 1 && stats.tlasInstances == 5,
+	Check( delta( 2, true ) && stats.built == 1 && stats.waiting == 1 && stats.lacking == 0 && stats.tlasInstances == 5,
 		va( "a delta builds up to the budget, the rest waits: %s", RtStats( stats ).c_str() ) );
 	Check( delta( 3, false ) && stats.built == 1 && stats.waiting == 0 && stats.tlasInstances == 6 && stats.blas == 5,
 		va( "and is built by the next: %s", RtStats( stats ).c_str() ) );
@@ -11345,6 +11381,7 @@ constexpr testCase_t TESTS[] = {
 	{ "GpuScene_Sides", Test_GpuSceneSides },
 	{ "GpuScene_Lights", Test_GpuSceneLights },
 	{ "GpuScene_Recovery", Test_GpuSceneRecovery },
+	{ "GpuScene_Settle", Test_GpuSceneSettle },
 	{ "GpuScene_ShadowLatch", Test_GpuSceneShadowLatch },
 	{ "Warp_GpuScene", OnWarp<GpuScene> },
 	{ "Warp_RtTlas", OnWarp<RtTlas> },

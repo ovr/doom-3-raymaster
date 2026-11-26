@@ -138,8 +138,8 @@ struct rtShadowApplyParms_t {
 	float							show;		// 0, or the scale of the picture that takes the scene's place
 	uint32							reachSrv;
 	uint32							lengthSrv;
-	float							lengthScale;	// 0, or 1 over the frames a history may hold: the picture is its length
-	uint32							unused;
+	float							lengthScale;	// 1 over the frames a history may hold, 0 without one
+	uint32							lengthView;		// 1: the picture is the history's length
 };
 static_assert( sizeof( rtShadowApplyParms_t ) == 32 );
 
@@ -567,9 +567,11 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 		heldColor = history.Use( rtHistorySlot_t::REFLECTION_COLOR, format, width, height, view );
 		heldAux = history.Use( rtHistorySlot_t::REFLECTION_AUX, MOMENTS_FORMAT, width, height, view );
 	}
-	// a frame that cannot be traced takes what the history holds of its glossy pixels
+	// what a surface reflects depends on where the eye is: the reference's plain average starts again when it moves
+	const bool restart = settings.reference && memcmp( view.worldToClip, view.prevWorldToClip, sizeof( view.worldToClip ) ) != 0;
+	// a frame that cannot be traced takes what the history holds of its glossy pixels, and without one adds nothing
 	const bool trace = Traceable( rt, gpuScene );
-	if ( !trace && ( heldColor.previous == nullptr || heldAux.previous == nullptr ) ) {
+	if ( !trace && ( restart || heldColor.previous == nullptr || heldAux.previous == nullptr ) ) {
 		return;
 	}
 	guideUses_t frame;
@@ -582,8 +584,6 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 		frame = *guide;
 	}
 	const bool store = view.store && heldColor.next != nullptr && heldAux.next != nullptr;
-	// what a surface reflects depends on where the eye is: the reference's plain average starts again when it moves
-	const bool restart = settings.reference && memcmp( view.worldToClip, view.prevWorldToClip, sizeof( view.worldToClip ) ) != 0;
 	const bool read = !restart && frame.previous.IsValid() && heldColor.previous != nullptr && heldAux.previous != nullptr;
 
 	const uint32 sceneWidth = static_cast<uint32>( scene.Width() );
@@ -1076,7 +1076,9 @@ void idD3D12RtPasses::Shadows( idD3D12RenderGraph & graph, idD3D12SceneTarget & 
 	applyBase.first[0] = rect.x;
 	applyBase.first[1] = rect.y;
 	applyBase.show = picture ? preExposure : 0.0f;
+	// without a history (r_rtHistory 0, no filter) the length view shows a length of 0: black
 	applyBase.lengthScale = showLength ? 1.0f / static_cast<float>( Max( settings.maxHistory, 1 ) ) : 0.0f;
+	applyBase.lengthView = settings.showLength ? 1u : 0u;
 	std::vector<d3d12GraphUse_t> applyUses = { { ratio, d3d12GraphAccess_t::SRV }, { colorUse, d3d12GraphAccess_t::RTV, 0 } };
 	if ( left != ratio ) {
 		applyUses.push_back( { left, d3d12GraphAccess_t::SRV } );

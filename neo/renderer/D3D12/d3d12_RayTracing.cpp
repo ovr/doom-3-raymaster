@@ -296,6 +296,8 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		stats = lastStats;
 		return true;
 	}
+	// a full update whose build does not finish leaves its work to the next one
+	fullPending = fullPending || scene.LastStats().full;
 	valid = false;
 	stats = {};
 	builds++;
@@ -337,7 +339,18 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 	std::vector<uint32> skinnedOffsets( sceneInstances.size(), d3d12RtInstance_t::NOT_SKINNED );
 	// A full update builds every structure it lacks, so the frame traces all its casters; a delta up to the budget.
 	// The builds go in batches of the budget: one batch's run side by side, the next takes the same scratch.
-	const bool all = scene.LastStats().full;
+	const bool all = fullPending;
+	// what the full update left waiting, until it is built or gone: the frames lack casters they count on
+	std::set<uint64> stillLacking;
+	const auto wait = [&]( uint64 key ) {
+		stats.waiting++;
+		if ( all || lacking.contains( key ) ) {
+			stats.lacking++;
+			if ( key != 0 ) {
+				stillLacking.insert( key );
+			}
+		}
+	};
 	uint64 staticScratch = 0;		// of the build's new static BLAS
 	uint64 batchScratch = 0;		// of the batch being filled
 	uint64 batchRegion = 0;			// the largest batch
@@ -361,7 +374,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 			// skinned: this frame's vertices, a BLAS of its own
 			const d3d12Descriptor_t jointSrv = BufferSrv( instance.jointBuffer );
 			if ( instance.skinnedVerts == 0 || !jointSrv.IsValid() || buffers.Use( instance.jointBuffer ) == nullptr ) {
-				stats.waiting++;
+				wait( instance.blasKey );
 				continue;
 			}
 			const uint64 base = skinnedBytes;
@@ -404,7 +417,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 					BlasOpaque( records[g] ) };
 			}
 			if ( !same ) {
-				stats.waiting++;		// two models with one key: the second waits for the first to go
+				wait( instance.blasKey );		// two models with one key: the second waits for the first to go
 				continue;
 			}
 			found->second.lastUsed = builds;
@@ -412,7 +425,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 			continue;
 		}
 		if ( !all && staticScratch >= scratchBudget ) {
-			stats.waiting++;
+			wait( instance.blasKey );
 			continue;
 		}
 		blas_t entry;
@@ -431,7 +444,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 			L"doom3 rt blas", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
 		if ( !entry.data ) {
 			geometryDescs.resize( firstDesc );
-			stats.waiting++;
+			wait( instance.blasKey );
 			continue;
 		}
 		entry.state.current = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
@@ -538,6 +551,8 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		stats.blasBytes += entry.bytes;
 	}
 	stats.frameBytes = scratchCapacity + skinnedCapacity + skinnedBlasCapacity + tlasCapacity + tableCapacity;
+	lacking = std::move( stillLacking );
+	fullPending = false;
 	valid = !device.IsLost();
 	stats.traceable = valid;
 	lastStats = stats;

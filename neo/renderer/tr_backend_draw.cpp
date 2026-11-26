@@ -1796,22 +1796,15 @@ DRAW INTERACTIONS
 // Whether the main view traces this light's shadows: it casts some, and its interactions are interaction.vfp's.
 static bool RB_LightTracesShadows( const viewLight_t & vLight ) {
 	return backEnd.tracedShadows && R_LightTracesShadows( vLight.castsShadows, *vLight.lightShader )
-		&& ( vLight.localInteractions != NULL || vLight.globalInteractions != NULL );
+		&& ( vLight.localInteractions != nullptr || vLight.globalInteractions != nullptr );
 }
 
-/*
-==================
-RB_DrawTracedLights
-
-The opaque interactions of the lights whose shadows are traced, in one bracket (R16): each adds its light to the
-scene as if nothing stood in its way, and to the light target what a caster of the GPU scene takes of it (R17).
-The resolve then takes the second sum out of the first: one signal for all lights, whatever their number.
-False: nothing was drawn, the lights draw with their stencil shadows.
-==================
-*/
+// The traced lights' opaque interactions in one bracket (R16): the scene takes each light whole, the light target
+// what a caster of the GPU scene takes of it (R17), and the resolve takes the second sum out of the first.
+// False: nothing was drawn, the lights draw with their stencil shadows.
 static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 	bool any = false;
-	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != NULL && !any; vLight = vLight->next ) {
+	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != nullptr && !any; vLight = vLight->next ) {
 		any = RB_LightTracesShadows( *vLight );
 	}
 	const idScreenRect & v = backEnd.viewDef->viewport;
@@ -1831,7 +1824,7 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 	const rtShadowSettings_t & shadow = backEnd.viewDef->rayTracing.shadow;
 	tracedLight_t traced = {};
 	const int sequence = shadow.history ? static_cast<int>( backEnd.viewSequence & 0xFFFFu ) : 0;
-	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != nullptr; vLight = vLight->next ) {
 		if ( !RB_LightTracesShadows( *vLight ) ) {
 			continue;
 		}
@@ -1880,7 +1873,7 @@ static void RB_DrawInteractions() {
 	//
 	// for each light, perform shadowing and adding
 	//
-	for ( const viewLight_t * vLight = tracedAlone ? NULL : backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+	for ( const viewLight_t * vLight = tracedAlone ? nullptr : backEnd.viewDef->viewLights; vLight != nullptr; vLight = vLight->next ) {
 		// do fogging later
 		if ( vLight->lightShader->IsFogLight() ) {
 			continue;
@@ -1891,12 +1884,12 @@ static void RB_DrawInteractions() {
 
 		// a traced light has drawn its opaque interactions, shadows in them: its translucent ones are left
 		const bool drawn = traced && RB_LightTracesShadows( *vLight );
-		const drawSurf_t * const localInteractions = drawn ? NULL : vLight->localInteractions;
-		const drawSurf_t * const globalInteractions = drawn ? NULL : vLight->globalInteractions;
-		const drawSurf_t * const localShadows = drawn ? NULL : vLight->localShadows;
-		const drawSurf_t * const globalShadows = drawn ? NULL : vLight->globalShadows;
+		const drawSurf_t * const localInteractions = drawn ? nullptr : vLight->localInteractions;
+		const drawSurf_t * const globalInteractions = drawn ? nullptr : vLight->globalInteractions;
+		const drawSurf_t * const localShadows = drawn ? nullptr : vLight->localShadows;
+		const drawSurf_t * const globalShadows = drawn ? nullptr : vLight->globalShadows;
 
-		if ( localInteractions == NULL && globalInteractions == NULL && vLight->translucentInteractions == NULL ) {
+		if ( localInteractions == nullptr && globalInteractions == nullptr && vLight->translucentInteractions == nullptr ) {
 			continue;
 		}
 
@@ -1909,7 +1902,7 @@ static void RB_DrawInteractions() {
 		}
 
 		// only need to clear the stencil buffer and perform stencil testing if there are shadows
-		const bool performStencilTest = ( globalShadows != NULL || localShadows != NULL );
+		const bool performStencilTest = ( globalShadows != nullptr || localShadows != nullptr );
 
 		// mirror flips the sense of the stencil select, and I don't want to risk accidentally breaking it
 		// in the normal case, so simply disable the stencil select in the mirror case
@@ -1939,7 +1932,7 @@ static void RB_DrawInteractions() {
 			}
 		}
 
-		if ( globalShadows != NULL ) {
+		if ( globalShadows != nullptr ) {
 			renderLog.OpenMainBlock( MRB_STENCIL_SHADOWS );
 			renderLog.OpenBlock( "Global Light Shadows" );
 			RB_StencilShadowPass( globalShadows, vLight );
@@ -1947,7 +1940,7 @@ static void RB_DrawInteractions() {
 			renderLog.CloseMainBlock();
 		}
 
-		if ( localInteractions != NULL ) {
+		if ( localInteractions != nullptr ) {
 			renderLog.OpenMainBlock( MRB_LIGHT_INTERACTIONS );
 			renderLog.OpenBlock( "Local Light Interactions" );
 			RB_RenderInteractions( localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
@@ -1955,7 +1948,7 @@ static void RB_DrawInteractions() {
 			renderLog.CloseMainBlock();
 		}
 
-		if ( localShadows != NULL ) {
+		if ( localShadows != nullptr ) {
 			renderLog.OpenMainBlock( MRB_STENCIL_SHADOWS );
 			renderLog.OpenBlock( "Local Light Shadows" );
 			RB_StencilShadowPass( localShadows, vLight );
@@ -1963,7 +1956,7 @@ static void RB_DrawInteractions() {
 			renderLog.CloseMainBlock();
 		}
 
-		if ( globalInteractions != NULL ) {
+		if ( globalInteractions != nullptr ) {
 			renderLog.OpenMainBlock( MRB_LIGHT_INTERACTIONS );
 			renderLog.OpenBlock( "Global Light Interactions" );
 			RB_RenderInteractions( globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
@@ -1972,7 +1965,7 @@ static void RB_DrawInteractions() {
 		}
 
 
-		if ( vLight->translucentInteractions != NULL && !r_skipTranslucent.GetBool() ) {
+		if ( vLight->translucentInteractions != nullptr && !r_skipTranslucent.GetBool() ) {
 			renderLog.OpenMainBlock( MRB_TRANSLUCENT_INTERACTIONS );
 			renderLog.OpenBlock( "Translucent Interactions" );
 
