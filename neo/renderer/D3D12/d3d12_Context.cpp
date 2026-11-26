@@ -140,7 +140,9 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	hdr( device, *this, computeRootSignature, passes, samplers, srvPool ),
 	gpuScene( device, *this, graveyard, srvPool, barriers, uploader, textures ),
 	rayTracing( device, *this, graveyard, srvPool, barriers, uploader, buffers ),
-	rtPasses( device, computeRootSignature, passes, samplers, buffers ) {
+	rtPasses( device, computeRootSignature, passes, samplers, buffers, textures, barriers ) {
+	// the recorder is older than what it asks
+	recorder.SetTraceSource( [this] { return rtPasses.DrawResources( rayTracing, gpuScene ); } );
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -152,6 +154,7 @@ idD3D12Context::~idD3D12Context() {
 		WaitIdle();
 	}
 	SavePipelines( !device.IsLost() );
+	rtPasses.DestroyDefaults();
 	buffers.DestroyAll();
 	textures.DestroyAll();
 	shaders.DestroyAll();

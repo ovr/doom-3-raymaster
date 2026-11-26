@@ -93,6 +93,8 @@ public:
 	void	BindShader_MotionBlur() { BindShader_Builtin( renderProgBuiltin_t::MOTION_BLUR ); }
 	void	BindShader_GBuffer() { BindShader_Builtin( renderProgBuiltin_t::GBUFFER ); }
 	void	BindShader_GBufferSkinned() { BindShader_Builtin( renderProgBuiltin_t::GBUFFER_SKINNED ); }
+	void	BindShader_InteractionRt() { BindShader_Builtin( renderProgBuiltin_t::INTERACTION_RT ); }
+	void	BindShader_InteractionRtSkinned() { BindShader_Builtin( renderProgBuiltin_t::INTERACTION_RT_SKINNED ); }
 
 	// the joints buffer should only be bound for vertex programs that use joints
 	bool	ShaderUsesJoints() const { return vertexShaders[currentVertexShader].usesJoints; }

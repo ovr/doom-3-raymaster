@@ -135,6 +135,8 @@ d3d12StageReflection_t D3D12_ReflectStage( ID3D12ShaderReflection & reflection, 
 			result.usesJoints = true;
 		} else if ( bind.BindPoint == d3d12DrawResources_t::REGISTER ) {
 			ReadDrawResources( reflection, bind.Name, result );
+		} else if ( bind.BindPoint == d3d12TraceResources_t::REGISTER && stage == shaderStageType_t::FRAGMENT ) {
+			result.traces = true;
 		}
 	}
 	if ( stage == shaderStageType_t::COMPUTE ) {

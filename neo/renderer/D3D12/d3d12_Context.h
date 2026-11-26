@@ -31,7 +31,7 @@
 	      ├── idD3D12TextureStore             textureHandle_t → a committed texture + SRV, the black fallbacks
 	      ├── idD3D12HlslCompiler             DXC over base/shaders/*.hlsl, the DXIL cache in shaders/cache
 	      ├── idD3D12ShaderLibrary            shaderHandle_t, programHandle_t → DXIL stages, their PSOs
-	      ├── idD3D12RootSignature            the 5 parameters of every PSO
+	      ├── idD3D12RootSignature            b0 to b4 of every PSO
 	      ├── idD3D12ComputeRootSignature     b0 and b1 of the compute passes
 	      ├── idD3D12PipelineJournal          every key drawn with, by program name: renderprogs/dxbc/pipelines.journal
 	      ├── optional<idD3D12PipelineLibrary>  ID3D12PipelineLibrary1 over renderprogs/dxbc/pipelines.bin

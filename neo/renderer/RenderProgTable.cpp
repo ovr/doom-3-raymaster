@@ -36,7 +36,7 @@ namespace {
 
 using enum renderProgBuiltin_t;
 
-// The builtins in the order Init creates them (then the vertex-only programs, then the gbuffer ones).
+// The builtins in the order Init creates them (then the vertex-only programs, then our own).
 constexpr renderProgDef_t renderProgs[] = {
 	{ .name = "gui", .builtin = GUI },
 	{ .name = "color", .builtin = COLOR },
@@ -63,7 +63,8 @@ constexpr renderProgDef_t renderProgs[] = {
 	{ .name = "bink_gui", .builtin = BINK_GUI },
 	{ .name = "stereoInterlace", .builtin = STEREO_INTERLACE },
 	{ .name = "motionBlur", .builtin = MOTION_BLUR },
-	{ .name = "gbuffer", .builtin = GBUFFER, .skinned = GBUFFER_SKINNED, .gbuffer = true },
+	{ .name = "gbuffer", .builtin = GBUFFER, .skinned = GBUFFER_SKINNED, .own = true },
+	{ .name = "interaction_rt", .builtin = INTERACTION_RT, .skinned = INTERACTION_RT_SKINNED, .own = true, .traces = true },
 
 	// the programs retail materials name
 	{ .name = "heatHaze", .optionalSkinning = true },
@@ -154,7 +155,10 @@ constexpr const char * renderParmNames[] = {
 	"rpPrevMVPmatrixZ",
 	"rpPrevMVPmatrixW",
 	"rpJointMotion",
-	"rpGBufferParms"
+	"rpGBufferParms",
+
+	"rpRtLight",
+	"rpRtShadow"
 };
 static_assert( std::size( renderParmNames ) == RENDERPARM_TOTAL );
 

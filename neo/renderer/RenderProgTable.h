@@ -44,7 +44,7 @@ If you have questions concerning this license or the applicable additional terms
 
 	Materials name programs too ("heatHaze.vfp"), case ignored. A name the table lacks, or a stage it
 	does not list, is a stage without a shader, and its program fails to link as it did in GL.
-	Init makes the gbuffer rows after every other builtin.
+	Init makes our own rows (the gbuffer, the traced interactions) after every builtin of id's.
 */
 
 enum class renderProgBuiltin_t : uint8 {
@@ -86,6 +86,8 @@ enum class renderProgBuiltin_t : uint8 {
 	MOTION_BLUR,
 	GBUFFER,
 	GBUFFER_SKINNED,
+	INTERACTION_RT,
+	INTERACTION_RT_SKINNED,
 
 	COUNT,
 	NONE = 0xFF
@@ -97,7 +99,8 @@ struct renderProgDef_t {
 	renderProgBuiltin_t	skinned = renderProgBuiltin_t::NONE;		// <name>_skinned; NONE: no skinned variant
 	bool				fragment = true;							// false: vertex only (shadow volumes)
 	bool				optionalSkinning = false;					// skins only when rpEnableSkinning is set
-	bool				gbuffer = false;							// ours, made last: the game data has no such program
+	bool				own = false;								// ours, made last: the game data has no such program
+	bool				traces = false;								// its pixel stage reads the GPU scene (R15) through b4
 };
 
 // A stage name of the table: its program and whether it is the skinned variant.

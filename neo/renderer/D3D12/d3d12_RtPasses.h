@@ -15,6 +15,9 @@
 	The rays read the scene through ResourceDescriptorHeap (include/raytracing.hlsli): the TLAS, the records, the
 	instance table, the static and the skinned vertices, the static indexes, the lights, the records' and lights'
 	textures (made readable first) and two linear samplers, repeating and clamped, held for the context's life.
+
+	A render program that traces (the program table's `traces`) reads the same through b4 in its pixel stage:
+	DrawResources is what the draw recorder asks per such draw. Its noise is renderer/BlueNoise.h as a texture.
 */
 
 #include <array>
@@ -27,14 +30,21 @@
 class idD3D12InternalPasses;
 class idD3D12SceneTarget;
 class idD3D12SamplerHeap;
+class idD3D12TextureStore;
 
 class idD3D12RtPasses {
 public:
 									idD3D12RtPasses( const idD3D12Device & device, const idD3D12ComputeRootSignature & computeRoot,
-										idD3D12InternalPasses & passes, idD3D12SamplerHeap & samplers, idD3D12BufferStore & buffers );
+										idD3D12InternalPasses & passes, idD3D12SamplerHeap & samplers, idD3D12BufferStore & buffers,
+										idD3D12TextureStore & textures, idD3D12Barriers & barriers );
 									idD3D12RtPasses( const idD3D12RtPasses & ) = delete;
 	idD3D12RtPasses &				operator=( const idD3D12RtPasses & ) = delete;
-	void							CreateDefaults();
+	void							CreateDefaults();	// the samplers and the noise texture
+	void							DestroyDefaults();	// the noise texture, before the texture store's DestroyAll
+
+	// b4 of a draw that traces: the heap indices of what the last build holds, their transitions queued for the
+	// open list. All zero (nothing valid) while the last build cannot be traced.
+	[[nodiscard]] d3d12TraceResources_t	DrawResources( idD3D12RayTracing & rt, idD3D12GpuScene & gpuScene );
 
 	// After the resolve: view's rays over viewport of the output, executed. Nothing while the last build is not
 	// valid or the device is lost.
@@ -58,6 +68,11 @@ private:
 	idD3D12InternalPasses &			passes;
 	idD3D12SamplerHeap &			samplers;
 	idD3D12BufferStore &			buffers;
+	idD3D12TextureStore &			textures;
+	idD3D12Barriers &				barriers;
+	textureHandle_t					noise = textureHandle_t::NONE;
+	// scene id, sequence and the store's state changes at the last MakeTexturesReadable: a draw asks per draw
+	std::optional<std::array<uint64, 3>>	readable;
 	std::array<idComPtr<ID3D12PipelineState>, 4>	debug;		// by log2 of the scene's samples, on first use
 	std::array<idComPtr<ID3D12PipelineState>, 8>	composite;	// by add, then log2 of the samples
 	std::array<d3d12ComputePipeline_t, 2>	reflect;		// by multisampled

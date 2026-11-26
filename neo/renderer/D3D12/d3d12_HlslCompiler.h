@@ -11,7 +11,8 @@
 	  "interaction_skinned.vfp"  → shaders/interaction_skinned.hlsl, or shaders/interaction.hlsl with SKINNED=1
 
 	A stage's parms are the members of its cbuffer, b0 for the VS and b1 for the PS: float4 each, named
-	like renderParm_t ("rpMVPmatrixX", "rpUser0"), packed in their order. b2 is the joint block.
+	like renderParm_t ("rpMVPmatrixX", "rpUser0"), packed in their order. b2 is the joint block, b3 the draw's
+	bindless resources, b4 what the pixel stage of a tracing program reads of the GPU scene.
 	DXIL is kept in fs_savepath/shaders/cache, keyed by the preprocessed text, the profile and DXC's version.
 
 	BuildAll, a batch: preprocessing, the cache and the reflection run on the calling thread, the DXC runs
@@ -43,8 +44,9 @@ struct d3d12HlslEntry_t {
 [[nodiscard]] std::expected<std::vector<d3d12HlslEntry_t>, idStr>	D3D12_HlslEntries( const idD3D12Library & library,
 																		const d3d12HlslSource_t & plain, const d3d12ShaderReader_t & reader );
 
-// RENDER_PARMS: the stage's cbuffer holds renderParm_t float4s (a render program); ANY: the backend's own passes.
-enum class hlslParms_t { RENDER_PARMS, ANY };
+// RENDER_PARMS: the stage's cbuffer holds renderParm_t float4s (a render program); TRACING: such a program whose
+// pixel stage may also read b4 (include/rtDraw.hlsli), a row of the table that traces; ANY: the backend's own passes.
+enum class hlslParms_t { RENDER_PARMS, TRACING, ANY };
 
 // fileSystem: a loose file under base/ or one of the resource files.
 [[nodiscard]] d3d12ShaderReader_t				D3D12_GameDataReader();

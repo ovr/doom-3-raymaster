@@ -7,9 +7,11 @@
 #include <bit>
 
 #include "../tr_local.h"
+#include "../BlueNoise.h"
 #include "d3d12_InternalPasses.h"
 #include "d3d12_Output.h"
 #include "d3d12_RtPasses.h"
+#include "d3d12_Textures.h"
 
 namespace {
 
@@ -103,17 +105,34 @@ struct rtSceneImports_t {
 }	// namespace
 
 idD3D12RtPasses::idD3D12RtPasses( const idD3D12Device & owner, const idD3D12ComputeRootSignature & root, idD3D12InternalPasses & internalPasses,
-	idD3D12SamplerHeap & samplerHeap, idD3D12BufferStore & bufferStore ) :
+	idD3D12SamplerHeap & samplerHeap, idD3D12BufferStore & bufferStore, idD3D12TextureStore & textureStore, idD3D12Barriers & batch ) :
 	device( owner ),
 	computeRoot( root ),
 	passes( internalPasses ),
 	samplers( samplerHeap ),
-	buffers( bufferStore ) {
+	buffers( bufferStore ),
+	textures( textureStore ),
+	barriers( batch ) {
 }
 
+// The noise is two bytes a texel, which FMT_L8A8 shows as ( x, x, x, w ): rtNoise.hlsli loads .xw.
 void idD3D12RtPasses::CreateDefaults() {
 	linearSampler = samplers.Acquire( D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::REPEAT, 1.0f, 0.0f } ) );
 	clampSampler = samplers.Acquire( D3D12_PackSampler( { samplerFilter_t::LINEAR_MIP_LINEAR, samplerAddress_t::CLAMP, 1.0f, 0.0f } ) );
+	idImageOpts opts;
+	opts.textureType = TT_2D;
+	opts.format = FMT_L8A8;
+	opts.colorFormat = CFM_DEFAULT;
+	opts.width = BLUE_NOISE_SIZE;
+	opts.height = BLUE_NOISE_SIZE;
+	opts.numLevels = 1;
+	noise = textures.Create( opts, textureRole_t::SAMPLED, { samplerFilter_t::NEAREST, samplerAddress_t::REPEAT, 1.0f, 0.0f }, "_rtBlueNoise" );
+	textures.Upload( noise, 0, 0, BLUE_NOISE_SIZE, BLUE_NOISE_SIZE, blueNoise, BLUE_NOISE_SIZE );
+}
+
+void idD3D12RtPasses::DestroyDefaults() {
+	textures.Destroy( noise );
+	noise = textureHandle_t::NONE;
 }
 
 ID3D12PipelineState * idD3D12RtPasses::DebugPipeline( UINT samples ) {
@@ -148,12 +167,43 @@ bool idD3D12RtPasses::Traceable( idD3D12RayTracing & rt, idD3D12GpuScene & gpuSc
 	if ( !rt.Valid() || !gpuScene.Valid() || rt.Tlas() == nullptr || gpuScene.Buffer() == nullptr ) {
 		return false;
 	}
-	// the draws since the build bound the static buffers as vertices and indexes again
-	if ( buffers.UseForShaders( gpuScene.StaticVertexBuffer() ) == nullptr || buffers.UseForShaders( gpuScene.StaticIndexBuffer() ) == nullptr ) {
+	// they decay with every list
+	if ( buffers.Use( gpuScene.StaticVertexBuffer() ) == nullptr || buffers.Use( gpuScene.StaticIndexBuffer() ) == nullptr ) {
 		return false;
 	}
-	gpuScene.MakeTexturesReadable();
+	// a texture leaves its read state only through the store, which counts it: no walk per draw
+	const std::array<uint64, 3> now = { gpuScene.SceneId(), gpuScene.Sequence(), textures.StateChanges() };
+	if ( readable != now ) {
+		gpuScene.MakeTexturesReadable();
+		readable = now;
+	}
 	return true;
+}
+
+d3d12TraceResources_t idD3D12RtPasses::DrawResources( idD3D12RayTracing & rt, idD3D12GpuScene & gpuScene ) {
+	d3d12TraceResources_t trace;
+	if ( !Traceable( rt, gpuScene ) ) {
+		return trace;
+	}
+	// what the graph's passes import, here for a draw of the open list; the TLAS has one state for life
+	barriers.Transition( *gpuScene.Buffer(), gpuScene.BufferState(), D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
+	if ( rt.InstanceTable() != nullptr ) {
+		barriers.Transition( *rt.InstanceTable(), rt.InstanceTableState(), D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
+		trace.indices[d3d12TraceResources_t::INSTANCES] = rt.InstanceTableSrv().index;
+	}
+	if ( rt.SkinnedVertices() != nullptr ) {
+		barriers.Transition( *rt.SkinnedVertices(), rt.SkinnedVerticesState(), D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
+		trace.indices[d3d12TraceResources_t::SKINNED] = rt.SkinnedVerticesSrv().index;
+	}
+	textures.MakeReadable( noise );
+	trace.indices[d3d12TraceResources_t::TLAS] = rt.TlasSrv().index;
+	trace.indices[d3d12TraceResources_t::RECORDS] = gpuScene.BufferSrv().index;
+	trace.indices[d3d12TraceResources_t::VERTICES] = rt.StaticVerticesSrv().index;
+	trace.indices[d3d12TraceResources_t::INDEXES] = rt.StaticIndexesSrv().index;
+	trace.indices[d3d12TraceResources_t::NOISE] = textures.SampledView( noise, textureKind_t::TEX_2D ).index;
+	trace.indices[d3d12TraceResources_t::SAMPLER] = linearSampler;
+	trace.indices[d3d12TraceResources_t::FLAGS] = d3d12TraceResources_t::VALID;
+	return trace;
 }
 
 void idD3D12RtPasses::Debug( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, idD3D12RayTracing & rt, idD3D12GpuScene & gpuScene,

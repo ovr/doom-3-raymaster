@@ -29,15 +29,18 @@ struct d3d12Program_t {
 	shaderStageInfo_t				fragmentInfo = {};
 	programInfo_t					info = {};
 	bool							colorConstants = false;	// a stage reads colorFlags or preExposure of b3
+	bool							traces = false;	// the pixel stage reads b4: a draw asks the trace source
 	uint16							dense = 0;		// pipelineKey_t::program
 	idStr							journalName;	// "<vs>|<ps>": stable across runs, unlike handles
 	std::vector<d3d12Pipeline_t>	pipelines;		// 1-20 keys: a linear search beats a hash
 };
 
+// What the stages of a program may bind: TRACING for a stage name of a table row that traces.
+[[nodiscard]] hlslParms_t			D3D12_ProgramParms( const char * stageName );
 // The device-free halves of CreateStage and CreateProgram, which the tests run on the repo's sources.
-// A stage of base/shaders; errors are DXC's or "name: what".
+// A stage of base/shaders; errors are DXC's or "name: what". parms nullopt: D3D12_ProgramParms( name ).
 [[nodiscard]] std::expected<d3d12ShaderStage_t, idStr>	D3D12_BuildHlslStage( idD3D12HlslCompiler & compiler, shaderStageType_t type, const char * name,
-															const d3d12HlslSource_t & source );
+															const d3d12HlslSource_t & source, std::optional<hlslParms_t> parms = std::nullopt );
 // fragment nullptr: a program without a PS. The PS must read what the VS writes at the same registers.
 [[nodiscard]] std::expected<d3d12Program_t, idStr>		D3D12_LinkProgram( const d3d12ShaderStage_t & vertex, const d3d12ShaderStage_t * fragment );
 

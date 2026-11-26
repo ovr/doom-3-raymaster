@@ -74,7 +74,7 @@ bool idD3D12GpuScene::WriteLights( std::span<const gpuSceneLightWrite_t> lights 
 			lightTextures.push_back( sampled );
 		}
 	}
-	uploader.BufferRange( *lightBuffer.Get(), lightState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0,
+	uploader.BufferRange( *lightBuffer.Get(), lightState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, 0,
 		std::span( reinterpret_cast<const byte *>( lightScratch.data() ), lightScratch.size() * sizeof( gpuSceneLight_t ) ) );
 	numLights = count;
 	return true;
@@ -209,7 +209,7 @@ bool idD3D12GpuScene::Update( const gpuSceneUpdate_t & update ) {
 			}
 			memcpy( scratch.data() + static_cast<size_t>( i - first ) * sizeof( gpuSceneGeometry_t ), &record, sizeof( record ) );
 		}
-		uploader.BufferRange( *buffer.Get(), state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+		uploader.BufferRange( *buffer.Get(), state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
 			static_cast<uint64>( frame.writes[first].index ) * sizeof( gpuSceneGeometry_t ), scratch );
 		stats.copies++;
 		stats.bytes += scratch.size();

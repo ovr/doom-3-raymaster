@@ -181,6 +181,7 @@ textureHandle_t idD3D12TextureStore::Create( const idImageOpts & opts, textureRo
 		BurySurface( texture.surface );
 		samplers.Release( texture.samplerSlot );
 	}
+	stateChanges++;
 	return handle;
 }
 
@@ -203,6 +204,7 @@ void idD3D12TextureStore::Destroy( textureHandle_t handle ) {
 	}
 	d3d12Texture_t dead = table.Remove( handle );
 	sampledDestroyed += ( dead.role == textureRole_t::SAMPLED ) ? 1 : 0;
+	stateChanges++;
 	BurySurface( dead.surface );
 	BurySurface( dead.spare );
 	samplers.Release( dead.samplerSlot );
@@ -263,6 +265,7 @@ d3d12TextureSurface_t * idD3D12TextureStore::PrepareCopyTarget( textureHandle_t 
 	}
 	texture->copiedResized = ( width != Max( 1, texture->opts.width ) || height != Max( 1, texture->opts.height ) );
 	texture->uploads.clear();	// level 0 holds no upload now, and the surface may be another one
+	stateChanges++;				// the copy takes the surface out of its read state
 	if ( copy == d3d12CopyKind_t::COLOR ) {
 		samplerDesc_t sampler = D3D12_UnpackSampler( texture->sampler );
 		sampler.filter = samplerFilter_t::LINEAR;
@@ -372,6 +375,7 @@ d3d12UploadRecord_t idD3D12TextureStore::CopyRegion( d3d12TextureSurface_t & sur
 		}
 	}
 	uploader.TextureRegion( *surface.resource.Get(), surface.state, subresource, *span, footprint, rows );
+	stateChanges++;
 	return result;
 }
 
@@ -433,6 +437,7 @@ d3d12TextureCheckResult_t idD3D12TextureCheck::Run( idD3D12TextureStore & store 
 	d3d12TextureCheckResult_t result;
 	used = 0;
 	pending.clear();
+	store.NoteStateChange();	// the readbacks leave what they read in COPY_SOURCE
 	store.ForEach( [&]( textureHandle_t, d3d12Texture_t & texture ) {
 		result.textures++;
 		bool recorded = false;

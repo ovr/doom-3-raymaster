@@ -123,12 +123,12 @@ void idRenderProgManager::Init() {
 	common->Printf( "----- Initializing Render Shaders -----\n" );
 
 	builtinShaders.fill( -1 );
-	// the vertex-only programs after the others, as the stage and program indexes always were; the gbuffer
-	// ones last, so every index of id's programs stays what the PSO journals hold
-	enum class phase_t { FRAGMENT, VERTEX_ONLY, GBUFFER };
-	for ( const phase_t phase : { phase_t::FRAGMENT, phase_t::VERTEX_ONLY, phase_t::GBUFFER } ) {
+	// the vertex-only programs after the others, as the stage and program indexes always were; our own
+	// last, so every index of id's programs stays what the PSO journals hold
+	enum class phase_t { FRAGMENT, VERTEX_ONLY, OWN };
+	for ( const phase_t phase : { phase_t::FRAGMENT, phase_t::VERTEX_ONLY, phase_t::OWN } ) {
 		for ( const renderProgDef_t & program : R_RenderProgs() ) {
-			const phase_t programPhase = program.gbuffer ? phase_t::GBUFFER : ( program.fragment ? phase_t::FRAGMENT : phase_t::VERTEX_ONLY );
+			const phase_t programPhase = program.own ? phase_t::OWN : ( program.fragment ? phase_t::FRAGMENT : phase_t::VERTEX_ONLY );
 			if ( program.builtin == renderProgBuiltin_t::NONE || programPhase != phase ) {
 				continue;
 			}

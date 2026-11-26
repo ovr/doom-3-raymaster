@@ -12,9 +12,11 @@ namespace {
 
 constexpr float DEFAULT_ATTRIB[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
-// The state a staged buffer is left in after a copy: what its draws read it as.
+// The one read state of a staged buffer, left after a copy: what its draws bind it as, plus what a shader or an
+// acceleration structure build reads it as, so a draw that traces the buffer it draws needs no second state.
 constexpr D3D12_RESOURCE_STATES UseState( bufferType_t type ) {
-	return ( type == bufferType_t::INDEX ) ? D3D12_RESOURCE_STATE_INDEX_BUFFER : D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+	return ( ( type == bufferType_t::INDEX ) ? D3D12_RESOURCE_STATE_INDEX_BUFFER : D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER )
+		| D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
 }
 
 // For PIX and the debug layer's messages.
@@ -170,14 +172,6 @@ const d3d12Buffer_t * idD3D12BufferStore::Use( bufferHandle_t handle ) {
 	d3d12Buffer_t * buffer = table.Find( handle );
 	if ( buffer != nullptr && buffer->placement == d3d12BufferPlacement_t::STAGED ) {
 		barriers.Transition( *buffer->resource.Get(), buffer->state, UseState( buffer->type ) );
-	}
-	return buffer;
-}
-
-const d3d12Buffer_t * idD3D12BufferStore::UseForShaders( bufferHandle_t handle ) {
-	d3d12Buffer_t * buffer = table.Find( handle );
-	if ( buffer != nullptr && buffer->placement == d3d12BufferPlacement_t::STAGED ) {
-		barriers.Transition( *buffer->resource.Get(), buffer->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
 	}
 	return buffer;
 }

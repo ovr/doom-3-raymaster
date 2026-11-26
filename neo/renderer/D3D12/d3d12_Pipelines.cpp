@@ -223,12 +223,17 @@ idD3D12RootSignature::idD3D12RootSignature( const idD3D12Device & device, const 
 	resources.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
 	resources.Constants = { d3d12DrawResources_t::REGISTER, 0, d3d12DrawResources_t::COUNT };
 	resources.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+	D3D12_ROOT_PARAMETER1 trace = {};
+	trace.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+	trace.Constants = { d3d12TraceResources_t::REGISTER, 0, d3d12TraceResources_t::COUNT };
+	trace.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
 	std::array<D3D12_ROOT_PARAMETER1, D3D12_Root( d3d12RootSlot_t::COUNT )> parameters;
 	parameters[D3D12_Root( d3d12RootSlot_t::VERTEX_PARMS )] = RootCbv( 0, D3D12_SHADER_VISIBILITY_VERTEX );
 	parameters[D3D12_Root( d3d12RootSlot_t::FRAGMENT_PARMS )] = RootCbv( 1, D3D12_SHADER_VISIBILITY_PIXEL );
 	parameters[D3D12_Root( d3d12RootSlot_t::JOINTS )] = RootCbv( 2, D3D12_SHADER_VISIBILITY_VERTEX );
 	parameters[D3D12_Root( d3d12RootSlot_t::DRAW_RESOURCES )] = resources;
+	parameters[D3D12_Root( d3d12RootSlot_t::TRACE_RESOURCES )] = trace;
 
 	D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc = {};
 	desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
