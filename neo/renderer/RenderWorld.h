@@ -187,6 +187,8 @@ typedef struct renderLight_s {
 	idVec3					lightRadius;		// xyz radius for point lights
 	idVec3					lightCenter;		// offset the lighting direction for shading and
 												// shadows, relative to origin
+	float					emitterRadius;		// light_size: the radius of the disk that emits, for ray traced
+												// shadows; 0 = by the light's reach (R_LightEmitterRadius)
 
 	// frustum definition for projected lights, all reletive to origin
 	// FIXME: we should probably have real plane equations here, and offer

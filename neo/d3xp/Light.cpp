@@ -155,6 +155,7 @@ void idGameEdit::ParseSpawnArgsToRenderLight( const idDict *args, renderLight_t 
 	args->GetBool( "noshadows", "0", renderLight->noShadows );
 	args->GetBool( "nospecular", "0", renderLight->noSpecular );
 	args->GetBool( "parallel", "0", renderLight->parallel );
+	args->GetFloat( "light_size", "0", renderLight->emitterRadius );
 
 	args->GetString( "texture", "lights/squarelight1", &texture );
 	// allow this to be NULL
@@ -264,6 +265,7 @@ void idLight::Restore( idRestoreGame *savefile ) {
 	bool hadPrelightModel;
 
 	savefile->ReadRenderLight( renderLight );
+	spawnArgs.GetFloat( "light_size", "0", renderLight.emitterRadius );	// not in the save
 
 	savefile->ReadBool( hadPrelightModel );
 	renderLight.prelightModel = renderModelManager->CheckModel( va( "_prelight_%s", name.c_str() ) );

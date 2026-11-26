@@ -5858,13 +5858,19 @@ void Test_GpuSceneSides() {
 	Check( GpuScene_OrderBySide( std::span( writes ).first( 3 ), plainVerts ) == 3 && plainVerts[0] == 15 && plainVerts[1] == 0, "a slot without two-sided surfaces" );
 }
 
-// The lights an update holds: not the one whose own area the view is not connected to.
+// The lights an update holds: not the one whose own area the view is not connected to. A light's emitter is its
+// light_size, else 2 % of its reach within 2 .. 10 units, times r_rtLightSize.
 void Test_GpuSceneLights() {
 	const bool connected[3] = { true, false, true };
 	Check( GpuScene_LightReaches( 0, connected ) && GpuScene_LightReaches( 2, connected ), "a light of a connected area" );
 	Check( !GpuScene_LightReaches( 1, connected ), "a light behind a closed door" );
 	Check( GpuScene_LightReaches( -1, connected ), "a light whose centre lies in no area" );
 	Check( GpuScene_LightReaches( 1, nullptr ), "a view without areas" );
+
+	Check( GpuScene_EmitterRadius( 0.0f, 300.0f, 1.0f ) == 6.0f, "2 % of the reach" );
+	Check( GpuScene_EmitterRadius( 0.0f, 50.0f, 1.0f ) == 2.0f && GpuScene_EmitterRadius( 0.0f, 2000.0f, 1.0f ) == 10.0f, "kept within 2 .. 10 units" );
+	Check( GpuScene_EmitterRadius( 32.0f, 300.0f, 1.0f ) == 32.0f && GpuScene_EmitterRadius( 0.125f, 300.0f, 1.0f ) == 0.125f, "a light_size is taken as it is" );
+	Check( GpuScene_EmitterRadius( 0.0f, 300.0f, 0.0f ) == 0.0f && GpuScene_EmitterRadius( 32.0f, 300.0f, 0.5f ) == 16.0f, "the scale: 0 makes points" );
 }
 
 // A refused delta asks for a full update once; the deltas the front end gathered before it saw that are refused

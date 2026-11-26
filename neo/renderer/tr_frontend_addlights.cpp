@@ -192,6 +192,8 @@ static void R_AddSingleLight( viewLight_t * vLight ) {
 	vLight->falloffImage = light->falloffImage;
 	vLight->lightShader = light->lightShader;
 	vLight->shaderRegisters = lightRegs;
+	vLight->emitterRadius = R_LightEmitterRadius( *light, viewDef->rayTracing.lightSize );
+	vLight->castsShadows = light->LightCastsShadows();
 
 	if ( r_useLightScissors.GetInteger() != 0 ) {
 		// Calculate the matrix that projects the zero-to-one cube to exactly cover the

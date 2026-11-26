@@ -517,6 +517,7 @@ void	idRenderWorldLocal::ReadRenderLight( ) {
 	}
 
 	light.viewAttachedID = 0;		// not in the demo format, demos draw tic poses
+	light.emitterRadius = 0.0f;		// nor is this: a demo's lights have the default size
 
 	UpdateLightDef( index, &light );
 

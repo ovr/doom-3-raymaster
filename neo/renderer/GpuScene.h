@@ -84,7 +84,7 @@ struct gpuSceneLight_t {
 	uint32		projection;
 	uint32		falloff;
 	uint32		flags;				// LIGHT_*
-	uint32		unused;
+	float		emitterRadius;		// of the disk at origin that emits (R_LightEmitterRadius); 0 a point
 };
 static_assert( sizeof( gpuSceneLight_t ) == 144 );
 
@@ -197,6 +197,12 @@ struct gpuSceneStats_t {
 // walls, and the faces toward a light are what stops its rays. lightArea -1: its centre lies in no area.
 [[nodiscard]] inline bool GpuScene_LightReaches( int lightArea, const bool * connectedAreas ) {
 	return lightArea < 0 || connectedAreas == nullptr || connectedAreas[lightArea];
+}
+
+// The radius of a light's emitter in units: its light_size, else 2 % of its reach kept within 2 .. 10; times
+// r_rtLightSize.
+[[nodiscard]] inline float GpuScene_EmitterRadius( float lightSize, float reach, float scale ) {
+	return scale * ( ( lightSize > 0.0f ) ? lightSize : idMath::ClampFloat( 2.0f, 10.0f, 0.02f * reach ) );
 }
 
 // Which refused updates ask the front end for a full one: a scene's first and a refused full one. The deltas gathered

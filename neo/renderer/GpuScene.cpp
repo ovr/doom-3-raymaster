@@ -311,6 +311,7 @@ void idGpuScene::GatherLights( idRenderWorldLocal & world, const viewDef_t & vie
 				out.boundsMin.Set( bounds[0].x, bounds[0].y, bounds[0].z, 0.0f );
 				out.boundsMax.Set( bounds[1].x, bounds[1].y, bounds[1].z, 0.0f );
 				out.flags = ambient ? gpuSceneLight_t::LIGHT_AMBIENT : ( light.LightCastsShadows() ? gpuSceneLight_t::LIGHT_SHADOWS : 0 );
+				out.emitterRadius = R_LightEmitterRadius( light, view.rayTracing.lightSize );
 				write.material = shader;
 				write.images[0] = stage.texture.image;
 				write.images[1] = light.falloffImage;
