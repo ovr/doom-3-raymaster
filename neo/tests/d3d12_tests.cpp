@@ -5858,6 +5858,15 @@ void Test_GpuSceneSides() {
 	Check( GpuScene_OrderBySide( std::span( writes ).first( 3 ), plainVerts ) == 3 && plainVerts[0] == 15 && plainVerts[1] == 0, "a slot without two-sided surfaces" );
 }
 
+// The lights an update holds: not the one whose own area the view is not connected to.
+void Test_GpuSceneLights() {
+	const bool connected[3] = { true, false, true };
+	Check( GpuScene_LightReaches( 0, connected ) && GpuScene_LightReaches( 2, connected ), "a light of a connected area" );
+	Check( !GpuScene_LightReaches( 1, connected ), "a light behind a closed door" );
+	Check( GpuScene_LightReaches( -1, connected ), "a light whose centre lies in no area" );
+	Check( GpuScene_LightReaches( 1, nullptr ), "a view without areas" );
+}
+
 // A refused delta asks for a full update once; the deltas the front end gathered before it saw that are refused
 // without asking again, a refused full update asks again.
 void Test_GpuSceneRecovery() {
@@ -8112,6 +8121,7 @@ constexpr testCase_t TESTS[] = {
 	{ "GBuffer_JointLayout", Test_JointMotionLayout },
 	{ "GpuScene_Ranges", Test_GpuSceneRanges },
 	{ "GpuScene_Sides", Test_GpuSceneSides },
+	{ "GpuScene_Lights", Test_GpuSceneLights },
 	{ "GpuScene_Recovery", Test_GpuSceneRecovery },
 	{ "Warp_GpuScene", OnWarp<GpuScene> },
 	{ "Warp_RtTlas", OnWarp<RtTlas> },

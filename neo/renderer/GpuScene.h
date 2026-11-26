@@ -32,7 +32,8 @@
 	backend refuses.
 
 	Every update also holds all the lights of the same areas, not only the view's (a reflected surface behind the
-	eye is lit by lights the view culled): one per enabled light stage, without fog and blend lights.
+	eye is lit by lights the view culled): one per enabled light stage, without fog and blend lights and without
+	the lights whose centre lies in an area the view is not connected to.
 */
 
 class idImage;
@@ -190,6 +191,12 @@ struct gpuSceneStats_t {
 		hash( record.flags & ( gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_CASTS_SHADOW ) );
 	}
 	return key | 1;
+}
+
+// A light whose own area the view cannot reach (a closed door) is left out: the scene holds none of that area's
+// walls, and the faces toward a light are what stops its rays. lightArea -1: its centre lies in no area.
+[[nodiscard]] inline bool GpuScene_LightReaches( int lightArea, const bool * connectedAreas ) {
+	return lightArea < 0 || connectedAreas == nullptr || connectedAreas[lightArea];
 }
 
 // Which refused updates ask the front end for a full one: a scene's first and a refused full one. The deltas gathered
