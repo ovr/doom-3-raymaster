@@ -40,6 +40,7 @@ extern idCVar r_windowWidth;
 extern idCVar r_windowHeight;
 extern idCVar r_hdrTonemap;
 extern idCVar r_hdrAgxLook;
+extern idCVar r_rayTracing;
 
 // r_hdrTonemap's values in its order, then r_hdrAgxLook's
 constexpr const char * TONEMAP_LABELS[] = { "Off", "AgX", "Film" };
@@ -93,7 +94,8 @@ static void SetControlDisabled( idMenuWidget_DynamicList & options, int field, b
 UpdateDisabledControls
 
 Controls that cannot apply are shown dimmed, without arrows: the resolution of a borderless window
-(always the desktop's), the tonemap without an HDR scene, the look of a curve other than AgX.
+(always the desktop's), the tonemap without an HDR scene, the look of a curve other than AgX,
+ray tracing without an HDR scene or on a GPU that cannot trace.
 ========================
 */
 static void UpdateDisabledControls( idMenuWidget_DynamicList * options ) {
@@ -105,6 +107,7 @@ static void UpdateDisabledControls( idMenuWidget_DynamicList * options ) {
 	SetControlDisabled( *options, fields_t::SYSTEM_FIELD_RESOLUTION, GetWindowMode() == WINDOW_MODE_BORDERLESS );
 	SetControlDisabled( *options, fields_t::SYSTEM_FIELD_TONEMAP, !hdr );
 	SetControlDisabled( *options, fields_t::SYSTEM_FIELD_COLORLOOK, !hdr || r_hdrTonemap.GetInteger() != TONEMAP_AGX );
+	SetControlDisabled( *options, fields_t::SYSTEM_FIELD_RAYTRACING, !renderSystem->HasRayTracing() );
 }
 
 /*
@@ -218,6 +221,14 @@ void idMenuScreen_Shell_SystemOptions::Initialize( idMenuHandler * data ) {
 	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK );
 	control->SetupEvents( CHOICE_REPEAT_TIME, options->GetChildren().Num() );
 	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_COLORLOOK );
+	options->AddChild( control );
+
+	control = new (TAG_SWF) idMenuWidget_ControlButton();
+	control->SetOptionType( OPTION_SLIDER_TEXT );
+	control->SetLabel( "Ray Tracing" );
+	control->SetDataSource( &systemData, idMenuDataSource_SystemSettings::SYSTEM_FIELD_RAYTRACING );
+	control->SetupEvents( CHOICE_REPEAT_TIME, options->GetChildren().Num() );
+	control->AddEventAction( WIDGET_EVENT_PRESS ).Set( WIDGET_ACTION_COMMAND, idMenuDataSource_SystemSettings::SYSTEM_FIELD_RAYTRACING );
 	options->AddChild( control );
 
 	control = new (TAG_SWF) idMenuWidget_ControlButton();
@@ -473,6 +484,7 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::LoadData
 	originalBrightness = r_lightScale.GetFloat();
 	originalTonemap = r_hdrTonemap.GetInteger();
 	originalColorLook = r_hdrAgxLook.GetInteger();
+	originalRayTracing = r_rayTracing.GetBool();
 	originalVolume = s_volume_dB.GetFloat();
 	originalFullscreen = r_fullscreen.GetInteger();
 	originalBorderless = r_borderless.GetBool();
@@ -629,6 +641,13 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 			}
 			break;
 		}
+		case SYSTEM_FIELD_RAYTRACING: {
+			// two values: either arrow, and a press, flips it
+			if ( renderSystem->HasRayTracing() && ( adjustAmount & 1 ) != 0 ) {
+				r_rayTracing.SetBool( !r_rayTracing.GetBool() );
+			}
+			break;
+		}
 		case SYSTEM_FIELD_VOLUME: {
 			const float percent = 100.0f * Square( 1.0f - ( s_volume_dB.GetFloat() / DB_SILENCE ) );
 			const float adjusted = percent + (float)adjustAmount;
@@ -707,6 +726,9 @@ idSWFScriptVar idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings
 			return TONEMAP_LABELS[idMath::ClampInt( 0, NUM_TONEMAPS - 1, r_hdrTonemap.GetInteger() )];
 		case SYSTEM_FIELD_COLORLOOK:
 			return COLOR_LOOK_LABELS[idMath::ClampInt( 0, NUM_COLOR_LOOKS - 1, r_hdrAgxLook.GetInteger() )];
+		case SYSTEM_FIELD_RAYTRACING:
+			// what the frames get, so a GPU that cannot trace reads as off whatever the cvar holds
+			return ( renderSystem->HasRayTracing() && r_rayTracing.GetBool() ) ? "#str_swf_enabled" : "#str_swf_disabled";
 		case SYSTEM_FIELD_VOLUME: {
 			return 100.0f * Square( 1.0f - ( s_volume_dB.GetFloat() / DB_SILENCE ) );
 		}
@@ -742,6 +764,9 @@ bool idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::IsDataCh
 		return true;
 	}
 	if ( originalTonemap != r_hdrTonemap.GetInteger() || originalColorLook != r_hdrAgxLook.GetInteger() ) {
+		return true;
+	}
+	if ( originalRayTracing != r_rayTracing.GetBool() ) {
 		return true;
 	}
 	if ( originalVolume != s_volume_dB.GetFloat() ) {

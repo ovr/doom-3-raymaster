@@ -1,0 +1,12 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# _xc_rt_switch: 01_camera with r_rayTracing switched off and on as the menu's row does, twice each, the second time
+# for a single tic. Off: the stencil frames; on again: the GPU scene goes on from what it held, no update refused.
+include 01_camera
+at 300 r_rayTracing 0
+at 600 r_rayTracing 1
+at 900 r_rayTracing 0
+at 901 r_rayTracing 1
+at 1200 r_rayTracing 0
+at 1500 r_rayTracing 1

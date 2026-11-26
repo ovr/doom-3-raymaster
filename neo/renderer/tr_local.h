@@ -768,6 +768,7 @@ public:
 	void					ShutdownBackend() override;
 	bool					IsBackendRunning() const override;
 	bool					HasHdrScene() const override;
+	bool					HasRayTracing() const override;
 	virtual bool			IsFullScreen() const;
 	virtual stereo3DMode_t	GetStereo3DMode() const;
 	virtual bool			IsStereoScopicRenderingSupported() const;

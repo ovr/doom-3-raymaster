@@ -1196,6 +1196,7 @@ public:
 			SYSTEM_FIELD_BRIGHTNESS,
 			SYSTEM_FIELD_TONEMAP,
 			SYSTEM_FIELD_COLORLOOK,
+			SYSTEM_FIELD_RAYTRACING,
 			SYSTEM_FIELD_VOLUME,
 			MAX_SYSTEM_FIELDS
 		};
@@ -1231,6 +1232,7 @@ public:
 		float originalBrightness;
 		int originalTonemap;
 		int originalColorLook;
+		bool originalRayTracing;
 		float originalVolume;
 
 		idList<vidMode_t>			modeList;
