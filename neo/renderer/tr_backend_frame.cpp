@@ -98,8 +98,9 @@ static void RB_DrawTestClearPattern() {
 	clearRect( width / 2 - 64, height / 2 - 32, 128, 64, 255, 255, 255 );
 }
 
-// R13: the 3D view the HDR scene resolves at: the last drawing one of a world before the first drawing GUI view.
-// Subviews, the portal sky and remote views before it draw into the scene too; the PDA, menus and previews stay LDR.
+// R13: the 3D view the HDR scene resolves at: the last drawing one of a world that the front end did not mark
+// (viewDef_t::notMainView), before the first drawing GUI view. Subviews, the portal sky and remote views before it
+// draw into the scene too; a second view of its world, the PDA, menus and previews stay LDR.
 // In stereo only that eye's views count, and GUI views among the other eye's are that eye's full-screen FX.
 static const drawSurfsCommand_t * RB_FindHdrMainView( const emptyCommand_t * cmds, int stereoEye ) {
 	if ( !renderBackend->Caps().hdrScene ) {
@@ -129,7 +130,7 @@ static const drawSurfsCommand_t * RB_FindHdrMainView( const emptyCommand_t * cmd
 			}
 			break;
 		}
-		if ( !viewDef->isSubview && viewDef->viewEntitys != nullptr ) {
+		if ( !viewDef->isSubview && !viewDef->notMainView && viewDef->viewEntitys != nullptr ) {
 			found = dsc;
 		}
 	}
@@ -188,6 +189,7 @@ static void RB_EndHdrScene() {
 
 // the debug tools that draw last, then the end of the frame (mono and stereo)
 static void RB_EndFrame() {
+	backEnd.tracedScene = backEnd.shadowLatch.EndFrame();
 	RB_EndHdrScene();
 	RB_DrawFlickerBox();
 	RB_DrawTestClearPattern();
@@ -497,6 +499,10 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	int c_draw2d = 0;
 	int c_setBuffers = 0;
 	int c_copyRenders = 0;
+
+	// a frame that traces no main view's shadows ends the front end's count on them (rtShadowLatch_t)
+	backEnd.shadowLatch.BeginFrame();
+	backEnd.tracedScene = {};
 
 	// nothing to draw: no frame is opened
 	if ( cmds->commandId == RC_NOP && !cmds->next ) {

@@ -367,7 +367,9 @@ public:
 	// rendering a scene may actually render multiple subviews for mirrors and portals, and
 	// may render composite textures for gui console screens and light projections
 	// It would also be acceptable to render a scene multiple times, for "rear view mirrors", etc
-	virtual void			RenderScene( const renderView_t *renderView ) = 0;
+	// auxiliary: drawn for the world's main view of the same frame (a portal sky, captured for it). The ray traced
+	// passes work in the main view alone, and it is what a caller leaves unmarked.
+	virtual void			RenderScene( const renderView_t *renderView, bool auxiliary = false ) = 0;
 
 	//-------------- Render Interpolation -----------------
 

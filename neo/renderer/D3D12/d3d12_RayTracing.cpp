@@ -62,7 +62,8 @@ constexpr uint64 AS_ALIGN = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNME
 }	// namespace
 
 idD3D12RayTracing::idD3D12RayTracing( const idD3D12Device & owner, idD3D12Submitter & submit, idD3D12Graveyard & graves,
-	idD3D12DescriptorPool & srvs, idD3D12Barriers & barrierBatch, idD3D12Uploader & copies, idD3D12BufferStore & bufferStore, uint64 unused ) :
+	idD3D12DescriptorPool & srvs, idD3D12Barriers & barrierBatch, idD3D12Uploader & copies, idD3D12BufferStore & bufferStore, uint64 unused,
+	uint64 budget ) :
 	device( owner ),
 	submitter( submit ),
 	graveyard( graves ),
@@ -70,7 +71,8 @@ idD3D12RayTracing::idD3D12RayTracing( const idD3D12Device & owner, idD3D12Submit
 	barriers( barrierBatch ),
 	uploader( copies ),
 	buffers( bufferStore ),
-	unusedBuilds( unused ) {
+	unusedBuilds( unused ),
+	scratchBudget( budget ) {
 	scratchState.decays = true;
 	skinnedState.decays = true;
 	tableState.decays = true;
@@ -333,7 +335,13 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 	geometryDescs.reserve( maxDescs );		// the inputs point into it: it must not move
 	std::vector<placed_t> placed( sceneInstances.size() );
 	std::vector<uint32> skinnedOffsets( sceneInstances.size(), d3d12RtInstance_t::NOT_SKINNED );
-	uint64 staticScratch = 0;
+	// A full update builds every structure it lacks, so the frame traces all its casters; a delta up to the budget.
+	// The builds go in batches of the budget: one batch's run side by side, the next takes the same scratch.
+	const bool all = scene.LastStats().full;
+	uint64 staticScratch = 0;		// of the build's new static BLAS
+	uint64 batchScratch = 0;		// of the batch being filled
+	uint64 batchRegion = 0;			// the largest batch
+	uint32 batch = 0;
 	uint64 skinnedBytes = 0;
 	uint64 skinnedBlasBytes = 0;
 
@@ -377,7 +385,8 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 			build.inputs = inputs;
 			build.firstDesc = firstDesc;
 			build.targetOffset = Align( skinnedBlasBytes );
-			build.scratchOffset = TakeScratch( info.ScratchDataSizeInBytes );
+			build.scratchOffset = TakeScratch( info.ScratchDataSizeInBytes );	// after the batches' region, once that is known
+			build.batch = batch;
 			skinnedBlasBytes = build.targetOffset + Align( info.ResultDataMaxSizeInBytes );
 			placed[i] = { std::addressof( skinnedBlas ), build.targetOffset };	// ComPtr's & releases it
 			skinnedOffsets[i] = static_cast<uint32>( base );
@@ -402,7 +411,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 			placed[i] = { std::addressof( found->second.data ), 0 };
 			continue;
 		}
-		if ( staticScratch >= SCRATCH_BUDGET ) {
+		if ( !all && staticScratch >= scratchBudget ) {
 			stats.waiting++;
 			continue;
 		}
@@ -433,13 +442,29 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		build.inputs = inputs;
 		build.firstDesc = firstDesc;
 		build.target = made.data.Get();
-		build.scratchOffset = TakeScratch( info.ScratchDataSizeInBytes );
-		staticScratch += Align( info.ScratchDataSizeInBytes );
+		const uint64 scratchNeed = Align( Max<uint64>( info.ScratchDataSizeInBytes, 1 ) );
+		if ( batchScratch > 0 && batchScratch + scratchNeed > scratchBudget ) {
+			batch++;
+			batchScratch = 0;
+		}
+		build.scratchOffset = batchScratch;
+		build.batch = batch;
+		batchScratch += scratchNeed;
+		batchRegion = Max( batchRegion, batchScratch );
+		staticScratch += scratchNeed;
 		built.push_back( &made );
 		placed[i] = { std::addressof( made.data ), 0 };
 		stats.built++;
 	}
 	AskSizes();
+
+	// the scratch of the skinned builds and of the TLAS lies after the batches' region
+	for ( build_t & build : blasBuilds ) {
+		if ( build.target == nullptr ) {
+			build.scratchOffset += batchRegion;
+		}
+	}
+	scratchBytes += batchRegion;
 
 	// the TLAS of every placed instance
 	for ( size_t i = 0; i < sceneInstances.size(); i++ ) {
@@ -560,7 +585,14 @@ void idD3D12RayTracing::AddPasses( idD3D12RenderGraph & graph ) {
 			tlasUses.push_back( { skinnedBlasUse, access::AS_READ } );
 		}
 		graph.AddPass( "rt blas", pass::AS_BUILD, uses, [this, scratchUse]( idD3D12GraphContext & context ) {
+			uint32 batch = 0;
 			for ( const build_t & build : blasBuilds ) {
+				// the builds before are done with the scratch the next batch takes
+				if ( build.batch != batch ) {
+					context.UavBarrier( scratchUse );
+					barriers.Flush();	// the graph's batch: a raw build flushes nothing
+					batch = build.batch;
+				}
 				D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
 				desc.Inputs = build.inputs;
 				desc.DestAccelerationStructureData = build.target->GetGPUVirtualAddress() + build.targetOffset;

@@ -194,6 +194,7 @@ static void R_AddSingleLight( viewLight_t * vLight ) {
 	vLight->shaderRegisters = lightRegs;
 	vLight->emitterRadius = R_LightEmitterRadius( *light, viewDef->rayTracing.lightSize );
 	vLight->castsShadows = light->LightCastsShadows();
+	vLight->lightIndex = light->index;
 
 	if ( r_useLightScissors.GetInteger() != 0 ) {
 		// Calculate the matrix that projects the zero-to-one cube to exactly cover the
@@ -376,9 +377,11 @@ static void R_AddSingleLight( viewLight_t * vLight ) {
 	}
 
 	//--------------------------------------------
-	// add the prelight shadows for the static world geometry
+	// add the prelight shadows for the static world geometry;
+	// a view that counts on the trace of this light's shadows makes no volume (rtShadowSettings_t)
 	//--------------------------------------------
-	if ( light->parms.prelightModel != NULL ) {
+	const bool volumes = !viewDef->rayTracing.shadow.WithoutVolumes() || !R_LightTracesShadows( vLight->castsShadows, *vLight->lightShader );
+	if ( light->parms.prelightModel != NULL && volumes ) {
 		srfTriangles_t * tri = light->parms.prelightModel->Surface( 0 )->geometry;
 
 		// these shadows will have valid bounds, and can be culled normally,

@@ -1793,8 +1793,7 @@ DRAW INTERACTIONS
 */
 // Whether the main view traces this light's shadows: it casts some, and its interactions are interaction.vfp's.
 static bool RB_LightTracesShadows( const viewLight_t & vLight ) {
-	const idMaterial & shader = *vLight.lightShader;
-	return backEnd.tracedShadows && vLight.castsShadows && !shader.IsAmbientLight() && !shader.IsFogLight() && !shader.IsBlendLight()
+	return backEnd.tracedShadows && R_LightTracesShadows( vLight.castsShadows, *vLight.lightShader )
 		&& ( vLight.localInteractions != NULL || vLight.globalInteractions != NULL );
 }
 
@@ -1815,7 +1814,12 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 	}
 	const idScreenRect & v = backEnd.viewDef->viewport;
 	const renderRect_t viewport = { v.x1, v.y1, v.GetWidth(), v.GetHeight() };
-	if ( !any || !renderBackend->BeginTracedLights( viewport ) ) {
+	if ( !any ) {
+		return false;
+	}
+	if ( !renderBackend->BeginTracedLights( viewport ) ) {
+		// the lights draw with what volumes they have, and the front end hears of it (rtShadowLatch_t)
+		backEnd.tracedShadows = false;
 		return false;
 	}
 
@@ -1824,7 +1828,7 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 	// with a history every frame takes other points of the disks (R18); without one each frame the same
 	const rtShadowSettings_t & shadow = backEnd.viewDef->rayTracing.shadow;
 	tracedLight_t traced = {};
-	traced.noise = shadow.history ? static_cast<int>( backEnd.viewSequence & 0xFFFFu ) : 0;
+	const int sequence = shadow.history ? static_cast<int>( backEnd.viewSequence & 0xFFFFu ) : 0;
 	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		if ( !RB_LightTracesShadows( *vLight ) ) {
 			continue;
@@ -1833,13 +1837,14 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 		if ( useLightDepthBounds ) {
 			renderBackend->DepthBoundsTest( vLight->scissorRect.zmin, vLight->scissorRect.zmax );
 		}
+		// Each light its own points of the disk, by its index in the world: two lights of a pixel share no noise,
+		// and a light that enters or leaves the view's list moves no other light's (a float holds the sum exactly).
+		traced.noise = sequence + 97 * ( vLight->lightIndex & 0xFFFF );
 		// a local surface (MF_NOSELFSHADOW) takes the shadows of the others only, as the stencil order gives it
 		traced.mask = gpuSceneInstance_t::MASK_SHADOW_GLOBAL;
 		RB_RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, &traced );
 		traced.mask = gpuSceneInstance_t::MASK_SHADOW;
 		RB_RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, &traced );
-		// each light its own points of the disk: two lights of a pixel do not share their noise, nor within a history
-		traced.noise += 97;
 		renderLog.CloseBlock();
 	}
 	renderLog.CloseBlock();
@@ -3031,12 +3036,27 @@ rtView_t RB_RayTracingView( const viewDef_t & viewDef ) {
 	view.sequence = backEnd.viewSequence;
 	view.eye = ( viewDef.renderView.viewEyeBuffer == 1 ) ? 1 : 0;
 	view.store = !tr.takingScreenshot;
+	view.held = backEnd.tracedHeld;
 	const float w = ( clipToWorld[3][2] != 0.0f ) ? clipToWorld[3][2] : 1.0f;
 	for ( int i = 0; i < 3; i++ ) {
 		view.origin[i] = clipToWorld[i][2] / w;
 	}
 	view.pixelSpread = 2.0f * idMath::Tan( DEG2RAD( viewDef.renderView.fov_y ) * 0.5f ) / static_cast<float>( Max( 1, static_cast<int>( viewDef.viewport.GetHeight() ) ) );
 	return view;
+}
+
+// r_rtStats: how the main view's frames of the last second came by their shadows.
+static void RB_TracedShadowStats( bool traced, bool withoutVolumes, bool held ) {
+	static int frames = 0, tracedFrames = 0, bare = 0, heldFrames = 0, lastPrint = 0;
+	frames++;
+	tracedFrames += traced ? 1 : 0;
+	bare += withoutVolumes ? 1 : 0;
+	heldFrames += held ? 1 : 0;
+	if ( Sys_Milliseconds() - lastPrint >= 1000 ) {
+		lastPrint = Sys_Milliseconds();
+		common->Printf( "rt shadows: %d frames, %d traced, %d without volumes, %d held\n", frames, tracedFrames, bare, heldFrames );
+		frames = tracedFrames = bare = heldFrames = 0;
+	}
 }
 
 void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
@@ -3063,9 +3083,13 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		renderLog.CloseMainBlock();
 	}
 
-	// render the scene; a frame that cannot trace every caster draws its stencil shadows
+	// render the scene; a frame that cannot trace every caster draws its stencil shadows. Where the front end made
+	// none, counting on the trace, the lights draw as traced ones and keep the shadows their history holds (R18)
+	const rtShadowSettings_t & shadow = backEnd.viewDef->rayTracing.shadow;
+	const bool shadows = hdrMainView && backEnd.hdrPhase && shadow.enabled;
 	backEnd.gbufferView = hdrMainView && backEnd.hdrPhase && backEnd.viewDef->rayTracing.gbuffer;
-	backEnd.tracedShadows = hdrMainView && backEnd.hdrPhase && traceable && backEnd.viewDef->rayTracing.shadow.enabled;
+	backEnd.tracedShadows = shadows && ( traceable || shadow.WithoutVolumes() );
+	backEnd.tracedHeld = backEnd.tracedShadows && !traceable;
 	const bool history = hdrMainView && backEnd.hdrPhase;
 	backEnd.viewFollows = false;
 	if ( history ) {
@@ -3100,8 +3124,26 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 	if ( history ) {
 		RB_EndMainViewHistory( *backEnd.viewDef );
 	}
+	// what the front end's next views go by: the main view that asked for traced shadows got them, and so did
+	// every view that has no volumes
+	if ( shadow.enabled && ( hdrMainView || shadow.WithoutVolumes() ) ) {
+		const gpuSceneFrame_t * const scene = backEnd.viewDef->gpuScene;
+		const bool traced = backEnd.tracedShadows && !backEnd.tracedHeld;
+		backEnd.shadowLatch.View( ( scene != nullptr ) ? scene->sceneId : 0, ( scene != nullptr ) ? scene->sequence : 0, traced );
+		if ( r_rtStats.GetBool() ) {
+			RB_TracedShadowStats( traced, shadow.WithoutVolumes(), backEnd.tracedHeld );
+			// the frames around a level load, a refused update or a view the back end takes for another: each one
+			if ( !shadow.keepVolumes && ( !traced || !shadow.WithoutVolumes() ) ) {
+				common->Printf( "rt shadows: frame %d, scene %u.%u%s: %s, %s (main view %d, hdr scene %d, traceable %d)\n", backEnd.viewDef->rayTracing.frameCount,
+					( scene != nullptr ) ? scene->sceneId : 0, ( scene != nullptr ) ? scene->sequence : 0, ( scene != nullptr && scene->full ) ? " full" : "",
+					shadow.WithoutVolumes() ? "no volumes" : "volumes", traced ? "traced" : backEnd.tracedHeld ? "held" : "not traced",
+					hdrMainView, shadows, traceable );
+			}
+		}
+	}
 	backEnd.gbufferView = false;
 	backEnd.tracedShadows = false;
+	backEnd.tracedHeld = false;
 	backEnd.viewFollows = false;
 
 	// optionally draw a box colored based on the eye number

@@ -140,11 +140,13 @@ If you have questions concerning this license or the applicable additional terms
 		or one whose writes follow the update it applied last (same scene, base that sequence), and the same one
 		again as a no-op; otherwise, after a texture a held record views was destroyed, or on a lost device it
 		returns false, keeps nothing the passes may trace this frame, and shared code sends a full update next.
-		An applied update builds the acceleration structures of its instances (an instance whose BLAS waits for
-		a later frame is left out) and fills stats; the no-op builds nothing. A triangle's front face is the side
+		An applied update builds the acceleration structures of its instances and fills stats: a full update
+		those of all of them, so that its frame traces every caster; a delta may leave out an instance whose
+		BLAS waits for a later frame; the no-op builds nothing. A triangle's front face is the side
 		Doom 3 draws (clockwise in GL's window); the geometries of an instance are all two-sided (no ray culls
-		a face of it) or all one-sided, and all local (MF_NOSELFSHADOW) or none: its mask says which rays meet
-		it (gpuSceneInstance_t::MASK_*). After the resolve, DrawRayTracingDebug traces a ray per pixel of the
+		a face of it) or all one-sided, all local (MF_NOSELFSHADOW) or none, and all drawn or none: its mask
+		says which rays meet it (gpuSceneInstance_t::MASK_*; without MASK_VISIBLE only shadow rays: a hull
+		that draws nothing, a body its own view leaves out). After the resolve, DrawRayTracingDebug traces a ray per pixel of the
 		main view against what the last applied update built and draws what it hits over the output.
 		DrawRayTracedReflections, in the linear phase after the lights, reads the G-buffer and the depth of the
 		main view, traces a mirror ray per pixel that may reflect, lights its hit with the update's lights and
@@ -162,13 +164,20 @@ If you have questions concerning this license or the applicable additional terms
 	R17	A program whose table row traces (renderProgDef_t::traces) reads, in its pixel stage, what the last
 		applied UpdateGpuScene built, and a noise texture. While nothing may be traced (no update yet, a
 		refused one, a lost device) the draw still runs and is told so: it sends nothing to the light target.
+		Shared code draws the traced lights of a view without stencil shadows. Once a frame has traced a
+		world's main view, the front end makes no shadow volume for the lights that view traces
+		(rtShadowSettings_t::volumes, rtShadowLatch_t), in the one view of a frame it leaves unmarked as
+		the main one (viewDef_t::notMainView): a frame that then cannot trace has no shadow of its own
+		(rtView_t::held, R18), says so, and the views two frames on have their volumes again.
 	R18	A ray traced pass may keep its result per eye for the next frame, with the G-buffer's normal and
 		depth of that frame (the history). It reads only what the frame before of the same rtView_t::epoch
 		stored (sequence - 1): shared code starts an epoch for a new view, viewport size, a frame without
 		the view, or a time that went back, and the backend drops everything at ResizeOutput and
 		EndLevelLoad. With rtView_t::store false (a screenshot) the pass reads the history and leaves it
 		as it is: the frame after is the one without the screenshot. What it reads is found through the
-		G-buffer's motion, so such a pass needs the G-buffer of its frame.
+		G-buffer's motion, so such a pass needs the G-buffer of its frame. With rtView_t::held the frame
+		traced nothing: ResolveTracedShadows takes what the history holds of a pixel in place of the
+		frame's value and counts no frame; a pixel without a history, and a resolve without one, is lit whole.
 
 ===============================================================================
 */

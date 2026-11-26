@@ -358,6 +358,7 @@ struct viewLight_t {
 	idImage *				falloffImage;				// falloff image used by backend
 	float					emitterRadius;				// R_LightEmitterRadius: the disk a ray traced shadow samples
 	bool					castsShadows;				// the lightDef's LightCastsShadows
+	int						lightIndex;					// the lightDef's index: its traced shadow's noise, whatever else the view lists
 
 	drawSurf_t *			globalShadows;				// shadow everything
 	drawSurf_t *			localInteractions;			// don't get local shadows
@@ -368,6 +369,12 @@ struct viewLight_t {
 	// R_AddSingleLight will build a chain of parameters here to setup shadow volumes
 	preLightShadowVolumeParms_t *	preLightShadowVolumes;
 };
+
+// Whether a view that traces its shadows (R17) traces this light's: it casts some, and its interactions are
+// interaction.vfp's. A view without volumes (rtShadowSettings_t) makes none for such a light.
+[[nodiscard]] inline bool R_LightTracesShadows( bool castsShadows, const idMaterial & lightShader ) {
+	return castsShadows && !lightShader.IsAmbientLight() && !lightShader.IsFogLight() && !lightShader.IsBlendLight();
+}
 
 // a viewEntity is created whenever a idRenderEntityLocal is considered for inclusion
 // in the current view, but it may still turn out to be culled.
@@ -435,6 +442,9 @@ struct viewDef_t {
 	// a different side than the renderView.viewOrg is.
 
 	bool				isSubview;				// true if this view is not the main view
+	// R13: never the frame's HDR main view: drawn for it (a portal sky's), a second view of its world, or one after a
+	// GUI view of the frame that drew (rtMainViewForecast_t)
+	bool				notMainView;
 	bool				isMirror;				// the portal is a mirror, invert the face culling
 	bool				isXraySubview;
 
@@ -712,6 +722,9 @@ struct backEndState_t {
 	bool				hdrGamma;				// in hdrPhase, the gamma composite: they do not
 	bool				gbufferView;			// the view being drawn is the HDR main view and writes the G-buffer (R14)
 	bool				tracedShadows;			// it is the HDR main view and its lights trace their shadows (R16, R17)
+	bool				tracedHeld;				// they have no volumes and the frame cannot trace: the history's shadows stand (R18)
+	rtShadowLatch_t		shadowLatch;			// of the frame being drawn
+	rtTracedScene_t		tracedScene;			// its result, of the last frame drawn: idRenderSystemLocal's copy is the front end's
 	bool				viewFollows;			// the HDR main view follows its eye's gbufferLast: the frame before, the same view
 	uint32				viewEpoch;				// rtView_t's epoch and sequence of the HDR main view being drawn
 	uint32				viewSequence;
@@ -830,6 +843,10 @@ public:
 	bool					discardFrame = false;	// the next Present shows nothing (ReadLastFrame)
 
 	int						frameCount;		// incremented every frame
+	// the scene whose main view the back end traced the shadows of, as of the last swap of the command buffers
+	// (rtShadowLatch_t): the same value whatever the threads' timing
+	rtTracedScene_t			tracedScene;
+	rtMainViewForecast_t	mainViewForecast;	// of the frame being built
 	int						viewCount;		// incremented every view (twice a scene if subviewed)
 											// and every R_MarkFragments call
 

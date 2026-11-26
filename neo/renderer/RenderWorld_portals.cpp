@@ -330,8 +330,12 @@ void idRenderWorldLocal::AddAreaViewLights( int areaNum, const portalStack_t *ps
 		}
 
 		// check for being closed off behind a door
-		// a light that doesn't cast shadows will still light even if it is behind a door
-		if ( r_useLightAreaCulling.GetBool() && !light->LightCastsShadows()
+		// a light that doesn't cast shadows will still light even if it is behind a door. One whose shadows the
+		// view traces would too: the GPU scene holds none of its area's walls, and a door need not cast (R15)
+		const bool castsShadows = light->LightCastsShadows();
+		const bool traced = tr.viewDef->rayTracing.shadow.enabled && light->lightShader != nullptr
+			&& R_LightTracesShadows( castsShadows, *light->lightShader );
+		if ( r_useLightAreaCulling.GetBool() && ( !castsShadows || traced )
 					&& light->areaNum != -1 && !tr.viewDef->connectedAreas[ light->areaNum ] ) {
 			continue;
 		}
