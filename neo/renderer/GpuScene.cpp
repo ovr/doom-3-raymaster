@@ -510,7 +510,7 @@ static textureHandle_t RB_GpuSceneTexture( idImage * image ) {
 	return image->Handle();
 }
 
-void RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
+bool RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 	for ( int i = 0; i < frame.numWrites; i++ ) {
 		gpuSceneWrite_t & write = frame.writes[i];
 		const_cast<idMaterial *>( write.material )->EnsureNotPurged();
@@ -552,4 +552,11 @@ void RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 			stats.skinnedVerts, stats.frameBytes / ( 1024.0 * 1024.0 ) );
 		refused = 0;
 	}
+	// A full update's structures are built over several frames, and until all stand the frame cannot trace its
+	// shadows. A caster that joins later only lacks its own for the frames it waits.
+	static bool settling = false;
+	if ( applied ) {
+		settling = ( frame.full || settling ) && stats.waiting > 0;
+	}
+	return applied && stats.traceable && !settling;
 }

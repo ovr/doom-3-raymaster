@@ -154,7 +154,9 @@ If you have questions concerning this license or the applicable additional terms
 		float surface of the scene's size and sample count) to zero and sends the draws until EndTracedLights
 		to both: a program's first colour output to the scene, its second to the light target, each through
 		the draw's one blend. Only programs with both outputs draw there, and nothing clears. The light
-		target holds until the next BeginTracedLights.
+		target holds until the next BeginTracedLights. ResolveTracedShadows, after the bracket: per pixel of
+		the viewport and channel, the light target over the scene (0 where the scene is black) is the part
+		the shadows take, and the scene is multiplied by what is left; settings.show puts that in its place.
 	R17	A program whose table row traces (renderProgDef_t::traces) reads, in its pixel stage, what the last
 		applied UpdateGpuScene built, and a noise texture. While nothing may be traced (no update yet, a
 		refused one, a lost device) the draw still runs and is told so: it sends nothing to the light target.
@@ -261,6 +263,7 @@ public:
 	// device), draw nothing until EndTracedLights.
 	[[nodiscard]] virtual bool	BeginTracedLights( const renderRect_t & rect ) { return false; }
 	virtual void			EndTracedLights() {}
+	virtual void			ResolveTracedShadows( const rtShadowSettings_t & settings, const renderRect_t & viewport ) {}
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,

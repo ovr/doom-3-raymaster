@@ -1194,9 +1194,25 @@ RB_RenderInteractions
 With added sorting and trivial path work.
 =============
 */
-static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t * vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds ) {
+// A light whose interactions trace its shadows themselves (R17): interaction_rt in place of interaction.
+struct tracedLight_t {
+	uint32	mask;		// gpuSceneInstance_t::MASK_SHADOW*: the casters the surfaces drawn take shadows of
+	int		noise;		// the index of the noise: the point of the light's disk a pixel aims at
+};
+
+static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t * vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds,
+	const tracedLight_t * traced = nullptr ) {
 	if ( surfList == NULL ) {
 		return;
+	}
+	// ambient lights have a program of their own and cast no shadow
+	assert( traced == nullptr || !vLight->lightShader->IsAmbientLight() );
+	if ( traced != nullptr ) {
+		const idVec3 & origin = vLight->globalLightOrigin;
+		const float rtLight[4] = { origin.x, origin.y, origin.z, vLight->emitterRadius };
+		const float rtShadow[4] = { static_cast<float>( traced->mask ), static_cast<float>( traced->noise ), 0.0f, 0.0f };
+		SetFragmentParm( RENDERPARM_RT_LIGHT, rtLight );
+		SetFragmentParm( RENDERPARM_RT_SHADOW, rtShadow );
 	}
 
 	// change the scissor if needed, it will be constant across all the surfaces lit by the light
@@ -1315,6 +1331,12 @@ static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t
 				} else {
 					renderProgManager.BindShader_InteractionAmbient();
 				}
+			} else if ( traced != nullptr ) {
+				if ( surf->jointCache ) {
+					renderProgManager.BindShader_InteractionRtSkinned();
+				} else {
+					renderProgManager.BindShader_InteractionRt();
+				}
 			} else {
 				if ( surf->jointCache ) {
 					renderProgManager.BindShader_InteractionSkinned();
@@ -1349,6 +1371,13 @@ static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t
 
 				// model-view-projection
 				RB_SetMVP( surf->space->mvp );
+
+				// the ray of a traced shadow starts at the pixel's world position
+				if ( traced != nullptr ) {
+					float modelMatrixTranspose[16];
+					R_MatrixTranspose( surf->space->modelMatrix, modelMatrixTranspose );
+					SetVertexParms( RENDERPARM_MODELMATRIX_X, modelMatrixTranspose, 4 );
+				}
 
 				// tranform the light/view origin into model local space
 				idVec4 localLightOrigin( 0.0f );
@@ -1771,6 +1800,64 @@ DRAW INTERACTIONS
 
 ==============================================================================================
 */
+// Whether the main view traces this light's shadows: it casts some, and its interactions are interaction.vfp's.
+static bool RB_LightTracesShadows( const viewLight_t & vLight ) {
+	const idMaterial & shader = *vLight.lightShader;
+	return backEnd.tracedShadows && vLight.castsShadows && !shader.IsAmbientLight() && !shader.IsFogLight() && !shader.IsBlendLight()
+		&& ( vLight.localInteractions != NULL || vLight.globalInteractions != NULL );
+}
+
+/*
+==================
+RB_DrawTracedLights
+
+The opaque interactions of the lights whose shadows are traced, in one bracket (R16): each adds its light to the
+scene as if nothing stood in its way, and to the light target what a caster of the GPU scene takes of it (R17).
+The resolve then takes the second sum out of the first: one signal for all lights, whatever their number.
+False: nothing was drawn, the lights draw with their stencil shadows.
+==================
+*/
+static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
+	bool any = false;
+	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != NULL && !any; vLight = vLight->next ) {
+		any = RB_LightTracesShadows( *vLight );
+	}
+	const idScreenRect & v = backEnd.viewDef->viewport;
+	const renderRect_t viewport = { v.x1, v.y1, v.GetWidth(), v.GetHeight() };
+	if ( !any || !renderBackend->BeginTracedLights( viewport ) ) {
+		return false;
+	}
+
+	renderLog.OpenMainBlock( MRB_LIGHT_INTERACTIONS );
+	renderLog.OpenBlock( "Traced Lights" );
+	tracedLight_t traced = {};
+	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+		if ( !RB_LightTracesShadows( *vLight ) ) {
+			continue;
+		}
+		renderLog.OpenBlock( vLight->lightShader->GetName() );
+		if ( useLightDepthBounds ) {
+			renderBackend->DepthBoundsTest( vLight->scissorRect.zmin, vLight->scissorRect.zmax );
+		}
+		// a local surface (MF_NOSELFSHADOW) takes the shadows of the others only, as the stencil order gives it
+		traced.mask = gpuSceneInstance_t::MASK_SHADOW_GLOBAL;
+		RB_RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, &traced );
+		traced.mask = gpuSceneInstance_t::MASK_SHADOW;
+		RB_RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, &traced );
+		// each light its own points of the disk: two lights of a pixel do not share their noise
+		traced.noise++;
+		renderLog.CloseBlock();
+	}
+	renderLog.CloseBlock();
+	renderLog.CloseMainBlock();
+	renderBackend->EndTracedLights();
+
+	renderLog.OpenMainBlock( MRB_RAY_TRACING );
+	renderBackend->ResolveTracedShadows( backEnd.viewDef->rayTracing.shadow, viewport );
+	renderLog.CloseMainBlock();
+	return true;
+}
+
 /*
 ==================
 RB_DrawInteractions
@@ -1785,11 +1872,14 @@ static void RB_DrawInteractions() {
 	renderLog.OpenBlock( "RB_DrawInteractions" );
 
 	const bool useLightDepthBounds = r_useLightDepthBounds.GetBool();
+	const bool traced = backEnd.tracedShadows && RB_DrawTracedLights( useLightDepthBounds );
+	// r_rtDebug 6 shows the traced lights alone: nothing else adds to them
+	const bool tracedAlone = traced && backEnd.viewDef->rayTracing.shadow.show;
 
 	//
 	// for each light, perform shadowing and adding
 	//
-	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+	for ( const viewLight_t * vLight = tracedAlone ? NULL : backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		// do fogging later
 		if ( vLight->lightShader->IsFogLight() ) {
 			continue;
@@ -1798,7 +1888,14 @@ static void RB_DrawInteractions() {
 			continue;
 		}
 
-		if ( vLight->localInteractions == NULL && vLight->globalInteractions == NULL && vLight->translucentInteractions == NULL ) {
+		// a traced light has drawn its opaque interactions, shadows in them: its translucent ones are left
+		const bool drawn = traced && RB_LightTracesShadows( *vLight );
+		const drawSurf_t * const localInteractions = drawn ? NULL : vLight->localInteractions;
+		const drawSurf_t * const globalInteractions = drawn ? NULL : vLight->globalInteractions;
+		const drawSurf_t * const localShadows = drawn ? NULL : vLight->localShadows;
+		const drawSurf_t * const globalShadows = drawn ? NULL : vLight->globalShadows;
+
+		if ( localInteractions == NULL && globalInteractions == NULL && vLight->translucentInteractions == NULL ) {
 			continue;
 		}
 
@@ -1811,7 +1908,7 @@ static void RB_DrawInteractions() {
 		}
 
 		// only need to clear the stencil buffer and perform stencil testing if there are shadows
-		const bool performStencilTest = ( vLight->globalShadows != NULL || vLight->localShadows != NULL );
+		const bool performStencilTest = ( globalShadows != NULL || localShadows != NULL );
 
 		// mirror flips the sense of the stencil select, and I don't want to risk accidentally breaking it
 		// in the normal case, so simply disable the stencil select in the mirror case
@@ -1841,34 +1938,34 @@ static void RB_DrawInteractions() {
 			}
 		}
 
-		if ( vLight->globalShadows != NULL ) {
+		if ( globalShadows != NULL ) {
 			renderLog.OpenMainBlock( MRB_STENCIL_SHADOWS );
 			renderLog.OpenBlock( "Global Light Shadows" );
-			RB_StencilShadowPass( vLight->globalShadows, vLight );
+			RB_StencilShadowPass( globalShadows, vLight );
 			renderLog.CloseBlock();
 			renderLog.CloseMainBlock();
 		}
 
-		if ( vLight->localInteractions != NULL ) {
+		if ( localInteractions != NULL ) {
 			renderLog.OpenMainBlock( MRB_LIGHT_INTERACTIONS );
 			renderLog.OpenBlock( "Local Light Interactions" );
-			RB_RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
+			RB_RenderInteractions( localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
 			renderLog.CloseBlock();
 			renderLog.CloseMainBlock();
 		}
 
-		if ( vLight->localShadows != NULL ) {
+		if ( localShadows != NULL ) {
 			renderLog.OpenMainBlock( MRB_STENCIL_SHADOWS );
 			renderLog.OpenBlock( "Local Light Shadows" );
-			RB_StencilShadowPass( vLight->localShadows, vLight );
+			RB_StencilShadowPass( localShadows, vLight );
 			renderLog.CloseBlock();
 			renderLog.CloseMainBlock();
 		}
 
-		if ( vLight->globalInteractions != NULL ) {
+		if ( globalInteractions != NULL ) {
 			renderLog.OpenMainBlock( MRB_LIGHT_INTERACTIONS );
 			renderLog.OpenBlock( "Global Light Interactions" );
-			RB_RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
+			RB_RenderInteractions( globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
 			renderLog.CloseBlock();
 			renderLog.CloseMainBlock();
 		}
@@ -2921,14 +3018,16 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 
 	// R15: the GPU scene before anything of the view traces it; the second eye sends the same update again.
 	// Only the main view sends: a world gathered for another view leaves a gap, and the next delta is refused.
+	bool traceable = false;
 	if ( hdrMainView && backEnd.viewDef->gpuScene != nullptr ) {
 		renderLog.OpenMainBlock( MRB_RT_SCENE );
-		RB_UpdateGpuScene( *backEnd.viewDef->gpuScene );
+		traceable = RB_UpdateGpuScene( *backEnd.viewDef->gpuScene );
 		renderLog.CloseMainBlock();
 	}
 
-	// render the scene
+	// render the scene; a frame that cannot trace every caster draws its stencil shadows
 	backEnd.gbufferView = hdrMainView && backEnd.hdrPhase && backEnd.viewDef->rayTracing.gbuffer;
+	backEnd.tracedShadows = hdrMainView && backEnd.hdrPhase && traceable && backEnd.viewDef->rayTracing.shadow.enabled;
 	RB_DrawViewInternal( cmd->viewDef, stereoEye, !hdrMainView );
 
 	// motion blur is in HDR: the resolve comes after it
@@ -2946,7 +3045,8 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 			renderBackend->DrawGBufferDebug( backEnd.viewDef->rayTracing.gbufferDebug, { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
 		}
 		const rtDebug_t rtDebug = backEnd.viewDef->rayTracing.rtDebug;
-		if ( rtDebug != rtDebug_t::NONE && rtDebug != rtDebug_t::REFLECTION && backEnd.viewDef->gpuScene != nullptr ) {
+		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS );	// drawn before the resolve
+		if ( rtDebug != rtDebug_t::NONE && !inScene && backEnd.viewDef->gpuScene != nullptr ) {
 			renderLog.OpenMainBlock( MRB_RAY_TRACING );
 			renderBackend->DrawRayTracingDebug( rtDebug, RB_RayTracingView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
 			renderLog.CloseMainBlock();
@@ -2954,6 +3054,7 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		RB_RenderDebugTools( (drawSurf_t **)&backEnd.viewDef->drawSurfs[0], backEnd.viewDef->numDrawSurfs );
 	}
 	backEnd.gbufferView = false;
+	backEnd.tracedShadows = false;
 
 	// optionally draw a box colored based on the eye number
 	if ( r_drawEyeColor.GetBool() ) {

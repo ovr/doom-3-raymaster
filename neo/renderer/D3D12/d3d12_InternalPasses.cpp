@@ -88,6 +88,9 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "rtReflect", shaderStageType_t::COMPUTE, "internal_rtReflect", nullptr },
 	{ "rtReflect", shaderStageType_t::COMPUTE, "internal_rtReflect_msaa", "MULTISAMPLED=1" },
 	{ "rtComposite", shaderStageType_t::FRAGMENT, "internal_rtComposite", nullptr },
+	{ "rtShadowRatio", shaderStageType_t::FRAGMENT, "internal_rtShadowRatio", nullptr },
+	{ "rtShadowRatio", shaderStageType_t::FRAGMENT, "internal_rtShadowRatio_msaa", "MULTISAMPLED=1" },
+	{ "rtShadowApply", shaderStageType_t::FRAGMENT, "internal_rtShadowApply", nullptr },
 };
 
 }	// namespace
