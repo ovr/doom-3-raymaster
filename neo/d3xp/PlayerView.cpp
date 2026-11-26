@@ -419,7 +419,7 @@ void idPlayerView::SingleView( const renderView_t *view, idMenuHandler_HUD * hud
 	if ( gameLocal.portalSkyEnt.GetEntity() && gameLocal.IsPortalSkyAcive() && g_enablePortalSky.GetBool() ) {
 		renderView_t portalView = hackedView;
 		portalView.vieworg = gameLocal.portalSkyEnt.GetEntity()->GetPhysics()->GetOrigin();
-		gameRenderWorld->RenderScene( &portalView );
+		gameRenderWorld->RenderScene( &portalView, true );
 		renderSystem->CaptureRenderToImage( "_currentRender" );
 
 		hackedView.forceUpdate = true;				// FIX: for smoke particles not drawing when portalSky present

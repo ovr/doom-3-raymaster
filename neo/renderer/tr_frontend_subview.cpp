@@ -204,6 +204,7 @@ static viewDef_t *R_MirrorViewBySurface( const drawSurf_t *drawSurf ) {
 	viewDef_t * parms = (viewDef_t *)R_FrameAlloc( sizeof( *parms ) );
 	*parms = *tr.viewDef;
 	parms->renderView.viewID = 0;	// clear to allow player bodies to show up, and suppress view weapons
+	parms->rayTracing.shadow.KeepStencil();
 
 	parms->isSubview = true;
 	parms->isMirror = true;
@@ -257,6 +258,7 @@ static viewDef_t *R_XrayViewBySurface( const drawSurf_t *drawSurf ) {
 	viewDef_t * parms = (viewDef_t *)R_FrameAlloc( sizeof( *parms ) );
 	*parms = *tr.viewDef;
 	parms->renderView.viewID = 0;	// clear to allow player bodies to show up, and suppress view weapons
+	parms->rayTracing.shadow.KeepStencil();
 
 	parms->isSubview = true;
 	parms->isXraySubview = true;
@@ -289,6 +291,7 @@ static void R_RemoteRender( const drawSurf_t *surf, textureStage_t *stage ) {
 
 	parms->renderView = *surf->space->entityDef->parms.remoteRenderView;
 	parms->renderView.viewID = 0;	// clear to allow player bodies to show up, and suppress view weapons
+	parms->rayTracing.shadow.KeepStencil();
 	parms->initialViewAreaOrigin = parms->renderView.vieworg;
 	parms->isSubview = true;
 	parms->isMirror = false;

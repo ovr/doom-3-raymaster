@@ -39,6 +39,7 @@ public:
 	// R15. False: not applied, and nothing may be traced until a full update applies.
 	[[nodiscard]] bool				Update( const gpuSceneUpdate_t & update );
 	[[nodiscard]] bool				Valid() const { return valid; }
+	[[nodiscard]] gpuSceneRefusal_t	Refusal() const { return refusal; }		// of the last Update
 	// The records as the GPU holds them (views in textures[]), by index; entries of no live slot are stale.
 	[[nodiscard]] std::span<const gpuSceneGeometry_t>	Geometries() const { return mirror; }
 	// The last update's instances and static buffers: this frame's, while Valid.
@@ -66,6 +67,7 @@ public:
 private:
 	[[nodiscard]] bool				Reserve( int records );
 	[[nodiscard]] bool				RecordTexturesLive();
+	[[nodiscard]] gpuSceneRefusal_t	DeltaRefusal( const gpuSceneFrame_t & frame );
 	[[nodiscard]] bool				WriteLights( std::span<const gpuSceneLightWrite_t> lights );
 	// The view a record holds of texture; sampled the texture when it is SAMPLED, else NONE (the fallback's view).
 	[[nodiscard]] uint32			View( textureHandle_t texture, textureHandle_t & sampled );
@@ -100,6 +102,7 @@ private:
 	bufferHandle_t					staticIndexBuffer = bufferHandle_t::NONE;
 
 	bool							valid = false;
+	gpuSceneRefusal_t				refusal = gpuSceneRefusal_t::NONE;
 	uint32							sceneId = 0;
 	uint32							sequence = 0;
 	int								staticGeneration = -1;

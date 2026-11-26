@@ -32,6 +32,10 @@ void idGpuScene::Reset() {
 	full = true;
 }
 
+bool idGpuScene::TracedSince( const rtTracedScene_t & traced ) const {
+	return traced.scene == id && traced.sequence >= fullSequence && !full && staticGeneration == vertexCache.StaticGeneration();
+}
+
 void idGpuScene::FreeSlot( slot_t & slot ) {
 	geometries.Free( slot.firstGeometry, slot.numGeometries );
 	slot = slot_t();
@@ -43,17 +47,21 @@ void idGpuScene::FreeEntity( int index ) {
 	}
 }
 
-// A surface the scene holds: static vertex cache geometry of a drawn, not translucent and not deformed material.
-static bool R_GpuSceneSurface( const modelSurface_t & surf, const idMaterial * shader ) {
+// A surface the scene holds: static vertex cache geometry of a drawn, not translucent and not deformed material,
+// or of a hull: a material that draws nothing and casts (forceShadows without a stage).
+static bool R_GpuSceneSurface( const modelSurface_t & surf, const idMaterial * shader, bool hull ) {
 	const srfTriangles_t * tri = surf.geometry;
-	if ( shader == nullptr || !shader->IsDrawn() || tri == nullptr || tri->numIndexes <= 0 || tri->numVerts <= 0 ) {
+	if ( shader == nullptr || tri == nullptr || tri->numIndexes <= 0 || tri->numVerts <= 0 ) {
 		return false;
 	}
 	if ( tri->ambientCache == 0 || tri->indexCache == 0 || !idVertexCache::CacheIsStatic( tri->ambientCache )
 			|| !idVertexCache::CacheIsStatic( tri->indexCache ) ) {
 		return false;
 	}
-	return shader->Coverage() != MC_TRANSLUCENT && shader->Deform() == DFRM_NONE && !shader->IsPortalSky();
+	if ( hull ) {
+		return shader->SurfaceCastsShadow();
+	}
+	return shader->IsDrawn() && shader->Coverage() != MC_TRANSLUCENT && shader->Deform() == DFRM_NONE && !shader->IsPortalSky();
 }
 
 // A stage that samples one plain texture with the surface's own texture coordinates.
@@ -165,8 +173,10 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 	const float * shaderParms = R_EntityShaderParms( def.parms, *tr.viewDef, generated );
 	for ( int i = 0; i < model.NumSurfaces(); i++ ) {
 		const modelSurface_t & surf = *model.Surface( i );
-		const idMaterial * shader = R_RemapShaderBySkin( surf.shader, def.parms.customSkin, def.parms.customShader );
-		if ( !R_GpuSceneSurface( surf, shader ) ) {
+		// what draws nothing is drawn under no skin either (R_AddSingleModel), and may still cast
+		const bool hull = ( surf.shader != nullptr && !surf.shader->IsDrawn() );
+		const idMaterial * shader = hull ? surf.shader : R_RemapShaderBySkin( surf.shader, def.parms.customSkin, def.parms.customShader );
+		if ( !R_GpuSceneSurface( surf, shader, hull ) ) {
 			continue;
 		}
 		const float * regs = shader->ConstantRegisters();
@@ -176,7 +186,7 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 			regs = scratch;
 			slot.animated = true;
 		}
-		if ( R_GpuSceneStagesOff( *shader, regs ) ) {
+		if ( !hull && R_GpuSceneStagesOff( *shader, regs ) ) {
 			continue;
 		}
 		const srfTriangles_t & tri = *surf.geometry;
@@ -199,7 +209,8 @@ void idGpuScene::BuildSlot( slot_t & slot, const idRenderEntityLocal & def, cons
 			| ( shader->GetCullType() == CT_TWO_SIDED ? gpuSceneGeometry_t::GEO_TWO_SIDED : 0 )
 			| ( ( shader->HasGui() || subview ) ? gpuSceneGeometry_t::GEO_NO_SHADING : 0 )
 			| ( shader->SurfaceCastsShadow() ? gpuSceneGeometry_t::GEO_CASTS_SHADOW : 0 )
-			| ( shader->TestMaterialFlag( MF_NOSELFSHADOW ) ? gpuSceneGeometry_t::GEO_NO_SELF_SHADOW : 0 );
+			| ( shader->TestMaterialFlag( MF_NOSELFSHADOW ) ? gpuSceneGeometry_t::GEO_NO_SELF_SHADOW : 0 )
+			| ( hull ? gpuSceneGeometry_t::GEO_SHADOW_ONLY : 0 );
 		R_GpuSceneMaterial( *shader, regs, write );
 	}
 	// an instance culls and casts as a whole: each group of the records is one
@@ -403,9 +414,15 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 
 			// as the view would draw it: not the weapon, nothing only another view sees, no xray
 			const renderEntity_t & parms = def.parms;
+			const int viewID = view.renderView.viewID;
 			if ( parms.hModel == nullptr || parms.weaponDepthHack || parms.xrayIndex == 2
-					|| ( parms.suppressSurfaceInViewID != 0 && parms.suppressSurfaceInViewID == view.renderView.viewID )
-					|| ( parms.allowSurfaceInViewID != 0 && parms.allowSurfaceInViewID != view.renderView.viewID ) ) {
+					|| ( parms.allowSurfaceInViewID != 0 && parms.allowSurfaceInViewID != viewID ) ) {
+				continue;
+			}
+			// what the view does not draw of itself (the player's body) casts unless its shadow is suppressed too
+			const bool visible = ( parms.suppressSurfaceInViewID == 0 || parms.suppressSurfaceInViewID != viewID );
+			const bool casts = !parms.noShadow && ( visible || parms.suppressShadowInViewID == 0 || parms.suppressShadowInViewID != viewID );
+			if ( !visible && !casts ) {
 				continue;
 			}
 			const idRenderModel * model = nullptr;
@@ -434,7 +451,8 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 			// an instance per group of the slot's records
 			const int * counts = slot.groups.count;
 			for ( int group = 0, first = slot.firstGeometry; group < GPU_SCENE_GROUPS; first += counts[group], group++ ) {
-				if ( counts[group] == 0 ) {
+				const uint32 mask = GpuScene_InstanceMask( group, casts, visible );
+				if ( counts[group] == 0 || mask == 0 ) {
 					continue;
 				}
 				gpuSceneInstance_t & instance = instances.Alloc();
@@ -446,7 +464,7 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 				}
 				instance.firstGeometry = static_cast<uint32>( first );
 				instance.numGeometries = static_cast<uint32>( counts[group] );
-				instance.mask = GpuScene_InstanceMask( group, !parms.noShadow );
+				instance.mask = mask;
 				instance.skinnedVerts = static_cast<uint32>( slot.groups.skinnedVerts[group] );
 				instance.blasKey = slot.blasKey[group];
 				if ( skinned ) {
@@ -473,6 +491,7 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 	out->sequence = ++sequence;
 	out->base = frameBase;
 	out->full = frameFull;
+	fullSequence = frameFull ? sequence : fullSequence;
 	out->staticGeneration = staticGeneration;
 	out->geometryCapacity = geometries.Capacity();
 	out->numWrites = writes.Num();
@@ -541,6 +560,9 @@ bool RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 		gpuSceneLost.store( frame.sceneId );
 	}
 	refused += applied ? 0 : 1;
+	if ( !applied && r_rtStats.GetBool() ) {
+		common->Printf( "rt scene %u.%u%s: refused, %s (base %u)\n", frame.sceneId, frame.sequence, frame.full ? " full" : "", GpuScene_RefusalName( stats.refusal ), frame.base );
+	}
 
 	static int lastPrint = 0;
 	if ( r_rtStats.GetBool() && Sys_Milliseconds() - lastPrint >= 1000 ) {
@@ -552,8 +574,8 @@ bool RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 			stats.skinnedVerts, stats.frameBytes / ( 1024.0 * 1024.0 ) );
 		refused = 0;
 	}
-	// A full update's structures are built over several frames, and until all stand the frame cannot trace its
-	// shadows. A caster that joins later only lacks its own for the frames it waits.
+	// A full update builds every structure at once; while one still waits after it (a buffer that could not be
+	// made) the frame cannot trace every caster. One that joins later only lacks its own for the frames it waits.
 	static bool settling = false;
 	if ( applied ) {
 		settling = ( frame.full || settling ) && stats.waiting > 0;

@@ -159,19 +159,40 @@ bool idD3D12GpuScene::RecordTexturesLive() {
 	return true;
 }
 
+// A delta's writes are all since base: they follow that update and any earlier one of its own frame (the first eye's).
+gpuSceneRefusal_t idD3D12GpuScene::DeltaRefusal( const gpuSceneFrame_t & frame ) {
+	if ( !valid ) {
+		return gpuSceneRefusal_t::NOTHING_HELD;
+	}
+	if ( frame.sceneId != sceneId ) {
+		return gpuSceneRefusal_t::OTHER_SCENE;
+	}
+	if ( frame.base > sequence || sequence >= frame.sequence ) {
+		return gpuSceneRefusal_t::GAP;
+	}
+	if ( frame.staticGeneration != staticGeneration ) {
+		return gpuSceneRefusal_t::STATIC_BUFFERS;
+	}
+	return RecordTexturesLive() ? gpuSceneRefusal_t::NONE : gpuSceneRefusal_t::TEXTURE_DESTROYED;
+}
+
 bool idD3D12GpuScene::Update( const gpuSceneUpdate_t & update ) {
 	const gpuSceneFrame_t & frame = *update.frame;
+	refusal = gpuSceneRefusal_t::NONE;
 	if ( device.IsLost() ) {
 		valid = false;
+		refusal = gpuSceneRefusal_t::DEVICE_LOST;
 		return false;
 	}
 	if ( valid && frame.sceneId == sceneId && frame.sequence == sequence ) {
 		return true;
 	}
-	// its writes are all since base: they follow that update and any earlier one of its own frame (the first eye's)
-	const bool follows = valid && frame.sceneId == sceneId && frame.base <= sequence && sequence < frame.sequence
-		&& frame.staticGeneration == staticGeneration && RecordTexturesLive();
-	if ( ( !frame.full && !follows ) || !Reserve( frame.geometryCapacity ) || !WriteLights( std::span( frame.lights, static_cast<size_t>( frame.numLights ) ) ) ) {
+	refusal = frame.full ? gpuSceneRefusal_t::NONE : DeltaRefusal( frame );
+	if ( refusal == gpuSceneRefusal_t::NONE
+			&& ( !Reserve( frame.geometryCapacity ) || !WriteLights( std::span( frame.lights, static_cast<size_t>( frame.numLights ) ) ) ) ) {
+		refusal = gpuSceneRefusal_t::NO_MEMORY;
+	}
+	if ( refusal != gpuSceneRefusal_t::NONE ) {
 		valid = false;
 		instances.clear();
 		numLights = 0;

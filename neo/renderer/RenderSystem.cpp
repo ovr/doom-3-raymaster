@@ -180,6 +180,8 @@ void	R_AddDrawViewCmd( viewDef_t *parms, bool guiOnly ) {
 	cmd->commandId = ( guiOnly ) ? RC_DRAW_VIEW_GUI : RC_DRAW_VIEW_3D;
 
 	cmd->viewDef = parms;
+	const bool mayBeMain = !guiOnly && !parms->isSubview && !parms->notMainView && parms->viewEntitys != nullptr;
+	tr.mainViewForecast.AddView( parms->renderView.viewEyeBuffer, guiOnly, parms->numDrawSurfs != 0, mayBeMain ? parms->renderWorld : nullptr );
 
 	tr.pc.c_numViews++;
 
@@ -778,6 +780,10 @@ const emptyCommand_t * idRenderSystemLocal::SwapCommandBuffers_FinishCommandBuff
 
 	// this is the ONLY place this is modified
 	frameCount++;
+
+	// no front end runs here and the back end has drawn the frame before: what it traced, for the next views
+	tracedScene = backEnd.tracedScene;
+	mainViewForecast.BeginFrame();
 
 	// just in case we did a common->Error while this
 	// was set

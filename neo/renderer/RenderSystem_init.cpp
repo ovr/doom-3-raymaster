@@ -199,7 +199,8 @@ idCVar r_rtShadows( "r_rtShadows", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced s
 idCVar r_rtHistory( "r_rtHistory", "1", CVAR_RENDERER | CVAR_BOOL, "the ray traced passes average their noise over the frames before; 0 = every frame alone, with the same noise" );
 idCVar r_rtShadowHistory( "r_rtShadowHistory", "16", CVAR_RENDERER | CVAR_INTEGER, "frames the ray traced shadows average per pixel", 1, 64 );
 idCVar r_rtShadowPasses( "r_rtShadowPasses", "3", CVAR_RENDERER | CVAR_INTEGER, "spatial filter passes over the ray traced shadows, each twice as wide as the one before; 0 = none", 0, 5 );
-idCVar r_rtReference( "r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a still camera: the ray traced passes average up to 4096 frames and skip their spatial filters" );
+idCVar r_rtShadowVolumes( "r_rtShadowVolumes", "0", CVAR_RENDERER | CVAR_BOOL, "the front end makes the stencil shadow volumes also for a view whose shadows are ray traced: a frame that cannot trace then draws them (to measure what they cost)" );
+idCVar r_rtReference("r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a still camera: the ray traced passes average up to 4096 frames and skip their spatial filters" );
 idCVar r_rtLightSize( "r_rtLightSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the emitter of every light for the ray traced shadows (its light_size, by default 2 % of the light's reach within 2 .. 10 units); 0 = point lights", 0.0f, 16.0f );
 idCVar r_rtReflections( "r_rtReflections", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced mirror reflections of the main view on the surfaces whose specular may reflect" );
 idCVar r_rtReflectionScale( "r_rtReflectionScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced reflections", 0.0f, 4.0f );
@@ -232,6 +233,7 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	shadow.show = ( settings.rtDebug == rtDebug_t::SHADOWS );
 	shadow.showLength = ( settings.rtDebug == rtDebug_t::HISTORY );
 	shadow.enabled = tracing && r_useGPUSkinning.GetBool() && ( r_rtShadows.GetBool() || shadow.show || shadow.showLength );
+	shadow.keepVolumes = r_rtShadowVolumes.GetBool();
 	shadow.reference = r_rtReference.GetBool();
 	shadow.history = r_rtHistory.GetBool() || shadow.reference;
 	shadow.maxHistory = shadow.reference ? 4096 : r_rtShadowHistory.GetInteger();
@@ -1297,6 +1299,8 @@ idRenderSystemLocal::Clear
 void idRenderSystemLocal::Clear() {
 	registered = false;
 	frameCount = 0;
+	tracedScene = {};
+	mainViewForecast.BeginFrame();
 	viewCount = 0;
 	frameShaderTime = 0.0f;
 	ambientLightVector.Zero();

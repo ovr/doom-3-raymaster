@@ -8,6 +8,7 @@
 #include <span>
 
 #include "RenderBackendTypes.h"
+#include "RayTracingSettings.h"
 
 /*
 	The GPU scene (R15 of RenderBackend.h): what the ray traced passes of the main view see.
@@ -20,12 +21,14 @@
 	    (gpuSceneFrame_t, frame memory)
 
 	A slot is built again when its entity changes (model, parms, a material that is not constant), and a record goes
-	out only when it differs from what the GPU holds at its index. A slot's surfaces are up to four instances: by
-	side, since an instance culls as a whole, and by MF_NOSELFSHADOW, since it has one mask (Doom 3's local
-	surfaces take no shadow of each other). A full update (the first, a new set of static buffers, a refused
-	update) drops every slot and sends the records of the frame's instances. Out for now: geometry of the frame's
-	vertex cache (particles, deforms, decals, CPU skinning), translucent surfaces, the weapon and the player's
-	body.
+	out only when it differs from what the GPU holds at its index. A slot's surfaces are up to eight instances: by
+	side, since an instance culls as a whole, by MF_NOSELFSHADOW, since it has one mask (Doom 3's local surfaces
+	take no shadow of each other), and by whether they are drawn: what only casts (a hull of
+	textures/common/shadow, which has no stage) is an instance no ray but a shadow ray meets. So is every instance
+	of an entity the view suppresses without its shadow (the player's body under g_showPlayerShadow). A full
+	update (the first, a new set of static buffers, a refused update) drops every slot and sends the records of
+	the frame's instances. Out for now: geometry of the frame's vertex cache (particles, deforms, decals, CPU
+	skinning), translucent surfaces and the weapon.
 
 	Every view of a frame that sees other areas gathers again (a portal sky's view comes before the player's): its
 	update has its own instances and lights and every write of the frame so far (base, the last sequence of the
@@ -57,6 +60,7 @@ struct gpuSceneGeometry_t {
 	static constexpr uint32	GEO_NO_SHADING = 1u << 3;	// an occluder only: a GUI, a mirror
 	static constexpr uint32	GEO_CASTS_SHADOW = 1u << 4;	// without it the BLAS holds the geometry not opaque: shadow rays skip it
 	static constexpr uint32	GEO_NO_SELF_SHADOW = 1u << 5;	// MF_NOSELFSHADOW, a local surface: no shadow of or on another such
+	static constexpr uint32	GEO_SHADOW_ONLY = 1u << 6;	// nothing draws it: its instance is not MASK_VISIBLE
 
 	uint32		vertexOffset;		// bytes into the static vertex buffer: idDrawVert
 	uint32		indexOffset;		// bytes into the static index buffer: triIndex_t
@@ -149,7 +153,24 @@ struct gpuSceneUpdate_t {
 };
 
 // What the backend made of an update's acceleration structures, for r_rtStats.
+// Why the backend refused an update (R15), for r_rtStats.
+enum class gpuSceneRefusal_t {
+	NONE,
+	DEVICE_LOST,
+	NOTHING_HELD,			// a delta while the backend holds no scene: after a refusal, before the first full one
+	OTHER_SCENE,
+	GAP,					// its writes do not follow the update applied last
+	STATIC_BUFFERS,			// another generation of the static vertex cache
+	TEXTURE_DESTROYED,		// a SAMPLED texture that a held record views
+	NO_MEMORY,
+};
+[[nodiscard]] constexpr const char * GpuScene_RefusalName( gpuSceneRefusal_t refusal ) {
+	constexpr const char * names[] = { "none", "device lost", "no scene held", "another scene", "a gap", "new static buffers", "a texture destroyed", "no memory" };
+	return names[static_cast<int>( refusal )];
+}
+
 struct gpuSceneStats_t {
+	gpuSceneRefusal_t		refusal = gpuSceneRefusal_t::NONE;
 	bool					traceable = false;	// the structures of the update stand: the frame's passes and draws may trace
 	int						tlasInstances = 0;
 	int						waiting = 0;		// instances left out: their BLAS waits for the frame's build budget
@@ -162,16 +183,19 @@ struct gpuSceneStats_t {
 	uint64					frameBytes = 0;		// the TLAS, the skinned BLAS and vertices, the scratch
 };
 
-// The instance a record of a slot belongs to: the one-sided before the two-sided, in each the local ones last.
-constexpr int GPU_SCENE_GROUPS = 4;
+// The instance a record of a slot belongs to: what is drawn before what only casts, in each the one-sided before
+// the two-sided, in each of those the local ones last.
+constexpr int GPU_SCENE_GROUPS = 8;
 [[nodiscard]] constexpr int GpuScene_Group( uint32 flags ) {
-	return ( ( flags & gpuSceneGeometry_t::GEO_TWO_SIDED ) != 0 ? 2 : 0 ) | ( ( flags & gpuSceneGeometry_t::GEO_NO_SELF_SHADOW ) != 0 ? 1 : 0 );
+	return ( ( flags & gpuSceneGeometry_t::GEO_SHADOW_ONLY ) != 0 ? 4 : 0 ) | ( ( flags & gpuSceneGeometry_t::GEO_TWO_SIDED ) != 0 ? 2 : 0 )
+		| ( ( flags & gpuSceneGeometry_t::GEO_NO_SELF_SHADOW ) != 0 ? 1 : 0 );
 }
 
-// An entity with noShadow casts nothing; a local group's shadows do not fall on local surfaces.
-[[nodiscard]] constexpr uint32 GpuScene_InstanceMask( int group, bool castsShadows ) {
+// An entity with noShadow casts nothing; a local group's shadows do not fall on local surfaces; what only casts, and
+// all of an entity the view does not draw (visible false), meets shadow rays alone. 0: no instance.
+[[nodiscard]] constexpr uint32 GpuScene_InstanceMask( int group, bool castsShadows, bool visible ) {
 	const uint32 shadows = gpuSceneInstance_t::MASK_SHADOW | ( ( group & 1 ) != 0 ? 0 : gpuSceneInstance_t::MASK_SHADOW_GLOBAL );
-	return gpuSceneInstance_t::MASK_VISIBLE | ( castsShadows ? shadows : 0 );
+	return ( ( visible && ( group & 4 ) == 0 ) ? gpuSceneInstance_t::MASK_VISIBLE : 0 ) | ( castsShadows ? shadows : 0 );
 }
 
 struct gpuSceneGroups_t {
@@ -327,6 +351,9 @@ public:
 	void					FreeEntity( int index );	// FreeEntityDef
 	void					Reset();					// the next Gather sends a full update
 	[[nodiscard]] uint32	Id() const { return id; }
+	// Whether a view may count on the trace, as far as the front end knows before it gathers: the back end traced
+	// this scene at or after its last full update, and the next update is no full one.
+	[[nodiscard]] bool		TracedSince( const rtTracedScene_t & traced ) const;
 
 private:
 	struct slot_t {
@@ -369,6 +396,7 @@ private:
 	idList<gather_t>		gathers;			// of gatherFrame
 	uint32					id;
 	uint32					sequence = 0;
+	uint32					fullSequence = 0;	// of the last full update
 	uint32					frameBase = 0;		// the sequence before gatherFrame's first gather
 	int						staticGeneration = -1;
 	bool					full = true;		// the next gather drops every slot

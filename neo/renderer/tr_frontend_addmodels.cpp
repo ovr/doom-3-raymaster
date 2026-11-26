@@ -459,6 +459,28 @@ static const idJointMat * R_JointsWithMotion( idRenderModelStatic & model, const
 	return model.jointsMotion;
 }
 
+// A GPU-skinned model's joints in this frame's joint buffer, uploaded once a frame. The GPU scene takes a skinned
+// model by them (R15): a caster the view does not draw needs them as much as a drawn one.
+static void R_UploadJoints( idRenderModelStatic & model ) {
+	assert( model.jointsInverted != NULL );
+
+	// 0 = changed since the upload (InstantiateDynamicModel); CacheIsCurrent takes it for frame 0 of the 15-bit counter
+	if ( model.jointsInvertedBuffer != 0 && vertexCache.CacheIsCurrent( model.jointsInvertedBuffer ) ) {
+		return;
+	}
+	const int alignment = renderBackend->Caps().uniformBufferOffsetAlignment;
+	if ( tr.viewDef->rayTracing.gbuffer ) {
+		// the skinned programs read the first joints as before; gbuffer_skinned those after them too (R14)
+		const jointMotionLayout_t layout = R_JointMotionLayout( model.numInvertedJoints, alignment );
+		model.jointsInvertedBuffer = vertexCache.AllocJoint( R_JointsWithMotion( model, layout ), layout.bytes );
+		model.jointsMotionRow = layout.motionRow;
+	} else {
+		const int bytes = ALIGN( model.numInvertedJoints * static_cast<int>( sizeof( idJointMat ) ), alignment );
+		model.jointsInvertedBuffer = vertexCache.AllocJoint( model.jointsInverted, bytes );
+		model.jointsMotionRow = 0;
+	}
+}
+
 void R_SetupDrawSurfJoints( drawSurf_t * drawSurf, const srfTriangles_t * tri, const idMaterial * shader ) {
 	if ( tri->staticModelWithJoints == NULL || !r_useGPUSkinning.GetBool() ) {
 		drawSurf->jointCache = 0;
@@ -467,22 +489,7 @@ void R_SetupDrawSurfJoints( drawSurf_t * drawSurf, const srfTriangles_t * tri, c
 	}
 
 	idRenderModelStatic * model = tri->staticModelWithJoints;
-	assert( model->jointsInverted != NULL );
-
-	// 0 = changed since the upload (InstantiateDynamicModel); CacheIsCurrent takes it for frame 0 of the 15-bit counter
-	if ( model->jointsInvertedBuffer == 0 || !vertexCache.CacheIsCurrent( model->jointsInvertedBuffer ) ) {
-		const int alignment = renderBackend->Caps().uniformBufferOffsetAlignment;
-		if ( tr.viewDef->rayTracing.gbuffer ) {
-			// the skinned programs read the first joints as before; gbuffer_skinned those after them too (R14)
-			const jointMotionLayout_t layout = R_JointMotionLayout( model->numInvertedJoints, alignment );
-			model->jointsInvertedBuffer = vertexCache.AllocJoint( R_JointsWithMotion( *model, layout ), layout.bytes );
-			model->jointsMotionRow = layout.motionRow;
-		} else {
-			const int bytes = ALIGN( model->numInvertedJoints * static_cast<int>( sizeof( idJointMat ) ), alignment );
-			model->jointsInvertedBuffer = vertexCache.AllocJoint( model->jointsInverted, bytes );
-			model->jointsMotionRow = 0;
-		}
-	}
+	R_UploadJoints( *model );
 	drawSurf->jointCache = model->jointsInvertedBuffer;
 	drawSurf->prevJointRow = model->jointsMotionRow;
 }
@@ -1013,6 +1020,15 @@ void R_AddSingleModel( viewEntity_t * vEntity ) {
 					entityDef->parms.hModel->IsStaticWorldModel() && !r_skipPrelightShadows.GetBool() ) {
 				// static light / world model shadow interacitons
 				// are always captured in the prelight shadow volume
+				continue;
+			}
+
+			// A view that counts on the trace of this light's shadows makes no volume (rtShadowSettings_t). Of the
+			// shadow surface the joints are left: a caster the view does not draw is in the GPU scene by them.
+			if ( viewDef->rayTracing.shadow.WithoutVolumes() && R_LightTracesShadows( vLight->castsShadows, *vLight->lightShader ) ) {
+				if ( gpuSkinned ) {
+					R_UploadJoints( *tri->staticModelWithJoints );
+				}
 				continue;
 			}
 

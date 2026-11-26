@@ -16,10 +16,13 @@
 	  rt blas readback COPY       those sizes into a READBACK buffer
 
 	A static BLAS is one per blasKey (a crate drawn 50 times is one), checked against its geometries; it is kept
-	while instances use it and unusedBuilds builds after, and dropped with its static generation. A build makes new
-	ones up to SCRATCH_BUDGET of scratch; the instances of the rest wait. The sizes are read once Waited() passes
-	their list, never by polling, so two runs record the same commands. Skinned instances are skinned and built again
-	every frame (PREFER_FAST_BUILD). The TLAS, the instance table and the skinned vertices hold until the next build.
+	while instances use it and unusedBuilds builds after, and dropped with its static generation. After a full
+	update a build makes every one the scene lacks, so that frame traces all its casters; after a delta new ones up
+	to scratchBudget of scratch, and the instances of the rest wait. New ones are built in batches of that budget:
+	a batch's builds share no scratch, the next batch takes the same bytes after a UAV barrier. The sizes are read
+	once Waited() passes their list, never by polling, so two runs record the same commands. Skinned instances are
+	skinned and built again every frame (PREFER_FAST_BUILD). The TLAS, the instance table and the skinned vertices
+	hold until the next build.
 */
 
 #include <map>
@@ -45,13 +48,13 @@ static_assert( sizeof( d3d12RtInstance_t ) == 16 );
 class idD3D12RayTracing {
 public:
 	static constexpr uint64			UNUSED_BUILDS = 600;
-	static constexpr uint64			SCRATCH_BUDGET = 32ull << 20;	// of new static BLAS per build
+	static constexpr uint64			SCRATCH_BUDGET = 32ull << 20;	// of a batch of new static BLAS, and of a delta's build
 	static constexpr int			MAX_SIZES = 4096;				// compacted sizes in flight
 	static constexpr int			MAX_COMPACTIONS = 256;			// per build: each makes a buffer
 
 									idD3D12RayTracing( const idD3D12Device & device, idD3D12Submitter & submitter, idD3D12Graveyard & graveyard,
 										idD3D12DescriptorPool & srvPool, idD3D12Barriers & barriers, idD3D12Uploader & uploader,
-										idD3D12BufferStore & buffers, uint64 unusedBuilds = UNUSED_BUILDS );
+										idD3D12BufferStore & buffers, uint64 unusedBuilds = UNUSED_BUILDS, uint64 scratchBudget = SCRATCH_BUDGET );
 									idD3D12RayTracing( const idD3D12RayTracing & ) = delete;
 	idD3D12RayTracing &				operator=( const idD3D12RayTracing & ) = delete;
 	void							CreateDefaults( const d3d12HlslStage_t & skinStage, const idD3D12ComputeRootSignature & computeRoot );
@@ -114,6 +117,7 @@ private:
 		ID3D12Resource *			target = nullptr;
 		uint64						targetOffset = 0;
 		uint64						scratchOffset = 0;
+		uint32						batch = 0;		// builds of two batches may take the same scratch
 	};
 	struct skin_t {
 		uint32						constants[8];	// rtSkin's b1
@@ -151,6 +155,7 @@ private:
 	idD3D12Uploader &				uploader;
 	idD3D12BufferStore &			buffers;
 	const uint64					unusedBuilds;
+	const uint64					scratchBudget;
 	d3d12ComputePipeline_t			skinPipeline;
 
 	std::map<uint64, blas_t>		cache;			// by blasKey: ordered, so two runs walk it alike

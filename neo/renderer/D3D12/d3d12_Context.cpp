@@ -462,6 +462,7 @@ bool idD3D12Context::UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneSt
 	} else {
 		rayTracing.Invalidate();
 		stats = {};
+		stats.refusal = gpuScene.Refusal();
 	}
 	recorder.Invalidate();
 	return applied;

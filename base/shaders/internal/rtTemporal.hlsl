@@ -26,6 +26,8 @@
 	           cut to the range and, by as much, becomes the frame's value with the neighbours' variance.
 
 	Fewer than 4 frames tell no variance: the neighbours do then. A hole the guides bridged keeps its history.
+	So does every pixel of a frame that holds no trace (flags bit 2: its signal is all 1): what the history has
+	of it stands, uncut and uncounted, and a pixel without one holds no value.
 */
 
 #include "../include/rtDenoise.hlsli"
@@ -42,7 +44,7 @@ cbuffer TemporalParms : register( b0 ) {
 	uint colorUav;
 	uint auxUav;
 	uint outputUav;
-	uint flags;				// bit 0: the frame before's guides, colour and aux are there; bit 1: a plain average
+	uint flags;				// bit 0: the frame before's guides, colour and aux are there; 1: a plain average; 2: no trace
 	float maxHistory;
 	float invPreExposure;
 	float leastStep;		// RtAverage's: the last bit of the colour's format over its value, or 0
@@ -72,6 +74,7 @@ void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
 	const uint packed = guides.Load( int3( pixel, 0 ) );
 	const bool past = ( flags & 1u ) != 0 && ( packed & RT_GUIDE_DRAWN ) != 0;
 	const bool plain = ( flags & 2u ) != 0;
+	const bool hold = ( flags & 4u ) != 0;
 
 	float3 mean = float3( 0.0, 0.0, 0.0 );
 	float second = 0.0;
@@ -198,7 +201,7 @@ void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
 			const float heldNoise = heldAux.x - heldLuminance * heldLuminance;
 			const float deviations = EDGE_DEVIATIONS * EDGE_DEVIATIONS * max( heldNoise - 5e-4 * heldAux.x, 0.0 );
 			const bool sure = held.a >= CUT_FRAMES && tapFar[slot] * tapFar[slot] > deviations;
-			const bool across = !plain && sure && tapFar[slot] > max( EDGE_STEP, 2.0 * nearest );
+			const bool across = !plain && !hold && sure && tapFar[slot] > max( EDGE_STEP, 2.0 * nearest );
 			const float w = across ? 0.0 : tapWeight[slot];
 			if ( w > 0.0 ) {
 				if ( weight == 0.0 ) {
@@ -222,7 +225,7 @@ void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
 			// CUT_SPREAD deviations between its mean over its frames and the mean of n neighbours: the more
 			// of them agree, the less it may differ. A history of a few frames knows no noise yet.
 			const float known = max( second - mixed * mixed - 5e-4 * second, 0.0 );
-			const bool whole = plain || frames < CUT_FRAMES;
+			const bool whole = plain || hold || frames < CUT_FRAMES;
 			const float spread = whole ? 1.0 : CUT_SPREAD * sqrt( known * ( 1.0 / inner + 1.0 / frames ) );
 			const float wideSpread = whole ? 1.0 : CUT_SPREAD * sqrt( known * ( 1.0 / taken + 1.0 / frames ) );
 			const float3 inside = clamp( mean, max( low - spread, wideLow - wideSpread ), min( high + spread, wideHigh + wideSpread ) );
@@ -243,6 +246,18 @@ void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
 			frames = 0.0;
 			second = 0.0;
 		}
+	}
+
+	// A frame without a trace adds nothing: the history stands. Without one the pixel holds no value, as one no
+	// light reaches: the next frame starts it anew.
+	if ( hold && !keep ) {
+		if ( frames < 1.0 ) {
+			color[dispatch.xy] = float4( value, 0.0 );
+			aux[dispatch.xy] = float2( 0.0, 0.0 );
+			output[dispatch.xy] = float4( value, -1.0 );
+			return;
+		}
+		keep = true;
 	}
 
 	const float count = keep ? frames : min( frames + 1.0, maxHistory );

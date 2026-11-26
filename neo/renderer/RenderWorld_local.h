@@ -126,7 +126,7 @@ public:
 	virtual void			RemoveDecals( qhandle_t entityHandle );
 
 	virtual void			SetRenderView( const renderView_t *renderView );
-	virtual	void			RenderScene( const renderView_t *renderView );
+	virtual	void			RenderScene( const renderView_t *renderView, bool auxiliary = false );
 
 	void					BeginGameTic() override;
 	void					SetInterpolation( const renderInterpolation_t * interpolation ) override;

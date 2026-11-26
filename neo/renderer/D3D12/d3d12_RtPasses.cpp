@@ -599,7 +599,7 @@ d3d12GraphResource_t idD3D12RtPasses::FilterShadows( idD3D12RenderGraph & graph,
 	rtTemporalParms_t temporalBase = {};
 	temporalBase.size[0] = width;
 	temporalBase.size[1] = height;
-	temporalBase.flags = ( read ? 1u : 0u ) | ( settings.reference ? 2u : 0u );
+	temporalBase.flags = ( read ? 1u : 0u ) | ( settings.reference ? 2u : 0u ) | ( view.held ? 4u : 0u );
 	temporalBase.maxHistory = static_cast<float>( Max( settings.maxHistory, 1 ) );
 	temporalBase.invPreExposure = 1.0f / Max( preExposure, 1e-6f );
 	// a half float's; the reference counts every frame alike in 32 bits

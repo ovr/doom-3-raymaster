@@ -801,7 +801,7 @@ Rendering a scene may require multiple views to be rendered
 to handle mirrors,
 ====================
 */
-void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
+void idRenderWorldLocal::RenderScene( const renderView_t *renderView, bool auxiliary ) {
 	if ( !R_IsInitialized() ) {
 		return;
 	}
@@ -831,6 +831,19 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
 	parms->renderView = *renderView;
 	parms->postProcess = R_DefaultPostProcessSettings();
 	parms->rayTracing = R_DefaultRayTracingSettings( parms->postProcess );
+	rtShadowSettings_t & shadow = parms->rayTracing.shadow;
+	// R13: a view drawn for the main one, a second view of this world or one after a GUI view of the frame that drew
+	// is never the main one, so never traced. After the main view nothing gathers: the update would never be sent,
+	// and the next frame's would not follow it.
+	const bool late = !tr.mainViewForecast.MayBeMain( renderView->viewEyeBuffer, this );
+	parms->notMainView = auxiliary || late;
+	if ( parms->notMainView ) {
+		shadow.KeepStencil();
+	}
+	parms->rayTracing.scene = parms->rayTracing.scene && !late;
+	// no stencil volumes once the back end has traced this world's main view and nothing asks for a full update:
+	// what it built then still stands (R17)
+	shadow.volumes = shadow.keepVolumes || !( shadow.enabled && gpuScene.TracedSince( tr.tracedScene ) );
 
 	if ( tr.takingScreenshot ) {
 		parms->renderView.forceUpdate = true;

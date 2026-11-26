@@ -6067,15 +6067,112 @@ void Test_GpuSceneSides() {
 	Check( plain.count[0] == 3 && plain.count[1] == 0 && plain.count[2] == 0 && plain.count[3] == 0 && plain.skinnedVerts[0] == 15
 		&& writes[0].record.vertexOffset == 0 && writes[1].record.vertexOffset == 3000 && writes[2].record.vertexOffset == 5000, "a slot of one group" );
 
-	// every group is seen; a local one's shadow does not fall on local surfaces, a noShadow entity's on none
+	// what only casts (a hull) comes after what is drawn, in groups of its own by side and MF_NOSELFSHADOW
+	constexpr uint32 HULL = gpuSceneGeometry_t::GEO_SHADOW_ONLY;
+	const std::array<uint32, 4> castingFlags = { HULL | OPAQUE_BIT | LOCAL, OPAQUE_BIT, HULL | OPAQUE_BIT, OPAQUE_BIT | TWO_SIDED };
+	std::array<gpuSceneWrite_t, 4> casting;
+	memset( casting.data(), 0, sizeof( casting ) );
+	for ( size_t i = 0; i < casting.size(); i++ ) {
+		casting[i].record.vertexOffset = static_cast<uint32>( i * 1000 );
+		casting[i].record.numIndexes = 6;
+		casting[i].record.numVerts = 4;
+		casting[i].record.flags = castingFlags[i];
+	}
+	const gpuSceneGroups_t hulls = GpuScene_OrderByGroup( casting );
+	Check( hulls.count[0] == 1 && hulls.count[2] == 1 && hulls.count[4] == 1 && hulls.count[5] == 1 && hulls.count[1] + hulls.count[3] + hulls.count[6]
+		+ hulls.count[7] == 0, va( "a drawn one-sided, a drawn two-sided, a hull and a local hull: %d, %d, %d, %d", hulls.count[0], hulls.count[2],
+			hulls.count[4], hulls.count[5] ) );
+	Check( casting[0].record.vertexOffset == 1000 && casting[1].record.vertexOffset == 3000 && casting[2].record.vertexOffset == 2000
+		&& casting[3].record.vertexOffset == 0, "the hulls last, the local one after the other" );
+	std::array<gpuSceneWrite_t, 1> drawn = { casting[2] };
+	drawn[0].record.flags ^= HULL;
+	Check( GpuScene_BlasKey( drawn ) == GpuScene_BlasKey( std::span<const gpuSceneWrite_t>( casting ).subspan( 2, 1 ) ), "a hull's BLAS is its geometry's" );
+
+	// every drawn group is seen; a local one's shadow does not fall on local surfaces, a noShadow entity's on none
 	constexpr uint32 VISIBLE = gpuSceneInstance_t::MASK_VISIBLE;
 	constexpr uint32 SHADOW = gpuSceneInstance_t::MASK_SHADOW;
 	constexpr uint32 GLOBAL = gpuSceneInstance_t::MASK_SHADOW_GLOBAL;
-	Check( GpuScene_InstanceMask( 0, true ) == ( VISIBLE | SHADOW | GLOBAL ) && GpuScene_InstanceMask( 2, true ) == ( VISIBLE | SHADOW | GLOBAL ),
+	Check( GpuScene_InstanceMask( 0, true, true ) == ( VISIBLE | SHADOW | GLOBAL ) && GpuScene_InstanceMask( 2, true, true ) == ( VISIBLE | SHADOW | GLOBAL ),
 		"a caster that is not local meets every shadow ray" );
-	Check( GpuScene_InstanceMask( 1, true ) == ( VISIBLE | SHADOW ) && GpuScene_InstanceMask( 3, true ) == ( VISIBLE | SHADOW ),
+	Check( GpuScene_InstanceMask( 1, true, true ) == ( VISIBLE | SHADOW ) && GpuScene_InstanceMask( 3, true, true ) == ( VISIBLE | SHADOW ),
 		"a local caster not the shadow rays of local surfaces" );
-	Check( GpuScene_InstanceMask( 0, false ) == VISIBLE && GpuScene_InstanceMask( 3, false ) == VISIBLE, "a noShadow entity no shadow ray" );
+	Check( GpuScene_InstanceMask( 0, false, true ) == VISIBLE && GpuScene_InstanceMask( 3, false, true ) == VISIBLE, "a noShadow entity no shadow ray" );
+	// what only casts meets shadow rays alone, and so does all of an entity the view does not draw (the player's body)
+	Check( GpuScene_InstanceMask( 4, true, true ) == ( SHADOW | GLOBAL ) && GpuScene_InstanceMask( 6, true, true ) == ( SHADOW | GLOBAL )
+		&& GpuScene_InstanceMask( 5, true, true ) == SHADOW && GpuScene_InstanceMask( 7, true, true ) == SHADOW, "a hull no ray but a shadow ray" );
+	Check( GpuScene_InstanceMask( 0, true, false ) == ( SHADOW | GLOBAL ) && GpuScene_InstanceMask( 1, true, false ) == SHADOW
+		&& GpuScene_InstanceMask( 4, true, false ) == ( SHADOW | GLOBAL ), "an entity the view does not draw casts" );
+	Check( GpuScene_InstanceMask( 4, false, true ) == 0 && GpuScene_InstanceMask( 0, false, false ) == 0 && GpuScene_InstanceMask( 7, false, false ) == 0,
+		"what neither is seen nor casts is no instance" );
+}
+
+// The front end leaves out a view's shadow volumes only after a frame in which the back end traced every view that
+// counted on it, all of one scene: the latch names that scene and the earliest update traced.
+void Test_GpuSceneShadowLatch() {
+	rtShadowLatch_t latch;
+	latch.BeginFrame();
+	Check( latch.EndFrame() == rtTracedScene_t(), "a frame without a main view names no scene" );
+	latch.View( 7, 40, true );
+	Check( latch.EndFrame() == rtTracedScene_t{ 7, 40 }, "a traced main view names its scene and update" );
+	latch.View( 7, 41, true );
+	Check( latch.EndFrame() == rtTracedScene_t{ 7, 40 }, "the second eye's later update keeps the earlier" );
+	latch.View( 7, 41, false );
+	Check( latch.EndFrame() == rtTracedScene_t(), "a view that was not traced ends it" );
+	latch.View( 7, 42, true );
+	Check( latch.EndFrame() == rtTracedScene_t(), "for the whole frame" );
+	latch.BeginFrame();
+	latch.View( 7, 43, true );
+	Check( latch.EndFrame() == rtTracedScene_t{ 7, 43 }, "the next frame starts anew" );
+	latch.View( 8, 3, true );
+	Check( latch.EndFrame() == rtTracedScene_t(), "two scenes in a frame name none" );
+	latch.BeginFrame();
+	latch.View( 0, 0, true );
+	Check( latch.EndFrame() == rtTracedScene_t(), "a view without a scene names none" );
+	latch.BeginFrame();
+	latch.View( 9, 5, false );
+	latch.View( 9, 6, true );
+	Check( latch.EndFrame() == rtTracedScene_t(), "a held eye before a traced one" );
+
+	// a view that keeps its stencil shadows makes its volumes; one without volumes is one that traces
+	rtShadowSettings_t shadow;
+	Check( shadow.volumes && !shadow.WithoutVolumes(), "by default a view has its volumes" );
+	shadow.enabled = true;
+	shadow.volumes = false;
+	Check( shadow.WithoutVolumes(), "a traced view without them" );
+	shadow.KeepStencil();
+	Check( !shadow.enabled && shadow.volumes && !shadow.WithoutVolumes(), "a subview keeps the stencil shadows" );
+	rtShadowSettings_t cleared;
+	memset( &cleared, 0, sizeof( cleared ) );
+	Check( !cleared.WithoutVolumes(), "a cleared view (a GUI's) asks for nothing" );
+
+	// the frame's main view as the front end marks it (R13): not a second view of a world, none after a GUI view that drew
+	rtMainViewForecast_t forecast;
+	const int worldA = 0, worldB = 0;	// two worlds, by address
+	Check( forecast.MayBeMain( 0, &worldA ), "the first view of a frame may be the main one" );
+	forecast.AddView( 0, false, true, &worldA );
+	Check( !forecast.MayBeMain( 0, &worldA ), "not a second view of its world: the wipe's second Draw" );
+	Check( forecast.MayBeMain( 0, &worldB ), "another world's may" );
+	forecast.AddView( 0, false, true, nullptr );
+	forecast.AddView( 0, true, false, nullptr );
+	Check( forecast.MayBeMain( 0, &worldB ), "a marked view, a subview and a GUI view that draws nothing end nothing" );
+	forecast.AddView( 0, true, true, nullptr );
+	Check( !forecast.MayBeMain( 0, &worldB ), "none after a GUI view that drew" );
+	forecast.BeginFrame();
+	Check( forecast.MayBeMain( 0, &worldA ), "the next frame starts anew" );
+	forecast.AddView( 0, false, false, &worldA );
+	Check( forecast.MayBeMain( 0, &worldA ), "a view that draws nothing is no main view: the next of its world may be" );
+	// stereo: the left eye's view and HUD, then the right eye's
+	forecast.BeginFrame();
+	forecast.AddView( -1, false, true, &worldA );
+	Check( !forecast.MayBeMain( -1, &worldA ) && forecast.MayBeMain( 1, &worldA ), "each eye has its own main view" );
+	forecast.AddView( 0, true, true, nullptr );
+	Check( !forecast.MayBeMain( -1, &worldB ) && forecast.MayBeMain( 1, &worldA ), "a GUI view among the left eye's views ends the left eye's only" );
+	forecast.AddView( 1, false, true, &worldA );
+	forecast.AddView( 0, true, true, nullptr );
+	Check( !forecast.MayBeMain( 1, &worldB ), "and the right eye's after its own" );
+	forecast.BeginFrame();
+	forecast.AddView( 1, true, true, nullptr );
+	Check( forecast.MayBeMain( -1, &worldA ) && !forecast.MayBeMain( 1, &worldA ), "a GUI view of one eye" );
 }
 
 // The lights an update holds: not the one whose own area the view is not connected to. A light's emitter is its
@@ -6230,12 +6327,14 @@ void GpuScene( idTestGpu & gpu ) {
 
 	gpuSceneTestFrame_t gap( 7, 4, false, 2048 );
 	Check( !scene.Update( gap.Update() ) && !scene.Valid() && scene.Instances().empty(), "a gap is refused and nothing is traced" );
+	Check( scene.Refusal() == gpuSceneRefusal_t::GAP, "and says why" );
+	Check( !scene.Update( gap.Update() ) && scene.Refusal() == gpuSceneRefusal_t::NOTHING_HELD, "a delta after it: no scene is held" );
 	gpuSceneTestFrame_t recover( 7, 5, true, 2048 );
 	recover.Write( 2, sampled, sampled );
 	Check( scene.Update( recover.Update() ) && scene.Valid(), "a full update recovers" );
 	matches( 1500, 2, doomedView, doomedView );
 	gpuSceneTestFrame_t other( 8, 6, false, 2048 );
-	Check( !scene.Update( other.Update() ), "a delta of another scene is refused" );
+	Check( !scene.Update( other.Update() ) && scene.Refusal() == gpuSceneRefusal_t::OTHER_SCENE, "a delta of another scene is refused" );
 	gpuSceneTestFrame_t again( 8, 6, true, 2048 );
 	again.Write( 0, sampled, sampled );
 	again.Write( 1500, doomed, sampled );
@@ -6254,7 +6353,7 @@ void GpuScene( idTestGpu & gpu ) {
 	Check( scene.Update( secondEye.Update() ) && scene.Valid(), "and the third after the second" );
 	matches( 2, 9, sampledView, sampledView );
 	matches( 3, 9, sampledView, sampledView );
-	Check( !scene.Update( firstEye.Update() ) && !scene.Valid(), "an update older than the one applied is refused" );
+	Check( !scene.Update( firstEye.Update() ) && !scene.Valid() && scene.Refusal() == gpuSceneRefusal_t::GAP, "an update older than the one applied is refused" );
 	gpuSceneTestFrame_t afterOlder( 8, 10, true, 2048 );
 	afterOlder.Write( 0, sampled, sampled );
 	afterOlder.Write( 1500, doomed, sampled );
@@ -6267,7 +6366,7 @@ void GpuScene( idTestGpu & gpu ) {
 	Check( scene.Update( afterUnrelated.Update() ) && scene.Valid(), "a destroyed SAMPLED texture that no record views changes nothing" );
 	gpu.textures.Destroy( doomed );
 	gpuSceneTestFrame_t afterDestroy( 8, 12, false, 2048 );
-	Check( !scene.Update( afterDestroy.Update() ) && !scene.Valid(), "one that a record views is refused" );
+	Check( !scene.Update( afterDestroy.Update() ) && !scene.Valid() && scene.Refusal() == gpuSceneRefusal_t::TEXTURE_DESTROYED, "one that a record views is refused" );
 	gpuSceneTestFrame_t rebuilt( 8, 13, true, 2048 );
 	rebuilt.Write( 1500, doomed, sampled );
 	Check( scene.Update( rebuilt.Update() ), "the full update after it applies" );
@@ -6595,7 +6694,8 @@ struct rtTestFrame_t {
 
 class idTestRtScene {
 public:
-	explicit						idTestRtScene( idTestGpu & gpu, uint64 unusedBuilds = idD3D12RayTracing::UNUSED_BUILDS );
+	explicit						idTestRtScene( idTestGpu & gpu, uint64 unusedBuilds = idD3D12RayTracing::UNUSED_BUILDS,
+										uint64 scratchBudget = idD3D12RayTracing::SCRATCH_BUDGET );
 									~idTestRtScene();
 									idTestRtScene( const idTestRtScene & ) = delete;
 	idTestRtScene &					operator=( const idTestRtScene & ) = delete;
@@ -6618,11 +6718,11 @@ private:
 	bool							ready = false;
 };
 
-idTestRtScene::idTestRtScene( idTestGpu & owner, uint64 unusedBuilds ) :
+idTestRtScene::idTestRtScene( idTestGpu & owner, uint64 unusedBuilds, uint64 scratchBudget ) :
 	gpu( owner ),
 	rays( owner ),
 	gpuScene( owner.device, owner, owner.graveyard, owner.srvPool, owner.barriers, owner.uploader, owner.textures ),
-	rt( owner.device, owner, owner.graveyard, owner.srvPool, owner.barriers, owner.uploader, owner.buffers, unusedBuilds ) {
+	rt( owner.device, owner, owner.graveyard, owner.srvPool, owner.barriers, owner.uploader, owner.buffers, unusedBuilds, scratchBudget ) {
 	if ( !rays.Ready() ) {
 		return;
 	}
@@ -6791,6 +6891,55 @@ void RtBlasCache( idTestGpu & gpu ) {
 	Check( apply( false, 2, true ) && stats.built == 1 && stats.blas == 3, va( "an evicted BLAS is built again: %s", RtStats( stats ).c_str() ) );
 	scene.Trace();
 	scene.rays.CheckResults( "built again" );
+	CheckNoLayerErrors( gpu );
+
+	// A full update builds every BLAS it lacks, whatever the scratch budget: in batches that take the same scratch one
+	// after another (a budget of a byte: a batch each). A delta builds up to the budget and the rest waits.
+	idTestRtScene batches( gpu, idD3D12RayTracing::UNUSED_BUILDS, 1 );
+	if ( !batches.Ready() ) {
+		return;
+	}
+	const idVec3 away( 300.0f, 0.0f, 0.0f );
+	rtTestFrame_t whole( 1, true );
+	whole.WriteQuads();
+	whole.AddRayScene();
+	whole.Instance( 40, gpuSceneInstance_t::MASK_VISIBLE, 0x400, away );
+	Check( batches.Apply( whole, stats ) && stats.built == 3 && stats.waiting == 0 && stats.tlasInstances == 4,
+		va( "a full update leaves nothing waiting: %s", RtStats( stats ).c_str() ) );
+	const int barriers = batches.rays.graph.LastStats().barriers;
+	batches.Trace();
+	batches.rays.CheckResults( "built in batches" );
+
+	const auto delta = [&]( uint32 deltaSequence, bool withWrites ) {
+		rtTestFrame_t frame( deltaSequence, false );
+		if ( withWrites ) {
+			frame.Write( 12, 0, 3, gpuSceneGeometry_t::GEO_OPAQUE );
+			frame.Write( 13, rtTestFrame_t::GRID_FIRST, 12, gpuSceneGeometry_t::GEO_OPAQUE, ( rtTestFrame_t::GRID + 1 ) * ( rtTestFrame_t::GRID + 1 ), 6 );
+		}
+		frame.AddRayScene();
+		frame.Instance( 40, gpuSceneInstance_t::MASK_VISIBLE, 0x400, away );
+		frame.Instance( 12, gpuSceneInstance_t::MASK_VISIBLE, 0x120, idVec3( 200.0f, 0.0f, 0.0f ) );
+		frame.Instance( 13, gpuSceneInstance_t::MASK_VISIBLE, 0x130, idVec3( 400.0f, 0.0f, 0.0f ) );
+		return batches.Apply( frame, stats );
+	};
+	Check( delta( 2, true ) && stats.built == 1 && stats.waiting == 1 && stats.tlasInstances == 5,
+		va( "a delta builds up to the budget, the rest waits: %s", RtStats( stats ).c_str() ) );
+	Check( delta( 3, false ) && stats.built == 1 && stats.waiting == 0 && stats.tlasInstances == 6 && stats.blas == 5,
+		va( "and is built by the next: %s", RtStats( stats ).c_str() ) );
+	batches.Trace();
+	batches.rays.CheckResults( "after the deltas" );
+
+	// the same full update under the usual budget is one batch: the barriers the small budget adds are the batches'
+	idTestRtScene one( gpu );
+	if ( !one.Ready() ) {
+		return;
+	}
+	rtTestFrame_t again( 1, true );
+	again.WriteQuads();
+	again.AddRayScene();
+	again.Instance( 40, gpuSceneInstance_t::MASK_VISIBLE, 0x400, away );
+	Check( one.Apply( again, stats ) && stats.built == 3 && barriers == one.rays.graph.LastStats().barriers + 2,
+		va( "three builds in three batches: 2 barriers more than in one (%d, %d)", barriers, one.rays.graph.LastStats().barriers ) );
 	CheckNoLayerErrors( gpu );
 }
 
@@ -6967,8 +7116,9 @@ constexpr const char * RT_HIT_COMPUTE =
 
 	Instances 0 to 9 are only seen. Record 56 once more per mask, at x = 80, 90, 100 and 110: a caster that is not local
 	(every shadow ray meets it), a local one (not the shadow rays of a local surface), a noShadow entity (no shadow ray),
-	and one only the shadow rays meet (RtTrace misses it). Record 55, one-sided, as such a one at x = 120: a shadow ray
-	stops at the side Doom 3 draws, the side that faces away from the light it goes to, and passes the other.
+	and a hull, which only the shadow rays meet (RtTrace misses it). Record 55, one-sided, as an entity the view does
+	not draw at x = 120: a shadow ray stops at the side Doom 3 draws, the side that faces away from the light it goes
+	to, and passes the other.
 */
 void RtHit( idTestGpu & gpu ) {
 	idTestRtScene scene( gpu );
@@ -7138,14 +7288,14 @@ void RtHit( idTestGpu & gpu ) {
 	const std::array<uint32, INSTANCES> firstRecords = { 10, 30, 11, 50, 51, 52, 53, 55, 54, 56, 56, 56, 56, 56, 55 };
 	const std::array<uint64, INSTANCES> blasKeys = { 0x100, 0, 0x100, 0x500, 0x510, 0x520, 0x530, 0x550, 0x540, 0x560, 0x560, 0x560, 0x560, 0x560, 0x550 };
 	constexpr uint32 SEEN = gpuSceneInstance_t::MASK_VISIBLE;
-	constexpr uint32 CASTS = gpuSceneInstance_t::MASK_SHADOW | gpuSceneInstance_t::MASK_SHADOW_GLOBAL;
 	std::array<uint32, INSTANCES> masks;
 	masks.fill( SEEN );
-	masks[10] = GpuScene_InstanceMask( 2, true );
-	masks[11] = GpuScene_InstanceMask( 3, true );
-	masks[12] = GpuScene_InstanceMask( 2, false );
-	masks[13] = CASTS;
-	masks[14] = CASTS;
+	masks[10] = GpuScene_InstanceMask( 2, true, true );
+	masks[11] = GpuScene_InstanceMask( 3, true, true );
+	masks[12] = GpuScene_InstanceMask( 2, false, true );
+	// what only casts: a two-sided hull, and a one-sided entity the view does not draw
+	masks[13] = GpuScene_InstanceMask( 6, true, true );
+	masks[14] = GpuScene_InstanceMask( 0, true, false );
 	for ( size_t i = 0; i < firstRecords.size(); i++ ) {
 		gpuSceneInstance_t & instance = frame.Instance( firstRecords[i], masks[i], blasKeys[i], origins[i] );
 		for ( int row = 0; row < 3; row++ ) {
@@ -7373,7 +7523,7 @@ void RtReflection( idTestGpu & gpu ) {
 				rows[0] = idVec4( 1.0f, 0.0f, 0.0f, 0.0f );
 				rows[1] = idVec4( 0.0f, 1.0f, 0.0f, 0.0f );
 			}
-			gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), GpuScene_InstanceMask( GpuScene_Group( flags ), true ),
+			gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), GpuScene_InstanceMask( GpuScene_Group( flags ), true, true ),
 				blasKey, idVec3( x0, y0, z ) );
 			instance.transform[0][0] = ( x1 - x0 ) * 0.25f;
 			instance.transform[1][1] = ( y1 - y0 ) * 0.25f;
@@ -7706,7 +7856,7 @@ idTestTracedFloor::idTestTracedFloor( idTestGpu & owner, UINT sampleCount ) :
 		frame.Write( record, 0, 6, flags );
 		frame.writes.back().record.flags = flags;
 		const uint64 blasKey = ( ( flags & gpuSceneGeometry_t::GEO_CASTS_SHADOW ) != 0 ) ? 0x700 : 0x710;
-		gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), GpuScene_InstanceMask( GpuScene_Group( flags ), true ), blasKey,
+		gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), GpuScene_InstanceMask( GpuScene_Group( flags ), true, true ), blasKey,
 			idVec3( rect.x0, rect.y0, z ) );
 		instance.transform[0][0] = ( rect.x1 - rect.x0 ) * 0.25f;
 		instance.transform[1][1] = ( rect.y1 - rect.y0 ) * 0.25f;
@@ -8301,6 +8451,7 @@ void RtShadowsAllSamples( idTestGpu & gpu ) {
 	  a quad taken away   the floor behind it starts again, the floor beside it goes on
 	  a light halved      its history is another light's: every pixel starts again; a tenth less, none does
 	  no history          two pasts give the same bytes; so does a sequence drawn twice, and a screenshot stores nothing
+	  nothing traced      a held frame shows the history's shadows to the byte; without a history the lights alone
 */
 void RtHistory( idTestGpu & gpu, UINT samples ) {
 	using bed_t = idTestTracedFloor;
@@ -8377,6 +8528,7 @@ void RtHistory( idTestGpu & gpu, UINT samples ) {
 		uint32						epoch = 1;
 		uint32						sequence = 0;
 		bool						store = true;
+		bool						held = false;		// the frame traces nothing: no ray meets a caster (rtView_t::held)
 		int							litFrom = 0;		// the light reaches the columns from here on
 		rtShadowSettings_t			settings;
 	};
@@ -8417,13 +8569,14 @@ void RtHistory( idTestGpu & gpu, UINT samples ) {
 		bed.fixture.scene.ClearLights( gpu.barriers, gpu.List(), { 0, 0, SIZE, SIZE } );
 		bed.fixture.recorder.SetLights( true );
 		bed.latch.scissor = { shot.litFrom, 0, SIZE - shot.litFrom, SIZE };
-		bed.Draw( bed.traced, shot.light, EVERY, shot.noise, shot.lightDepth );
+		bed.Draw( bed.traced, shot.light, shot.held ? 0u : EVERY, shot.noise, shot.lightDepth );
 		bed.latch.scissor = bed.latch.viewport;
 		bed.fixture.recorder.SetLights( false );
 		bed.fixture.recorder.EndPass();
 
 		rtView_t view = viewOf( shot.shift, shot.before, shot.epoch, shot.sequence );
 		view.store = shot.store;
+		view.held = shot.held;
 		bed.rtPasses.Shadows( bed.graph, bed.fixture.scene, bed.history, shot.settings, view, { 0, 0, SIZE, SIZE }, bed_t::PRE_EXPOSURE, nullptr );
 		bed.fixture.recorder.Invalidate();
 		return bed.Read( false ).scene;
@@ -8785,6 +8938,31 @@ void RtHistory( idTestGpu & gpu, UINT samples ) {
 	const std::vector<idVec4> captured = run( screenshot, 4, 4 );
 	const std::vector<idVec4> next = run( filtered, 4, 4 );
 	Check( sameBytes( captured, next ), va( "%u sample(s): a screenshot's frame and the frame after it are the same bytes", samples ) );
+
+	// A frame that traces nothing (R17: its view has no shadow volumes and its update was refused) draws its lights
+	// whole. Held, it shows the shadows the history has, to the byte, and the frame after it goes on as if it had
+	// not been; without a history it is the lights alone, and the frame after it a first frame.
+	const std::vector<idVec4> traced16 = run( filtered, 0, 15 );
+	shot_t heldShot = filtered;
+	heldShot.held = true;
+	const std::vector<idVec4> held16 = run( heldShot, 16, 16 );
+	const float afterHeld = penumbraError( run( filtered, 17, 17 ), softAlone, 0.0f );
+	Check( sameBytes( traced16, held16 ) && afterHeld < filtered16 * 1.1f, va( "%u sample(s): a frame that traces nothing keeps the shadows of the frame "
+		"before; the one after is off by %.3f (%.3f after 16)", samples, afterHeld, filtered16 ) );
+	const std::vector<idVec4> heldFirst = run( heldShot, 0, 0 );
+	const std::vector<idVec4> afterHeldFirst = run( filtered, 1, 1 );
+	shot_t lone = filtered;
+	lone.epoch = ++epoch;
+	lone.sequence = lone.noise = 1;
+	const std::vector<idVec4> secondAlone = frame( lone );
+	if ( Check( heldFirst.size() == numTexels, va( "%u sample(s): the held first frame is read", samples ) ) ) {
+		int shadowed = 0;
+		for ( size_t at = 0; at < numTexels; at++ ) {
+			shadowed += ( idMath::Fabs( heldFirst[at].x - softAlone[at].x ) > 0.002f * Max( softAlone[at].x, 1e-5f ) ) ? 1 : 0;
+		}
+		Check( shadowed == 0 && sameBytes( afterHeldFirst, secondAlone ), va( "%u sample(s): held without a history %d pixels are not the light alone; "
+			"the frame after it is a first frame", samples, shadowed ) );
+	}
 
 	// r_rtReference: a plain average in 32-bit floats, no pass; more frames, less error
 	shot_t reference = base;
@@ -9890,6 +10068,7 @@ constexpr testCase_t TESTS[] = {
 	{ "GpuScene_Sides", Test_GpuSceneSides },
 	{ "GpuScene_Lights", Test_GpuSceneLights },
 	{ "GpuScene_Recovery", Test_GpuSceneRecovery },
+	{ "GpuScene_ShadowLatch", Test_GpuSceneShadowLatch },
 	{ "Warp_GpuScene", OnWarp<GpuScene> },
 	{ "Warp_RtTlas", OnWarp<RtTlas> },
 	{ "Gpu_RtTlas", OnGpu<RtTlas> },
