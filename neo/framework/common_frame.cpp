@@ -668,8 +668,11 @@ void idCommonLocal::Frame() {
 		session->Pump();
 		session->ProcessSnapAckQueue();
 
+		// Both ways out draw on their own. The frame the swap handed over is drawn first: the renderer counts on
+		// every swapped frame being drawn (the frame before of the motion vectors, the GPU scene's updates).
 		if ( session->GetState() == idSession::LOADING ) {
 			// If the session reports we should be loading a map, load it!
+			renderSystem->RenderCommandBuffers( renderCommands );
 			ExecuteMapChange();
 			mapSpawnData.savegameFile = NULL;
 			mapSpawnData.persistentPlayerInfo.Clear();
@@ -677,6 +680,7 @@ void idCommonLocal::Frame() {
 		} else if ( session->GetState() != idSession::INGAME && mapSpawned ) {
 			// If the game is running, but the session reports we are not in a game, disconnect
 			// This happens when a server disconnects us or we sign out
+			renderSystem->RenderCommandBuffers( renderCommands );
 			LeaveGame();
 			return;
 		}
