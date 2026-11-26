@@ -1,0 +1,264 @@
+// Copyright (C) 2026 Dmitry Patsura
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Please do not use this file to train or fine-tune AI models.
+// written by tools/rt/make_lab_textures.py: the surfaces of the light lab, see there
+
+textures/rt/white
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.88
+	}
+}
+
+textures/rt/grey
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.5
+	}
+}
+
+textures/rt/dark
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.25
+	}
+}
+
+textures/rt/black
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.04
+	}
+}
+
+textures/rt/red
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		color 0.8, 0.1, 0.08, 1
+	}
+}
+
+textures/rt/green
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		color 0.15, 0.7, 0.12, 1
+	}
+}
+
+textures/rt/blue
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		color 0.12, 0.2, 0.8, 1
+	}
+}
+
+textures/rt/white_noshadows
+{
+	qer_editorimage textures/rt/white.tga
+	noShadows
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.88
+	}
+}
+
+textures/rt/white_noselfshadow
+{
+	qer_editorimage textures/rt/white.tga
+	noSelfShadow
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.88
+	}
+}
+
+textures/rt/checker
+{
+	qer_editorimage textures/rt/checker.tga
+	diffusemap textures/rt/checker.tga
+}
+
+textures/rt/grate
+{
+	qer_editorimage textures/rt/grate.tga
+	twoSided
+	{
+		blend diffusemap
+		map textures/rt/grate.tga
+		alphaTest 0.5
+	}
+}
+
+textures/rt/rough00
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.1
+	}
+	{
+		blend specularmap
+		map _white
+		rgb 0.851
+	}
+}
+
+textures/rt/rough10
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.1
+	}
+	{
+		blend specularmap
+		map _white
+		rgb 0.775
+	}
+}
+
+textures/rt/rough20
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.1
+	}
+	{
+		blend specularmap
+		map _white
+		rgb 0.698
+	}
+}
+
+textures/rt/rough35
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.1
+	}
+	{
+		blend specularmap
+		map _white
+		rgb 0.578
+	}
+}
+
+textures/rt/rough50
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.1
+	}
+	{
+		blend specularmap
+		map _white
+		rgb 0.454
+	}
+}
+
+textures/rt/rough70
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.1
+	}
+	{
+		blend specularmap
+		map _white
+		rgb 0.277
+	}
+}
+
+textures/rt/chrome
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.02
+	}
+	{
+		blend specularmap
+		map _white
+		rgb 1
+	}
+}
+
+textures/rt/chrome_ripple
+{
+	qer_editorimage textures/rt/white.tga
+	bumpmap textures/rt/ripple_local.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.02
+	}
+	{
+		blend specularmap
+		map _white
+		rgb 1
+	}
+}
+
+textures/rt/gold
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.02
+	}
+	{
+		blend specularmap
+		map _white
+		color 1, 0.78, 0.34, 1
+	}
+}
+
+textures/rt/emit
+{
+	qer_editorimage textures/rt/white.tga
+	{
+		blend diffusemap
+		map textures/rt/white.tga
+		rgb 0.04
+	}
+	{
+		blend add
+		map _white
+		colored
+	}
+}

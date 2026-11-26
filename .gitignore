@@ -13,3 +13,4 @@ CMakeUserPresets.json
 /external/qt-*/
 /external/d3d12-*/
 /external/doom3-gpl/
+__pycache__/

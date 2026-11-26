@@ -13,6 +13,8 @@ Runs, with run-vdemos.ps1 and the shader cache kept between the runs:
   gbv  -DebugLevel 2 -TimeoutScale 6, with -Gbv -> <OutRoot>\d3d12-<Stage>-gbv
 then checks:
   - every run ended ok, exit code 0, "validation" all zeros, Direct3D 12;
+  - no "window: client" line of a run's log falls into a compared demo: another program moved or
+    resized the window there, and the frames from there on do not compare;
   - cmp-frames.py a b (and a gbv): byte for byte, so the layer changes nothing and the runs repeat;
   - analyze.py a against -Baseline (research/vdemo/gl-ref) with the bars of -Bars on every frame,
     5 heat maps per demo, contact sheets <OutRoot>\sheets-<Stage>\<Stage>-<demo>-sheet.png.
@@ -27,11 +29,15 @@ The runs get "+set r_hdr 0": OpenGL had no HDR scene, so only those frames can b
 -Hdr keeps the HDR scene and holds the frames to research\vdemo\d3d12-hdr-ref instead (made by an
 earlier -Hdr gate).
 
+-Warmup <demo> runs that demo first in every run and leaves it out of every comparison: it takes
+what happens at a fixed time after the start (a window that another program resizes).
+
 Exit code 0 when every check passed, 1 otherwise.
 
 .EXAMPLE
 tools\vdemo\compare-apis.ps1 -Stage s8 -Demos _x4_gui -ExtraArgs '+set','r_clear','2' -Baseline research\vdemo\gl-ref-clear -Gbv
 tools\vdemo\compare-apis.ps1 -Stage h6 -Demos 01_camera,04_lighting -Hdr -Gbv
+tools\vdemo\compare-apis.ps1 -Stage l1 -Demos 27_rt_shadows,28_rt_bounce -Hdr -Warmup 05_weapons
 tools\vdemo\compare-apis.ps1 -Stage rt1 -Demos 20_rt_gallery -Hdr -GameDir testing_rt -BuildDir build\rt-demo-bin
 #>
 [CmdletBinding()]
@@ -40,6 +46,7 @@ param(
 	[Parameter(Mandatory = $true)] [string[]] $Demos,
 	[switch] $Gbv,
 	[switch] $Hdr,
+	[string] $Warmup,
 	[string[]] $ExtraArgs = @(),
 	[string] $Baseline,
 	[string] $Bars,
@@ -59,6 +66,10 @@ if ( $Demos.Count -gt 1 -and $Demos -contains '_x7_heathaze' ) {
 	Write-Error '_x7_heathaze runs alone: give it a compare-apis call of its own'
 	exit 1
 }
+if ( $Warmup -and $Demos -contains $Warmup ) {
+	Write-Error "-Warmup $Warmup is one of the compared demos"
+	exit 1
+}
 $demoList = $Demos -join ','
 $runVdemos = Join-Path $PSScriptRoot 'run-vdemos.ps1'
 $cmpFrames = Join-Path $PSScriptRoot 'cmp-frames.py'
@@ -73,10 +84,27 @@ function Add-Result( [string] $check, [bool] $passed, [string] $detail ) {
 	$results.Add( [pscustomobject]@{ check = $check; result = $( if ( $passed ) { 'pass' } else { 'FAIL' } ); detail = $detail } )
 }
 
+# the demos that a "window: client" line of the run's log fell into
+function Get-WindowDemos( [string] $outDir ) {
+	$hit = @()
+	$log = Join-Path $outDir 'qconsole.log'
+	if ( Test-Path $log ) {
+		$demo = ''
+		foreach ( $line in Get-Content $log ) {
+			if ( $line -match '^vdemo (\S+): loading ' ) {
+				$demo = $Matches[1]
+			} elseif ( $demo -and $line -match '^window: client' -and $hit -notcontains $demo ) {
+				$hit += $demo
+			}
+		}
+	}
+	return $hit
+}
+
 function Invoke-Run( [string] $name, [hashtable] $options ) {
 	$outDir = "$prefix-$name"
 	$options['OutDir'] = $outDir
-	$options['Demos'] = $Demos
+	$options['Demos'] = $( if ( $Warmup ) { @( $Warmup ) + $Demos } else { $Demos } )
 	$options['ExtraArgs'] = $ExtraArgs
 	if ( $GameDir ) { $options['GameDir'] = $GameDir }
 	if ( $BuildDir ) { $options['BuildDir'] = $BuildDir }
@@ -98,6 +126,8 @@ function Invoke-Run( [string] $name, [hashtable] $options ) {
 		if ( $failed ) { $detail += ", failed: $( $failed -join '; ' )" }
 	}
 	Add-Result "run $name" ( $code -eq 0 ) $detail
+	$moved = @( Get-WindowDemos $outDir | Where-Object { $_ -ne $Warmup } )
+	Add-Result "window of $name" ( $moved.Count -eq 0 ) $( if ( $moved ) { "moved or resized during $( $moved -join ', ' )" } else { 'untouched during the compared demos' } )
 	return $outDir
 }
 
@@ -127,7 +157,7 @@ if ( $Gbv ) {
 
 $passed = -not ( $results | Where-Object { $_.result -ne 'pass' } )
 $lines = @( "# compare-apis $Stage (d3d12$( if ( $Hdr ) { ', HDR' } )): $( if ( $passed ) { 'PASS' } else { 'FAIL' } )", '',
-	"Demos: $demoList. Baseline: $Baseline. Bars: $Bars. Extra args: $( $ExtraArgs -join ' ' ).", '',
+	"Demos: $demoList. Warmup: $( if ( $Warmup ) { $Warmup } else { 'none' } ). Baseline: $Baseline. Bars: $Bars. Extra args: $( $ExtraArgs -join ' ' ).", '',
 	'| check | result | detail |', '|---|---|---|' )
 $lines += $results | ForEach-Object { "| $( $_.check ) | $( $_.result ) | $( $_.detail ) |" }
 $summary = "$prefix-summary.md"

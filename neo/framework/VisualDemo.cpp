@@ -65,6 +65,8 @@ If you have questions concerning this license or the applicable additional terms
 								forward=<-127..127>  right=<-127..127>  up=<1|-1> (jump, crouch)
 								yaw=<deg/s> (+ turns left)  pitch=<deg/s> (+ looks down)
 								attack  run  zoom  use  jump  crouch
+								in noclip a value v from 22 up moves 4.5 v units a second, one up to
+								21 only 0.93 v (the player is stopped below 20): no speed between 20 and 99
 	impulse <tic> <n>			an impulse with tic <tic>: 0..12 select weapons, 16 the flashlight
 	capture <from> <to> [every=<k>] [fps=<n>]
 								write the frames of tics from..to (inclusive), of every k-th tic
