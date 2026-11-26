@@ -6,9 +6,10 @@
 	R15 on the GPU: what a ray of the GPU scene hits. Everything is read through ResourceDescriptorHeap:
 
 	  TLAS        InstanceID the instance's first geometry record, InstanceIndex its row of the instance table,
-	              GeometryIndex the record after the first; mask bit 0 rays that see, bit 1 shadow rays; the front
-	              face is the side Doom 3 draws, and only a two-sided geometry is hit from behind: an instance
-	              holds two-sided geometries only (it culls nothing) or none
+	              GeometryIndex the record after the first; mask bit 0 rays that see, bit 1 shadow rays, bit 2
+	              the shadow rays of a local surface (RtShadowMask); the front face is the side Doom 3 draws,
+	              and only a two-sided geometry is hit from behind: an instance holds two-sided geometries
+	              only (it culls nothing) or none
 	  records     GpuScene.h's gpuSceneGeometry_t, 288 bytes; textures[] are SRV indices of 2D views
 	  instances   d3d12RtInstance_t, 16 bytes: first record, count, the bytes of its skinned vertices, scene instance
 	  vertices    idDrawVert, 32 bytes: xyz, st as halves, normal and tangent as bytes, two colours; a skinned
@@ -30,6 +31,7 @@ static const uint RT_GEO_SKINNED = 1u << 1;
 static const uint RT_GEO_TWO_SIDED = 1u << 2;
 static const uint RT_GEO_NO_SHADING = 1u << 3;
 static const uint RT_GEO_CASTS_SHADOW = 1u << 4;
+static const uint RT_GEO_NO_SELF_SHADOW = 1u << 5;
 
 // gpuSceneTexture_t
 static const uint RT_TEXTURE_DIFFUSE = 0;
@@ -41,6 +43,7 @@ static const uint RT_TEXTURES = 5;
 
 static const uint RT_MASK_VISIBLE = 1u << 0;
 static const uint RT_MASK_SHADOW = 1u << 1;
+static const uint RT_MASK_SHADOW_GLOBAL = 1u << 2;
 static const uint RT_NOT_SKINNED = 0xFFFFFFFF;
 static const uint RT_GEOMETRY_BYTES = 288;
 static const uint RT_INSTANCE_BYTES = 16;
@@ -299,10 +302,16 @@ RtHit RtTrace( RtHeap heap, RayDesc ray, uint mask, float pixelSpread, uint samp
 	return hit;
 }
 
+// The casters whose shadows fall on a surface: all of them, but on a local one (MF_NOSELFSHADOW) only those that are
+// not local, as the stencil shadows draw the local interactions before the local shadows.
+uint RtShadowMask( uint geometryFlags ) {
+	return ( ( geometryFlags & RT_GEO_NO_SELF_SHADOW ) != 0 ) ? RT_MASK_SHADOW_GLOBAL : RT_MASK_SHADOW;
+}
+
 // Whether a shadow caster lies within tMax along the ray: Doom 3's shadow volumes extrude the sides that face the
 // light, which the ray meets from behind, so it culls front faces; any hit ends the search. footprint: the
-// world units of a pixel at the origin, for the alpha's level.
-bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float footprint, uint samplerIndex ) {
+// world units of a pixel at the origin, for the alpha's level. mask: RtShadowMask of the surface at the origin.
+bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float footprint, uint samplerIndex, uint mask ) {
 	RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[heap.tlas];
 	RayDesc ray;
 	ray.Origin = origin;
@@ -310,7 +319,7 @@ bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float
 	ray.TMin = 0.0;
 	ray.TMax = tMax;
 	RayQuery<RAY_FLAG_CULL_FRONT_FACING_TRIANGLES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-	query.TraceRayInline( tlas, RAY_FLAG_NONE, RT_MASK_SHADOW, ray );
+	query.TraceRayInline( tlas, RAY_FLAG_NONE, mask, ray );
 	while ( query.Proceed() ) {
 		// a cone of the footprint's width all along: the level stays the origin's
 		if ( query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE

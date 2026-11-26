@@ -20,11 +20,12 @@
 	    (gpuSceneFrame_t, frame memory)
 
 	A slot is built again when its entity changes (model, parms, a material that is not constant), and a record goes
-	out only when it differs from what the GPU holds at its index. A slot's one-sided and two-sided surfaces are an
-	instance each, since an instance culls as a whole. A full update (the first, a new set of static buffers, a
-	refused update) drops every slot and sends the records of the frame's instances. Out for now: geometry of the
-	frame's vertex cache (particles, deforms, decals, CPU skinning), translucent surfaces, the weapon and the
-	player's body.
+	out only when it differs from what the GPU holds at its index. A slot's surfaces are up to four instances: by
+	side, since an instance culls as a whole, and by MF_NOSELFSHADOW, since it has one mask (Doom 3's local
+	surfaces take no shadow of each other). A full update (the first, a new set of static buffers, a refused
+	update) drops every slot and sends the records of the frame's instances. Out for now: geometry of the frame's
+	vertex cache (particles, deforms, decals, CPU skinning), translucent surfaces, the weapon and the player's
+	body.
 
 	Every view of a frame that sees other areas gathers again (a portal sky's view comes before the player's): its
 	update has its own instances and lights and every write of the frame so far (base, the last sequence of the
@@ -55,6 +56,7 @@ struct gpuSceneGeometry_t {
 	static constexpr uint32	GEO_TWO_SIDED = 1u << 2;
 	static constexpr uint32	GEO_NO_SHADING = 1u << 3;	// an occluder only: a GUI, a mirror
 	static constexpr uint32	GEO_CASTS_SHADOW = 1u << 4;	// without it the BLAS holds the geometry not opaque: shadow rays skip it
+	static constexpr uint32	GEO_NO_SELF_SHADOW = 1u << 5;	// MF_NOSELFSHADOW, a local surface: no shadow of or on another such
 
 	uint32		vertexOffset;		// bytes into the static vertex buffer: idDrawVert
 	uint32		indexOffset;		// bytes into the static index buffer: triIndex_t
@@ -104,10 +106,11 @@ struct gpuSceneWrite_t {
 	textureHandle_t			textures[GPU_SCENE_TEXTURES];	// filled by the back end
 };
 
-// An entity's one-sided or two-sided surfaces in this frame's acceleration structure: its geometries cull alike.
+// A group of an entity's surfaces in this frame's acceleration structure: its geometries cull and cast alike.
 struct gpuSceneInstance_t {
 	static constexpr uint32	MASK_VISIBLE = 1u << 0;		// reflection and debug rays
-	static constexpr uint32	MASK_SHADOW = 1u << 1;		// shadow rays
+	static constexpr uint32	MASK_SHADOW = 1u << 1;		// shadow rays: every caster
+	static constexpr uint32	MASK_SHADOW_GLOBAL = 1u << 2;	// the shadow rays of a local surface: the casters that are not local
 
 	float					transform[3][4];	// object to world, the rows of the drawn model matrix
 	uint32					firstGeometry;
@@ -158,19 +161,38 @@ struct gpuSceneStats_t {
 	uint64					frameBytes = 0;		// the TLAS, the skinned BLAS and vertices, the scratch
 };
 
-// A slot's records in the order of its instances: the one-sided, then the two-sided, each half counting its skinned
-// vertices from 0 into skinnedVerts. Returns how many are one-sided.
-[[nodiscard]] inline int GpuScene_OrderBySide( std::span<gpuSceneWrite_t> writes, int skinnedVerts[2] ) {
-	const auto oneSided = []( const gpuSceneWrite_t & write ) { return ( write.record.flags & gpuSceneGeometry_t::GEO_TWO_SIDED ) == 0; };
-	const int numOneSided = static_cast<int>( std::stable_partition( writes.begin(), writes.end(), oneSided ) - writes.begin() );
-	skinnedVerts[0] = skinnedVerts[1] = 0;
-	for ( int i = 0; i < static_cast<int>( writes.size() ); i++ ) {
-		gpuSceneGeometry_t & record = writes[i].record;
-		int & verts = skinnedVerts[( i < numOneSided ) ? 0 : 1];
-		record.skinnedOffset = static_cast<uint32>( verts * sizeof( idDrawVert ) );
-		verts += ( record.flags & gpuSceneGeometry_t::GEO_SKINNED ) != 0 ? static_cast<int>( record.numVerts ) : 0;
+// The instance a record of a slot belongs to: the one-sided before the two-sided, in each the local ones last.
+constexpr int GPU_SCENE_GROUPS = 4;
+[[nodiscard]] constexpr int GpuScene_Group( uint32 flags ) {
+	return ( ( flags & gpuSceneGeometry_t::GEO_TWO_SIDED ) != 0 ? 2 : 0 ) | ( ( flags & gpuSceneGeometry_t::GEO_NO_SELF_SHADOW ) != 0 ? 1 : 0 );
+}
+
+// An entity with noShadow casts nothing; a local group's shadows do not fall on local surfaces.
+[[nodiscard]] constexpr uint32 GpuScene_InstanceMask( int group, bool castsShadows ) {
+	const uint32 shadows = gpuSceneInstance_t::MASK_SHADOW | ( ( group & 1 ) != 0 ? 0 : gpuSceneInstance_t::MASK_SHADOW_GLOBAL );
+	return gpuSceneInstance_t::MASK_VISIBLE | ( castsShadows ? shadows : 0 );
+}
+
+struct gpuSceneGroups_t {
+	int						count[GPU_SCENE_GROUPS] = {};			// records of each group, one after another
+	int						skinnedVerts[GPU_SCENE_GROUPS] = {};
+};
+
+// A slot's records in the order of its instances, each group keeping its order and counting its skinned vertices
+// from 0.
+[[nodiscard]] inline gpuSceneGroups_t GpuScene_OrderByGroup( std::span<gpuSceneWrite_t> writes ) {
+	std::stable_sort( writes.begin(), writes.end(), []( const gpuSceneWrite_t & a, const gpuSceneWrite_t & b ) {
+		return GpuScene_Group( a.record.flags ) < GpuScene_Group( b.record.flags );
+	} );
+	gpuSceneGroups_t groups;
+	for ( gpuSceneWrite_t & write : writes ) {
+		gpuSceneGeometry_t & record = write.record;
+		const int group = GpuScene_Group( record.flags );
+		record.skinnedOffset = static_cast<uint32>( groups.skinnedVerts[group] * sizeof( idDrawVert ) );
+		groups.skinnedVerts[group] += ( record.flags & gpuSceneGeometry_t::GEO_SKINNED ) != 0 ? static_cast<int>( record.numVerts ) : 0;
+		groups.count[group]++;
 	}
-	return numOneSided;
+	return groups;
 }
 
 // The key of a static BLAS of these records: their positions and what the BLAS holds opaque. Never 0, a skinned one's.
@@ -311,9 +333,8 @@ private:
 		int					modified = 0;			// the entity's lastModifiedFrameNum then
 		int					firstGeometry = 0;
 		int					numGeometries = 0;
-		int					numOneSided = 0;		// the first records; the rest are two-sided: an instance each
-		int					skinnedVerts[2] = {};	// of each half
-		uint64				blasKey[2] = {};
+		gpuSceneGroups_t	groups;					// its records by instance
+		uint64				blasKey[GPU_SCENE_GROUPS] = {};
 		bool				animated = false;		// a material that is not constant: built again every frame
 		bool				skinned = false;
 	};
