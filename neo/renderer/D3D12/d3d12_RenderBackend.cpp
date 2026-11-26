@@ -194,6 +194,15 @@ void idRenderBackendD3D12::EndGBuffer() {
 	context->EndGBuffer();
 }
 
+bool idRenderBackendD3D12::BeginTracedLights( const renderRect_t & rect ) {
+	assert( IsOwnerThread() && inFrame );
+	return context->BeginTracedLights( rect );
+}
+
+void idRenderBackendD3D12::EndTracedLights() {
+	context->EndTracedLights();
+}
+
 void idRenderBackendD3D12::DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {
 	context->DrawGBufferDebug( mode, viewport );
 }

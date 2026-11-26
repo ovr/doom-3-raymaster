@@ -395,19 +395,15 @@ void idD3D12Context::EndHdrScene() {
 }
 
 bool idD3D12Context::BeginGBuffer( const renderRect_t & viewport ) {
-	if ( !hdrScene || recorder.HdrGamma() || device.IsLost() ) {
+	const std::optional<D3D12_RECT> rect = SceneRect( viewport );
+	if ( !hdrScene || recorder.HdrGamma() || recorder.Lights() || device.IsLost() || !rect ) {
 		return false;
 	}
 	recorder.EndPass();
 	if ( !scene.EnsureGBuffer() ) {
 		return false;
 	}
-	const D3D12_RECT rect = { Max( viewport.x, 0 ), Max( viewport.y, 0 ), Min( viewport.x + viewport.width, scene.Width() ),
-		Min( viewport.y + viewport.height, scene.Height() ) };
-	if ( rect.right <= rect.left || rect.bottom <= rect.top ) {
-		return false;
-	}
-	scene.ClearGBuffer( barriers, List(), rect );
+	scene.ClearGBuffer( barriers, List(), *rect );
 	recorder.SetGBuffer( true );
 	return true;
 }
@@ -416,6 +412,31 @@ void idD3D12Context::EndGBuffer() {
 	if ( recorder.GBuffer() ) {
 		recorder.SetGBuffer( false );
 	}
+}
+
+bool idD3D12Context::BeginTracedLights( const renderRect_t & rect ) {
+	const std::optional<D3D12_RECT> clear = SceneRect( rect );
+	if ( !hdrScene || recorder.HdrGamma() || recorder.GBuffer() || device.IsLost() || !clear ) {
+		return false;
+	}
+	recorder.EndPass();
+	if ( !scene.EnsureLights() ) {
+		return false;
+	}
+	scene.ClearLights( barriers, List(), *clear );
+	recorder.SetLights( true );
+	return true;
+}
+
+void idD3D12Context::EndTracedLights() {
+	if ( recorder.Lights() ) {
+		recorder.SetLights( false );
+	}
+}
+
+std::optional<D3D12_RECT> idD3D12Context::SceneRect( const renderRect_t & rect ) const {
+	const D3D12_RECT inside = { Max( rect.x, 0 ), Max( rect.y, 0 ), Min( rect.x + rect.width, scene.Width() ), Min( rect.y + rect.height, scene.Height() ) };
+	return ( inside.right > inside.left && inside.bottom > inside.top ) ? std::optional( inside ) : std::nullopt;
 }
 
 // A failed build leaves nothing to trace this frame; a full update would not help it, so the update stands.

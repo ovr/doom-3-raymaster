@@ -182,7 +182,7 @@ pipelineKey_t D3D12_NormalizeKey( const pipelineKey_t & key ) {
 	normal.layout = ( key.layout < NUM_VERTEX_LAYOUTS ) ? key.layout : static_cast<uint8>( LAYOUT_UNKNOWN );
 	// the slot says it all: GLS_POLYGON_OFFSET adds nothing
 	uint64 bits = key.stateBits & GLS_PIPELINE_BITS & ~( UNDEFINED_STATE_BITS | GLS_POLYGON_OFFSET );
-	int raster = key.raster & ( D3D12_KEY_CULL_BITS | D3D12_KEY_LINES | D3D12_KEY_TARGET_BITS | D3D12_KEY_STRICT_DEPTH | D3D12_KEY_HDR_TARGET );
+	int raster = key.raster & D3D12_KEY_RASTER_BITS;
 	if ( ( raster & D3D12_KEY_CULL_BITS ) == D3D12_KEY_CULL_BITS ) {
 		raster &= ~D3D12_KEY_CULL_BITS;		// no such cull: none
 	}
@@ -202,6 +202,7 @@ pipelineKey_t D3D12_NormalizeKey( const pipelineKey_t & key ) {
 	}
 	normal.stateBits = bits;
 	normal.raster = static_cast<uint8>( raster );
+	normal.target = D3D12_KeyTarget( key ).value;
 	return normal;
 }
 
@@ -219,7 +220,7 @@ d3d12PipelineDesc_t D3D12_PipelineDescFor( const pipelineKey_t & key, uint16 pro
 	target.SrcBlendAlpha = AlphaFactor( target.SrcBlend );
 	target.DestBlendAlpha = AlphaFactor( target.DestBlend );
 	target.BlendOp = target.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-	const d3d12TargetId_t targetId = D3D12_KeyTarget( key.raster );
+	const d3d12TargetId_t targetId = D3D12_KeyTarget( key );
 	if ( targetId.Hdr() && target.BlendEnable && target.DestBlendAlpha == D3D12_BLEND_ONE ) {
 		target.SrcBlendAlpha = D3D12_BLEND_ONE;
 		target.BlendOpAlpha = D3D12_BLEND_OP_MAX;

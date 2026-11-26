@@ -150,6 +150,11 @@ If you have questions concerning this license or the applicable additional terms
 		main view, traces a mirror ray per pixel that may reflect, lights its hit with the update's lights and
 		adds it to the scene (or replaces the scene's colour with it, settings.alone). Both draw nothing while
 		the scene is refused.
+	R16	In the HDR scene's linear phase: BeginTracedLights clears a rectangle of the light target (a second
+		float surface of the scene's size and sample count) to zero and sends the draws until EndTracedLights
+		to both: a program's first colour output to the scene, its second to the light target, each through
+		the draw's one blend. Only programs with both outputs draw there, and nothing clears. The light
+		target holds until the next BeginTracedLights.
 
 ===============================================================================
 */
@@ -249,6 +254,10 @@ public:
 	// R15 and R14, in the linear phase after the lights: the mirror reflections into the viewport of the scene.
 	virtual void			DrawRayTracedReflections( const rtReflectionSettings_t & settings, const rtView_t & view,
 								const renderRect_t & viewport ) {}
+	// R16, in the linear phase. Each ends the pass of a pipeline backend. False: no light target (a lost
+	// device), draw nothing until EndTracedLights.
+	[[nodiscard]] virtual bool	BeginTracedLights( const renderRect_t & rect ) { return false; }
+	virtual void			EndTracedLights() {}
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,

@@ -78,6 +78,8 @@ public:
 	[[nodiscard]] std::optional<hdrExposure_t>	LastHdrExposure() const override;
 	[[nodiscard]] bool				BeginGBuffer( const renderRect_t & viewport ) override;
 	void							EndGBuffer() override;
+	[[nodiscard]] bool				BeginTracedLights( const renderRect_t & rect ) override;
+	void							EndTracedLights() override;
 	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) override;
 	[[nodiscard]] bool				UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats ) override;
 	void							DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport ) override;

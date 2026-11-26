@@ -150,18 +150,20 @@ const d3d12HlslStage_t & idD3D12InternalPasses::Stage( const char * name ) const
 }
 
 idComPtr<ID3D12PipelineState> idD3D12InternalPasses::CreatePipeline( const d3d12Bytecode_t & pixelShader, DXGI_FORMAT format, UINT samples,
-	uint8 writeMask, const wchar_t * name, bool add ) const {
+	uint8 writeMask, const wchar_t * name, d3d12PassBlend_t blend ) const {
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
 	desc.pRootSignature = root.Get();
 	desc.VS = { triangleVs.data(), triangleVs.size() };
 	desc.PS = { pixelShader.data(), pixelShader.size() };
-	D3D12_RENDER_TARGET_BLEND_DESC & blend = desc.BlendState.RenderTarget[0];
-	blend.SrcBlend = blend.SrcBlendAlpha = D3D12_BLEND_ONE;
-	blend.DestBlend = blend.DestBlendAlpha = add ? D3D12_BLEND_ONE : D3D12_BLEND_ZERO;
-	blend.BlendEnable = add;
-	blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-	blend.LogicOp = D3D12_LOGIC_OP_NOOP;
-	blend.RenderTargetWriteMask = writeMask;
+	const bool multiply = ( blend == d3d12PassBlend_t::MULTIPLY );
+	D3D12_RENDER_TARGET_BLEND_DESC & target = desc.BlendState.RenderTarget[0];
+	target.BlendEnable = ( blend != d3d12PassBlend_t::REPLACE );
+	target.SrcBlend = target.SrcBlendAlpha = multiply ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE;
+	target.DestBlend = multiply ? D3D12_BLEND_SRC_COLOR : ( target.BlendEnable ? D3D12_BLEND_ONE : D3D12_BLEND_ZERO );
+	target.DestBlendAlpha = multiply ? D3D12_BLEND_SRC_ALPHA : target.DestBlend;
+	target.BlendOp = target.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+	target.LogicOp = D3D12_LOGIC_OP_NOOP;
+	target.RenderTargetWriteMask = writeMask;
 	desc.SampleMask = UINT_MAX;
 	desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
 	desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;

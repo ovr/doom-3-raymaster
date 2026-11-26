@@ -130,7 +130,7 @@ ID3D12PipelineState * idD3D12RtPasses::CompositePipeline( UINT samples, bool add
 	if ( !pso ) {
 		constexpr uint8 RGB = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
 		pso = passes.CreatePipeline( passes.Stage( "internal_rtComposite" ).code, d3d12TargetId_t::HDR_FORMAT, samples, RGB,
-			add ? L"doom3 rt reflection composite" : L"doom3 rt reflection alone", add );
+			add ? L"doom3 rt reflection composite" : L"doom3 rt reflection alone", add ? d3d12PassBlend_t::ADD : d3d12PassBlend_t::REPLACE );
 	}
 	return pso.Get();
 }

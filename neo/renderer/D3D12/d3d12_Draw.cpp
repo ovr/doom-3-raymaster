@@ -62,6 +62,13 @@ void idD3D12DrawRecorder::BeginPass( ID3D12GraphicsCommandList4 & list ) {
 		barriers.Flush();
 		const auto rtvs = scene.GBufferRtvs();
 		list.OMSetRenderTargets( static_cast<UINT>( rtvs.size() ), rtvs.data(), FALSE, &dsv );
+	} else if ( lights ) {
+		for ( idD3D12SceneTarget::surface_t * target : { &scene.Color( true ), &scene.Lights() } ) {
+			barriers.Transition( *target->resource.Get(), target->state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		}
+		barriers.Flush();
+		const auto rtvs = scene.LightsRtvs();
+		list.OMSetRenderTargets( static_cast<UINT>( rtvs.size() ), rtvs.data(), FALSE, &dsv );
 	} else {
 		idD3D12SceneTarget::surface_t & color = scene.Color( hdr );
 		barriers.Transition( *color.resource.Get(), color.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
@@ -73,9 +80,15 @@ void idD3D12DrawRecorder::BeginPass( ID3D12GraphicsCommandList4 & list ) {
 }
 
 void idD3D12DrawRecorder::SetGBuffer( bool enable ) {
-	assert( !enable || hdr );
+	assert( !enable || ( hdr && !lights ) );
 	EndPass();
 	gbuffer = enable;
+}
+
+void idD3D12DrawRecorder::SetLights( bool enable ) {
+	assert( !enable || ( hdr && !hdrGamma && !gbuffer ) );
+	EndPass();
+	lights = enable;
 }
 
 // The target id in the key changes with the view, so the next draw binds a PSO of the other format.
@@ -91,6 +104,7 @@ void idD3D12DrawRecorder::SetHdr( bool enable, float scenePreExposure ) {
 	hdr = enable;
 	hdrGamma = false;
 	gbuffer = false;
+	lights = false;
 	preExposure = scenePreExposure;
 }
 
@@ -102,8 +116,8 @@ void idD3D12DrawRecorder::SetHdrGamma( bool enable ) {
 // The scene is in GL row order, so the rectangle of shared code is used as it is. glClear obeys
 // glDepthMask; the stencil write mask is never changed from 0xFF.
 void idD3D12DrawRecorder::Clear( const renderLatch_t & latch, const clearDesc_t & clear ) {
-	if ( gbuffer ) {
-		assert( false );	// R14: nothing clears between BeginGBuffer and EndGBuffer
+	if ( gbuffer || lights ) {
+		assert( false );	// R14, R16: nothing clears between BeginGBuffer and EndGBuffer, BeginTracedLights and EndTracedLights
 		return;
 	}
 	const int x0 = Max( clear.rect.x, 0 );
@@ -195,8 +209,8 @@ std::optional<idD3D12DrawRecorder::prepared_t> idD3D12DrawRecorder::Prepare( con
 	prepared_t prepared;
 	pipelineKey_t key = sharedKey;
 	key.program = program.dense;
-	const d3d12TargetId_t target = gbuffer ? d3d12TargetId_t::GBuffer( scene.Samples() ) : scene.Target( srgb, hdr );
-	key.raster = static_cast<uint8>( key.raster | D3D12_KeyRaster( target ) );
+	key.target = ( gbuffer ? d3d12TargetId_t::GBuffer( scene.Samples() ) : lights ? d3d12TargetId_t::Lights( scene.Samples() )
+		: scene.Target( srgb, hdr ) ).value;
 	if ( ( latch.stateBits & GLS_POLYGON_OFFSET ) != 0 && dc.topology == primitive_t::TRIANGLES ) {
 		key.depthBias = pipelines.Bias().Slot( latch.polyOfsScale, latch.polyOfsBias );
 	}
