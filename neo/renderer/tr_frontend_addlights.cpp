@@ -194,6 +194,7 @@ static void R_AddSingleLight( viewLight_t * vLight ) {
 	vLight->shaderRegisters = lightRegs;
 	vLight->emitterRadius = R_LightEmitterRadius( *light, viewDef->rayTracing.lightSize );
 	vLight->castsShadows = light->LightCastsShadows();
+	vLight->fillLight = R_FillLight( light->lightShader->IsAmbientLight(), light->parms.pointLight, vLight->castsShadows );
 	vLight->lightIndex = light->index;
 
 	if ( r_useLightScissors.GetInteger() != 0 ) {

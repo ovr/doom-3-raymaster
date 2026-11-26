@@ -194,7 +194,7 @@ postProcessSettings_t R_DefaultPostProcessSettings() {
 // RayTracingSettings.h: copied into every view like the post process settings
 idCVar r_gbufferDebug( "r_gbufferDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows the main view's thin G-buffer: 1 = the world normal, 2 = F0, 3 = the roughness, 4 = the motion (hue = direction, 8 pixels = full), 5 = the albedo", 0, 5 );
 idCVar r_gbufferGloss( "r_gbufferGloss", "1.2", CVAR_RENDERER | CVAR_FLOAT, "the G-buffer's gloss is the square root of the specular luminance times this; the roughness is 1 - gloss", 0.0f, 4.0f );
-idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the mirror reflections alone, 6 = what the traced shadows leave of the lights (blue where none reaches), 7 = the length of their history (white = all it may hold)", 0, 7 );
+idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the mirror reflections alone, 6 = what the traced shadows leave of the lights (blue where none reaches), 7 = the length of their history (white = all it may hold), 8 = the indirect light alone, as a white surface takes it", 0, 8 );
 idCVar r_rtShadows( "r_rtShadows", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced shadows of the main view's lights, soft by the size of each light, instead of stencil shadow volumes (needs r_useGPUSkinning 1)" );
 idCVar r_rtHistory( "r_rtHistory", "1", CVAR_RENDERER | CVAR_BOOL, "the ray traced passes average their noise over the frames before; 0 = every frame alone, with the same noise" );
 idCVar r_rtShadowHistory( "r_rtShadowHistory", "16", CVAR_RENDERER | CVAR_INTEGER, "frames the ray traced shadows average per pixel", 1, 64 );
@@ -208,6 +208,15 @@ idCVar r_rtReflectionDistance( "r_rtReflectionDistance", "2048", CVAR_RENDERER |
 idCVar r_rtReflectionLights( "r_rtReflectionLights", "8", CVAR_RENDERER | CVAR_INTEGER, "lights that may light a reflected point, the first that reach it", 0, 64 );
 idCVar r_rtReflectionShadows( "r_rtReflectionShadows", "1", CVAR_RENDERER | CVAR_BOOL, "a shadow ray toward every light of a reflected point" );
 idCVar r_rtReflectionRoughness( "r_rtReflectionRoughness", "0.6", CVAR_RENDERER | CVAR_FLOAT, "pixels of this G-buffer roughness and rougher reflect nothing; the reflection fades in over 0.15 below it", 0.0f, 1.0f );
+idCVar r_rtIndirect( "r_rtIndirect", "0", CVAR_RENDERER | CVAR_BOOL, "one bounce of ray traced indirect light in the main view: what the lights leave on the surfaces around, and what surfaces emit" );
+idCVar r_rtIndirectScale( "r_rtIndirectScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced indirect light", 0.0f, 8.0f );
+idCVar r_rtEmissiveScale( "r_rtEmissiveScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales what a surface emits into the ray traced indirect light", 0.0f, 64.0f );
+idCVar r_rtIndirectDistance( "r_rtIndirectDistance", "1024", CVAR_RENDERER | CVAR_FLOAT, "the longest ray of the indirect light, in world units", 16.0f, 65536.0f );
+idCVar r_rtIndirectResolution( "r_rtIndirectResolution", "0.5", CVAR_RENDERER | CVAR_FLOAT, "rays of the indirect light per pixel along a side: 1, 0.5, 0.33 or 0.25", 0.25f, 1.0f );
+idCVar r_rtIndirectHistory( "r_rtIndirectHistory", "24", CVAR_RENDERER | CVAR_INTEGER, "frames the ray traced indirect light averages", 1, 64 );
+idCVar r_rtIndirectPasses( "r_rtIndirectPasses", "4", CVAR_RENDERER | CVAR_INTEGER, "spatial filter passes over the ray traced indirect light, each twice as wide as the one before; 0 = none", 0, 5 );
+idCVar r_rtIndirectClamp( "r_rtIndirectClamp", "8", CVAR_RENDERER | CVAR_FLOAT, "the most a ray of the indirect light brings, as the exposed scene's value (1 is about white); 0 = no limit", 0.0f, 1024.0f );
+idCVar r_rtFillLightScale( "r_rtFillLightScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the lights that stand in for bounced light (ambient lights, point lights without shadows) in the main view while r_rtIndirect is on", 0.0f, 1.0f );
 
 rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & postProcess ) {
 	rayTracingSettings_t settings;
@@ -239,8 +248,23 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	shadow.maxHistory = shadow.reference ? 4096 : r_rtShadowHistory.GetInteger();
 	shadow.passes = shadow.reference ? 0 : r_rtShadowPasses.GetInteger();
 
-	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled || shadow.Filtered() );
-	settings.scene = tracing && ( r_rtStats.GetBool() || settings.rtDebug != rtDebug_t::NONE || reflection.enabled || shadow.enabled );
+	// another picture in the scene's place takes nothing on top
+	rtIndirectSettings_t & indirect = settings.indirect;
+	indirect.alone = ( settings.rtDebug == rtDebug_t::INDIRECT );
+	indirect.enabled = tracing && ( indirect.alone || ( r_rtIndirect.GetBool() && !reflection.alone && !shadow.show && !shadow.showLength ) );
+	indirect.reference = r_rtReference.GetBool();
+	indirect.history = r_rtHistory.GetBool() || indirect.reference;
+	indirect.maxHistory = indirect.reference ? 4096 : r_rtIndirectHistory.GetInteger();
+	indirect.passes = indirect.reference ? 0 : r_rtIndirectPasses.GetInteger();
+	indirect.stride = idMath::ClampInt( 1, 4, idMath::Ftoi( 1.0f / Max( r_rtIndirectResolution.GetFloat(), 0.25f ) + 0.5f ) );
+	indirect.scale = r_rtIndirectScale.GetFloat();
+	indirect.emissiveScale = r_rtEmissiveScale.GetFloat();
+	indirect.distance = r_rtIndirectDistance.GetFloat();
+	indirect.maxRadiance = r_rtIndirectClamp.GetFloat();
+	settings.fillLightScale = ( indirect.enabled && !indirect.alone ) ? r_rtFillLightScale.GetFloat() : 1.0f;
+
+	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled || shadow.Filtered() || indirect.enabled );
+	settings.scene = tracing && ( r_rtStats.GetBool() || settings.rtDebug != rtDebug_t::NONE || reflection.enabled || shadow.enabled || indirect.enabled );
 	return settings;
 }
 

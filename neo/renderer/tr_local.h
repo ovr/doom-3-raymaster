@@ -358,7 +358,8 @@ struct viewLight_t {
 	idImage *				falloffImage;				// falloff image used by backend
 	float					emitterRadius;				// R_LightEmitterRadius: the disk a ray traced shadow samples
 	bool					castsShadows;				// the lightDef's LightCastsShadows
-	int						lightIndex;					// the lightDef's index: its traced shadow's noise, whatever else the view lists
+	bool					fillLight;					// R_FillLight: it stands in for bounced light
+	int						lightIndex;				// the lightDef's index: its traced shadow's noise, whatever else the view lists
 
 	drawSurf_t *			globalShadows;				// shadow everything
 	drawSurf_t *			localInteractions;			// don't get local shadows

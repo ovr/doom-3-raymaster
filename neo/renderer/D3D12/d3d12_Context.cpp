@@ -486,6 +486,15 @@ void idD3D12Context::DrawRayTracedReflections( const rtReflectionSettings_t & se
 	recorder.Invalidate();
 }
 
+void idD3D12Context::DrawRayTracedIndirect( const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & viewport ) {
+	if ( !settings.enabled || !hdrScene || recorder.HdrGamma() || device.IsLost() ) {
+		return;
+	}
+	recorder.EndPass();
+	rtPasses.Indirect( graph, scene, rtHistory, rayTracing, gpuScene, settings, view, viewport, preExposure, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	recorder.Invalidate();
+}
+
 void idD3D12Context::DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) {
 	if ( mode == gbufferDebug_t::NONE || device.IsLost() || !scene.GBuffer( 0 ).resource ) {
 		return;

@@ -30,6 +30,7 @@ enum class rtDebug_t : uint8 {
 	REFLECTION,	// the mirror reflections alone, in place of the lights (the passes after them still draw)
 	SHADOWS,	// what the traced shadows leave of the traced lights, in place of the lights; blue where none reaches
 	HISTORY,	// how many frames the traced shadows' history holds per pixel, black none, white all it may
+	INDIRECT,	// the indirect light alone, as a white surface takes it, in place of the scene's colour
 	COUNT
 };
 
@@ -58,6 +59,30 @@ struct rtReflectionSettings_t {
 	float				distance = 2048.0f;	// the longest ray
 	float				maxRoughness = 0.6f;	// rougher pixels send no ray; the weight fades in over 0.15 below it
 };
+
+// r_rtIndirect: one bounce of light in the main view (R19). A ray per texel of a grid of stride pixels leaves the
+// surface by the cosine about the plane its depth holds; what it hits is lit by one of the lights that reach it and
+// by what it emits. The amount and the direction it came from are averaged over the eye's history (R18) and the
+// neighbours of the same surface, then every pixel takes them by its own bumped normal, times its albedo.
+struct rtIndirectSettings_t {
+	bool				enabled = false;	// with scene and gbuffer
+	bool				alone = false;		// rtDebug_t::INDIRECT
+	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
+	bool				reference = false;	// r_rtReference: a plain average of up to maxHistory frames, unfiltered
+	int					maxHistory = 24;	// r_rtIndirectHistory: frames a texel averages
+	int					passes = 4;			// r_rtIndirectPasses: spatial passes, each twice as wide
+	int					stride = 2;			// pixels a side per texel, from r_rtIndirectResolution
+	float				scale = 1.0f;		// r_rtIndirectScale
+	float				emissiveScale = 1.0f;	// r_rtEmissiveScale: what a hit emits, times this
+	float				distance = 1024.0f;	// the longest ray
+	float				maxRadiance = 8.0f;	// r_rtIndirectClamp: the most a ray brings, times the exposure; 0 any
+};
+
+// id's stand-ins for bounced light: an ambient light, and a point light that casts no shadow. A projected light
+// without shadows is a lamp of its own (the flashlight).
+[[nodiscard]] constexpr bool R_FillLight( bool ambient, bool pointLight, bool castsShadows ) {
+	return ambient || ( pointLight && !castsShadows );
+}
 
 // r_rtShadows: the main view's lights that cast shadows trace them in their interactions (R16, R17), a ray per
 // lit pixel and light toward the light's disk, instead of drawing stencil shadow volumes.
@@ -163,6 +188,10 @@ struct rayTracingSettings_t {
 	gbufferDebug_t		gbufferDebug = gbufferDebug_t::NONE;
 	rtDebug_t			rtDebug = rtDebug_t::NONE;	// with scene
 	rtReflectionSettings_t	reflection;
+	rtIndirectSettings_t	indirect;
+	// r_rtFillLightScale while the indirect light is on, else 1: the main view's lights that stand in for bounced
+	// light (R_FillLight) are drawn, and gathered for the rays, times this
+	float				fillLightScale = 1.0f;
 	rtShadowSettings_t	shadow;
 	float				gloss = 1.0f;		// r_gbufferGloss: sqrt( specular luminance ) times this is the gloss
 	float				lightSize = 1.0f;	// r_rtLightSize: scales every light's emitter; 0 = point lights

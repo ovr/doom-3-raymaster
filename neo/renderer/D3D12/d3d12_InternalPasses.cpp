@@ -93,8 +93,15 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "rtShadowApply", shaderStageType_t::FRAGMENT, "internal_rtShadowApply", nullptr },
 	{ "rtGuides", shaderStageType_t::COMPUTE, "internal_rtGuides", nullptr },
 	{ "rtGuides", shaderStageType_t::COMPUTE, "internal_rtGuides_msaa", "MULTISAMPLED=1" },
+	{ "rtGradient", shaderStageType_t::COMPUTE, "internal_rtGradient", nullptr },
 	{ "rtTemporal", shaderStageType_t::COMPUTE, "internal_rtTemporal", nullptr },
 	{ "rtAtrous", shaderStageType_t::COMPUTE, "internal_rtAtrous", nullptr },
+	{ "rtIndirect", shaderStageType_t::COMPUTE, "internal_rtIndirect", nullptr },
+	{ "rtIndirect", shaderStageType_t::COMPUTE, "internal_rtIndirect_msaa", "MULTISAMPLED=1" },
+	{ "rtIndirectTemporal", shaderStageType_t::COMPUTE, "internal_rtIndirectTemporal", nullptr },
+	{ "rtIndirectAtrous", shaderStageType_t::COMPUTE, "internal_rtIndirectAtrous", nullptr },
+	{ "rtUpsample", shaderStageType_t::FRAGMENT, "internal_rtUpsample", nullptr },
+	{ "rtUpsample", shaderStageType_t::FRAGMENT, "internal_rtUpsample_msaa", "MULTISAMPLED=1" },
 };
 
 }	// namespace

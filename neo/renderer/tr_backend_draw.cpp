@@ -1277,7 +1277,9 @@ static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t
 			continue;
 		}
 
-		const float lightScale = r_lightScale.GetFloat();
+		// R19: with the indirect light on, the main view's stand-ins for it are dimmed
+		const float fill = ( backEnd.gbufferView && vLight->fillLight ) ? backEnd.viewDef->rayTracing.fillLightScale : 1.0f;
+		const float lightScale = r_lightScale.GetFloat() * fill;
 		const idVec4 lightColor(
 			lightScale * lightRegs[ lightStage->color.registers[0] ],
 			lightScale * lightRegs[ lightStage->color.registers[1] ],
@@ -2747,12 +2749,19 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool d
 	//-------------------------------------------------
 	RB_DrawInteractions();
 
-	// R15: the mirror reflections add to the lights in linear, before the passes that blend in gamma
-	if ( backEnd.gbufferView && viewDef->rayTracing.reflection.enabled && viewDef->gpuScene != nullptr ) {
+	// R15, R19: the mirror reflections and the indirect light add to the lights in linear, before the passes that
+	// blend in gamma
+	const rayTracingSettings_t & rayTracing = viewDef->rayTracing;
+	if ( backEnd.gbufferView && viewDef->gpuScene != nullptr && ( rayTracing.reflection.enabled || rayTracing.indirect.enabled ) ) {
 		renderLog.OpenMainBlock( MRB_RAY_TRACING );
 		const idScreenRect & v = viewDef->viewport;
-		renderBackend->DrawRayTracedReflections( viewDef->rayTracing.reflection, RB_RayTracingView( *viewDef ),
-			{ v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
+		const renderRect_t viewport = { v.x1, v.y1, v.GetWidth(), v.GetHeight() };
+		if ( rayTracing.reflection.enabled ) {
+			renderBackend->DrawRayTracedReflections( rayTracing.reflection, RB_RayTracingView( *viewDef ), viewport );
+		}
+		if ( rayTracing.indirect.enabled ) {
+			renderBackend->DrawRayTracedIndirect( rayTracing.indirect, RB_RayTracingView( *viewDef ), viewport );
+		}
 		renderLog.CloseMainBlock();
 	}
 
@@ -3113,7 +3122,8 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		}
 		const rtDebug_t rtDebug = backEnd.viewDef->rayTracing.rtDebug;
 		// drawn before the resolve
-		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS || rtDebug == rtDebug_t::HISTORY );
+		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS || rtDebug == rtDebug_t::HISTORY
+			|| rtDebug == rtDebug_t::INDIRECT );
 		if ( rtDebug != rtDebug_t::NONE && !inScene && backEnd.viewDef->gpuScene != nullptr ) {
 			renderLog.OpenMainBlock( MRB_RAY_TRACING );
 			renderBackend->DrawRayTracingDebug( rtDebug, RB_RayTracingView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
