@@ -194,7 +194,7 @@ postProcessSettings_t R_DefaultPostProcessSettings() {
 // RayTracingSettings.h: copied into every view like the post process settings
 idCVar r_gbufferDebug( "r_gbufferDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows the main view's thin G-buffer: 1 = the world normal, 2 = F0, 3 = the roughness, 4 = the motion (hue = direction, 8 pixels = full), 5 = the albedo", 0, 5 );
 idCVar r_gbufferGloss( "r_gbufferGloss", "1.2", CVAR_RENDERER | CVAR_FLOAT, "the G-buffer's gloss is the square root of the specular luminance times this; the roughness is 1 - gloss", 0.0f, 4.0f );
-idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the mirror reflections alone, 6 = what the traced shadows leave of the lights (blue where none reaches), 7 = the length of their history (white = all it may hold), 8 = the indirect light alone, as a white surface takes it", 0, 8 );
+idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the reflections alone, 6 = what the traced shadows leave of the lights (blue where none reaches), 7 = the length of their history (white = all it may hold), 8 = the indirect light alone, as a white surface takes it", 0, 8 );
 idCVar r_rtShadows( "r_rtShadows", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced shadows of the main view's lights, soft by the size of each light, instead of stencil shadow volumes (needs r_useGPUSkinning 1)" );
 idCVar r_rtHistory( "r_rtHistory", "1", CVAR_RENDERER | CVAR_BOOL, "the ray traced passes average their noise over the frames before; 0 = every frame alone, with the same noise" );
 idCVar r_rtShadowHistory( "r_rtShadowHistory", "16", CVAR_RENDERER | CVAR_INTEGER, "frames the ray traced shadows average per pixel", 1, 64 );
@@ -202,11 +202,15 @@ idCVar r_rtShadowPasses( "r_rtShadowPasses", "3", CVAR_RENDERER | CVAR_INTEGER, 
 idCVar r_rtShadowVolumes( "r_rtShadowVolumes", "0", CVAR_RENDERER | CVAR_BOOL, "the front end makes the stencil shadow volumes also for a view whose shadows are ray traced: a frame that cannot trace then draws them (to measure what they cost)" );
 idCVar r_rtReference("r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a still camera: the ray traced passes average up to 4096 frames and skip their spatial filters" );
 idCVar r_rtLightSize( "r_rtLightSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the emitter of every light for the ray traced shadows (its light_size, by default 2 % of the light's reach within 2 .. 10 units); 0 = point lights", 0.0f, 16.0f );
-idCVar r_rtReflections( "r_rtReflections", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced mirror reflections of the main view on the surfaces whose specular may reflect" );
+idCVar r_rtReflections( "r_rtReflections", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced reflections of the main view on the surfaces whose specular may reflect" );
+idCVar r_rtReflectionGlossy( "r_rtReflectionGlossy", "1", CVAR_RENDERER | CVAR_BOOL, "a rough surface reflects as wide as its roughness says, filtered over frames and neighbours; 0 = every surface that reflects is a mirror" );
+idCVar r_rtReflectionMirror( "r_rtReflectionMirror", "0.08", CVAR_RENDERER | CVAR_FLOAT, "pixels of less than this G-buffer roughness are mirrors: one ray, every light with a hard shadow, no filter", 0.0f, 1.0f );
+idCVar r_rtReflectionHistory( "r_rtReflectionHistory", "16", CVAR_RENDERER | CVAR_INTEGER, "frames the glossy reflections average per pixel", 1, 64 );
+idCVar r_rtReflectionPasses( "r_rtReflectionPasses", "4", CVAR_RENDERER | CVAR_INTEGER, "spatial filter passes over the glossy reflections, each twice as wide as the one before; 0 = none", 0, 5 );
 idCVar r_rtReflectionScale( "r_rtReflectionScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced reflections", 0.0f, 4.0f );
 idCVar r_rtReflectionDistance( "r_rtReflectionDistance", "2048", CVAR_RENDERER | CVAR_FLOAT, "the longest reflection ray, in world units", 16.0f, 65536.0f );
-idCVar r_rtReflectionLights( "r_rtReflectionLights", "8", CVAR_RENDERER | CVAR_INTEGER, "lights that may light a reflected point, the first that reach it", 0, 64 );
-idCVar r_rtReflectionShadows( "r_rtReflectionShadows", "1", CVAR_RENDERER | CVAR_BOOL, "a shadow ray toward every light of a reflected point" );
+idCVar r_rtReflectionLights( "r_rtReflectionLights", "8", CVAR_RENDERER | CVAR_INTEGER, "lights that may light a point a mirror reflects, the first that reach it", 0, 64 );
+idCVar r_rtReflectionShadows( "r_rtReflectionShadows", "1", CVAR_RENDERER | CVAR_BOOL, "a shadow ray toward every light of a point a mirror reflects" );
 idCVar r_rtReflectionRoughness( "r_rtReflectionRoughness", "0.6", CVAR_RENDERER | CVAR_FLOAT, "pixels of this G-buffer roughness and rougher reflect nothing; the reflection fades in over 0.15 below it", 0.0f, 1.0f );
 idCVar r_rtIndirect( "r_rtIndirect", "0", CVAR_RENDERER | CVAR_BOOL, "one bounce of ray traced indirect light in the main view: what the lights leave on the surfaces around, and what surfaces emit" );
 idCVar r_rtIndirectScale( "r_rtIndirectScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced indirect light", 0.0f, 8.0f );
@@ -236,6 +240,12 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	reflection.scale = r_rtReflectionScale.GetFloat();
 	reflection.distance = r_rtReflectionDistance.GetFloat();
 	reflection.maxRoughness = r_rtReflectionRoughness.GetFloat();
+	reflection.glossy = r_rtReflectionGlossy.GetBool();
+	reflection.mirrorRoughness = r_rtReflectionMirror.GetFloat();
+	reflection.reference = r_rtReference.GetBool();
+	reflection.history = r_rtHistory.GetBool() || reflection.reference;
+	reflection.maxHistory = reflection.reference ? 4096 : r_rtReflectionHistory.GetInteger();
+	reflection.passes = reflection.reference ? 0 : r_rtReflectionPasses.GetInteger();
 
 	// without GPU skinning no MD5 is in the GPU scene: none would cast a shadow
 	rtShadowSettings_t & shadow = settings.shadow;

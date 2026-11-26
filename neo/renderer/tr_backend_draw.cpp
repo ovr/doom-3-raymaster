@@ -2749,7 +2749,7 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool d
 	//-------------------------------------------------
 	RB_DrawInteractions();
 
-	// R15, R19: the mirror reflections and the indirect light add to the lights in linear, before the passes that
+	// R20, R19: the reflections and the indirect light add to the lights in linear, before the passes that
 	// blend in gamma
 	const rayTracingSettings_t & rayTracing = viewDef->rayTracing;
 	if ( backEnd.gbufferView && viewDef->gpuScene != nullptr && ( rayTracing.reflection.enabled || rayTracing.indirect.enabled ) ) {

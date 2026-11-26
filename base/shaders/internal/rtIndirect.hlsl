@@ -11,8 +11,8 @@
 	  amount  RGBA16F  a the luminance that came, rgb that times the ray's direction
 	  chroma  RG16F    Co and Cg of it
 
-	Three pairs of numbers per texel and frame (include/rtNoise.hlsli, at three places of the tile): the ray's
-	direction, the light, the point of its disk. MULTISAMPLED reads sample 0.
+	Three pairs of numbers per texel and frame (include/rtNoise.hlsli, at three places of the tile, each with its
+	own step): the ray's direction, the light, the point of its disk. MULTISAMPLED reads sample 0.
 */
 
 #include "../include/gbuffer.hlsli"
@@ -111,9 +111,9 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 		ray.TMax = limits.x;
 		const RtHit hit = RtTrace( heap, ray, RT_MASK_VISIBLE, BOUNCE_SPREAD, linearSampler );
 		if ( hit.hit ) {
-			const float pick = RtNoise( noiseSrv, id.xy + uint2( 37, 5 ), noiseIndex ).x;
-			const float2 spot = RtDisk( RtNoise( noiseSrv, id.xy + uint2( 53, 47 ), noiseIndex ) );
-			radiance = RtShadeSampled( heap, lighting, hit, ray, 0.0, BOUNCE_SPREAD, pick, spot, limits.y );
+			const float pick = RtNoise( noiseSrv, id.xy + uint2( 37, 5 ), noiseIndex, 1 ).x;
+			const float2 spot = RtDisk( RtNoise( noiseSrv, id.xy + uint2( 53, 47 ), noiseIndex, 2 ) );
+			radiance = RtShadeSampled( heap, lighting, hit, ray, 0.0, BOUNCE_SPREAD, pick, spot, limits.y, false );
 		}
 	}
 

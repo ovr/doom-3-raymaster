@@ -135,7 +135,7 @@ public:
 	[[nodiscard]] bool				UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats );
 	// After the resolve: r_rtDebug's rays over viewport of the output, nothing while the last update was refused.
 	void							DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport );
-	// In the HDR scene's linear phase: the mirror reflections over viewport of SceneColor (r_rtReflections).
+	// In the HDR scene's linear phase: the reflections over viewport of SceneColor (r_rtReflections), over view's history.
 	void							DrawRayTracedReflections( const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & viewport );
 	// In the HDR scene's linear phase: one bounce of light over viewport of SceneColor (r_rtIndirect), over view's history.
 	void							DrawRayTracedIndirect( const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & viewport );

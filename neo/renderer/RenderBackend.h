@@ -147,11 +147,8 @@ If you have questions concerning this license or the applicable additional terms
 		a face of it) or all one-sided, all local (MF_NOSELFSHADOW) or none, and all drawn or none: its mask
 		says which rays meet it (gpuSceneInstance_t::MASK_*; without MASK_VISIBLE only shadow rays: a hull
 		that draws nothing, a body its own view leaves out). After the resolve, DrawRayTracingDebug traces a ray per pixel of the
-		main view against what the last applied update built and draws what it hits over the output.
-		DrawRayTracedReflections, in the linear phase after the lights, reads the G-buffer and the depth of the
-		main view, traces a mirror ray per pixel that may reflect, lights its hit with the update's lights and
-		adds it to the scene (or replaces the scene's colour with it, settings.alone). Both draw nothing while
-		the scene is refused.
+		main view against what the last applied update built and draws what it hits over the output, and
+		nothing while the scene is refused.
 	R16	In the HDR scene's linear phase: BeginTracedLights clears a rectangle of the light target (a second
 		float surface of the scene's size and sample count) to zero and sends the draws until EndTracedLights
 		to both: a program's first colour output to the scene, its second to the light target, each through
@@ -187,6 +184,18 @@ If you have questions concerning this license or the applicable additional terms
 		takes it, in the scene's place). While the scene is refused the frame takes what the history holds,
 		and nothing where it holds nothing. Shared code dims the lights that stand in for bounced light
 		(R_FillLight) by rayTracingSettings_t::fillLightScale, in the main view's interactions and for the rays.
+	R20	DrawRayTracedReflections, in the linear phase after the lights, with the G-buffer of the frame: a ray per
+		pixel of the main view whose G-buffer reflects (F0 above 0, roughness below settings.maxRoughness).
+		Smoother than settings.mirrorRoughness, or without settings.glossy, the pixel is a mirror: the ray
+		leaves about its normal and the hit is lit by the first settings.maxLights lights of the update's
+		that reach it, each with a shadow ray toward its centre; the same every frame, kept nowhere. A
+		rougher pixel's ray leaves about a normal of its GGX lobe, its hit lit as R19's and with its
+		highlight, averaged over the eye's history (R18, found where the surface was and where the reflected
+		image was; settings.reference starts again when the eye moves, since what a surface reflects depends
+		on the eye) and the neighbours of the same surface as far as the lobe reaches. What the rays met,
+		times the surface's Fresnel and settings.scale, is added to the scene (settings.alone: in the scene's
+		place). While the scene is refused a glossy pixel takes what the history holds; a mirror and a pixel
+		without a history, nothing.
 
 ===============================================================================
 */
@@ -283,7 +292,7 @@ public:
 	[[nodiscard]] virtual bool	UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats ) { return false; }
 	// R15, after the resolve: r_rtDebug's view over the viewport of the output.
 	virtual void			DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport ) {}
-	// R15 and R14, in the linear phase after the lights: the mirror reflections into the viewport of the scene.
+	// R20 and R14, in the linear phase after the lights: the reflections into the viewport of the scene.
 	virtual void			DrawRayTracedReflections( const rtReflectionSettings_t & settings, const rtView_t & view,
 								const renderRect_t & viewport ) {}
 	// R19, in the linear phase after the lights: one bounce of light into the viewport of the scene.
