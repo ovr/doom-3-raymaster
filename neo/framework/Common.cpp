@@ -1277,13 +1277,14 @@ void idCommonLocal::Shutdown() {
 	delete renderWorld;
 	renderWorld = NULL;
 
-	printf( "delete soundWorld;\n" );
-	delete soundWorld;
-	soundWorld = NULL;
+	// through the sound system: a deleted world left in its list is read when the samples are freed
+	printf( "soundSystem->FreeSoundWorld( soundWorld );\n" );
+	soundSystem->FreeSoundWorld( soundWorld );
+	soundWorld = nullptr;
 
-	printf( "delete menuSoundWorld;\n" );
-	delete menuSoundWorld;
-	menuSoundWorld = NULL;
+	printf( "soundSystem->FreeSoundWorld( menuSoundWorld );\n" );
+	soundSystem->FreeSoundWorld( menuSoundWorld );
+	menuSoundWorld = nullptr;
 
 	// shut down the session
 	printf( "session->ShutdownSoundRelatedSystems();\n" );
