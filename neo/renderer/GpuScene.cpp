@@ -320,7 +320,9 @@ void idGpuScene::GatherLights( idRenderWorldLocal & world, const viewDef_t & vie
 				for ( int i = 0; i < 4; i++ ) {
 					out.project[i].Set( project[i][0], project[i][1], project[i][2], project[i][3] );
 				}
-				out.color.Set( lightScale * color.x, lightScale * color.y, lightScale * color.z, regs[stage.color.registers[3]] );
+				// as the main view draws it (R19)
+				const float scale = lightScale * ( R_FillLight( ambient, parms.pointLight, light.LightCastsShadows() ) ? view.rayTracing.fillLightScale : 1.0f );
+				out.color.Set( scale * color.x, scale * color.y, scale * color.z, regs[stage.color.registers[3]] );
 				const idBounds & bounds = light.globalLightBounds;
 				out.boundsMin.Set( bounds[0].x, bounds[0].y, bounds[0].z, 0.0f );
 				out.boundsMax.Set( bounds[1].x, bounds[1].y, bounds[1].z, 0.0f );

@@ -42,17 +42,7 @@ PSOutput PSMain( VSOutput input ) {
 	// under MSAA a pixel's centre may lie beside its triangle, inside the wall next to it
 	const float3 position = EvaluateAttributeCentroid( input.worldPosition ).xyz;
 	const float radius = rpRtLight.w;
-	const float3 toLight = rpRtLight.xyz - position;
-	const float range = length( toLight );
-	if ( range <= radius ) {
-		return output;
-	}
-	const float3 axis = toLight / range;
-	const float3 other = ( abs( axis.z ) < 0.9 ) ? float3( 0.0, 0.0, 1.0 ) : float3( 1.0, 0.0, 0.0 );
-	const float3 right = normalize( cross( other, axis ) );
-	const float3 up = cross( axis, right );
 	const float2 disk = RtDisk( RtNoise( rtNoise, uint2( input.position.xy ), uint( rpRtShadow.y ) ) ) * radius;
-	float3 spread = right * disk.x + up * disk.y;
 
 	// the side of the surface the eye sees
 	const float footprint = max( length( dx ), length( dy ) );
@@ -60,20 +50,7 @@ PSOutput PSMain( VSOutput input ) {
 	const float area = length( side );
 	side = ( area > 1e-16 ) ? side / area : normalize( input.toEye.xyz );
 	side = ( dot( side, input.toEye.xyz ) < 0.0 ) ? -side : side;
-	// a surface that faces the light sees its whole disk: a point behind the surface's plane becomes the one across
-	if ( dot( toLight, side ) > 0.0 && dot( toLight + spread, side ) <= 0.0 ) {
-		spread = -spread;
-	}
-	const float3 emitter = rpRtLight.xyz + spread;
-	// Off the surface on that side, further where a pixel covers more of it. Toward a point behind the surface the
-	// ray comes back through the pixel's own point, so the surface stops it and not what lies beside its edge.
-	const float3 aim = normalize( emitter - position );
-	const float lift = 0.02 + 0.1 * footprint;
-	const float rise = dot( aim, side );
-	const float3 origin = ( rise > 0.0 ) ? position + side * lift : position - aim * ( lift / max( -rise, 0.05 ) );
-	const float3 path = emitter - origin;
-	const float reach = length( path );
-	if ( reach > radius && RtOccluded( RtDrawHeap(), origin, path / reach, reach - radius, footprint, rtSampler, uint( rpRtShadow.x ) ) ) {
+	if ( RtDiskOccluded( RtDrawHeap(), position, side, rpRtLight.xyz, radius, disk, footprint, rtSampler, uint( rpRtShadow.x ) ) ) {
 		output.lights = float4( output.scene.rgb, 0.0 );
 	}
 	return output;

@@ -4,19 +4,23 @@
 
 /*
 	The guides of the main view's frame (include/rtDenoise.hlsli), from its depth and G-buffer, a texel per pixel of
-	the viewport. Where the G-buffer holds nothing and the frame before held a surface, that surface's guide stays
-	for this one frame, marked: a driver's hole does not end a history, and the sky ends it one frame late.
-	MULTISAMPLED reads sample 0.
+	the viewport, or per stride pixels a side for a pass on a coarser grid: a texel is then the first pixel of its
+	block, and the motion and the slope count in texels. Where the G-buffer holds nothing and the frame before held
+	a surface, that surface's guide stays for this one frame, marked: a driver's hole does not end a history, and
+	the sky ends it one frame late. flags bit 1: the normal is the plane's the depth holds (include/rtView.hlsli),
+	not the G-buffer's bumped one, for a signal that does not follow the bumps. MULTISAMPLED reads sample 0.
 */
 
 #include "../include/rtDenoise.hlsli"
+#include "../include/rtView.hlsli"
 
 cbuffer GuidesParms : register( b0 ) {
 	float4 clipToWorld[4];		// rows: GL's clip space to world
 	float4 prevClipW;			// the row of w of the frame before's world to clip
 	float4 viewport;			// x, y, width, height in the scene: what the clip space maps to
+	float4 origin;				// xyz the eye
 	int2 first;					// the first pixel in the scene
-	uint2 size;					// pixels
+	uint2 size;					// texels
 	uint depthSrv;
 	uint normalSrv;				// GB0
 	uint motionSrv;				// GB2
@@ -25,8 +29,8 @@ cbuffer GuidesParms : register( b0 ) {
 	uint guidesUav;
 	uint reprojectUav;
 	uint slopeUav;
-	uint flags;					// bit 0: the frame before's guides are there
-	uint unused0;
+	uint flags;					// bit 0: the frame before's guides are there; 1: the depth's plane as the normal
+	uint stride;				// pixels a side per texel
 	uint unused1;
 	uint unused2;
 };
@@ -39,9 +43,9 @@ cbuffer GuidesParms : register( b0 ) {
 #define SCENE_LOAD( texture, p ) texture.Load( int3( p, 0 ) )
 #endif
 
-// A pixel of the viewport in clip space, w 1: clip to world of it is the point over its clip w.
+// A texel's pixel of the viewport in clip space, w 1: clip to world of it is the point over its clip w.
 float4 ClipAt( SCENE_TEXTURE( float ) depthMap, int2 id ) {
-	const int2 pixel = first + id;
+	const int2 pixel = first + id * int( stride );
 	const float2 ndc = ( float2( pixel ) + 0.5 - viewport.xy ) / viewport.zw * 2.0 - 1.0;
 	return float4( ndc, SCENE_LOAD( depthMap, pixel ) * 2.0 - 1.0, 1.0 );
 }
@@ -60,7 +64,7 @@ void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
 	RWTexture2D<float2> slopes = ResourceDescriptorHeap[slopeUav];
 
 	const int2 id = int2( dispatch.xy );
-	const int2 pixel = first + id;
+	const int2 pixel = first + id * int( stride );
 	const float drawn = SCENE_LOAD( albedoMap, pixel ).a;
 	if ( !GBufferDrawn( drawn ) ) {
 		uint kept = 0;
@@ -101,7 +105,16 @@ void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
 	// The depth the point had if it stood still; what moves is within the test's tolerance. Under the weapon's
 	// depth hack the depth is not the point's: it keeps its own.
 	const float before = GBufferWeapon( drawn ) ? 1.0 : dot( prevClipW, float4( position, 1.0 ) ) * inverseW;
-	guides[dispatch.xy] = RtPackGuide( SCENE_LOAD( normalMap, pixel ), 1.0 / inverseW );
-	reproject[dispatch.xy] = float4( SCENE_LOAD( motionMap, pixel ), before, 0.0 );
+	float2 normal = SCENE_LOAD( normalMap, pixel );
+	if ( ( flags & 2u ) != 0 ) {
+		RtView view;
+		view.clipToWorld = clipToWorld;
+		view.eye = origin.xyz;
+		view.viewport = viewport;
+		view.depthSrv = depthSrv;
+		normal = EncodeOctahedral( RtDepthNormal( view, pixel, RtDepthAt( view, pixel ), position ) );
+	}
+	guides[dispatch.xy] = RtPackGuide( normal, 1.0 / inverseW );
+	reproject[dispatch.xy] = float4( SCENE_LOAD( motionMap, pixel ) / float( stride ), before, 0.0 );
 	slopes[dispatch.xy] = slope;
 }

@@ -25,6 +25,11 @@
 	           the noise of its frames and of that many neighbours explains, is of a shadow that moved on. It is
 	           cut to the range and, by as much, becomes the frame's value with the neighbours' variance.
 
+	What the cut cannot tell, a history inside the range that is still of another signal (a penumbra where an
+	umbra was), the gradient does (flags bit 3, internal/rtGradient.hlsl): where the frame's values of the tiles
+	around the pixel lie farther from their histories than the noise of both explains, by as much the history
+	is shortened, down to none. That costs noise for some frames and never a wrong value.
+
 	Fewer than 4 frames tell no variance: the neighbours do then. A hole the guides bridged keeps its history.
 	So does every pixel of a frame that holds no trace (flags bit 2: its signal is all 1): what the history has
 	of it stands, uncut and uncounted, and a pixel without one holds no value.
@@ -44,16 +49,50 @@ cbuffer TemporalParms : register( b0 ) {
 	uint colorUav;
 	uint auxUav;
 	uint outputUav;
-	uint flags;				// bit 0: the frame before's guides, colour and aux are there; 1: a plain average; 2: no trace
+	// bit 0: the frame before's guides, colour and aux are there; 1: a plain average; 2: no trace; 3: the gradient is there
+	uint flags;
 	float maxHistory;
 	float invPreExposure;
 	float leastStep;		// RtAverage's: the last bit of the colour's format over its value, or 0
+	uint gradientSrv;		// a texel per tile
 };
 
-static const float CUT_SPREAD = 2.0;	// deviations of n neighbours' mean the history may lie outside their range
-static const float CUT_FRAMES = 4.0;	// frames a history needs to be cut, and to tell its variance
-static const float EDGE_STEP = 1.0 / 16.0;	// the least step between the two sides of an edge
-static const float EDGE_DEVIATIONS = 4.0;	// of a texel's noise its step must exceed
+static const float CUT_SPREAD = 2.0;		// deviations of n neighbours' mean the history may lie outside their range
+static const float GRADIENT_SPREAD = 3.0;	// deviations of the tiles' noise their frame may lie from their histories
+static const float GRADIENT_PIXELS = 8.0;	// pixels that must count around the pixel
+
+// How much of the pixel's history is of another signal, 0..1: the frame's values against the histories' over
+// the four tiles around it, each by how near its centre is, so that no tile's border shows.
+float Changed( int2 pixel ) {
+	Texture2D<float4> gradient = ResourceDescriptorHeap[gradientSrv];
+	const int2 tiles = int2( ( size + RT_TILE - 1 ) / RT_TILE );
+	const float2 at = ( float2( pixel ) + 0.5 ) / float( RT_TILE ) - 0.5;
+	const float2 base = floor( at );
+	const float2 part = at - base;
+	float difference = 0.0;
+	float counted = 0.0;
+	float variance = 0.0;
+	[unroll]
+	for ( uint tap = 0; tap < 4; tap++ ) {
+		const int2 offset = int2( tap & 1u, tap >> 1 );
+		const int2 tile = int2( base ) + offset;
+		const float w = ( ( offset.x != 0 ) ? part.x : 1.0 - part.x ) * ( ( offset.y != 0 ) ? part.y : 1.0 - part.y );
+		if ( all( tile >= 0 ) && all( tile < tiles ) ) {
+			const float3 held = gradient.Load( int3( tile, 0 ) ).rgb;
+			difference += w * held.r;
+			counted += w * held.g;
+			variance += w * w * held.b;
+		}
+	}
+	// a tile holds its sums over its pixels
+	const float pixels = float( RT_TILE * RT_TILE );
+	if ( counted * pixels < GRADIENT_PIXELS ) {
+		return 0.0;
+	}
+	// of the mean of the pixels that count
+	const float deviation = sqrt( variance / pixels ) / counted;
+	return saturate( abs( difference ) / ( counted * max( GRADIENT_SPREAD * deviation, RT_EDGE_STEP ) ) - 1.0 );
+}
 
 [numthreads( 8, 8, 1 )]
 void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
@@ -147,90 +186,22 @@ void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
 		Texture2D<float4> prevColor = ResourceDescriptorHeap[prevColorSrv];
 		Texture2D<float2> prevAux = ResourceDescriptorHeap[prevAuxSrv];
 		Texture2D<float4> reproject = ResourceDescriptorHeap[reprojectSrv];
-		const float3 moved = reproject.Load( int3( pixel, 0 ) ).xyz;
-		// the scene counts its rows up, as the motion does: where the pixel's centre was, in texels
-		const float2 at = float2( pixel ) - moved.xy;
-		const float2 base = floor( at );
-		const float2 part = at - base;
-		const float expected = guide.w * moved.z;
-		const float tolerance = 0.02 + abs( slope.x ) + abs( slope.y );
-		float4 tapColor[4];
-		float2 tapAux[4];
-		float tapWeight[4];
-		float tapFar[4];		// from the frame's value
-		float nearest = 1.0;
-		[unroll]
-		for ( uint tap = 0; tap < 4; tap++ ) {
-			const int2 offset = int2( tap & 1u, tap >> 1 );
-			const float w = ( ( offset.x != 0 ) ? part.x : 1.0 - part.x ) * ( ( offset.y != 0 ) ? part.y : 1.0 - part.y );
-			const int2 q = int2( base ) + offset;
-			tapColor[tap] = float4( 0.0, 0.0, 0.0, 0.0 );
-			tapAux[tap] = float2( 0.0, 0.0 );
-			tapWeight[tap] = 0.0;
-			tapFar[tap] = 0.0;
-			if ( w > 0.0 && all( q >= 0 ) && all( q < int2( size ) ) ) {
-				const RtGuide other = RtUnpackGuide( prevGuides.Load( int3( q, 0 ) ) );
-				const float4 held = prevColor.Load( int3( q, 0 ) );
-				// a texel without a frame held nothing: no light reached it
-				if ( held.a >= 1.0 && RtSameSurface( guide, expected, tolerance, other ) ) {
-					const float3 apart = abs( held.rgb - value );
-					tapColor[tap] = held;
-					tapAux[tap] = prevAux.Load( int3( q, 0 ) );
-					tapWeight[tap] = w;
-					tapFar[tap] = max( apart.r, max( apart.g, apart.b ) );
-					nearest = min( nearest, tapFar[tap] );
-				}
-			}
-		}
-		float weight = 0.0;
-		float least = 3.4e38;	// of the taps' measures
-		float most = 0.0;
-		// The taps as differences to the first one: equal ones give their value to the bit. Of the luminance it is
-		// the variance that is mixed: the second moment of two texels that differ would count their difference as noise.
-		float4 first = float4( 0.0, 0.0, 0.0, 0.0 );
-		float firstNoise = 0.0;
-		float noise = 0.0;
-		[unroll]
-		for ( uint slot = 0; slot < 4; slot++ ) {
-			const float4 held = tapColor[slot];
-			const float2 heldAux = tapAux[slot];
-			// An edge the history holds without noise is not mixed: of its two sides the pixel takes its own. A
-			// texel farther from the frame's value than EDGE_DEVIATIONS of its noise explain, and much farther
-			// than the nearest texel, lies across the edge. A penumbra's lone sample has no texel near it: all stay.
-			const float heldLuminance = dot( held.rgb, RT_LUMA );
-			const float heldNoise = heldAux.x - heldLuminance * heldLuminance;
-			const float deviations = EDGE_DEVIATIONS * EDGE_DEVIATIONS * max( heldNoise - 5e-4 * heldAux.x, 0.0 );
-			const bool sure = held.a >= CUT_FRAMES && tapFar[slot] * tapFar[slot] > deviations;
-			const bool across = !plain && !hold && sure && tapFar[slot] > max( EDGE_STEP, 2.0 * nearest );
-			const float w = across ? 0.0 : tapWeight[slot];
-			if ( w > 0.0 ) {
-				if ( weight == 0.0 ) {
-					first = held;
-					firstNoise = heldNoise;
-				}
-				mean += w * ( held.rgb - first.rgb );
-				frames += w * ( held.a - first.a );
-				noise += w * ( heldNoise - firstNoise );
-				least = min( least, heldAux.y );
-				most = max( most, heldAux.y );
-				weight += w;
-			}
-		}
-		if ( weight > 0.0 && measure <= most * 1.25 + 1e-6 && measure >= least * 0.75 - 1e-6 ) {
-			mean = first.rgb + mean / weight;
-			frames = first.a + frames / weight;
-			const float mixed = dot( mean, RT_LUMA );
-			second = max( mixed * mixed + firstNoise + noise / weight, 0.0 );
+		const RtHeld held = RtReadHistory( pixel, size, guide, slope, value, measure, !plain && !hold, reproject, prevGuides, prevColor, prevAux );
+		if ( held.frames > 0.0 ) {
+			mean = held.mean;
+			second = held.second;
+			frames = held.frames;
 			// A history outside what the neighbours hold now is of a shadow that moved on. Its own noise explains
 			// CUT_SPREAD deviations between its mean over its frames and the mean of n neighbours: the more
 			// of them agree, the less it may differ. A history of a few frames knows no noise yet.
-			const float known = max( second - mixed * mixed - 5e-4 * second, 0.0 );
-			const bool whole = plain || hold || frames < CUT_FRAMES;
+			const float mixed = dot( mean, RT_LUMA );
+			const float known = RtKnownNoise( mixed, second );
+			const bool whole = plain || hold || frames < RT_CUT_FRAMES;
 			const float spread = whole ? 1.0 : CUT_SPREAD * sqrt( known * ( 1.0 / inner + 1.0 / frames ) );
 			const float wideSpread = whole ? 1.0 : CUT_SPREAD * sqrt( known * ( 1.0 / taken + 1.0 / frames ) );
 			const float3 inside = clamp( mean, max( low - spread, wideLow - wideSpread ), min( high + spread, wideHigh + wideSpread ) );
 			const float3 cut = abs( mean - inside );
-			const float again = saturate( CUT_FRAMES * max( cut.r, max( cut.g, cut.b ) ) );
+			const float again = saturate( RT_CUT_FRAMES * max( cut.r, max( cut.g, cut.b ) ) );
 			if ( again > 0.0 ) {
 				// As far as it is cut it is a new pixel: the frame's value, the variance its neighbours show
 				// (none where they agree: a moved shadow without noise is not blurred), and frames enough
@@ -239,12 +210,13 @@ void CSMain( uint3 dispatch : SV_DispatchThreadID ) {
 				mean = lerp( inside, value, again );
 				const float after = dot( mean, RT_LUMA );
 				second = after * after + lerp( known, around, again );
-				frames = max( frames * ( 1.0 - again ), CUT_FRAMES - 1.0 );
+				frames = max( frames * ( 1.0 - again ), RT_CUT_FRAMES - 1.0 );
 			}
-		} else {
-			mean = float3( 0.0, 0.0, 0.0 );
-			frames = 0.0;
-			second = 0.0;
+			// What is left of a history of another signal joins the frame as that many frames. After the cut, which
+			// needs the history's length to tell what its noise explains.
+			if ( ( flags & 8u ) != 0 ) {
+				frames *= 1.0 - Changed( pixel );
+			}
 		}
 	}
 

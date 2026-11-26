@@ -13,11 +13,18 @@
 	                           (RGBA32F for r_rtReference: a half float stops counting at 2048)
 	  shadow aux     RG16F     r the average of that luminance squared, g the unshadowed luminance, unexposed
 
+	and for the indirect light (R19), at the size of its grid, a texel per r_rtIndirectResolution's stride pixels:
+
+	  indirect guides  R32_UINT  as the guides, of the grid's pixels, with the depth's plane as the normal
+	  indirect amount  RGBA16F   include/rtBounce.hlsli's: the mean luminance and where it comes from
+	  indirect aux     RGBA16F   its chroma, the luminance squared, the frames (both RGBA32F for r_rtReference)
+
 	Each is a pair: a frame reads the surface the frame before wrote and writes the other. A surface remembers
 	the epoch and the sequence it was written with (rtView_t) and is read only at the next sequence of that
 	epoch, so a pass that skipped a frame starts again; the same sequence again (a second graph of the frame)
 	gets the same two. Views: SRV and UAV; the passes are compute. Drop buries everything: Resize, EndLevelLoad,
-	Shutdown. 32 bytes a pixel and eye for the shadows: 118 MB at 2560 x 1440.
+	Shutdown. 32 bytes a pixel and eye for the shadows, 118 MB at 2560 x 1440; 10 more for the indirect light at
+	half the resolution, 37 MB.
 */
 
 #include <array>
@@ -26,7 +33,7 @@
 #include "d3d12_Descriptors.h"
 #include "d3d12_Memory.h"
 
-enum class rtHistorySlot_t : uint8 { GUIDES, SHADOW_COLOR, SHADOW_AUX, COUNT };
+enum class rtHistorySlot_t : uint8 { GUIDES, SHADOW_COLOR, SHADOW_AUX, INDIRECT_GUIDES, INDIRECT_AMOUNT, INDIRECT_AUX, COUNT };
 
 class idD3D12RtHistory {
 public:

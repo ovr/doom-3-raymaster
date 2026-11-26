@@ -227,6 +227,11 @@ void idRenderBackendD3D12::DrawRayTracedReflections( const rtReflectionSettings_
 	context->DrawRayTracedReflections( settings, view, viewport );
 }
 
+void idRenderBackendD3D12::DrawRayTracedIndirect( const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & viewport ) {
+	assert( IsOwnerThread() && inFrame );
+	context->DrawRayTracedIndirect( settings, view, viewport );
+}
+
 std::optional<hdrExposure_t> idRenderBackendD3D12::LastHdrExposure() const {
 	return context ? context->LastHdrExposure() : std::nullopt;
 }

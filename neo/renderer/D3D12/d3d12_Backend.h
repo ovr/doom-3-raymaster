@@ -86,6 +86,8 @@ public:
 	void							DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport ) override;
 	void							DrawRayTracedReflections( const rtReflectionSettings_t & settings, const rtView_t & view,
 										const renderRect_t & viewport ) override;
+	void							DrawRayTracedIndirect( const rtIndirectSettings_t & settings, const rtView_t & view,
+										const renderRect_t & viewport ) override;
 	void							EndLevelLoad() override;			// r_d3d12CheckImages 1: d3d12_checkImages
 
 	bufferHandle_t					CreateBuffer( bufferType_t type, bufferUsage_t usage, int size, const void * data ) override;

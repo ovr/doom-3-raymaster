@@ -178,6 +178,15 @@ If you have questions concerning this license or the applicable additional terms
 		G-buffer's motion, so such a pass needs the G-buffer of its frame. With rtView_t::held the frame
 		traced nothing: ResolveTracedShadows takes what the history holds of a pixel in place of the
 		frame's value and counts no frame; a pixel without a history, and a resolve without one, is lit whole.
+	R19	DrawRayTracedIndirect, in the linear phase after the lights, with the G-buffer of the frame: a ray per
+		texel of a grid of settings.stride pixels of the main view gathers the light of one bounce (the hit lit
+		by one light of the update's, picked by what it adds, with a shadow ray also for a light that casts no
+		stencil shadow, only not for an ambient one, plus what the hit emits), kept as its amount and
+		direction, averaged over the eye's history (R18) and the neighbours of the same surface. Every pixel
+		takes it by its own normal, times its albedo, added to the scene (settings.alone: as a white surface
+		takes it, in the scene's place). While the scene is refused the frame takes what the history holds,
+		and nothing where it holds nothing. Shared code dims the lights that stand in for bounced light
+		(R_FillLight) by rayTracingSettings_t::fillLightScale, in the main view's interactions and for the rays.
 
 ===============================================================================
 */
@@ -276,6 +285,9 @@ public:
 	virtual void			DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport ) {}
 	// R15 and R14, in the linear phase after the lights: the mirror reflections into the viewport of the scene.
 	virtual void			DrawRayTracedReflections( const rtReflectionSettings_t & settings, const rtView_t & view,
+								const renderRect_t & viewport ) {}
+	// R19, in the linear phase after the lights: one bounce of light into the viewport of the scene.
+	virtual void			DrawRayTracedIndirect( const rtIndirectSettings_t & settings, const rtView_t & view,
 								const renderRect_t & viewport ) {}
 	// R16, in the linear phase. Each ends the pass of a pipeline backend. False: no light target (a lost
 	// device), draw nothing until EndTracedLights.

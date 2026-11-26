@@ -10,7 +10,8 @@
 namespace {
 
 constexpr std::array<const wchar_t *, static_cast<size_t>( rtHistorySlot_t::COUNT )> NAMES = {
-	L"doom3 rt history guides", L"doom3 rt history shadow colour", L"doom3 rt history shadow aux"
+	L"doom3 rt history guides", L"doom3 rt history shadow colour", L"doom3 rt history shadow aux",
+	L"doom3 rt history indirect guides", L"doom3 rt history indirect amount", L"doom3 rt history indirect aux"
 };
 
 [[nodiscard]] uint32 BytesPerTexel( DXGI_FORMAT format ) {

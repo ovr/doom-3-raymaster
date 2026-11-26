@@ -332,4 +332,35 @@ bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float
 	return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
+// Whether a caster stands between a point of a surface and a point of a light's disk, which faces it. side: the
+// surface's plane toward where it is seen from. disk: the point on the disk, RtDisk's times the radius. The ray
+// ends a radius short of the disk, so what a lamp is mounted on does not shadow it.
+bool RtDiskOccluded( RtHeap heap, float3 position, float3 side, float3 lightOrigin, float radius, float2 disk, float footprint, uint samplerIndex,
+	uint mask ) {
+	const float3 toLight = lightOrigin - position;
+	const float range = length( toLight );
+	if ( range <= radius ) {
+		return false;
+	}
+	const float3 axis = toLight / range;
+	const float3 other = ( abs( axis.z ) < 0.9 ) ? float3( 0.0, 0.0, 1.0 ) : float3( 1.0, 0.0, 0.0 );
+	const float3 right = normalize( cross( other, axis ) );
+	const float3 up = cross( axis, right );
+	float3 spread = right * disk.x + up * disk.y;
+	// a surface that faces the light sees its whole disk: a point behind the surface's plane becomes the one across
+	if ( dot( toLight, side ) > 0.0 && dot( toLight + spread, side ) <= 0.0 ) {
+		spread = -spread;
+	}
+	const float3 emitter = lightOrigin + spread;
+	// Off the surface on that side, further where a pixel covers more of it. Toward a point behind the surface the
+	// ray comes back through the surface's own point, so the surface stops it and not what lies beside its edge.
+	const float3 aim = normalize( emitter - position );
+	const float lift = 0.02 + 0.1 * footprint;
+	const float rise = dot( aim, side );
+	const float3 origin = ( rise > 0.0 ) ? position + side * lift : position - aim * ( lift / max( -rise, 0.05 ) );
+	const float3 path = emitter - origin;
+	const float reach = length( path );
+	return reach > radius && RtOccluded( heap, origin, path / reach, reach - radius, footprint, samplerIndex, mask );
+}
+
 #endif

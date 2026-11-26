@@ -137,6 +137,8 @@ public:
 	void							DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport );
 	// In the HDR scene's linear phase: the mirror reflections over viewport of SceneColor (r_rtReflections).
 	void							DrawRayTracedReflections( const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & viewport );
+	// In the HDR scene's linear phase: one bounce of light over viewport of SceneColor (r_rtIndirect), over view's history.
+	void							DrawRayTracedIndirect( const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & viewport );
 	d3d12TextureCheckResult_t		CheckTextures();						// d3d12_checkImages: between frames, waits
 	void							PrintInfo() const;
 	void							PushGroup( const char * name );			// r_pix 2, in a frame
