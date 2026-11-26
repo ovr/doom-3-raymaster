@@ -140,7 +140,8 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	hdr( device, *this, computeRootSignature, passes, samplers, srvPool ),
 	gpuScene( device, *this, graveyard, srvPool, barriers, uploader, textures ),
 	rayTracing( device, *this, graveyard, srvPool, barriers, uploader, buffers ),
-	rtPasses( device, computeRootSignature, passes, samplers, buffers, textures, barriers ) {
+	rtPasses( device, computeRootSignature, passes, samplers, buffers, textures, barriers ),
+	rtHistory( device, graveyard, srvPool ) {
 	// the recorder is older than what it asks
 	recorder.SetTraceSource( [this] { return rtPasses.DrawResources( rayTracing, gpuScene ); } );
 }
@@ -154,6 +155,7 @@ idD3D12Context::~idD3D12Context() {
 		WaitIdle();
 	}
 	SavePipelines( !device.IsLost() );
+	rtHistory.Drop();
 	rtPasses.DestroyDefaults();
 	buffers.DestroyAll();
 	textures.DestroyAll();
@@ -437,12 +439,12 @@ void idD3D12Context::EndTracedLights() {
 	}
 }
 
-void idD3D12Context::ResolveTracedShadows( const rtShadowSettings_t & settings, const renderRect_t & viewport ) {
+void idD3D12Context::ResolveTracedShadows( const rtShadowSettings_t & settings, const rtView_t & view, const renderRect_t & viewport ) {
 	if ( !hdrScene || recorder.HdrGamma() || recorder.Lights() || device.IsLost() ) {
 		return;
 	}
 	recorder.EndPass();
-	rtPasses.Shadows( graph, scene, settings, viewport, preExposure, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	rtPasses.Shadows( graph, scene, rtHistory, settings, view, viewport, preExposure, ( groups.Depth() > 0 ) ? &groups : nullptr );
 	recorder.Invalidate();
 }
 
@@ -541,6 +543,7 @@ void idD3D12Context::Resize( int width, int height ) {
 	scene.Create( swapChain->Width(), swapChain->Height(), scene.Samples() );
 	recorder.Invalidate();
 	hdr.ResetExposure();
+	rtHistory.Drop();
 	// the old scene target dies after the next wait: a leak shows as memory that grows from resize to resize
 	const d3d12VideoMemory_t memory = device.VideoMemory();
 	common->DPrintf( "d3d12: output resized to %d x %d; %d graves, %.1f MB of video memory in use\n", width, height, graveyard.Pending(),
@@ -574,6 +577,7 @@ void idD3D12Context::EndLevelLoad() {
 		level.loaded );
 	SavePipelines( false );
 	hdr.ResetExposure();
+	rtHistory.Drop();
 }
 
 // The file system outlives the renderer (common's Shutdown), but not a failed Init.

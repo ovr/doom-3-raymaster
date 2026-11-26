@@ -684,14 +684,19 @@ struct hdrLastResolve_t {
 	bool				valid;
 };
 
-// The camera of the main view's last G-buffer, per eye: the camera's motion for the next one (R14).
+// The HDR main view of the frame before, per eye: its camera is the motion of the next G-buffer (R14), and the
+// next frame reads what the ray traced passes kept of it (R18).
 struct gbufferLastView_t {
 	idRenderMatrix		projection;
 	float				worldModelView[16];
+	idRenderMatrix		mvp;					// world to GL's clip space
 	int					viewID;
 	int					frame;					// rayTracingSettings_t::frameCount of the view
 	int					width;
 	int					height;
+	int					time;					// renderView.time[0], ms
+	uint32				epoch;					// rtView_t's
+	uint32				sequence;
 	bool				valid;
 };
 
@@ -707,6 +712,10 @@ struct backEndState_t {
 	bool				hdrGamma;				// in hdrPhase, the gamma composite: they do not
 	bool				gbufferView;			// the view being drawn is the HDR main view and writes the G-buffer (R14)
 	bool				tracedShadows;			// it is the HDR main view and its lights trace their shadows (R16, R17)
+	bool				viewFollows;			// the HDR main view follows its eye's gbufferLast: the frame before, the same view
+	uint32				viewEpoch;				// rtView_t's epoch and sequence of the HDR main view being drawn
+	uint32				viewSequence;
+	uint32				historyEpochs;			// epochs started so far
 	hdrLastResolve_t	hdrLastResolve;
 	gbufferLastView_t	gbufferLast[2];
 

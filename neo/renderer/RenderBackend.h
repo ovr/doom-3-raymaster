@@ -156,10 +156,19 @@ If you have questions concerning this license or the applicable additional terms
 		the draw's one blend. Only programs with both outputs draw there, and nothing clears. The light
 		target holds until the next BeginTracedLights. ResolveTracedShadows, after the bracket: per pixel of
 		the viewport and channel, the light target over the scene (0 where the scene is black) is the part
-		the shadows take, and the scene is multiplied by what is left; settings.show puts that in its place.
+		the shadows take, and the scene is multiplied by what is left, filtered when settings.Filtered()
+		(R18: over the eye's history and the neighbours of the same surface); settings.show puts that in
+		its place, settings.showLength the length of the history.
 	R17	A program whose table row traces (renderProgDef_t::traces) reads, in its pixel stage, what the last
 		applied UpdateGpuScene built, and a noise texture. While nothing may be traced (no update yet, a
 		refused one, a lost device) the draw still runs and is told so: it sends nothing to the light target.
+	R18	A ray traced pass may keep its result per eye for the next frame, with the G-buffer's normal and
+		depth of that frame (the history). It reads only what the frame before of the same rtView_t::epoch
+		stored (sequence - 1): shared code starts an epoch for a new view, viewport size, a frame without
+		the view, or a time that went back, and the backend drops everything at ResizeOutput and
+		EndLevelLoad. With rtView_t::store false (a screenshot) the pass reads the history and leaves it
+		as it is: the frame after is the one without the screenshot. What it reads is found through the
+		G-buffer's motion, so such a pass needs the G-buffer of its frame.
 
 ===============================================================================
 */
@@ -263,7 +272,7 @@ public:
 	// device), draw nothing until EndTracedLights.
 	[[nodiscard]] virtual bool	BeginTracedLights( const renderRect_t & rect ) { return false; }
 	virtual void			EndTracedLights() {}
-	virtual void			ResolveTracedShadows( const rtShadowSettings_t & settings, const renderRect_t & viewport ) {}
+	virtual void			ResolveTracedShadows( const rtShadowSettings_t & settings, const rtView_t & view, const renderRect_t & viewport ) {}
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,

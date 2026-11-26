@@ -29,14 +29,22 @@ enum class rtDebug_t : uint8 {
 	ALBEDO,		// the hit's diffuse texture times its stage colour, as stored (gamma)
 	REFLECTION,	// the mirror reflections alone, in place of the lights (the passes after them still draw)
 	SHADOWS,	// what the traced shadows leave of the traced lights, in place of the lights; blue where none reaches
+	HISTORY,	// how many frames the traced shadows' history holds per pixel, black none, white all it may
 	COUNT
 };
 
-// The main view as its rays need it: GL's clip space of shared code, the eye, the angle of a pixel.
+// The main view as its rays need it: GL's clip space of shared code, the eye, the angle of a pixel; and its
+// place in the eye's history (R18), which a pass reads only from the frame before of the same epoch.
 struct rtView_t {
 	float				clipToWorld[4][4] = {};	// rows of the inverse of the view's MVP
+	float				worldToClip[4][4] = {};	// rows of the MVP
+	float				prevWorldToClip[4][4] = {};	// of the frame before; this frame's when there is none
 	float				origin[3] = {};
 	float				pixelSpread = 0.0f;		// radians per pixel of the viewport's height: the texture level of a hit
+	uint32				epoch = 0;				// changes when the history starts again: a new view, size, a gap, time going back
+	uint32				sequence = 0;			// frames of the epoch before this one
+	int					eye = 0;				// 0, or 1 for the second eye of a stereo pair
+	bool				store = true;			// false: a screenshot reads the history and leaves it as it is
 };
 
 // r_rtReflection*: a mirror ray per pixel whose G-buffer may reflect, added to the HDR scene after the lights.
@@ -52,9 +60,18 @@ struct rtReflectionSettings_t {
 
 // r_rtShadows: the main view's lights that cast shadows trace them in their interactions (R16, R17), a ray per
 // lit pixel and light toward the light's disk, instead of drawing stencil shadow volumes.
+// What is left of the lights is filtered before the scene takes it (R18): over the eye's history, then over the
+// pixel's neighbours of the same surface, wider where the history still varies.
 struct rtShadowSettings_t {
 	bool				enabled = false;	// with scene
 	bool				show = false;		// rtDebug_t::SHADOWS
+	bool				showLength = false;	// rtDebug_t::HISTORY
+	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
+	bool				reference = false;	// r_rtReference: a plain average of up to maxHistory frames, 32-bit, unfiltered
+	int					maxHistory = 16;	// r_rtShadowHistory: frames a pixel averages
+	int					passes = 3;			// r_rtShadowPasses: spatial passes, each twice as wide; 0 with no history = raw
+	// the filter reads the G-buffer
+	[[nodiscard]] bool	Filtered() const { return enabled && ( history || passes > 0 ); }
 };
 
 struct rayTracingSettings_t {

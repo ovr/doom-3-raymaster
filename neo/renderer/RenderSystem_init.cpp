@@ -194,8 +194,12 @@ postProcessSettings_t R_DefaultPostProcessSettings() {
 // RayTracingSettings.h: copied into every view like the post process settings
 idCVar r_gbufferDebug( "r_gbufferDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows the main view's thin G-buffer: 1 = the world normal, 2 = F0, 3 = the roughness, 4 = the motion (hue = direction, 8 pixels = full), 5 = the albedo", 0, 5 );
 idCVar r_gbufferGloss( "r_gbufferGloss", "1.2", CVAR_RENDERER | CVAR_FLOAT, "the G-buffer's gloss is the square root of the specular luminance times this; the roughness is 1 - gloss", 0.0f, 4.0f );
-idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the mirror reflections alone, 6 = what the traced shadows leave of the lights (blue where none reaches)", 0, 6 );
+idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the mirror reflections alone, 6 = what the traced shadows leave of the lights (blue where none reaches), 7 = the length of their history (white = all it may hold)", 0, 7 );
 idCVar r_rtShadows( "r_rtShadows", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced shadows of the main view's lights, soft by the size of each light, instead of stencil shadow volumes (needs r_useGPUSkinning 1)" );
+idCVar r_rtHistory( "r_rtHistory", "1", CVAR_RENDERER | CVAR_BOOL, "the ray traced passes average their noise over the frames before; 0 = every frame alone, with the same noise" );
+idCVar r_rtShadowHistory( "r_rtShadowHistory", "16", CVAR_RENDERER | CVAR_INTEGER, "frames the ray traced shadows average per pixel", 1, 64 );
+idCVar r_rtShadowPasses( "r_rtShadowPasses", "3", CVAR_RENDERER | CVAR_INTEGER, "spatial filter passes over the ray traced shadows, each twice as wide as the one before; 0 = none", 0, 5 );
+idCVar r_rtReference( "r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a still camera: the ray traced passes average up to 4096 frames and skip their spatial filters" );
 idCVar r_rtLightSize( "r_rtLightSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the emitter of every light for the ray traced shadows (its light_size, by default 2 % of the light's reach within 2 .. 10 units); 0 = point lights", 0.0f, 16.0f );
 idCVar r_rtReflections( "r_rtReflections", "0", CVAR_RENDERER | CVAR_BOOL, "ray traced mirror reflections of the main view on the surfaces whose specular may reflect" );
 idCVar r_rtReflectionScale( "r_rtReflectionScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced reflections", 0.0f, 4.0f );
@@ -226,9 +230,14 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	// without GPU skinning no MD5 is in the GPU scene: none would cast a shadow
 	rtShadowSettings_t & shadow = settings.shadow;
 	shadow.show = ( settings.rtDebug == rtDebug_t::SHADOWS );
-	shadow.enabled = tracing && r_useGPUSkinning.GetBool() && ( r_rtShadows.GetBool() || shadow.show );
+	shadow.showLength = ( settings.rtDebug == rtDebug_t::HISTORY );
+	shadow.enabled = tracing && r_useGPUSkinning.GetBool() && ( r_rtShadows.GetBool() || shadow.show || shadow.showLength );
+	shadow.reference = r_rtReference.GetBool();
+	shadow.history = r_rtHistory.GetBool() || shadow.reference;
+	shadow.maxHistory = shadow.reference ? 4096 : r_rtShadowHistory.GetInteger();
+	shadow.passes = shadow.reference ? 0 : r_rtShadowPasses.GetInteger();
 
-	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled );
+	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled || shadow.Filtered() );
 	settings.scene = tracing && ( r_rtStats.GetBool() || settings.rtDebug != rtDebug_t::NONE || reflection.enabled || shadow.enabled );
 	return settings;
 }

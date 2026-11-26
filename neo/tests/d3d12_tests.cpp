@@ -18,6 +18,7 @@
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
 #include "../renderer/D3D12/d3d12_RenderGraph.h"
+#include "../renderer/D3D12/d3d12_RtHistory.h"
 #include "../renderer/D3D12/d3d12_RtPasses.h"
 #include "../renderer/D3D12/d3d12_StateMap.h"
 #include "../renderer/D3D12/d3d12_Textures.h"
@@ -7600,7 +7601,10 @@ public:
 	// The scene at zero; bracket: the light target at zero too, and open.
 	[[nodiscard]] bool				Begin( bool bracket );
 	// The floor under one light, added to what the targets hold.
-	void							Draw( programHandle_t program, const light_t & light, uint32 mask, uint32 noiseIndex );
+	void							Draw( programHandle_t program, const light_t & light, uint32 mask, uint32 noiseIndex,
+										uint64 depthFunc = GLS_DEPTHFUNC_ALWAYS );
+	// The quad with the parms and textures as they are.
+	void							DrawQuad( programHandle_t program, uint64 stateBits );
 	[[nodiscard]] pair_t			Read( bool lights );
 	// How deep ( x, y ) of the floor lies in the hard shadows casters throw from origin, in units of the floor;
 	// negative outside.
@@ -7618,11 +7622,14 @@ public:
 	idD3D12GpuScene					gpuScene;
 	idD3D12RayTracing				rt;
 	idD3D12RtPasses					rtPasses;
+	idD3D12RtHistory				history;
 	programHandle_t					traced = programHandle_t::NONE;		// interaction_rt
 	programHandle_t					plain = programHandle_t::NONE;		// interaction
 	bool							traceable = true;	// false: the recorder is told that nothing may be traced
 	int								asked = 0;			// how often it asked
 	bool							leans = false;		// the bump leans toward +x: a light above the floor lights it
+	std::array<idVec4, MAX_RENDER_PARMS>	parms;
+	renderLatch_t					latch;
 
 private:
 	bufferHandle_t					vertexBuffer = bufferHandle_t::NONE;
@@ -7631,8 +7638,6 @@ private:
 	textureHandle_t					bump = textureHandle_t::NONE;
 	textureHandle_t					leaning = textureHandle_t::NONE;
 	textureHandle_t					white = textureHandle_t::NONE;
-	std::array<idVec4, MAX_RENDER_PARMS>	parms;
-	renderLatch_t					latch;
 	drawCall_t						dc = {};
 	bool							defaults = false;	// rtPasses holds its noise texture
 	bool							ready = false;
@@ -7647,7 +7652,8 @@ idTestTracedFloor::idTestTracedFloor( idTestGpu & owner, UINT sampleCount ) :
 	graph( owner.device, owner, owner.barriers, pool, owner.srvPool, owner.rtvPool, fixture.constants, computeRoot ),
 	gpuScene( owner.device, owner, owner.graveyard, owner.srvPool, owner.barriers, owner.uploader, owner.textures ),
 	rt( owner.device, owner, owner.graveyard, owner.srvPool, owner.barriers, owner.uploader, fixture.buffers ),
-	rtPasses( owner.device, computeRoot, fixture.passes, owner.samplers, fixture.buffers, owner.textures, owner.barriers ) {
+	rtPasses( owner.device, computeRoot, fixture.passes, owner.samplers, fixture.buffers, owner.textures, owner.barriers ),
+	history( owner.device, owner.graveyard, owner.srvPool ) {
 	if ( !fixture.Ready() ) {
 		return;
 	}
@@ -7763,6 +7769,7 @@ idTestTracedFloor::~idTestTracedFloor() {
 	fixture.recorder.SetTraceSource( {} );
 	fixture.recorder.EndPass();
 	gpu.WaitIdle();
+	history.Drop();
 	if ( defaults ) {
 		rtPasses.DestroyDefaults();
 	}
@@ -7804,14 +7811,18 @@ bool idTestTracedFloor::Begin( bool bracket ) {
 }
 
 // The floor's object space is its x and y over 16.
-void idTestTracedFloor::Draw( programHandle_t program, const light_t & light, uint32 mask, uint32 noiseIndex ) {
+void idTestTracedFloor::Draw( programHandle_t program, const light_t & light, uint32 mask, uint32 noiseIndex, uint64 depthFunc ) {
 	parms[RENDERPARM_LOCALLIGHTORIGIN].Set( ( light.origin.x + 32.0f ) / 16.0f, ( light.origin.y + 32.0f ) / 16.0f, light.origin.z, 1.0f );
 	parms[RENDERPARM_DIFFUSEMODIFIER].Set( light.color.x, light.color.y, light.color.z, 1.0f );
 	parms[RENDERPARM_RT_LIGHT].Set( light.origin.x, light.origin.y, light.origin.z, light.radius );
 	parms[RENDERPARM_RT_SHADOW].Set( static_cast<float>( mask ), static_cast<float>( noiseIndex ), 0.0f, 0.0f );
 	latch.textures[0][static_cast<size_t>( textureKind_t::TEX_2D )] = leans ? leaning : bump;
+	DrawQuad( program, depthFunc | GLS_DEPTHMASK | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
+}
+
+void idTestTracedFloor::DrawQuad( programHandle_t program, uint64 stateBits ) {
 	latch.program = program;
-	latch.stateBits = GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHMASK | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+	latch.stateBits = stateBits;
 	pipelineKey_t key = {};
 	key.stateBits = latch.stateBits & GLS_PIPELINE_BITS;
 	key.layout = LAYOUT_DRAW_VERT;
@@ -7827,6 +7838,9 @@ idTestTracedFloor::pair_t idTestTracedFloor::Read( bool lights ) {
 		texels.lights = ReadFloatSurface( gpu, fixture.scene.Lights() );
 		fixture.NewList();
 	}
+	// the reads waited for the GPU: what the frame's lists took of the ring is free again
+	fixture.constants.CloseChunk( gpu.WaitedFence() );
+	fixture.constants.Retire( gpu.WaitedFence() );
 	return texels;
 }
 
@@ -8107,7 +8121,9 @@ void RtShadows( idTestGpu & gpu, UINT samples ) {
 		rtShadowSettings_t settings;
 		settings.enabled = true;
 		settings.show = show;
-		bed.rtPasses.Shadows( bed.graph, bed.fixture.scene, settings, { 0, 0, SIZE, SIZE }, bed_t::PRE_EXPOSURE, nullptr );
+		settings.history = false;
+		settings.passes = 0;
+		bed.rtPasses.Shadows( bed.graph, bed.fixture.scene, bed.history, settings, rtView_t(), { 0, 0, SIZE, SIZE }, bed_t::PRE_EXPOSURE, nullptr );
 		bed.fixture.recorder.Invalidate();
 		return bed.Read( false ).scene;
 	};
@@ -8266,6 +8282,527 @@ void RtShadowsAllSamples( idTestGpu & gpu ) {
 	RtShadows( gpu, 1 );
 	if ( gpu.device.Features().samples[2] ) {
 		RtShadows( gpu, 4 );
+	}
+}
+
+/*
+	The traced shadows through their history and their spatial filter (R18), over the traced floor seen with
+	perspective: the eye 64 under it and a pixel of the floor a unit as before, so the floor lies at clip w 64 and
+	a quad at z = -4 at 60. A frame is the depth pass, the G-buffer with its motion against the view before, the
+	bracket of the light and the resolve; shift moves the eye along x, a pixel a unit.
+
+	  over the frames     the error against the hidden part of the light's disk falls with the frames in the average
+	  the spatial filter  one frame alone is closer to it filtered; a hard shadow with a history is not blurred
+	  a gliding eye       a quarter of a pixel a frame mixes no texel across a hard shadow's edge into a pixel
+	  a sliding shadow    an eighth of a pixel to a whole one a frame: nothing 2 pixels off its edges trails
+	  no light            a floor the light does not reach is no part of the filter: the shadow beside it stays dark
+	  a moved shadow      off its edges nothing of the old one a frame later; in the end the bytes of a frame alone
+	  a moved eye         the average follows the floor and keeps its length; the wrong way it would lose the shadows
+	  a quad taken away   the floor behind it starts again, the floor beside it goes on
+	  a light halved      its history is another light's: every pixel starts again; a tenth less, none does
+	  no history          two pasts give the same bytes; so does a sequence drawn twice, and a screenshot stores nothing
+*/
+void RtHistory( idTestGpu & gpu, UINT samples ) {
+	using bed_t = idTestTracedFloor;
+	using rect_t = bed_t::rect_t;
+	using light_t = bed_t::light_t;
+	constexpr int SIZE = bed_t::SIZE;
+	constexpr float EYE = 64.0f;
+	constexpr float QUAD_Z = -4.0f;
+	constexpr float NEAR_PLANE = 1.0f;
+	constexpr float FAR_PLANE = 256.0f;
+	constexpr float DEPTH_A = ( FAR_PLANE + NEAR_PLANE ) / ( FAR_PLANE - NEAR_PLANE );
+	constexpr float DEPTH_B = -2.0f * FAR_PLANE * NEAR_PLANE / ( FAR_PLANE - NEAR_PLANE );
+	constexpr int MAX_HISTORY = 16;
+	constexpr rect_t BOTH[] = { bed_t::LOCAL_CASTER, bed_t::GLOBAL_CASTER };
+	constexpr rect_t OCCLUDER = { -20.0f, -4.0f, 12.0f, 26.0f };	// drawn, and in no ray's way: the scene does not hold it
+	constexpr uint32 EVERY = gpuSceneInstance_t::MASK_SHADOW;
+	const light_t soft = { idVec3( 0.0f, 0.0f, -16.0f ), idVec3( 0.5f, 0.25f, 0.0f ), 6.0f };
+	light_t hard = soft;
+	hard.radius = 0.0f;
+
+	bed_t bed( gpu, samples );
+	if ( !bed.Ready() ) {
+		return;
+	}
+	const programHandle_t depthProgram = bed.fixture.Program( "depth" );
+	const programHandle_t gbufferProgram = bed.fixture.Program( "gbuffer" );
+	if ( !Check( depthProgram != programHandle_t::NONE && gbufferProgram != programHandle_t::NONE, va( "%u sample(s): depth and gbuffer", samples ) ) ) {
+		return;
+	}
+	const size_t numTexels = static_cast<size_t>( SIZE ) * SIZE;
+
+	// a quad of the bed (object 0..4) over rect at z, seen by an eye shift units along x
+	const auto setMvp = [&]( int firstRow, const rect_t & rect, float z, float shift ) {
+		const float scale = EYE / 32.0f;
+		bed.parms[firstRow + 0].Set( scale * ( rect.x1 - rect.x0 ) * 0.25f, 0.0f, 0.0f, scale * ( rect.x0 - shift ) );
+		bed.parms[firstRow + 1].Set( 0.0f, scale * ( rect.y1 - rect.y0 ) * 0.25f, 0.0f, scale * rect.y0 );
+		bed.parms[firstRow + 2].Set( 0.0f, 0.0f, DEPTH_A, DEPTH_A * ( z + EYE ) + DEPTH_B );
+		bed.parms[firstRow + 3].Set( 0.0f, 0.0f, 1.0f, z + EYE );
+	};
+	const auto worldToClip = [&]( float shift ) {
+		const float scale = EYE / 32.0f;
+		return idRenderMatrix( scale, 0.0f, 0.0f, -scale * shift,
+			0.0f, scale, 0.0f, 0.0f,
+			0.0f, 0.0f, DEPTH_A, DEPTH_A * EYE + DEPTH_B,
+			0.0f, 0.0f, 1.0f, EYE );
+	};
+	const auto viewOf = [&]( float shift, float before, uint32 epoch, uint32 sequence ) {
+		rtView_t view;
+		const idRenderMatrix now = worldToClip( shift );
+		const idRenderMatrix then = worldToClip( before );
+		idRenderMatrix inverse;
+		Check( idRenderMatrix::Inverse( now, inverse ), "the view inverts" );
+		for ( int row = 0; row < 4; row++ ) {
+			for ( int column = 0; column < 4; column++ ) {
+				view.clipToWorld[row][column] = inverse[row][column];
+				view.worldToClip[row][column] = now[row][column];
+				view.prevWorldToClip[row][column] = then[row][column];
+			}
+		}
+		view.origin[0] = shift;
+		view.origin[2] = -EYE;
+		view.epoch = epoch;
+		view.sequence = sequence;
+		return view;
+	};
+
+	struct shot_t {
+		float						shift = 0.0f;
+		float						before = 0.0f;		// the shift of the frame before
+		bool						occluder = false;
+		uint64						lightDepth = GLS_DEPTHFUNC_EQUAL;
+		light_t						light;
+		uint32						noise = 0;
+		uint32						epoch = 1;
+		uint32						sequence = 0;
+		bool						store = true;
+		int							litFrom = 0;		// the light reaches the columns from here on
+		rtShadowSettings_t			settings;
+	};
+	const auto frame = [&]( const shot_t & shot ) -> std::vector<idVec4> {
+		bed.fixture.recorder.SetLights( false );
+		bed.fixture.recorder.SetHdr( true, bed_t::PRE_EXPOSURE );
+		clearDesc_t clear = {};
+		clear.rect = bed.latch.viewport;
+		clear.color = clear.depth = clear.stencil = true;
+		clear.colorWriteMask = 0xF;
+		renderLatch_t clearLatch = bed.latch;
+		clearLatch.stateBits = 0;
+		bed.fixture.recorder.Clear( clearLatch, clear );
+
+		const auto quads = [&]( programHandle_t program, uint64 stateBits ) {
+			setMvp( RENDERPARM_MVPMATRIX_X, bed_t::FLOOR, 0.0f, shot.shift );
+			setMvp( RENDERPARM_PREVMVPMATRIX_X, bed_t::FLOOR, 0.0f, shot.before );
+			bed.DrawQuad( program, stateBits );
+			if ( shot.occluder ) {
+				setMvp( RENDERPARM_MVPMATRIX_X, OCCLUDER, QUAD_Z, shot.shift );
+				setMvp( RENDERPARM_PREVMVPMATRIX_X, OCCLUDER, QUAD_Z, shot.before );
+				bed.DrawQuad( program, stateBits );
+				setMvp( RENDERPARM_MVPMATRIX_X, bed_t::FLOOR, 0.0f, shot.shift );
+			}
+		};
+		quads( depthProgram, GLS_DEFAULT );
+		if ( !BeginTestGBuffer( gpu, bed.fixture ) ) {
+			return {};
+		}
+		bed.parms[RENDERPARM_GBUFFER].Set( 1.0f, 1.0f, SIZE * 0.5f, SIZE * 0.5f );
+		quads( gbufferProgram, GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL );
+		bed.fixture.recorder.SetGBuffer( false );
+
+		bed.fixture.recorder.EndPass();
+		if ( !Check( bed.fixture.scene.EnsureLights(), va( "%u sample(s): the light target", samples ) ) ) {
+			return {};
+		}
+		bed.fixture.scene.ClearLights( gpu.barriers, gpu.List(), { 0, 0, SIZE, SIZE } );
+		bed.fixture.recorder.SetLights( true );
+		bed.latch.scissor = { shot.litFrom, 0, SIZE - shot.litFrom, SIZE };
+		bed.Draw( bed.traced, shot.light, EVERY, shot.noise, shot.lightDepth );
+		bed.latch.scissor = bed.latch.viewport;
+		bed.fixture.recorder.SetLights( false );
+		bed.fixture.recorder.EndPass();
+
+		rtView_t view = viewOf( shot.shift, shot.before, shot.epoch, shot.sequence );
+		view.store = shot.store;
+		bed.rtPasses.Shadows( bed.graph, bed.fixture.scene, bed.history, shot.settings, view, { 0, 0, SIZE, SIZE }, bed_t::PRE_EXPOSURE, nullptr );
+		bed.fixture.recorder.Invalidate();
+		return bed.Read( false ).scene;
+	};
+	// the light alone and unshadowed, as interaction.vfp draws it
+	const auto alone = [&]( const light_t & light, float shift ) {
+		std::vector<idVec4> texels;
+		setMvp( RENDERPARM_MVPMATRIX_X, bed_t::FLOOR, 0.0f, shift );
+		if ( bed.Begin( false ) ) {
+			bed.Draw( bed.plain, light, EVERY, 0 );
+			texels = bed.Read( false ).scene;
+		}
+		return texels;
+	};
+	const std::vector<idVec4> softAlone = alone( soft, 0.0f );
+	const std::vector<idVec4> movedAlone = alone( soft, 3.0f );
+	if ( !Check( softAlone.size() == numTexels && movedAlone.size() == numTexels, va( "%u sample(s): the light alone", samples ) ) ) {
+		return;
+	}
+	// what a frame left of the light, against the part of its disk no caster hides: the root mean square over the penumbra
+	const auto penumbraError = [&]( const std::vector<idVec4> & scene, const std::vector<idVec4> & whole, float shift, int * pixels = nullptr ) {
+		double squares = 0.0;
+		int count = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				if ( scene.size() != numTexels || whole[at].x < 1e-5f ) {
+					continue;
+				}
+				const float hidden = bed_t::Hidden( column - 31.5f + shift, row - 31.5f, soft, BOTH );
+				if ( hidden > 0.05f && hidden < 0.95f ) {
+					const double error = scene[at].x / whole[at].x - ( 1.0f - hidden );
+					squares += error * error;
+					count++;
+				}
+			}
+		}
+		if ( pixels != nullptr ) {
+			*pixels = count;
+		}
+		return ( count > 0 ) ? static_cast<float>( sqrt( squares / count ) ) : 1.0f;
+	};
+	// r_rtDebug 7's picture as frames
+	const auto framesOf = [&]( const idVec4 & shown ) {
+		return shown.x / bed_t::PRE_EXPOSURE * MAX_HISTORY;
+	};
+	const auto sameBytes = []( const std::vector<idVec4> & a, const std::vector<idVec4> & b ) {
+		return !a.empty() && a.size() == b.size() && memcmp( a.data(), b.data(), a.size() * sizeof( idVec4 ) ) == 0;
+	};
+
+	shot_t base;
+	base.light = soft;
+	base.settings.enabled = true;
+	base.settings.history = true;
+	base.settings.maxHistory = MAX_HISTORY;
+	base.settings.passes = 0;
+	uint32 epoch = 0;
+	// frames first..last of a new epoch when first is 0; the noise is the sequence, as with a history
+	const auto run = [&]( shot_t shot, uint32 first, uint32 last ) {
+		std::vector<idVec4> scene;
+		if ( first == 0 ) {
+			epoch++;
+		}
+		shot.epoch = epoch;
+		for ( uint32 sequence = first; sequence <= last; sequence++ ) {
+			shot.sequence = sequence;
+			shot.noise = shot.settings.history ? sequence : 0;
+			scene = frame( shot );
+		}
+		return scene;
+	};
+
+	// over the frames
+	int penumbra = 0;
+	const float after1 = penumbraError( run( base, 0, 0 ), softAlone, 0.0f, &penumbra );
+	const float after4 = penumbraError( run( base, 1, 3 ), softAlone, 0.0f );
+	const float after16 = penumbraError( run( base, 4, 15 ), softAlone, 0.0f );
+	Check( penumbra > 200 && after4 < after1 * 0.75f && after16 < after4 * 0.75f && after16 < 0.12f, va( "%u sample(s): over 1, 4 and 16 frames the "
+		"penumbra's %d pixels are off by %.3f, %.3f and %.3f", samples, penumbra, after1, after4, after16 ) );
+
+	// the spatial filter: one frame alone, then with a history
+	shot_t filtered = base;
+	filtered.settings.passes = 3;
+	const float filtered1 = penumbraError( run( filtered, 0, 0 ), softAlone, 0.0f );
+	const float filtered16 = penumbraError( run( filtered, 1, 15 ), softAlone, 0.0f );
+	Check( filtered1 < after1 * 0.6f && filtered16 < after16 * 1.1f, va( "%u sample(s): three passes leave one frame off by %.3f (%.3f without) "
+		"and 16 by %.3f (%.3f without)", samples, filtered1, after1, filtered16, after16 ) );
+
+	// A hard shadow holds no noise: from 4 frames on the history says so, and the passes leave it as it is. A
+	// frame alone cannot tell an edge from noise, and blurs it.
+	shot_t sharp = filtered;
+	sharp.light = hard;
+	shot_t raw = sharp;
+	raw.settings.history = false;
+	raw.settings.passes = 0;
+	const std::vector<idVec4> unfiltered = run( raw, 0, 0 );
+	const std::vector<idVec4> sharpFirst = run( sharp, 0, 0 );
+	const std::vector<idVec4> sharpLater = run( sharp, 1, 4 );
+	if ( Check( unfiltered.size() == numTexels && sharpFirst.size() == numTexels && sharpLater.size() == numTexels,
+			va( "%u sample(s): the hard shadow is read", samples ) ) ) {
+		int blurredFirst = 0, blurredLater = 0;
+		for ( size_t at = 0; at < numTexels; at++ ) {
+			const float whole = Max( softAlone[at].x, 1e-5f );
+			blurredFirst += ( idMath::Fabs( sharpFirst[at].x - unfiltered[at].x ) > 0.02f * whole ) ? 1 : 0;
+			blurredLater += ( idMath::Fabs( sharpLater[at].x - unfiltered[at].x ) > 0.002f * whole ) ? 1 : 0;
+		}
+		Check( blurredFirst > 20 && blurredLater == 0, va( "%u sample(s): a hard shadow's first frame is blurred in %d pixels, its fifth in %d",
+			samples, blurredFirst, blurredLater ) );
+	}
+
+	// An eye that glides a quarter of a pixel a frame: the history's texels lie between this frame's pixels. Mixed,
+	// the edge of a hard shadow would widen with every frame; a pixel takes only the texels of its own side.
+	shot_t gliding = sharp;
+	static_cast<void>( run( gliding, 0, 4 ) );
+	std::vector<idVec4> glided;
+	for ( uint32 step = 1; step <= 12; step++ ) {
+		gliding.before = gliding.shift;
+		gliding.shift = 0.25f * step;
+		glided = run( gliding, 4 + step, 4 + step );
+	}
+	shot_t rawGlided = raw;
+	rawGlided.shift = rawGlided.before = gliding.shift;
+	const std::vector<idVec4> glidedAlone = run( rawGlided, 0, 0 );
+	if ( Check( glided.size() == numTexels && glidedAlone.size() == numTexels, va( "%u sample(s): the gliding eye is read", samples ) ) ) {
+		int shadowed = 0, mixed = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				// Under MSAA the floor's diagonal is shaded once per triangle: where an edge crosses it a pixel holds
+				// a part of the shadow that changes as the eye glides, and the passes take its variance to its neighbours.
+				if ( samples > 1 && abs( column + 3 - row ) <= 2 ) {
+					continue;
+				}
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				const float whole = Max( movedAlone[at].x, 1e-5f );
+				shadowed += ( movedAlone[at].x > 1e-5f && glidedAlone[at].x < 0.5f * whole ) ? 1 : 0;
+				mixed += ( idMath::Fabs( glided[at].x - glidedAlone[at].x ) > 0.002f * whole ) ? 1 : 0;
+			}
+		}
+		Check( shadowed > 100 && mixed == 0, va( "%u sample(s): an eye glided 3 pixels in 12 frames: of a hard shadow of %d pixels, %d are not "
+			"what a frame alone gives", samples, shadowed, mixed ) );
+	}
+
+	// A hard shadow that slides: the light moves for 24 frames, its shadows an eighth of a pixel to a whole one a
+	// frame. The old shadow stays only at an edge: 2 pixels off one, the floor is what a frame alone gives.
+	for ( const float speed : { 0.375f, 0.75f, 1.5f, 3.0f } ) {
+		shot_t sliding = sharp;
+		static_cast<void>( run( sliding, 0, 7 ) );
+		std::vector<idVec4> slid;
+		for ( uint32 step = 1; step <= 24; step++ ) {
+			sliding.light.origin.x = hard.origin.x + speed * step;
+			slid = run( sliding, 7 + step, 7 + step );
+		}
+		shot_t rawSlid = raw;
+		rawSlid.light = sliding.light;
+		const std::vector<idVec4> slidAlone = run( rawSlid, 0, 0 );
+		const std::vector<idVec4> slidWhole = alone( sliding.light, 0.0f );
+		if ( !Check( slid.size() == numTexels && slidAlone.size() == numTexels && slidWhole.size() == numTexels,
+				va( "%u sample(s): the sliding light is read", samples ) ) ) {
+			continue;
+		}
+		const auto left = [&]( size_t at ) {
+			return slidAlone[at].x / Max( slidWhole[at].x, 1e-5f );
+		};
+		int trailing = 0, atEdges = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				const float error = idMath::Fabs( slid[at].x - slidAlone[at].x ) / Max( slidWhole[at].x, 1e-5f );
+				bool flat = true;
+				for ( int y = Max( row - 2, 0 ); y <= Min( row + 2, SIZE - 1 ); y++ ) {
+					for ( int x = Max( column - 2, 0 ); x <= Min( column + 2, SIZE - 1 ); x++ ) {
+						flat = flat && idMath::Fabs( left( static_cast<size_t>( y ) * SIZE + x ) - left( at ) ) < 0.01f;
+					}
+				}
+				trailing += ( flat && error > 0.1f ) ? 1 : 0;
+				atEdges += ( error > 0.25f ) ? 1 : 0;
+			}
+		}
+		Check( trailing == 0 && atEdges <= 80, va( "%u sample(s): a hard shadow sliding %.3f pixels a frame: 2 pixels off an edge %d pixels hold "
+			"the old one, and %d at the edges", samples, speed / 3.0f, trailing, atEdges ) );
+	}
+
+	// The floor no traced light reaches is no part of the filter. The resolve stores "all of nothing" there, which
+	// lightened the shadow beside it: on a monster's back, the bumps that face a light among those that do not.
+	// A's shadow, columns 3..18 and rows 24..39, lies across the light's scissor.
+	constexpr int LIT_FROM = 10;
+	shot_t partly = sharp;
+	partly.litFrom = LIT_FROM;
+	const std::vector<idVec4> partlyFirst = run( partly, 0, 0 );
+	std::vector<idVec4> partlyMoved;
+	for ( uint32 step = 1; step <= 6; step++ ) {
+		// the eye goes left: where a pixel was lies toward the columns without light
+		partly.before = partly.shift;
+		partly.shift = -0.5f * step;
+		partlyMoved = run( partly, step, step );
+	}
+	shot_t partlyRaw = raw;
+	partlyRaw.litFrom = LIT_FROM;
+	partlyRaw.shift = partlyRaw.before = partly.shift;
+	const std::vector<idVec4> partlyAlone = run( partlyRaw, 0, 0 );
+	if ( Check( unfiltered.size() == numTexels && sharpFirst.size() == numTexels && partlyFirst.size() == numTexels
+			&& partlyMoved.size() == numTexels && partlyAlone.size() == numTexels, va( "%u sample(s): the partly lit floor is read", samples ) ) ) {
+		int inShadow = 0, lightenedFirst = 0, lightenedMoved = 0;
+		float most = 0.0f;
+		for ( int row = 29; row <= 34; row++ ) {
+			for ( int column = LIT_FROM; column < LIT_FROM + 4; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				const float whole = Max( softAlone[at].x, 1e-5f );
+				if ( unfiltered[at].x < 1e-4f * whole && partlyAlone[at].x < 1e-4f * whole ) {
+					inShadow++;
+					// a first frame is blurred from the shadow's edges, with the whole floor lit too
+					lightenedFirst += ( partlyFirst[at].x > sharpFirst[at].x + 0.02f * whole ) ? 1 : 0;
+					lightenedMoved += ( partlyMoved[at].x > 0.002f * whole ) ? 1 : 0;
+					most = Max( most, Max( partlyFirst[at].x - sharpFirst[at].x, partlyMoved[at].x ) / whole );
+				}
+			}
+		}
+		Check( inShadow == 24 && lightenedFirst == 0 && lightenedMoved == 0, va( "%u sample(s): of %d shadowed pixels beside the floor no light "
+			"reaches, a first frame lightens %d and a moved eye's seventh %d (by %.4f of the light at most)", samples, inShadow, lightenedFirst,
+			lightenedMoved, most ) );
+	}
+
+	// A shadow that moved leaves no trail. A frame later the floor with no edge of it within 3 pixels is what a frame
+	// alone gives: the history is cut to what the neighbours hold. After a while every pixel is, to the bit: a half
+	// float alone would stop a step short of a constant for good, and two runs that differed once would never agree.
+	light_t aside = hard;
+	aside.origin.x += 12.0f;
+	const std::vector<idVec4> asideAlone = alone( aside, 0.0f );
+	shot_t rawAside = raw;
+	rawAside.light = aside;
+	shot_t settling = sharp;
+	settling.settings.maxHistory = 4;
+	const std::vector<idVec4> unfilteredAside = run( rawAside, 0, 0 );
+	static_cast<void>( run( settling, 0, 5 ) );
+	settling.light = aside;
+	const std::vector<idVec4> atOnce = run( settling, 6, 6 );
+	// beside an edge the old shadow fades by a quarter a frame: 60 frames down to the last bit of a half float
+	const std::vector<idVec4> settled = run( settling, 7, 86 );
+	if ( Check( unfiltered.size() == numTexels && asideAlone.size() == numTexels && unfilteredAside.size() == numTexels
+			&& atOnce.size() == numTexels && settled.size() == numTexels, va( "%u sample(s): the moved light is read", samples ) ) ) {
+		// what the shadows leave of the light alone
+		const auto left = []( const std::vector<idVec4> & scene, const std::vector<idVec4> & whole, size_t at ) {
+			return scene[at].x / Max( whole[at].x, 1e-5f );
+		};
+		int changed = 0, trailing = 0, kept = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				const float whole = Max( asideAlone[at].x, 1e-5f );
+				const float now = left( unfilteredAside, asideAlone, at );
+				kept += ( settled[at].x != unfilteredAside[at].x || settled[at].y != unfilteredAside[at].y ) ? 1 : 0;
+				// The light about as bright as it was (else its history is another light's), no edge near: the cut
+				// looks a pixel around, a new history's variance two, and the first pass takes that from one more.
+				bool flat = idMath::Fabs( asideAlone[at].x - softAlone[at].x ) < 0.2f * softAlone[at].x;
+				for ( int y = Max( row - 3, 0 ); y <= Min( row + 3, SIZE - 1 ); y++ ) {
+					for ( int x = Max( column - 3, 0 ); x <= Min( column + 3, SIZE - 1 ); x++ ) {
+						flat = flat && idMath::Fabs( left( unfilteredAside, asideAlone, static_cast<size_t>( y ) * SIZE + x ) - now ) < 0.01f;
+					}
+				}
+				if ( flat && idMath::Fabs( now - left( unfiltered, softAlone, at ) ) > 0.5f ) {
+					changed++;
+					trailing += ( idMath::Fabs( atOnce[at].x - unfilteredAside[at].x ) > 0.02f * whole ) ? 1 : 0;
+				}
+			}
+		}
+		Check( changed > 10 && trailing == 0 && kept == 0, va( "%u sample(s): a hard shadow moved 4 pixels: of the %d pixels it crossed, off "
+			"its edges, %d hold the old one a frame later; 80 frames later %d pixels are not what a frame alone gives", samples, changed, trailing, kept ) );
+	}
+
+	// A moved eye: the floor went 3 pixels to the left, and the last 3 columns show nothing. They are a hole in the
+	// first frame, which keeps what it held, and nothing in the second.
+	static_cast<void>( run( base, 0, 7 ) );
+	shot_t moved = base;
+	moved.shift = 3.0f;
+	const float afterMove = penumbraError( run( moved, 8, 8 ), movedAlone, 3.0f );
+	shot_t movedLength = moved;
+	movedLength.settings.showLength = true;
+	const std::vector<idVec4> movedFrames = run( movedLength, 8, 8 );
+	movedLength.before = moved.shift;
+	const std::vector<idVec4> restedFrames = run( movedLength, 9, 9 );
+	if ( Check( movedFrames.size() == numTexels && restedFrames.size() == numTexels, va( "%u sample(s): the moved eye is read", samples ) ) ) {
+		int wrong = 0, wrongLater = 0;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				const bool floor = ( column <= 60 );
+				wrong += ( idMath::Fabs( framesOf( movedFrames[at] ) - ( floor ? 9.0f : 8.0f ) ) > 0.1f ) ? 1 : 0;
+				wrongLater += ( idMath::Fabs( framesOf( restedFrames[at] ) - ( floor ? 10.0f : 0.0f ) ) > 0.1f ) ? 1 : 0;
+			}
+		}
+		Check( wrong == 0 && wrongLater == 0 && afterMove < after4, va( "%u sample(s): after a move of 3 pixels %d pixels hold neither 9 frames nor, "
+			"off the floor, the 8 they held; a frame later %d hold neither 10 nor none; the penumbra is off by %.3f (%.3f after 4 frames)", samples,
+			wrong, wrongLater, afterMove, after4 ) );
+	}
+
+	// A quad taken away. The light is drawn over it too, so only its depth tells the floor behind it from it.
+	shot_t covered = base;
+	covered.occluder = true;
+	covered.lightDepth = GLS_DEPTHFUNC_ALWAYS;
+	static_cast<void>( run( covered, 0, 7 ) );
+	shot_t uncovered = covered;
+	uncovered.occluder = false;
+	uncovered.settings.showLength = true;
+	const std::vector<idVec4> uncoveredFrames = run( uncovered, 8, 8 );
+	if ( Check( uncoveredFrames.size() == numTexels, va( "%u sample(s): the uncovered floor is read", samples ) ) ) {
+		int wrong = 0, behind = 0;
+		const float nearer = ( QUAD_Z + EYE ) / EYE;	// the quad's unit on the screen is the floor's over this
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const float x = ( column - 31.5f ) * nearer;
+				const float y = ( row - 31.5f ) * nearer;
+				const float inside = Min( Min( x - OCCLUDER.x0, OCCLUDER.x1 - x ), Min( y - OCCLUDER.y0, OCCLUDER.y1 - y ) );
+				if ( idMath::Fabs( inside ) < 1.0f ) {
+					continue;
+				}
+				behind += ( inside > 0.0f ) ? 1 : 0;
+				const float want = ( inside > 0.0f ) ? 1.0f : 9.0f;
+				wrong += ( idMath::Fabs( framesOf( uncoveredFrames[static_cast<size_t>( row ) * SIZE + column] ) - want ) > 0.1f ) ? 1 : 0;
+			}
+		}
+		Check( wrong == 0 && behind > 100, va( "%u sample(s): %d pixels behind the quad taken away; %d pixels hold neither 1 frame there nor 9 beside it",
+			samples, behind, wrong ) );
+	}
+
+	// a light halved, and one a tenth dimmer
+	const auto framesAfterDimming = [&]( float part ) {
+		static_cast<void>( run( base, 0, 7 ) );
+		shot_t dimmed = base;
+		dimmed.light.color *= part;
+		dimmed.settings.showLength = true;
+		const std::vector<idVec4> shown = run( dimmed, 8, 8 );
+		float least = idMath::INFINITY, most = 0.0f;
+		for ( const idVec4 & texel : shown ) {
+			least = Min( least, framesOf( texel ) );
+			most = Max( most, framesOf( texel ) );
+		}
+		return idVec2( least, most );
+	};
+	const idVec2 halved = framesAfterDimming( 0.5f );
+	const idVec2 dimmer = framesAfterDimming( 0.9f );
+	Check( halved.Compare( idVec2( 1.0f, 1.0f ), 0.1f ) && dimmer.Compare( idVec2( 9.0f, 9.0f ), 0.1f ), va( "%u sample(s): a light halved leaves "
+		"%.1f to %.1f frames, one a tenth dimmer %.1f to %.1f", samples, halved.x, halved.y, dimmer.x, dimmer.y ) );
+
+	// no history: the frame alone, whatever came before
+	shot_t single = filtered;
+	single.settings.history = false;
+	bed.history.Drop();
+	const std::vector<idVec4> fresh = run( single, 0, 0 );
+	static_cast<void>( run( filtered, 0, 2 ) );
+	const std::vector<idVec4> afterOthers = run( single, 0, 0 );
+	Check( sameBytes( fresh, afterOthers ), va( "%u sample(s): without a history a frame is the same bytes after other frames", samples ) );
+	// a sequence drawn twice reads the same frame before and writes the same surface
+	const std::vector<idVec4> once = run( filtered, 0, 3 );
+	const std::vector<idVec4> twice = run( filtered, 3, 3 );
+	Check( sameBytes( once, twice ), va( "%u sample(s): a sequence drawn twice gives the same bytes", samples ) );
+	// a screenshot reads the history and leaves it: the frame after it is the one without it
+	shot_t screenshot = filtered;
+	screenshot.store = false;
+	const std::vector<idVec4> captured = run( screenshot, 4, 4 );
+	const std::vector<idVec4> next = run( filtered, 4, 4 );
+	Check( sameBytes( captured, next ), va( "%u sample(s): a screenshot's frame and the frame after it are the same bytes", samples ) );
+
+	// r_rtReference: a plain average in 32-bit floats, no pass; more frames, less error
+	shot_t reference = base;
+	reference.settings.reference = true;
+	reference.settings.maxHistory = 4096;
+	const float after32 = penumbraError( run( reference, 0, 31 ), softAlone, 0.0f );
+	Check( after32 < after16, va( "%u sample(s): the reference is off by %.3f after 32 frames (%.3f after 16)", samples, after32, after16 ) );
+
+	bed.fixture.recorder.SetHdr( false, 1.0f );
+	bed.fixture.recorder.EndPass();
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+void RtHistoryAllSamples( idTestGpu & gpu ) {
+	RtHistory( gpu, 1 );
+	if ( gpu.device.Features().samples[2] ) {
+		RtHistory( gpu, 4 );
 	}
 }
 
@@ -9368,6 +9905,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_RtDraw", OnGpu<RtDrawAllSamples> },
 	{ "Warp_RtShadows", OnWarp<RtShadowsAllSamples> },
 	{ "Gpu_RtShadows", OnGpu<RtShadowsAllSamples> },
+	{ "Warp_RtHistory", OnWarp<RtHistoryAllSamples> },
+	{ "Gpu_RtHistory", OnGpu<RtHistoryAllSamples> },
 	{ "Gpu_HdrScene", OnGpu<HdrScene> },
 	{ "Warp_HdrCopies", OnWarp<HdrCopiesAllSamples> },
 	{ "Warp_CombineLut", OnWarp<CombineLutAllSamples> },
