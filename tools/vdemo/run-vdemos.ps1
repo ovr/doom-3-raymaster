@@ -6,9 +6,9 @@
 Runs the visual demos (base/vdemos/*.vdemo) in a retail install and collects their frames.
 
 .DESCRIPTION
-Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir, base/vdemos and our own maps
-(base/maps/rt/*.map, which the demos compile with their build directive; stale .map files there are removed) into the game dir
-(with -Api d3d12 also base/shaders, the HLSL that DXC compiles), starts the game in a 1280x720 window with an isolated fs_savepath (the
+Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir, base/vdemos, base/shaders
+(the HLSL that DXC compiles) and our own maps (base/maps/rt/*.map, which the demos compile with their build directive; stale .map
+files there are removed) into the game dir, starts the game in a 1280x720 window with an isolated fs_savepath (the
 real config in Saved Games is never read or written), runs "vdemo <demos> quit" and copies into
 -OutDir: the frames and vdemo.json of every demo, run.json,
 qconsole.log, the screenshots the demos took (screenshots/) and modules.txt, every module the game
@@ -18,7 +18,7 @@ run.json gets two more fields: "validation", the debug layer messages of qconsol
 (lines "d3d12 debug: <SEVERITY>", plus "d3d12 live:" objects left at shutdown in Debug), and
 "exitCode", the game's own. The game writes "api", the backend that really ran.
 
--Api opengl|d3d12 sets r_renderApi. -DebugLevel N sets r_debugContext (only when given). The save
+-DebugLevel N sets r_debugContext (only when given). The save
 path is wiped every run; -KeepShaderCache keeps its D3D12 caches (shaders/cache, the DXIL, and
 renderprogs/dxbc, the PSO journal and pipeline library) across the wipe. -TimeoutScale N stretches
 the game's load and stall timeouts (vdemo_timeoutScale) and -TimeoutMinutes, for slow runs such as
@@ -26,19 +26,18 @@ GPU-based validation.
 
 Refuses to run while any Doom3BFG.exe runs. Exit code: 0 when every demo ended "ok" with all its
 frames on disk and no layer message, 1 when a demo failed, lost a frame or the layer reported
-anything, 2 when the game timed out, crashed, exited with a nonzero code or ran another API than asked.
+anything, 2 when the game timed out, crashed, exited with a nonzero code or did not run Direct3D 12.
 
 .EXAMPLE
 tools\vdemo\run-vdemos.ps1 -OutDir research\vdemo\baseline
 tools\vdemo\run-vdemos.ps1 -OutDir build\vdemo\run2 -Demos 01_camera,04_lighting -NoDeploy
-tools\vdemo\run-vdemos.ps1 -Api d3d12 -DebugLevel 1 -OutDir build\vdemo\d3d12 -Demos 01_camera -ExtraArgs '+set','r_testClearPattern','1'
-tools\vdemo\run-vdemos.ps1 -Api d3d12 -GameDir testing_rt -BuildDir build\rt-demo-bin -OutDir build\vdemo\rt -Demos 20_rt_gallery
+tools\vdemo\run-vdemos.ps1 -DebugLevel 1 -OutDir build\vdemo\d3d12 -Demos 01_camera -ExtraArgs '+set','r_testClearPattern','1'
+tools\vdemo\run-vdemos.ps1 -GameDir testing_rt -BuildDir build\rt-demo-bin -OutDir build\vdemo\rt -Demos 20_rt_gallery
 #>
 [CmdletBinding()]
 param(
 	[Parameter(Mandatory = $true)] [string] $OutDir,
 	[string[]] $Demos = @( 'all' ),
-	[ValidateSet( 'opengl', 'd3d12' )] [string] $Api = 'opengl',
 	[ValidateRange( 0, 3 )] [int] $DebugLevel = 0,
 	[switch] $KeepShaderCache,
 	[ValidateRange( 1, 100 )] [double] $TimeoutScale = 1,
@@ -55,7 +54,6 @@ $repoRoot = ( Resolve-Path ( Join-Path $PSScriptRoot '..\..' ) ).Path
 $invariant = [System.Globalization.CultureInfo]::InvariantCulture
 # "powershell -File" passes "a,b" as one string
 $Demos = @( $Demos | ForEach-Object { $_ -split ',' } | Where-Object { $_ } )
-$apiNames = @{ 'opengl' = 'OpenGL'; 'd3d12' = 'Direct3D 12' }
 
 # a worktree has no testing_1, the main checkout does
 function Get-MainCheckout {
@@ -125,14 +123,11 @@ if ( -not $NoDeploy ) {
 	New-Item -ItemType Directory -Force $mapTarget | Out-Null
 	Get-ChildItem $mapTarget -Filter '*.map' | Remove-Item -Force
 	Copy-Item ( Join-Path $repoRoot 'base\maps\rt\*.map' ) $mapTarget -Force
-	# GL compiles the GLSL baked into the packs and reads no loose file
-	if ( $Api -eq 'd3d12' ) {
-		# the HLSL DXC compiles, with its include folder; a file an older deploy left is removed
-		$shaderTarget = Join-Path $GameDir 'base\shaders'
-		if ( Test-Path $shaderTarget ) { Remove-Item -Recurse -Force $shaderTarget }
-		Copy-Item ( Join-Path $repoRoot 'base\shaders' ) $shaderTarget -Recurse -Force
-	}
-	Write-Host "deployed $BuildDir, base\vdemos and base\maps\rt to $GameDir"
+	# the HLSL DXC compiles, with its include folder; a file an older deploy left is removed
+	$shaderTarget = Join-Path $GameDir 'base\shaders'
+	if ( Test-Path $shaderTarget ) { Remove-Item -Recurse -Force $shaderTarget }
+	Copy-Item ( Join-Path $repoRoot 'base\shaders' ) $shaderTarget -Recurse -Force
+	Write-Host "deployed $BuildDir, base\vdemos, base\shaders and base\maps\rt to $GameDir"
 }
 
 # the save path is ours only: a marker file guards against wiping anything else
@@ -182,8 +177,7 @@ $gameArgs = @(
 	'+set', 'r_windowY', '40',
 	'+set', 's_noSound', '1',
 	'+set', 'com_skipStartupVideos', '1',
-	'+set', 'in_mouse', '0',
-	'+set', 'r_renderApi', $Api
+	'+set', 'in_mouse', '0'
 )
 if ( $PSBoundParameters.ContainsKey( 'DebugLevel' ) ) {
 	$gameArgs += @( '+set', 'r_debugContext', "$DebugLevel" )
@@ -259,8 +253,8 @@ $text += ",`n`t`"validation`": { $fields },`n`t`"exitCode`": $gameExitText`n}`n"
 $run = $text | ConvertFrom-Json
 $run.demos | Format-Table demo, map, status, tics, frames, loadAttempts, loadMsec, runMsec -AutoSize | Out-String | Write-Host
 Write-Host "api $( $run.api ), validation: $fields, modules $( $modules.Count )"
-if ( $run.api -ne $apiNames[$Api] ) {
-	Write-Warning "the game ran $( $run.api ), not $( $apiNames[$Api] )"
+if ( $run.api -ne 'Direct3D 12' ) {
+	Write-Warning "the game ran $( $run.api ), not Direct3D 12"
 	$exitCode = 2
 }
 if ( $null -ne $gameExitCode -and $gameExitCode -ne 0 ) {

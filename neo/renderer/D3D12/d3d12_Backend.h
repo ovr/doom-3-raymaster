@@ -5,10 +5,9 @@
 #pragma once
 
 /*
-	idRenderBackendD3D12: the Direct3D 12 implementation of idRenderBackend, chosen with
-	+set r_renderApi d3d12. Private to renderer/D3D12/: shared code reaches it only through
-	renderBackend. Each override forwards to one subsystem of idD3D12Context; the change hooks keep
-	the base class's empty bodies, because a draw reads the whole latch.
+	idRenderBackendD3D12: the Direct3D 12 implementation of idRenderBackend. Private to
+	renderer/D3D12/: shared code reaches it only through renderBackend (R_CreateRenderBackend).
+	Each override forwards to one subsystem of idD3D12Context; a draw reads the whole latch.
 */
 
 #include "d3d12_Context.h"
@@ -64,7 +63,6 @@ public:
 	void							EndFrame() override;
 	presentResult_t					Present( presentMode_t mode ) override;
 	uint64							GetFrameGpuMicroseconds() override;
-	void							SelectOutput( outputEye_t eye ) override;	// every eye → the one output
 	void							ReadOutputPixels( int x, int y, int width, int height, byte * rgb ) override;
 
 	textureHandle_t					CreateTexture( const idImageOpts & opts, textureRole_t role, const samplerDesc_t & sampler, const char * debugName ) override;

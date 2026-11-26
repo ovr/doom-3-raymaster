@@ -34,9 +34,9 @@ If you have questions concerning this license or the applicable additional terms
 
 	idRenderBackend: the graphics-API-neutral interface of the renderer.
 
-	All shared render code talks to one object, renderBackend. The cvar r_renderApi picks its
-	class once at startup through idRenderBackendFactory, so a new backend is a new folder and
-	lines in sources.cmake, with no #ifdef in shared code.
+	All shared render code talks to one object, renderBackend: the Direct3D 12 backend of
+	renderer/D3D12/, created in R_InitBackend. The API stays behind this interface, so shared
+	code has no #ifdef and no API name.
 
 	  game, front end (game thread)            frame back end (main thread)
 	  -----------------------------            ----------------------------------------------
@@ -48,57 +48,43 @@ If you have questions concerning this license or the applicable additional terms
 	        v                                         v
 	  +-----------------------------------------------------------------------------------+
 	  | idRenderBackend  (RenderBackend.h, RenderBackend.cpp)                             |
-	  |   renderLatch_t + inline wrappers (shared, no API)  ->  virtual hooks API_*       |
-	  |   idRenderBackendFactory + r_renderApi (one backend per run)                      |
-	  +---------------+---------------------------+---------------------------+-----------+
-	                  v                           v                           v
-	  renderer/OpenGL/                     renderer/D3D12/             renderer/Vulkan/ (later)
-	                  |                           |                           |
-	                  v                           v                           v
-	  sys/win32/win_glimp.cpp, win_qgl.cpp        the window (HWND) of the platform layer
-	   (the WGL context)
+	  |   renderLatch_t + inline wrappers (shared, no API)  ->  API_Clear, API_DrawIndexed |
+	  +-----------------------------------------+-----------------------------------------+
+	                                            v
+	                               renderer/D3D12/  ->  the window (HWND) of the platform layer
 
 	A draw is the latch (the GLS_* state vector, face culling, the program, the textures per slot)
 	plus a drawCall_t and one virtual call, DrawIndexed. The latch lives in the base class: it is
-	the record of what shared code asked for. In front of every virtual hook stands a non-virtual
-	inline wrapper that drops repeats, so a repeated State, Cull or BindTexture costs one compare.
-	An immediate backend (OpenGL) issues its API calls in the hooks. A pipeline backend (D3D12,
-	Vulkan) leaves the change hooks empty, builds a pipelineKey_t from the latch in API_DrawIndexed
-	and looks a pipeline up only when the key differs from the last one.
+	the record of what shared code asked for. The inline wrappers only update it; the backend
+	builds a pipelineKey_t from it in API_DrawIndexed and looks a pipeline up only when the key
+	differs from the last one.
 
-	Two rules of the OpenGL path change pixels, so they are part of this contract, of the latch and
-	of pipelineKey_t: after a TWO_SIDED Cull face culling stays off until a one-sided Cull right after
-	a TWO_SIDED one (renderLatch_t::cullEnabled; the CULL_UNSET of SetViewMirror does not turn it on),
-	and the depth test is strict LESS after SetDefaultState until a State changes the depth function
-	(renderLatch_t::depthFuncStrict). r_glCheckLatch 1 compares both with GL on every draw.
+	Two rules of id's OpenGL renderer change pixels, so they are part of this contract, of the latch
+	and of pipelineKey_t: after a TWO_SIDED Cull face culling stays off until a one-sided Cull right
+	after a TWO_SIDED one (renderLatch_t::cullEnabled; the CULL_UNSET of SetViewMirror does not turn
+	it on), and the depth test is strict LESS after SetDefaultState until a State changes the depth
+	function (renderLatch_t::depthFuncStrict).
 
 	Diagnostics every backend has, in the shared wrappers and the frame loop: r_debugMaxDraws N
 	drops the draws of a frame after the first N, r_hashDrawStream 1 prints a hash of every frame's
 	draws without handles and buffer offsets (two runs of a visual demo print the same hashes),
 	r_testClearPattern 1 ends every frame with a fixed pattern of clears (tools/vdemo/check-pattern.py).
 
-	Where the APIs live. Only the files of renderer/OpenGL/ and sys/win32/win_glimp.cpp and
-	win_qgl.cpp include the GL headers, and only renderer/D3D12/ (and its tests, neo/tests/d3d12_*)
-	includes the Direct3D 12, DXGI and DXC headers. The precompiled header includes neither,
-	so an API type or call in shared code does not compile. The D3D12 backend loads its DLLs from
-	System32 in its Init, so an OpenGL run never loads the HLSL compiler. The script
-	tools/check-render-api-leaks.ps1 finds the rest (gl* functions that windows.h declares, API
-	includes, code no config builds) and fails when it finds a name:
+	Where the API lives. Only renderer/D3D12/ (and its tests, neo/tests/d3d12_*) includes the
+	Direct3D 12, DXGI and DXC headers, and nothing includes OpenGL's. The precompiled header includes
+	neither, so an API type or call in shared code does not compile. The backend loads Windows' DLLs
+	from System32 in its Init. The script tools/check-render-api-leaks.ps1 finds the rest (gl*
+	functions that windows.h declares, API includes, code no config builds) and fails when it finds
+	a name:
 
 	  ctest --test-dir build/vs2022-x64 -C Release -R renderApiLeaks
 
 	Shared code keeps the engine's own names: the GLS_* state bits (RenderState.h), screenConfig
 	(the window and the screen), renderProgManager, RB_* for the passes.
 
-	Adding a backend:
-	  1. a folder renderer/<Api>/ with a class derived from idRenderBackend that implements
-	     Init .. Present and the API_* hooks; its API headers stay inside that folder;
-	  2. its files in neo/sources.cmake and one static idRenderBackendFactory object with the name
-	     r_renderApi selects (see gl_RenderBackend.cpp);
-	  3. the window is made by sys/sys_window.h before Init and arrives as
-	     renderBackendInit_t::nativeWindow (an HWND); win_glimp.cpp is the WGL context only;
-	  4. the visual demos (tools/vdemo) are the check: the frames of the new backend against the
-	     OpenGL ones.
+	The window is made by sys/sys_window.h before Init and arrives as renderBackendInit_t::nativeWindow
+	(an HWND). The visual demos (tools/vdemo) are the check of the frames, against the stored frames
+	of id's OpenGL renderer and the backend's own earlier ones.
 
 	The rules of the contract:
 
@@ -123,16 +109,16 @@ If you have questions concerning this license or the applicable additional terms
 		code that the program and the parm values are those of the previous DrawIndexed.
 	R8	Present blocks. ReadOutputPixels is legal after EndFrame and before Present and reads the
 		frame just drawn.
-	R9	One backend per run: r_renderApi is CVAR_INIT, vid_restart does not change the API. The cvar is
-		archived, so "set r_renderApi d3d12" in the console takes effect at the next start.
+	R9	One device per run: a mode switch or vid_restart calls ResizeOutput, and the device and its
+		sample count stay until Shutdown.
 	R10	A pipeline backend opens its pass at the first draw or clear after BeginFrame or after a
 		copy, and closes it at a copy and in EndFrame. SetDefaultState does not close the pass.
 	R11	A slot the program samples and shared code did not bind reads as opaque black, from a 2D
 		or a cube texture as programInfo_t::cubeMask says.
 	R12	A stage the game data lacks still gets a handle, and CreateProgram with it raises idLib::Error
-		with the text of GL's failed link, which ends the map load. A stage that fails to compile is
-		NONE. A draw with program NONE is illegal: Debug asserts, GL draws with the fixed-function
-		pipeline, a pipeline backend skips it.
+		with the text of id's failed GLSL link (the visual demos retry a load on it), which ends the
+		map load. A stage that fails to compile is NONE. A draw with program NONE is illegal: Debug
+		asserts, the backend skips it.
 	R13	With caps.hdrScene, the draws, clears and copies between BeginHdrScene and ResolveHdrScene go to a
 		linear float scene: in the render programs an 8-bit colour texture and the colour parms decode
 		from sRGB, the output is pre-exposed, a copy is float. Shared code decodes the colour parms it
@@ -142,7 +128,7 @@ If you have questions concerning this license or the applicable additional terms
 		draws until SetHdrSceneGamma( false ) blend there in gamma without decoding (backEnd.hdrGamma).
 		A resolve moves the eye adaptation by its step; LastHdrExposure is what a resolve the CPU has
 		read back chose (a frame or more late).
-	R14	With caps.gbuffer, in the HDR scene's linear phase: BeginGBuffer clears the viewport's rectangle of the
+	R14	In the HDR scene's linear phase: BeginGBuffer clears the viewport's rectangle of the
 		thin G-buffer (all zero) and sends the draws until EndGBuffer into its three targets with the scene's
 		depth instead of the scene: GB0 the octahedral world normal, GB1 F0 (sRGB) and roughness, GB2 the
 		motion in pixels of the scene since the previous frame (rows count up from the bottom, as GL's).
@@ -217,7 +203,7 @@ public:
 	int						OutputHeight() const { return outputHeight; }
 	// A hint between frames; a backend without the notion does nothing.
 	virtual void			SetOption( renderOption_t option, bool enable ) = 0;
-	// Display gamma tables from R_SetColorMappings. GL: device ramp; others: applied in the present blit.
+	// Display gamma tables from R_SetColorMappings, applied in the present blit.
 	virtual void			SetGammaRamp( const unsigned short red[256], const unsigned short green[256], const unsigned short blue[256] ) = 0;
 	// Reports pending API errors or validation messages to the console; may do nothing.
 	virtual void			CheckErrors() = 0;
@@ -236,8 +222,6 @@ public:
 	virtual presentResult_t	Present( presentMode_t mode ) = 0;
 	// GPU time of the frame closed before the last Present; blocks until known; 0 without caps.gpuTimer.
 	virtual uint64			GetFrameGpuMicroseconds() = 0;
-	// Which eye buffer draws go to. LEFT and RIGHT need caps.quadBufferStereo.
-	virtual void			SelectOutput( outputEye_t eye ) = 0;
 	// Reads the finished frame: after EndFrame, before Present. RGB8, tightly packed, bottom row first.
 	virtual void			ReadOutputPixels( int x, int y, int width, int height, byte * rgb ) = 0;
 	// The frame loop brackets the draws of a frame with these: after BeginFrame, before EndFrame.
@@ -250,7 +234,7 @@ public:
 	virtual void			EndHdrScene() {}
 	virtual void			SetHdrSceneGamma( bool encoded, const renderRect_t & viewport ) {}
 	[[nodiscard]] virtual std::optional<hdrExposure_t>	LastHdrExposure() const { return std::nullopt; }
-	// R14, in the linear phase, with caps.gbuffer. Each ends the pass of a pipeline backend. False: no G-buffer
+	// R14, in the linear phase. Each ends the pass of a pipeline backend. False: no G-buffer
 	// (a lost device), draw nothing until EndGBuffer.
 	[[nodiscard]] virtual bool	BeginGBuffer( const renderRect_t & viewport ) { return false; }
 	virtual void			EndGBuffer() {}
@@ -266,7 +250,7 @@ public:
 
 	// ---- latched state: inside a frame ---------------------------------------------------------
 	// Resets the latch: state bits 0, cull unset but enabled, strict depth test, offsets and bounds off,
-	// scissor = output, texture hooks re-sent.
+	// scissor = output.
 	void					SetDefaultState();
 	// Sets the whole state vector. A draw uses the vector latched at its DrawIndexed.
 	void					State( uint64 stateBits );
@@ -308,9 +292,6 @@ public:
 	virtual void			EndLevelLoad() {}
 	// What the draws that follow sample on this slot for this kind. A slot keeps one 2D and one cube entry.
 	void					BindTexture( int slot, textureKind_t kind, textureHandle_t texture );
-	// The next BindTexture of every slot reaches the API hook even when the handle is unchanged.
-	// idImage::PurgeImage calls it unconditionally; what is bound does not change.
-	void					ForgetTextureBindings() { latch.texturesSent = 0; }
 
 	// ---- buffers ----------------------------------------------------------------------------------------
 	// Allocates size bytes; data may be nullptr. JOINT buffers get any tail padding the API needs.
@@ -324,8 +305,8 @@ public:
 	virtual void			UnmapBuffer( bufferHandle_t buffer, int dirtyOffset, int dirtyBytes ) = 0;
 
 	// ---- programs ---------------------------------------------------------------------------------------
-	// Loads one stage <name> in the backend's own form (GL: the GLSL baked into the resource files, D3D12:
-	// base/shaders; RenderProgTable.h). A stage it lacks gets a handle all the same (R12); NONE when it fails to compile.
+	// Loads one stage <name> from base/shaders (RenderProgTable.h). A stage it lacks gets a handle all
+	// the same (R12); NONE when it fails to compile.
 	virtual shaderHandle_t	CreateShaderStage( shaderStageType_t stage, const char * name, shaderStageInfo_t & info ) = 0;
 	// Pairs two stages; fragment NONE = a program without a fragment stage. A stage the game data lacks
 	// raises idLib::Error (R12), any other failure returns NONE.
@@ -353,19 +334,7 @@ public:
 	virtual void			PopDebugGroup() = 0;
 
 protected:
-	// Hooks of an immediate backend (GL): called only for a real change, after the latch is updated.
-	// A pipeline backend leaves them empty and reads the latch in API_DrawIndexed.
-	virtual void			API_SetDefaultState() {}
-	virtual void			API_State( uint64 stateBits, uint64 changedBits ) {}
-	virtual void			API_BeginView() {}
-	virtual void			API_Cull( int cullType, int previousCullType ) {}
-	virtual void			API_PolygonOffset( float scale, float bias ) {}
-	virtual void			API_DepthBoundsTest( float zmin, float zmax ) {}
-	virtual void			API_Viewport( const renderRect_t & rect ) {}
-	virtual void			API_Scissor( const renderRect_t & rect ) {}
-	virtual void			API_BindTexture( int slot, textureKind_t kind, textureHandle_t texture ) {}
-	virtual void			API_BindProgram( programHandle_t program ) {}
-	// Every backend implements these.
+	// The backend reads the latch in these.
 	virtual void			API_Clear( const clearDesc_t & clear ) = 0;
 	virtual void			API_DestroyTexture( textureHandle_t texture ) = 0;
 	virtual void			API_DrawIndexed( const drawCall_t & dc ) = 0;
@@ -382,21 +351,10 @@ protected:
 	bool					inFrame = false;	// between BeginFrame and EndFrame; set by the backend, read by asserts
 };
 
-// One static instance per backend; shared code never names a backend class.
-class idRenderBackendFactory {
-public:
-								idRenderBackendFactory( const char * apiName, idRenderBackend * ( *create )() );
-	static idRenderBackend *	Create( const char * apiName );		// nullptr when no backend has that name
-	static void					ListApis( idStrList & names );
-private:
-	const char *				apiName;
-	idRenderBackend *			( *create )();
-	idRenderBackendFactory *	next;
-	static idRenderBackendFactory *	staticFactories;	// the idCVar::staticVars pattern, safe before main
-};
+// The Direct3D 12 backend; shared code never names its class.
+idRenderBackend *			R_CreateRenderBackend();
 
-extern idRenderBackend *	renderBackend;	// created in R_InitOpenGL, destroyed in idRenderSystemLocal::Shutdown
-extern idCVar				r_renderApi;
+extern idRenderBackend *	renderBackend;	// created in R_InitBackend, destroyed in idRenderSystemLocal::Shutdown
 extern idCVar				r_useStateCaching;
 extern idCVar				r_debugMaxDraws;		// RenderSystem_init.cpp, like the two below
 extern idCVar				r_hashDrawStream;
@@ -405,12 +363,12 @@ extern idCVar				r_testClearPattern;
 /*
 ===============================================================================
 
-	The hot path: every wrapper keeps the repeat test the OpenGL path had.
+	The hot path: the wrappers update the latch with the rules of id's OpenGL renderer.
 
 ===============================================================================
 */
 
-// with caching off every group is applied; an unchanged vector costs one compare
+// with caching off every State changes every bit, as id's renderer then re-sent them: the depth test is no longer strict
 ID_INLINE void idRenderBackend::State( uint64 stateBits ) {
 	uint64 changed = stateBits ^ latch.stateBits;
 	if ( !r_useStateCaching.GetBool() ) {
@@ -422,16 +380,13 @@ ID_INLINE void idRenderBackend::State( uint64 stateBits ) {
 	if ( ( changed & GLS_DEPTHFUNC_BITS ) != 0 ) {
 		latch.depthFuncStrict = false;
 	}
-	API_State( stateBits, changed );
 }
 
 ID_INLINE void idRenderBackend::SetViewMirror( bool isMirror ) {
 	latch.viewIsMirror = isMirror;
 	latch.cull = CULL_UNSET;
-	API_BeginView();
 }
 
-// the hook gets the previous value: GL applies the enable rule of latch.cullEnabled itself
 ID_INLINE void idRenderBackend::Cull( int cullType ) {
 	if ( latch.cull == cullType ) {
 		return;
@@ -443,15 +398,11 @@ ID_INLINE void idRenderBackend::Cull( int cullType ) {
 	} else if ( previous == CT_TWO_SIDED ) {
 		latch.cullEnabled = true;
 	}
-	API_Cull( cullType, previous );
 }
 
 ID_INLINE void idRenderBackend::PolygonOffset( float scale, float bias ) {
 	latch.polyOfsScale = scale;
 	latch.polyOfsBias = bias;
-	if ( ( latch.stateBits & GLS_POLYGON_OFFSET ) != 0 ) {
-		API_PolygonOffset( scale, bias );
-	}
 }
 
 ID_INLINE void idRenderBackend::DepthBoundsTest( float zmin, float zmax ) {
@@ -460,40 +411,26 @@ ID_INLINE void idRenderBackend::DepthBoundsTest( float zmin, float zmax ) {
 	}
 	latch.depthBoundsMin = zmin;
 	latch.depthBoundsMax = zmax;
-	API_DepthBoundsTest( zmin, zmax );
 }
 
-// viewport and scissor are not filtered
 ID_INLINE void idRenderBackend::Viewport( int x, int y, int width, int height ) {
 	latch.viewport = { x, y, width, height };
-	API_Viewport( latch.viewport );
 }
 
-// a negative size is an error in GL (nothing changes) and has no meaning elsewhere
+// a negative size changes nothing, as in id's OpenGL renderer
 ID_INLINE void idRenderBackend::Scissor( int x, int y, int width, int height ) {
 	if ( width < 0 || height < 0 ) {
 		return;
 	}
 	latch.scissor = { x, y, width, height };
-	API_Scissor( latch.scissor );
 }
 
-// skipped only when the hook has seen this very entry
 ID_INLINE void idRenderBackend::BindTexture( int slot, textureKind_t kind, textureHandle_t texture ) {
-	const int k = static_cast<int>( kind );
-	const uint32 bit = 1u << ( slot * 2 + k );
-	if ( ( latch.texturesSent & bit ) != 0 && latch.textures[slot][k] == texture ) {
-		return;
-	}
-	latch.textures[slot][k] = texture;
-	latch.texturesSent |= bit;
-	API_BindTexture( slot, kind, texture );
+	latch.textures[slot][static_cast<int>( kind )] = texture;
 }
 
-// not filtered here: idRenderProgManager::BindShader keeps its index compare
 ID_INLINE void idRenderBackend::BindProgram( programHandle_t program ) {
 	latch.program = program;
-	API_BindProgram( program );
 }
 
 ID_INLINE void idRenderBackend::DrawIndexed( const drawCall_t & dc ) {

@@ -816,7 +816,7 @@ void idCommonLocal::Frame() {
 		//   pre  - session, gui events and usercmd generation
 		//   game - game logic on the game thread (all tics of this frame)
 		//   draw - renderer front end on the game thread
-		//   bk   - renderer back end (GL command submission) on the main thread
+		//   bk   - renderer back end (command list recording) on the main thread
 		//   join - main thread waiting for the game thread after the back end
 		//   post - sound, snapshots and the game return processing
 		//   gpu  - GPU time of the previous frame (timer query)

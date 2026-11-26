@@ -47,23 +47,21 @@ static const int LOG_LEVEL_EVERYTHING	= 2;
 /*
 ================================================================================================
 
-GPU / CPU time per render pass and KHR_debug groups (r_pix)
+GPU / CPU time per render pass and debug groups (r_pix)
 
 The backend marks its passes with renderLog.OpenMainBlock( MRB_* ) / CloseMainBlock(), and the
 smaller pieces in them (views, lights, materials) with renderLog.OpenBlock( label ) / CloseBlock().
 
-r_pix 1 times every main block with two GL_TIMESTAMP queries (glQueryCounter). Unlike
-GL_TIME_ELAPSED queries, timestamps can nest, and they also work inside the GL_TIME_ELAPSED query
-that measures the whole backend for com_showFPS and com_speeds. The timestamps of a frame go into
-one of QUERY_FRAMES query sets, and a set is read back only once the GPU has written its last
-timestamp, a frame or more later, so the CPU never waits for the GPU. About once a second the GPU and
-CPU milliseconds of each pass, per frame, are printed.
+r_pix 1 times every main block with two GPU timestamps (renderBackend->WriteTimestamp), so blocks
+can nest. The timestamps of a frame go into one of QUERY_FRAMES sets, and a set is read back only
+once the GPU has written its last timestamp, a frame or more later, so the CPU never waits for the
+GPU. About once a second the GPU and CPU milliseconds of each pass, per frame, are printed.
 
-r_pix 2 wraps every main block and block in a KHR_debug group, so RenderDoc, Radeon GPU Profiler and
-Nsight show named passes, views, lights and materials.
+r_pix 2 wraps every main block and block in a debug group (a PIX event), so PIX, RenderDoc, Radeon
+GPU Profiler and Nsight show named passes, views, lights and materials.
 
 Only the backend opens blocks, and the backend runs on the main thread with com_smp 0 and 1, the
-thread that owns the GL context. Events from any other thread are dropped. The results are read
+thread that records the command lists. Events from any other thread are dropped. The results are read
 back in SwapCommandBuffers, while the game thread is idle, so the com_showFPS overlay can read them
 while the game thread builds the next frame.
 ================================================================================================
@@ -71,8 +69,8 @@ while the game thread builds the next frame.
 
 idCVar r_pix( "r_pix", "0", CVAR_RENDERER | CVAR_INTEGER,
 	"GPU time per render pass: 1 = print the GPU and CPU ms of each pass about once a second "
-	"(GL timestamp queries, also adds the top passes to com_showFPS), 2 = KHR_debug groups named after "
-	"the passes, views, lights and materials for RenderDoc / Radeon GPU Profiler / Nsight, 3 = both",
+	"(GPU timestamps, also adds the top passes to com_showFPS), 2 = debug groups named after "
+	"the passes, views, lights and materials for PIX / RenderDoc / Radeon GPU Profiler / Nsight, 3 = both",
 	0, 3 );
 
 /*
@@ -136,7 +134,7 @@ private:
 	static constexpr int	QUERY_FRAMES	= TIMESTAMP_SETS;	// frames of timestamps in flight
 	static constexpr int	MAX_BLOCKS		= 1024;		// timed main blocks in a frame, the frame itself included
 	static constexpr int	MAX_DEPTH		= 32;		// nesting of the timed main blocks
-	static constexpr int	MAX_GROUP_DEPTH	= 48;		// nesting of the debug groups, GL guarantees 64
+	static constexpr int	MAX_GROUP_DEPTH	= 48;		// nesting of the debug groups
 	static constexpr int	REPORT_MSEC		= 1000;
 
 	struct block_t {

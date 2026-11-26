@@ -11,8 +11,8 @@ same name in two runs show the same game tic and virtual-clock step, so they mus
   analyze.py RUN                         smoothness of RUN alone
   analyze.py RUN --baseline BASE         + SSIM/PSNR and the difference metrics of the frames RUN
                                          and BASE share, heat maps
-  analyze.py RUN --baseline BASE --bars tools/vdemo/bars-d3d12.json [--layer msaa4]
-                                         + the per-demo bars of another API against BASE
+  analyze.py RUN --baseline BASE --bars tools/vdemo/bars-d3d12.json
+                                         + the per-demo bars of another run against BASE
   analyze.py RUN --sheets DIR --sheet-prefix 10-   contact sheets DIR/10-<demo>-sheet.png
   analyze.py RUN --video                 an mp4 per demo (ffmpeg on PATH)
   analyze.py RUN --pair 04_lighting:04b_lighting_zfail   two passes of a scene in one run
@@ -29,10 +29,9 @@ the largest 4-connected region of delta > 8 left after a 3x3 erosion, which remo
 speckle up to 2 px thick. Compiler noise and rasterization lines stay out of the blob; a missing
 surface, a wrong blend or a flipped cull leaves a solid one, so the blob is the main bug detector.
 
-Bars (a JSON file, "demos": {demo: {ssimMin, ssimMean, frac8, blob}}, "layers": {layer: {"demos":
-{...}}} for runs with other cvars on both APIs) hold for the worst frame of a demo: min SSIM >=
-ssimMin, mean SSIM >= ssimMean, every frac8 <= frac8, every blob <= blob; the repeats and pops of the
-demo must equal the baseline's.
+Bars (a JSON file, "demos": {demo: {ssimMin, ssimMean, frac8, blob}}) hold for the worst frame of
+a demo: min SSIM >= ssimMin, mean SSIM >= ssimMean, every frac8 <= frac8, every blob <= blob; the
+repeats and pops of the demo must equal the baseline's.
 
 Smoothness looks at frames that are neighbours in virtual time (one capture interval apart): the
 mean absolute luma difference between them, repeats (no pixel changed) and pops (a difference
@@ -198,16 +197,10 @@ def difference_metrics(a, b):
 NO_DIFFERENCE = {"maxDelta": 0, "frac2": 0.0, "frac8": 0.0, "blob": 0, "blobBox": None}
 
 
-def load_bars(path, layer):
-    """The bars of every demo, the layer's entries replacing the plain ones."""
+def load_bars(path):
+    """The bars of every demo."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    bars = dict(data.get("demos", {}))
-    if layer:
-        layers = data.get("layers", {})
-        if layer not in layers:
-            raise ValueError(f"no layer '{layer}' in {path}")
-        bars.update(layers[layer].get("demos", {}))
-    return bars
+    return dict(data.get("demos", {}))
 
 
 def check_bars(demo, entry, bar):
@@ -496,7 +489,6 @@ def main():
                         help="compare demo B against demo A of the same run (e.g. a second pass with other cvars)")
     parser.add_argument("--bars", type=Path,
                         help="per-demo bars (tools/vdemo/bars-d3d12.json); they replace --ssim-threshold")
-    parser.add_argument("--layer", help="take the bars of this layer of the bars file where it has them")
     parser.add_argument("--luma", action="store_true",
                         help="only the mean display luma of the run against the baseline, per demo (luma.json)")
     args = parser.parse_args()
@@ -515,13 +507,10 @@ def main():
             print("--bars needs --baseline", file=sys.stderr)
             return 2
         try:
-            bars = load_bars(args.bars, args.layer)
+            bars = load_bars(args.bars)
         except (OSError, ValueError) as error:
             print(f"--bars: {error}", file=sys.stderr)
             return 2
-    elif args.layer:
-        print("--layer needs --bars", file=sys.stderr)
-        return 2
     out = args.out or (args.run / "analysis")
     out.mkdir(parents=True, exist_ok=True)
     if args.sheets:
@@ -541,7 +530,7 @@ def main():
 
     report = {"run": str(args.run), "baseline": str(args.baseline) if args.baseline else None,
               "ssimThreshold": args.ssim_threshold, "offsetTics": args.offset_tics, "hold": args.hold,
-              "bars": str(args.bars) if args.bars else None, "layer": args.layer, "demos": {}}
+              "bars": str(args.bars) if args.bars else None, "demos": {}}
     regressions = []
     bar_misses = []
     for demo in demos:
@@ -605,7 +594,7 @@ def main():
         offset = f", run tic T against baseline tic T-{args.offset_tics}" if args.offset_tics else ""
         lines += [f"Baseline: `{args.baseline}`, SSIM threshold {args.ssim_threshold} on {matching}{offset}"]
     if args.bars is not None:
-        lines += [f"Bars: `{args.bars}`" + (f", layer {args.layer}" if args.layer else "")]
+        lines += [f"Bars: `{args.bars}`"]
     lines += ["", "| demo | frames | compared | identical | min SSIM | mean SSIM | min PSNR | max d | "
                   "max d>2 % | max d>8 % | max blob | missing | mean diff | repeats (base) | pops (base) |",
               "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]

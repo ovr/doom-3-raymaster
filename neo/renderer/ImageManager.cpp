@@ -266,8 +266,8 @@ idImage *idImageManager::AllocStandaloneImage( const char *name ) {
 ImageFromFunction
 
 Images that are procedurally generated are allways specified
-with a callback which must work at any time, allowing the OpenGL
-system to be completely regenerated if needed.
+with a callback which must work at any time, allowing the render
+backend to be completely regenerated if needed.
 ==================
 */
 idImage *idImageManager::ImageFromFunction( const char *_name, void (*generatorFunction)( idImage *image ) ) {

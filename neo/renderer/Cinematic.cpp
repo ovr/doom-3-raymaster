@@ -56,10 +56,10 @@ extern idCVar s_noSound;
 	views pass (their renderView.time is 0) and what ResetTime( Sys_Milliseconds() ) callers
 	expect; world surfaces pass the view's game time.
 
-	Threading: ImageForTime runs in the backend on the main thread, where the GL uploads
+	Threading: ImageForTime runs in the backend on the main thread, where texture uploads
 	are legal. Materials, and with them cinematics, can be created, reset and freed on the
 	game thread, so every entry point locks the cinematic, and nothing but ImageForTime
-	(and ShutdownCinematic) touches GL.
+	(and ShutdownCinematic) touches the render backend.
 
 ===============================================================================
 */
@@ -86,7 +86,7 @@ constexpr int64			REWIND_TOLERANCE_FRAMES = 2;
 /*
 ================================================
 Y, Cr and Cb textures of a cinematic (bink shader units 0, 1, 2), outside the image manager.
-A cinematic can be freed on any thread but deleting a texture needs the GL context, so freed
+A cinematic can be freed on any thread but deleting a texture needs the main thread, so freed
 sets go to a pool for the next cinematic.
 ================================================
 */
@@ -510,8 +510,6 @@ cinData_t idCinematicFFmpeg::ImageForTime( int thisTime ) {
 		UploadPlane( images.y, f.planes[ 0 ], f.pitches[ 0 ], f.width, f.height );
 		UploadPlane( images.cb, f.planes[ 1 ], f.pitches[ 1 ], chromaWidth, chromaHeight );
 		UploadPlane( images.cr, f.planes[ 2 ], f.pitches[ 2 ], chromaWidth, chromaHeight );
-		// an upload may reach the texture through a slot behind the back of the latch: the next Bind must really bind
-		renderBackend->ForgetTextureBindings();
 		uploadedFrame = decoder->FrameIndex();
 	}
 
@@ -533,7 +531,7 @@ cinData_t idCinematicFFmpeg::ImageForTime( int thisTime ) {
 ========================
 idCinematicFFmpeg::AcquireImages
 
-Main thread with the GL context.
+Main thread, where the render backend lives.
 ========================
 */
 bool idCinematicFFmpeg::AcquireImages() {
@@ -562,7 +560,7 @@ bool idCinematicFFmpeg::AcquireImages() {
 ========================
 idCinematicFFmpeg::ReleaseImages
 
-Any thread: no GL here, the images go back to the pool with their textures.
+Any thread: no backend call here, the images go back to the pool with their textures.
 ========================
 */
 void idCinematicFFmpeg::ReleaseImages() {
@@ -733,7 +731,7 @@ void idCinematic::InitCinematic() {
 ==============
 idCinematic::ShutdownCinematic
 
-Called by the render system shutdown while the GL context is still there.
+Called by the render system shutdown while the render backend is still there.
 ==============
 */
 void idCinematic::ShutdownCinematic() {
