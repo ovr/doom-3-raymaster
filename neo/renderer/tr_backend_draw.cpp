@@ -878,21 +878,28 @@ THE THIN G-BUFFER (R14)
 =========================================================================================
 */
 
-// The first bump and specular stage that is on, as RB_RenderInteractions reads them; without one, flat or black.
+// The first bump, diffuse and specular stage that is on, as RB_RenderInteractions reads them; without one, flat or
+// black (the black image is no YCoCg black: the colour 0 makes it one).
 struct gbufferMaterial_t {
 	idImage *	bump;
+	idImage *	diffuse;
 	idImage *	specular;
 	idVec4		bumpMatrix[2] = { idVec4( 1, 0, 0, 0 ), idVec4( 0, 1, 0, 0 ) };
+	idVec4		diffuseMatrix[2] = { idVec4( 1, 0, 0, 0 ), idVec4( 0, 1, 0, 0 ) };
 	idVec4		specularMatrix[2] = { idVec4( 1, 0, 0, 0 ), idVec4( 0, 1, 0, 0 ) };
+	idVec4		diffuseColor = vec4_zero;
 	idVec4		specularColor = vec4_zero;
 };
 
 static gbufferMaterial_t RB_GBufferMaterial( const idMaterial & shader, const float * regs ) {
 	gbufferMaterial_t material;
 	material.bump = globalImages->flatNormalMap;
+	material.diffuse = globalImages->blackImage;
 	material.specular = globalImages->blackImage;
 	if ( shader.GetFastPathBumpImage() != nullptr && !r_skipInteractionFastPath.GetBool() ) {
 		material.bump = shader.GetFastPathBumpImage();
+		material.diffuse = shader.GetFastPathDiffuseImage();
+		material.diffuseColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
 		if ( shader.GetFastPathSpecularImage() != nullptr ) {
 			material.specular = shader.GetFastPathSpecularImage();
 			material.specularColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
@@ -901,8 +908,9 @@ static gbufferMaterial_t RB_GBufferMaterial( const idMaterial & shader, const fl
 	}
 	const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 	bool bump = false;
+	bool diffuse = false;
 	bool specular = false;
-	for ( int i = 0; i < shader.GetNumStages() && !( bump && specular ); i++ ) {
+	for ( int i = 0; i < shader.GetNumStages() && !( bump && diffuse && specular ); i++ ) {
 		const shaderStage_t * stage = shader.GetStage( i );
 		if ( regs[stage->conditionRegister] == 0 || stage->texture.image == nullptr ) {
 			continue;
@@ -911,6 +919,10 @@ static gbufferMaterial_t RB_GBufferMaterial( const idMaterial & shader, const fl
 			material.bump = stage->texture.image;
 			RB_SetupInteractionStage( stage, regs, nullptr, material.bumpMatrix, nullptr );
 			bump = true;
+		} else if ( stage->lighting == SL_DIFFUSE && !diffuse ) {
+			material.diffuse = stage->texture.image;
+			RB_SetupInteractionStage( stage, regs, white, material.diffuseMatrix, material.diffuseColor.ToFloatPtr() );
+			diffuse = true;
 		} else if ( stage->lighting == SL_SPECULAR && !specular ) {
 			material.specular = stage->texture.image;
 			RB_SetupInteractionStage( stage, regs, white, material.specularMatrix, material.specularColor.ToFloatPtr() );
@@ -1033,14 +1045,18 @@ static void RB_FillGBuffer( drawSurf_t ** drawSurfs, int numDrawSurfs ) {
 		const gbufferMaterial_t material = RB_GBufferMaterial( shader, regs );
 		SetVertexParm( RENDERPARM_BUMPMATRIX_S, material.bumpMatrix[0].ToFloatPtr() );
 		SetVertexParm( RENDERPARM_BUMPMATRIX_T, material.bumpMatrix[1].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_DIFFUSEMATRIX_S, material.diffuseMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_DIFFUSEMATRIX_T, material.diffuseMatrix[1].ToFloatPtr() );
 		SetVertexParm( RENDERPARM_SPECULARMATRIX_S, material.specularMatrix[0].ToFloatPtr() );
 		SetVertexParm( RENDERPARM_SPECULARMATRIX_T, material.specularMatrix[1].ToFloatPtr() );
+		SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, RB_ColorParm( material.diffuseColor ).ToFloatPtr() );
 		SetFragmentParm( RENDERPARM_SPECULARMODIFIER, RB_ColorParm( material.specularColor ).ToFloatPtr() );
 
 		// a mirror, the weapon and GUIs must not reflect the scene again
-		const bool reflects = !subview && !surf->space->weaponDepthHack && !surf->space->isGuiSurface;
+		const bool weapon = surf->space->weaponDepthHack;
+		const bool reflects = !subview && !weapon && !surf->space->isGuiSurface;
 		const bool twoSided = ( shader.GetCullType() == CT_TWO_SIDED ) || surf->space->isGuiSurface;
-		const float gbufferParms[4] = { viewDef->rayTracing.gloss, static_cast<float>( ( reflects ? 1 : 0 ) | ( twoSided ? 2 : 0 ) ),
+		const float gbufferParms[4] = { viewDef->rayTracing.gloss, static_cast<float>( ( reflects ? 1 : 0 ) | ( twoSided ? 2 : 0 ) | ( weapon ? 4 : 0 ) ),
 			v.GetWidth() * 0.5f, v.GetHeight() * 0.5f };
 		SetFragmentParm( RENDERPARM_GBUFFER, gbufferParms );
 		if ( surf->jointCache ) {
@@ -1052,6 +1068,7 @@ static void RB_FillGBuffer( drawSurf_t ** drawSurfs, int numDrawSurfs ) {
 		}
 		material.bump->Bind( 0 );
 		material.specular->Bind( 1 );
+		material.diffuse->Bind( 2 );
 
 		renderLog.OpenBlock( shader.GetName() );
 		for ( int o = 0; o < offsets.Num(); o++ ) {

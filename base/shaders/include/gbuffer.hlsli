@@ -10,9 +10,22 @@
 	  GB0  R16G16_SNORM         the world normal, octahedral
 	  GB1  R8G8B8A8_UNORM_SRGB  rgb F0, the reflectance at normal incidence (linear; the view encodes it), a roughness
 	  GB2  R16G16_FLOAT         the motion in pixels of the scene from the previous frame to this one, +y up
+	  GB3  R8G8B8A8_UNORM_SRGB  rgb the albedo: the diffuse map times its stage colour (linear; the view encodes it);
+	                            a what was drawn: 0 nothing, 1 a surface, 0.5 one under the weapon's depth hack,
+	                            whose clip z is a quarter of the true one
 
-	A cleared texel is no surface: normal (0, 0), F0 0, no motion.
+	A cleared texel is no surface: normal (0, 0), F0 0, no motion, albedo and its alpha 0.
 */
+
+static const float GBUFFER_WEAPON = 0.5;
+
+bool GBufferDrawn( float albedoAlpha ) {
+	return albedoAlpha > 0.25;
+}
+
+bool GBufferWeapon( float albedoAlpha ) {
+	return albedoAlpha > 0.25 && albedoAlpha < 0.75;
+}
 
 float2 OctahedralWrap( float2 v ) {
 	return ( 1.0 - abs( v.yx ) ) * select( v >= 0.0, float2( 1.0, 1.0 ), float2( -1.0, -1.0 ) );

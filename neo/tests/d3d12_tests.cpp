@@ -2213,8 +2213,9 @@ void Test_PipelineRaster() {
 	Check( srgb.numTargets == 1 && srgb.colorFormats[0] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && srgb.sample.Count == 4,
 		"the target id: the sRGB view, 4 samples" );
 	const d3d12PipelineDesc_t gbuffer = Desc( Key( 0, D3D12_KeyRaster( d3d12TargetId_t::GBuffer( 2 ) ) ) );
-	Check( gbuffer.numTargets == 3 && gbuffer.colorFormats[0] == DXGI_FORMAT_R16G16_SNORM && gbuffer.colorFormats[1] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
-		&& gbuffer.colorFormats[2] == DXGI_FORMAT_R16G16_FLOAT && gbuffer.sample.Count == 2, "the G-buffer: three targets, the scene's samples" );
+	Check( gbuffer.numTargets == 4 && gbuffer.colorFormats[0] == DXGI_FORMAT_R16G16_SNORM && gbuffer.colorFormats[1] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+		&& gbuffer.colorFormats[2] == DXGI_FORMAT_R16G16_FLOAT && gbuffer.colorFormats[3] == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+		&& gbuffer.sample.Count == 2, "the G-buffer: four targets, the scene's samples" );
 	Check( plain.raster.DepthClipEnable && !plain.raster.MultisampleEnable && !plain.raster.AntialiasedLineEnable, "depth clip, aliased lines" );
 }
 
@@ -2438,7 +2439,7 @@ void Test_PipelineTargetIds() {
 		Check( !ldr.Hdr() && ldr.Srgb() && ldr.Samples() == samples && ldr.ColorView() == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
 			va( "the output of %u samples keeps its ids", samples ) );
 		const d3d12TargetId_t gbuffer = d3d12TargetId_t::GBuffer( samples );
-		Check( gbuffer.IsGBuffer() && !gbuffer.Hdr() && !gbuffer.Srgb() && gbuffer.Samples() == samples && gbuffer.NumTargets() == 3
+		Check( gbuffer.IsGBuffer() && !gbuffer.Hdr() && !gbuffer.Srgb() && gbuffer.Samples() == samples && gbuffer.NumTargets() == 4
 			&& !hdr.IsGBuffer() && !ldr.IsGBuffer() && ldr.NumTargets() == 1, va( "the G-buffer of %u samples is an id of its own", samples ) );
 	}
 	pipelineKey_t key = {};
@@ -5383,12 +5384,14 @@ struct gbufferTexels_t {
 	std::vector<uint32>			normal;		// two SNORM16
 	std::vector<uint32>			material;	// RGBA8, rgb sRGB
 	std::vector<uint32>			motion;		// two halfs
+	std::vector<uint32>			albedo;		// RGBA8, rgb sRGB; a what was drawn
 };
 
 [[nodiscard]] gbufferTexels_t ReadGBuffer( idTestGpu & gpu, idTestRecorder & fixture ) {
 	fixture.recorder.EndPass();
 	gbufferTexels_t texels;
-	std::vector<uint32> * const targets[] = { &texels.normal, &texels.material, &texels.motion };
+	std::vector<uint32> * const targets[] = { &texels.normal, &texels.material, &texels.motion, &texels.albedo };
+	static_assert( std::size( targets ) == idD3D12SceneTarget::GBUFFER_TARGETS );
 	for ( size_t i = 0; i < std::size( targets ); i++ ) {
 		idD3D12SceneTarget::surface_t & surface = fixture.scene.GBuffer( i );
 		*targets[i] = ReadTexels( gpu, *surface.resource.Get(), surface.state );
@@ -5463,9 +5466,10 @@ struct gbufferQuads_t {
 	gbuffer.vfp, depth-equal over the depth of depth.vfp, in the HDR scene's linear phase; stripes of 16 columns:
 
 	  0  a bump texel tilted along the tangent, a model matrix turned 90 degrees about z, a specular map of sRGB
-	     128 times ( 1, 0.5, 0.25 ), gloss 1.2: the world normal, F0 and roughness; the previous MVP is this one
-	  1  the same, but it must not reflect (F0 0, roughness 1); the previous MVP a quarter of clip space to the
-	     left: 8 pixels of motion to the right
+	     128 times ( 1, 0.5, 0.25 ), gloss 1.2, a YCoCg diffuse texel times ( 0.5, 1, 0.25 ): the world normal, F0,
+	     roughness and albedo, drawn 1; the previous MVP is this one
+	  1  the same, but the weapon: it must not reflect (F0 0, roughness 1) and is drawn 0.5; the previous MVP a
+	     quarter of clip space to the left: 8 pixels of motion to the right
 	  2  drawn by the G-buffer only: no depth of its own, so depth-equal leaves the cleared zeros
 	  3  drawn by neither
 */
@@ -5475,7 +5479,9 @@ void GBuffer( idTestGpu & gpu ) {
 	constexpr float GLOSS = 1.2f;
 	constexpr byte BUMP[4] = { 0, 128, 0, 204 };		// wy: x 0.3 and y about 0 in tangent space
 	constexpr byte SPECULAR[4] = { 128, 128, 128, 255 };
+	constexpr byte DIFFUSE[4] = { 160, 112, 0, 200 };	// Co, Cg, the scale, Y: a light red
 	const idVec4 specularModifier( 1.0f, 0.5f, 0.25f, 1.0f );
+	const idVec4 diffuseModifier( 0.5f, 1.0f, 0.25f, 1.0f );
 	idTestRecorder fixture( gpu, d3d12BufferPlacement_t::UPLOAD );
 	if ( !fixture.Ready() ) {
 		return;
@@ -5484,7 +5490,7 @@ void GBuffer( idTestGpu & gpu ) {
 	const programHandle_t gbuffer = fixture.Program( "gbuffer" );
 	const d3d12Program_t * linked = fixture.shaders.FindProgram( gbuffer );
 	if ( !Check( linked != nullptr && fixture.shaders.FindProgram( depth ) != nullptr, "depth and gbuffer" )
-			|| !Check( linked->info.samplerMask == 3 && !linked->info.usesJoints, "gbuffer samples slots 0 and 1, no joints" ) ) {
+			|| !Check( linked->info.samplerMask == 7 && !linked->info.usesJoints, "gbuffer samples slots 0, 1 and 2, no joints" ) ) {
 		return;
 	}
 	const auto texture = [&]( const byte texel[4], const char * name ) {
@@ -5494,6 +5500,7 @@ void GBuffer( idTestGpu & gpu ) {
 	};
 	const textureHandle_t bump = texture( BUMP, "test bump" );
 	const textureHandle_t specular = texture( SPECULAR, "test specular" );
+	const textureHandle_t diffuse = texture( DIFFUSE, "test diffuse" );
 
 	const gbufferQuads_t quads;
 	fixture.NewList();
@@ -5519,13 +5526,17 @@ void GBuffer( idTestGpu & gpu ) {
 	parms[RENDERPARM_BUMPMATRIX_T].Set( 0.0f, 1.0f, 0.0f, 0.0f );
 	parms[RENDERPARM_SPECULARMATRIX_S] = parms[RENDERPARM_BUMPMATRIX_S];
 	parms[RENDERPARM_SPECULARMATRIX_T] = parms[RENDERPARM_BUMPMATRIX_T];
+	parms[RENDERPARM_DIFFUSEMATRIX_S] = parms[RENDERPARM_BUMPMATRIX_S];
+	parms[RENDERPARM_DIFFUSEMATRIX_T] = parms[RENDERPARM_BUMPMATRIX_T];
 	parms[RENDERPARM_GLOBALEYEPOS].Set( 0.0f, 0.0f, 10.0f, 1.0f );
 	parms[RENDERPARM_SPECULARMODIFIER] = specularModifier;
+	parms[RENDERPARM_DIFFUSEMODIFIER] = diffuseModifier;
 	renderLatch_t latch;
 	latch.viewport = { 0, 0, SIZE, SIZE };
 	latch.scissor = latch.viewport;
 	latch.textures[0][static_cast<size_t>( textureKind_t::TEX_2D )] = bump;
 	latch.textures[1][static_cast<size_t>( textureKind_t::TEX_2D )] = specular;
+	latch.textures[2][static_cast<size_t>( textureKind_t::TEX_2D )] = diffuse;
 	drawCall_t dc = {};
 	dc.vertexBuffer = vertexBuffer;
 	dc.indexBuffer = indexBuffer;
@@ -5560,7 +5571,7 @@ void GBuffer( idTestGpu & gpu ) {
 	const float halfSize = SIZE * 0.5f;
 	parms[RENDERPARM_GBUFFER].Set( GLOSS, 1.0f, halfSize, halfSize );
 	draw( 0, gbuffer, EQUAL );
-	parms[RENDERPARM_GBUFFER].Set( GLOSS, 0.0f, halfSize, halfSize );
+	parms[RENDERPARM_GBUFFER].Set( GLOSS, 4.0f, halfSize, halfSize );
 	parms[RENDERPARM_PREVMVPMATRIX_X].Set( 1.0f, 0.0f, 0.0f, -0.25f );
 	draw( 1, gbuffer, EQUAL );
 	draw( 2, gbuffer, EQUAL );
@@ -5588,10 +5599,20 @@ void GBuffer( idTestGpu & gpu ) {
 	const auto encode = [&]( float linear ) { return static_cast<int>( idMath::Floor( R_LinearToSRGB( linear ) * 255.0f + 0.5f ) ); };
 	const std::array<int, 4> material = { encode( f0.x ), encode( f0.y ), encode( f0.z ),
 		static_cast<int>( idMath::Floor( ( 1.0f - gloss ) * 255.0f + 0.5f ) ) };
+	// include/ycocg.hlsli's ConvertYCoCgToRGB
+	const float chromaScale = 1.0f / ( DIFFUSE[2] / 255.0f * 31.875f + 1.0f );
+	const idVec4 ycocg( DIFFUSE[0] / 255.0f * chromaScale, DIFFUSE[1] / 255.0f * chromaScale, chromaScale, DIFFUSE[3] / 255.0f );
+	const idVec3 diffuseRgb( ycocg.x - ycocg.y + ycocg.w, ycocg.y - 0.50196078f * ycocg.z + ycocg.w,
+		-ycocg.x - ycocg.y + 1.00392156f * ycocg.z + ycocg.w );
+	std::array<int, 4> albedo = { 0, 0, 0, 255 };
+	for ( int i = 0; i < 3; i++ ) {
+		albedo[i] = encode( idMath::ClampFloat( 0.0f, 1.0f, R_SRGBToLinear( diffuseRgb[i] ) * diffuseModifier[i] ) );
+	}
+	const std::array<int, 4> weaponAlbedo = { albedo[0], albedo[1], albedo[2], 128 };
 
 	const gbufferTexels_t texels = ReadGBuffer( gpu, fixture );
 	if ( !Check( texels.normal.size() == static_cast<size_t>( SIZE ) * SIZE && texels.material.size() == texels.normal.size()
-			&& texels.motion.size() == texels.normal.size(), "the G-buffer is read" ) ) {
+			&& texels.motion.size() == texels.normal.size() && texels.albedo.size() == texels.normal.size(), "the G-buffer is read" ) ) {
 		return;
 	}
 	const auto byteNear = []( uint32 texel, const std::array<int, 4> & expected ) {
@@ -5607,23 +5628,27 @@ void GBuffer( idTestGpu & gpu ) {
 		bool					surface;
 		std::array<int, 4>		material;
 		idVec2					motion;
+		std::array<int, 4>		albedo;
 	};
 	const std::array<stripe_t, gbufferQuads_t::STRIPES> expected = { {
-		{ "a still reflecting surface", true, material, idVec2( 0.0f, 0.0f ) },
-		{ "a moving surface that does not reflect", true, { 0, 0, 0, 255 }, idVec2( 8.0f, 0.0f ) },
-		{ "no depth of its own", false, { 0, 0, 0, 0 }, idVec2( 0.0f, 0.0f ) },
-		{ "not drawn", false, { 0, 0, 0, 0 }, idVec2( 0.0f, 0.0f ) },
+		{ "a still reflecting surface", true, material, idVec2( 0.0f, 0.0f ), albedo },
+		{ "the moving weapon, which does not reflect", true, { 0, 0, 0, 255 }, idVec2( 8.0f, 0.0f ), weaponAlbedo },
+		{ "no depth of its own", false, { 0, 0, 0, 0 }, idVec2( 0.0f, 0.0f ), { 0, 0, 0, 0 } },
+		{ "not drawn", false, { 0, 0, 0, 0 }, idVec2( 0.0f, 0.0f ), { 0, 0, 0, 0 } },
 	} };
 	for ( int stripe = 0; stripe < gbufferQuads_t::STRIPES; stripe++ ) {
 		const stripe_t & want = expected[stripe];
 		int wrongNormal = 0;
 		int wrongMaterial = 0;
 		int wrongMotion = 0;
+		int wrongAlbedo = 0;
 		for ( int row = 0; row < SIZE; row++ ) {
 			for ( int column = stripe * STRIPE; column < ( stripe + 1 ) * STRIPE; column++ ) {
 				const size_t at = static_cast<size_t>( row ) * SIZE + column;
 				wrongNormal += ( want.surface ? Snorm16Pair( texels.normal[at] ).Compare( normal, 2e-4f ) : texels.normal[at] == 0 ) ? 0 : 1;
 				wrongMaterial += byteNear( texels.material[at], want.material ) ? 0 : 1;
+				// what was not drawn is zero to the bit: a consumer tells a hole by it
+				wrongAlbedo += ( want.surface ? byteNear( texels.albedo[at], want.albedo ) : texels.albedo[at] == 0 ) ? 0 : 1;
 				// the motion of a still surface is zero to the bit
 				wrongMotion += ( want.motion.x == 0.0f ? texels.motion[at] == 0 : HalfPair( texels.motion[at] ).Compare( want.motion, 1e-2f ) ) ? 0 : 1;
 			}
@@ -5635,6 +5660,8 @@ void GBuffer( idTestGpu & gpu ) {
 			texels.material[first], want.material[3], want.material[2], want.material[1], want.material[0] ) );
 		Check( wrongMotion == 0, va( "stripe %d, %s: %d motions wrong (%s, not %s)", stripe, want.what, wrongMotion,
 			HalfPair( texels.motion[first] ).ToString( 3 ), want.motion.ToString( 3 ) ) );
+		Check( wrongAlbedo == 0, va( "stripe %d, %s: %d albedos wrong (%08x, not %02x%02x%02x%02x)", stripe, want.what, wrongAlbedo,
+			texels.albedo[first], want.albedo[3], want.albedo[2], want.albedo[1], want.albedo[0] ) );
 	}
 	fixture.recorder.SetHdr( false, 1.0f );
 	fixture.recorder.EndPass();
@@ -5643,6 +5670,7 @@ void GBuffer( idTestGpu & gpu ) {
 	fixture.buffers.Destroy( indexBuffer );
 	gpu.textures.Destroy( bump );
 	gpu.textures.Destroy( specular );
+	gpu.textures.Destroy( diffuse );
 	CheckNoLayerErrors( gpu );
 }
 

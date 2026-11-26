@@ -16,7 +16,7 @@
 // the screen, so the rectangles of shared code are used as they are and only the present blit flips rows.
 // Colour and depth are TYPELESS (UNORM + SRGB render target views, an R24 depth shader view); MSAA adds a resolve texture.
 // The HDR scene (R13) is a second colour surface of RGBA16F with the same depth, made at its first phase; the
-// G-buffer (R14) three more, d3d12TargetId_t::GBUFFER_FORMATS, made at the first BeginGBuffer.
+// G-buffer (R14) four more, d3d12TargetId_t::GBUFFER_FORMATS, made at the first BeginGBuffer.
 class idD3D12SceneTarget {
 public:
 	struct surface_t {
