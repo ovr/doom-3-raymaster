@@ -18,7 +18,8 @@
 	A static BLAS is one per blasKey (a crate drawn 50 times is one), checked against its geometries; it is kept
 	while instances use it and unusedBuilds builds after, and dropped with its static generation. After a full
 	update a build makes every one the scene lacks, so that frame traces all its casters; after a delta new ones up
-	to scratchBudget of scratch, and the instances of the rest wait. New ones are built in batches of that budget:
+	to scratchBudget of scratch, and the instances of the rest wait. What a full update could not make (a buffer, a
+	key another model holds) the stats count as lacking until it is built or gone. New ones are built in batches of that budget:
 	a batch's builds share no scratch, the next batch takes the same bytes after a UAV barrier. The sizes are read
 	once Waited() passes their list, never by polling, so two runs record the same commands. Skinned instances are
 	skinned and built again every frame (PREFER_FAST_BUILD). The TLAS, the instance table and the skinned vertices
@@ -26,6 +27,7 @@
 */
 
 #include <map>
+#include <set>
 #include <span>
 
 #include "d3d12_Buffers.h"
@@ -164,6 +166,8 @@ private:
 	uint32							builtScene = 0;
 	uint32							builtSequence = 0;
 	bool							valid = false;
+	bool							fullPending = false;	// a full update whose build did not finish: the next one builds all
+	std::set<uint64>				lacking;		// the static BLAS keys the last full build left waiting
 	std::vector<std::pair<bufferHandle_t, d3d12Descriptor_t>>	bufferSrvs;	// raw views of the buffers rtSkin and the hits read
 	d3d12Descriptor_t				staticVertexSrv;
 	d3d12Descriptor_t				staticIndexSrv;

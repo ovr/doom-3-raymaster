@@ -421,9 +421,10 @@ void idGpuScene::Gather( idRenderWorldLocal & world, viewDef_t & view ) {
 					|| ( parms.allowSurfaceInViewID != 0 && parms.allowSurfaceInViewID != viewID ) ) {
 				continue;
 			}
-			// what the view does not draw of itself (the player's body) casts unless its shadow is suppressed too
+			// the view's suppressions as the stencil shadows take them: what it does not draw of itself (the player's
+			// body) still casts, and what it suppresses the shadow of casts nothing, drawn or not
 			const bool visible = ( parms.suppressSurfaceInViewID == 0 || parms.suppressSurfaceInViewID != viewID );
-			const bool casts = !parms.noShadow && ( visible || parms.suppressShadowInViewID == 0 || parms.suppressShadowInViewID != viewID );
+			const bool casts = !parms.noShadow && ( parms.suppressShadowInViewID == 0 || parms.suppressShadowInViewID != viewID );
 			if ( !visible && !casts ) {
 				continue;
 			}
@@ -569,18 +570,19 @@ bool RB_UpdateGpuScene( gpuSceneFrame_t & frame ) {
 	static int lastPrint = 0;
 	if ( r_rtStats.GetBool() && Sys_Milliseconds() - lastPrint >= 1000 ) {
 		lastPrint = Sys_Milliseconds();
-		common->Printf( "rt scene %u.%u: %d instances, %d geometries, %d written%s, capacity %d, %d lights, %d refused; tlas %d (%d waiting), "
+		common->Printf( "rt scene %u.%u: %d instances, %d geometries, %d written%s, capacity %d, %d lights, %d refused; tlas %d (%d waiting, %d lacking), "
 			"blas %d (%d built, %d compacted, %.1f MB), skinned %d (%d verts), %.1f MB per frame\n", frame.sceneId, frame.sequence,
 			frame.numInstances, frame.numGeometries, frame.numWrites, frame.full ? " (full)" : "", frame.geometryCapacity, frame.numLights, refused,
-			stats.tlasInstances, stats.waiting, stats.blas, stats.built, stats.compacted, stats.blasBytes / ( 1024.0 * 1024.0 ), stats.skinned,
+			stats.tlasInstances, stats.waiting, stats.lacking, stats.blas, stats.built, stats.compacted, stats.blasBytes / ( 1024.0 * 1024.0 ), stats.skinned,
 			stats.skinnedVerts, stats.frameBytes / ( 1024.0 * 1024.0 ) );
 		refused = 0;
 	}
-	// A full update builds every structure at once; while one still waits after it (a buffer that could not be
-	// made) the frame cannot trace every caster. One that joins later only lacks its own for the frames it waits.
-	static bool settling = false;
-	if ( applied ) {
-		settling = ( frame.full || settling ) && stats.waiting > 0;
+	// what the full update could not build keeps the frame from tracing every caster, for a while (gpuSceneSettle_t)
+	static gpuSceneSettle_t settle;
+	const gpuSceneSettle_t::state_t settled = applied ? settle.After( frame.sequence, frame.full, stats.lacking ) : gpuSceneSettle_t::state_t::TRACES;
+	if ( settled == gpuSceneSettle_t::state_t::GIVES_UP ) {
+		common->Warning( "rt scene %u.%u: %d instances still lack the structures of the full update %u; traced without their shadows",
+			frame.sceneId, frame.sequence, stats.lacking, settle.fullSequence );
 	}
-	return applied && stats.traceable && !settling;
+	return applied && stats.traceable && settled != gpuSceneSettle_t::state_t::WAITS;
 }
