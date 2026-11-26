@@ -28,6 +28,7 @@ enum class rtDebug_t : uint8 {
 	NORMAL,		// the hit's interpolated vertex normal in world space, 0.5 + 0.5 n
 	ALBEDO,		// the hit's diffuse texture times its stage colour, as stored (gamma)
 	REFLECTION,	// the mirror reflections alone, in place of the lights (the passes after them still draw)
+	SHADOWS,	// what the traced shadows leave of the traced lights, in place of the lights; blue where none reaches
 	COUNT
 };
 
@@ -49,12 +50,20 @@ struct rtReflectionSettings_t {
 	float				maxRoughness = 0.6f;	// rougher pixels send no ray; the weight fades in over 0.15 below it
 };
 
+// r_rtShadows: the main view's lights that cast shadows trace them in their interactions (R16, R17), a ray per
+// lit pixel and light toward the light's disk, instead of drawing stencil shadow volumes.
+struct rtShadowSettings_t {
+	bool				enabled = false;	// with scene
+	bool				show = false;		// rtDebug_t::SHADOWS
+};
+
 struct rayTracingSettings_t {
 	bool				gbuffer = false;	// the main view writes the G-buffer: a consumer is on, HDR
 	bool				scene = false;		// the main view gathers the GPU scene: a consumer is on, caps.rayTracing, HDR
 	gbufferDebug_t		gbufferDebug = gbufferDebug_t::NONE;
 	rtDebug_t			rtDebug = rtDebug_t::NONE;	// with scene
 	rtReflectionSettings_t	reflection;
+	rtShadowSettings_t	shadow;
 	float				gloss = 1.0f;		// r_gbufferGloss: sqrt( specular luminance ) times this is the gloss
 	float				lightSize = 1.0f;	// r_rtLightSize: scales every light's emitter; 0 = point lights
 	int					frameCount = 0;		// the front end's frame: the motion is against the frame before

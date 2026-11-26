@@ -437,6 +437,15 @@ void idD3D12Context::EndTracedLights() {
 	}
 }
 
+void idD3D12Context::ResolveTracedShadows( const rtShadowSettings_t & settings, const renderRect_t & viewport ) {
+	if ( !hdrScene || recorder.HdrGamma() || recorder.Lights() || device.IsLost() ) {
+		return;
+	}
+	recorder.EndPass();
+	rtPasses.Shadows( graph, scene, settings, viewport, preExposure, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	recorder.Invalidate();
+}
+
 std::optional<D3D12_RECT> idD3D12Context::SceneRect( const renderRect_t & rect ) const {
 	const D3D12_RECT inside = { Max( rect.x, 0 ), Max( rect.y, 0 ), Min( rect.x + rect.width, scene.Width() ), Min( rect.y + rect.height, scene.Height() ) };
 	return ( inside.right > inside.left && inside.bottom > inside.top ) ? std::optional( inside ) : std::nullopt;

@@ -122,6 +122,8 @@ public:
 	// R16, in the HDR scene's linear phase: rect of the light target cleared, then the draws go to the scene and to it.
 	[[nodiscard]] bool				BeginTracedLights( const renderRect_t & rect );
 	void							EndTracedLights();
+	// After the bracket: the light target's part of viewport of SceneColor taken out of it (r_rtShadows).
+	void							ResolveTracedShadows( const rtShadowSettings_t & settings, const renderRect_t & viewport );
 	// After the resolve: one target of the G-buffer over viewport of the output (r_gbufferDebug).
 	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport );
 	// R15, in a frame: ends the pass; an applied update builds the acceleration structures.

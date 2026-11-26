@@ -80,6 +80,7 @@ public:
 	void							EndGBuffer() override;
 	[[nodiscard]] bool				BeginTracedLights( const renderRect_t & rect ) override;
 	void							EndTracedLights() override;
+	void							ResolveTracedShadows( const rtShadowSettings_t & settings, const renderRect_t & viewport ) override;
 	void							DrawGBufferDebug( gbufferDebug_t mode, const renderRect_t & viewport ) override;
 	[[nodiscard]] bool				UpdateGpuScene( const gpuSceneUpdate_t & update, gpuSceneStats_t & stats ) override;
 	void							DrawRayTracingDebug( rtDebug_t mode, const rtView_t & view, const renderRect_t & viewport ) override;

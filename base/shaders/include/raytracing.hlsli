@@ -308,9 +308,9 @@ uint RtShadowMask( uint geometryFlags ) {
 	return ( ( geometryFlags & RT_GEO_NO_SELF_SHADOW ) != 0 ) ? RT_MASK_SHADOW_GLOBAL : RT_MASK_SHADOW;
 }
 
-// Whether a shadow caster lies within tMax along the ray: Doom 3's shadow volumes extrude the sides that face the
-// light, which the ray meets from behind, so it culls front faces; any hit ends the search. footprint: the
-// world units of a pixel at the origin, for the alpha's level. mask: RtShadowMask of the surface at the origin.
+// Whether a caster lies within tMax along a ray toward a light. A stencil volume comes from the triangles that face
+// away from the light: the ray meets those from the front, so it culls back faces; any hit ends the search.
+// footprint: the world units of a pixel at the origin, for the alpha's level. mask: RtShadowMask of the origin's surface.
 bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float footprint, uint samplerIndex, uint mask ) {
 	RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[heap.tlas];
 	RayDesc ray;
@@ -318,7 +318,7 @@ bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float
 	ray.Direction = direction;
 	ray.TMin = 0.0;
 	ray.TMax = tMax;
-	RayQuery<RAY_FLAG_CULL_FRONT_FACING_TRIANGLES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+	RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
 	query.TraceRayInline( tlas, RAY_FLAG_NONE, mask, ray );
 	while ( query.Proceed() ) {
 		// a cone of the footprint's width all along: the level stays the origin's

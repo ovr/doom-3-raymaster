@@ -65,6 +65,21 @@ struct rtCompositeParms_t {
 	uint32							reflectionSrv;
 };
 
+// b1 of internal/rtShadowRatio.hlsl.
+struct rtShadowRatioParms_t {
+	int32							first[2];
+	uint32							sceneSrv;
+	uint32							lightsSrv;
+	uint32							samples;
+};
+
+// b1 of internal/rtShadowApply.hlsl.
+struct rtShadowApplyParms_t {
+	int32							first[2];
+	uint32							ratioSrv;
+	float							show;		// 0, or the scale of the picture that takes the scene's place
+};
+
 constexpr float REFLECTION_FADE = 0.15f;	// the roughness over which the reflections fade out below the limit
 
 // What every trace reads, imported into one graph.
@@ -150,6 +165,25 @@ ID3D12PipelineState * idD3D12RtPasses::CompositePipeline( UINT samples, bool add
 		constexpr uint8 RGB = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
 		pso = passes.CreatePipeline( passes.Stage( "internal_rtComposite" ).code, d3d12TargetId_t::HDR_FORMAT, samples, RGB,
 			add ? L"doom3 rt reflection composite" : L"doom3 rt reflection alone", add ? d3d12PassBlend_t::ADD : d3d12PassBlend_t::REPLACE );
+	}
+	return pso.Get();
+}
+
+ID3D12PipelineState * idD3D12RtPasses::ShadowRatioPipeline( bool multisampled ) {
+	idComPtr<ID3D12PipelineState> & pso = shadowRatio[multisampled ? 1 : 0];
+	if ( !pso ) {
+		pso = passes.CreatePipeline( passes.Stage( multisampled ? "internal_rtShadowRatio_msaa" : "internal_rtShadowRatio" ).code,
+			d3d12TargetId_t::HDR_FORMAT, 1, static_cast<uint8>( D3D12_COLOR_WRITE_ENABLE_ALL ), L"doom3 rt shadow ratio" );
+	}
+	return pso.Get();
+}
+
+ID3D12PipelineState * idD3D12RtPasses::ShadowApplyPipeline( UINT samples, bool show ) {
+	idComPtr<ID3D12PipelineState> & pso = shadowApply[( show ? 4 : 0 ) + ( std::countr_zero( samples ) & 3 )];
+	if ( !pso ) {
+		constexpr uint8 RGB = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
+		pso = passes.CreatePipeline( passes.Stage( "internal_rtShadowApply" ).code, d3d12TargetId_t::HDR_FORMAT, samples, RGB,
+			show ? L"doom3 rt shadows alone" : L"doom3 rt shadow apply", show ? d3d12PassBlend_t::REPLACE : d3d12PassBlend_t::MULTIPLY );
 	}
 	return pso.Get();
 }
@@ -339,6 +373,57 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 			parms.reflectionSrv = context.Srv( reflection );
 			const d3d12UploadSpan_t span = context.Parms( parms );
 			context.Draw( *pso, colorUse, 0, rect, span );
+		} );
+	graph.Execute( groups );
+}
+
+// The ratio is one value per pixel, also under MSAA: the pixel's samples lose the same part, and their sum what the
+// light target's sum holds. It is a signal of its own so that a filter can work on it and leave the scene's detail.
+void idD3D12RtPasses::Shadows( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const rtShadowSettings_t & settings,
+	const renderRect_t & viewport, float preExposure, idD3D12DebugGroups * groups ) {
+	idD3D12SceneTarget::surface_t & sceneColor = scene.Color( true );
+	idD3D12SceneTarget::surface_t & lights = scene.Lights();
+	const renderRect_t rect = SceneRect( scene, viewport );
+	if ( !settings.enabled || !sceneColor.resource || !lights.resource || rect.width <= 0 || rect.height <= 0 ) {
+		return;
+	}
+	const UINT samples = scene.Samples();
+	ID3D12PipelineState * ratioPso = ShadowRatioPipeline( samples > 1 );
+	ID3D12PipelineState * applyPso = ShadowApplyPipeline( samples, settings.show );
+	if ( ratioPso == nullptr || applyPso == nullptr ) {
+		return;
+	}
+
+	const uint32 width = static_cast<uint32>( scene.Width() );
+	const uint32 height = static_cast<uint32>( scene.Height() );
+	const d3d12GraphResource_t colorUse = graph.Import( "SceneColor", { sceneColor.resource.Get(), &sceneColor.state, sceneColor.srv, {},
+		scene.Rtv( false, true ), width, height } );
+	const d3d12GraphResource_t lightsUse = graph.Import( "Lights", { lights.resource.Get(), &lights.state, lights.srv, {}, {}, width, height } );
+	d3d12PoolDesc_t desc;
+	desc.format = d3d12TargetId_t::HDR_FORMAT;
+	desc.width = static_cast<uint32>( rect.width );
+	desc.height = static_cast<uint32>( rect.height );
+	desc.renderTarget = true;
+	const d3d12GraphResource_t ratio = graph.Create( "rt shadow ratio", desc );
+
+	const rtShadowRatioParms_t ratioBase = { { rect.x, rect.y }, 0, 0, samples };
+	const renderRect_t ratioRect = { 0, 0, rect.width, rect.height };
+	graph.AddPass( "rt shadow ratio", d3d12GraphPass_t::RASTER, { { colorUse, d3d12GraphAccess_t::SRV }, { lightsUse, d3d12GraphAccess_t::SRV },
+		{ ratio, d3d12GraphAccess_t::RTV, 0 } }, [ratioPso, ratioBase, colorUse, lightsUse, ratio, ratioRect]( idD3D12GraphContext & context ) {
+			rtShadowRatioParms_t parms = ratioBase;
+			parms.sceneSrv = context.Srv( colorUse );
+			parms.lightsSrv = context.Srv( lightsUse );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Draw( *ratioPso, ratio, 0, ratioRect, span );
+		} );
+
+	const rtShadowApplyParms_t applyBase = { { rect.x, rect.y }, 0, settings.show ? preExposure : 0.0f };
+	graph.AddPass( "rt shadow apply", d3d12GraphPass_t::RASTER, { { ratio, d3d12GraphAccess_t::SRV }, { colorUse, d3d12GraphAccess_t::RTV, 0 } },
+		[applyPso, applyBase, ratio, colorUse, rect]( idD3D12GraphContext & context ) {
+			rtShadowApplyParms_t parms = applyBase;
+			parms.ratioSrv = context.Srv( ratio );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Draw( *applyPso, colorUse, 0, rect, span );
 		} );
 	graph.Execute( groups );
 }

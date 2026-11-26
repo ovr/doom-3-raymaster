@@ -150,6 +150,7 @@ struct gpuSceneUpdate_t {
 
 // What the backend made of an update's acceleration structures, for r_rtStats.
 struct gpuSceneStats_t {
+	bool					traceable = false;	// the structures of the update stand: the frame's passes and draws may trace
 	int						tlasInstances = 0;
 	int						waiting = 0;		// instances left out: their BLAS waits for the frame's build budget
 	int						blas = 0;			// static BLAS kept, one per distinct model
@@ -377,4 +378,5 @@ private:
 };
 
 // The back end's half, on the main thread: textures and joints, then the backend; a failure asks for a full one.
-void RB_UpdateGpuScene( gpuSceneFrame_t & frame );
+// True: the frame may trace the scene, and the casters of its last full update have their structures.
+[[nodiscard]] bool RB_UpdateGpuScene( gpuSceneFrame_t & frame );

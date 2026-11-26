@@ -10,8 +10,8 @@
 
 	  interaction.hlsl      id's program: the colour into the scene
 	  interaction_rt.hlsl   INTERACTION_RT=1: the same colour, and what a traced shadow takes of it into the
-	                        light target (R16); the vertex stage adds the world position, the parms end with
-	                        the model matrix (b0) and rpRtLight, rpRtShadow (b1)
+	                        light target (R16); the vertex stage adds the world position and the way to the
+	                        eye, the parms end with the model matrix (b0) and rpRtLight, rpRtShadow (b1)
 
 	SKINNED=1 is the skinned variant: the joints in COLOR0 and COLOR1, so no vertex colour.
 */
@@ -94,6 +94,7 @@ struct VSOutput {
 	float4 color : COLOR0;
 #if INTERACTION_RT
 	float4 worldPosition : TEXCOORD7;
+	float4 toEye : TEXCOORD8;			// world space, not normalized
 #endif
 };
 
@@ -160,6 +161,8 @@ VSOutput VSMain( VSInput input ) {
 #if INTERACTION_RT
 	output.worldPosition = float4( dot4( modelPosition, rpModelMatrixX ), dot4( modelPosition, rpModelMatrixY ),
 		dot4( modelPosition, rpModelMatrixZ ), 1.0 );
+	const float3 eye = ( rpLocalViewOrigin - modelPosition ).xyz;
+	output.toEye = float4( dot( eye, rpModelMatrixX.xyz ), dot( eye, rpModelMatrixY.xyz ), dot( eye, rpModelMatrixZ.xyz ), 0.0 );
 #endif
 	return output;
 }

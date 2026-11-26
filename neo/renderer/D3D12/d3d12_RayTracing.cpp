@@ -513,10 +513,11 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		stats.blasBytes += entry.bytes;
 	}
 	stats.frameBytes = scratchCapacity + skinnedCapacity + skinnedBlasCapacity + tlasCapacity + tableCapacity;
+	valid = !device.IsLost();
+	stats.traceable = valid;
 	lastStats = stats;
 	builtScene = scene.SceneId();
 	builtSequence = scene.Sequence();
-	valid = !device.IsLost();
 	return valid;
 }
 

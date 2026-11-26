@@ -7,10 +7,13 @@
 /*
 	The passes that trace the GPU scene (R15), on the render graph, over what idD3D12RayTracing built last:
 
-	  rt reflect     COMPUTE  r_rtReflections: a mirror ray per pixel of the main view (internal/rtReflect.hlsl), from
-	                          the depth and the G-buffer, its hit lit by the scene's lights → RGBA16F of the viewport
-	  rt composite   RASTER   that times the scale and preExposure, added to the HDR scene (internal/rtComposite.hlsl)
-	  rt debug       RASTER   r_rtDebug: a ray per pixel of the main view (internal/rtDebug.hlsl) over the output
+	  rt reflect       COMPUTE  r_rtReflections: a mirror ray per pixel of the main view (internal/rtReflect.hlsl), from
+	                            the depth and the G-buffer, its hit lit by the scene's lights → RGBA16F of the viewport
+	  rt composite     RASTER   that times the scale and preExposure, added to the HDR scene (internal/rtComposite.hlsl)
+	  rt debug         RASTER   r_rtDebug: a ray per pixel of the main view (internal/rtDebug.hlsl) over the output
+	  rt shadow ratio  RASTER   r_rtShadows, after the traced lights (R16): per pixel and channel what the shadows
+	                            leave, 1 - the light target over the scene (internal/rtShadowRatio.hlsl) → RGBA16F
+	  rt shadow apply  RASTER   the scene times that (internal/rtShadowApply.hlsl)
 
 	The rays read the scene through ResourceDescriptorHeap (include/raytracing.hlsli): the TLAS, the records, the
 	instance table, the static and the skinned vertices, the static indexes, the lights, the records' and lights'
@@ -55,10 +58,16 @@ public:
 	void							Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, idD3D12RayTracing & rt,
 										idD3D12GpuScene & gpuScene, const rtReflectionSettings_t & settings, const rtView_t & view,
 										const renderRect_t & viewport, float preExposure, idD3D12DebugGroups * groups );
+	// In the HDR scene's linear phase, after the bracket of the traced lights: viewport of the scene loses what the
+	// light target holds of it, executed (settings.show: what is left, in the scene's place). Nothing without one.
+	void							Shadows( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const rtShadowSettings_t & settings,
+										const renderRect_t & viewport, float preExposure, idD3D12DebugGroups * groups );
 
 private:
 	[[nodiscard]] ID3D12PipelineState *	DebugPipeline( UINT samples );
 	[[nodiscard]] ID3D12PipelineState *	CompositePipeline( UINT samples, bool add );
+	[[nodiscard]] ID3D12PipelineState *	ShadowRatioPipeline( bool multisampled );
+	[[nodiscard]] ID3D12PipelineState *	ShadowApplyPipeline( UINT samples, bool show );
 	[[nodiscard]] const d3d12ComputePipeline_t *	ReflectPipeline( bool multisampled );
 	// Whether the last build can be traced; makes the static buffers and the textures readable when it can.
 	[[nodiscard]] bool				Traceable( idD3D12RayTracing & rt, idD3D12GpuScene & gpuScene );
@@ -76,6 +85,8 @@ private:
 	std::array<idComPtr<ID3D12PipelineState>, 4>	debug;		// by log2 of the scene's samples, on first use
 	std::array<idComPtr<ID3D12PipelineState>, 8>	composite;	// by add, then log2 of the samples
 	std::array<d3d12ComputePipeline_t, 2>	reflect;		// by multisampled
+	std::array<idComPtr<ID3D12PipelineState>, 2>	shadowRatio;	// by multisampled
+	std::array<idComPtr<ID3D12PipelineState>, 8>	shadowApply;	// by show, then log2 of the samples
 	uint32							linearSampler = 0;
 	uint32							clampSampler = 0;
 };

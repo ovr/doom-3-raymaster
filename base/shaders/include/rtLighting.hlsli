@@ -134,9 +134,13 @@ float3 RtShade( RtHeap heap, RtLighting lighting, RtHit hit, RayDesc ray, float 
 		}
 		taken++;
 		if ( lighting.shadows && ( light.flags & RT_LIGHT_SHADOWS ) != 0 ) {
-			// off the plane toward the light, by more than the hit's float error: the hit lies on the triangle itself
-			const float3 side = ( dot( s.faceNormal, light.origin - s.position ) >= 0.0 ) ? s.faceNormal : -s.faceNormal;
-			const float3 origin = s.position + side * ( 0.02 + 0.1 * footprint );
+			// Off the plane on the side the ray came to, by more than the hit's float error. A triangle that faces away
+			// from the light shadows itself, as the cap of its stencil volume: the ray comes back through the hit.
+			const float3 side = hit.frontFace ? s.faceNormal : -s.faceNormal;
+			const float3 aim = normalize( light.origin - s.position );
+			const float lift = 0.02 + 0.1 * footprint;
+			const float rise = dot( aim, side );
+			const float3 origin = ( rise > 0.0 ) ? s.position + side * lift : s.position - aim * ( lift / max( -rise, 0.05 ) );
 			const float3 path = light.origin - origin;
 			const float distance = length( path );
 			if ( distance > 0.0 && RtOccluded( heap, origin, path / distance, distance, footprint, lighting.linearSampler, RtShadowMask( g.flags ) ) ) {

@@ -706,6 +706,7 @@ struct backEndState_t {
 	bool				hdrPhase;				// BeginHdrScene .. ResolveHdrScene: the colour parms decode from sRGB (R13)
 	bool				hdrGamma;				// in hdrPhase, the gamma composite: they do not
 	bool				gbufferView;			// the view being drawn is the HDR main view and writes the G-buffer (R14)
+	bool				tracedShadows;			// it is the HDR main view and its lights trace their shadows (R16, R17)
 	hdrLastResolve_t	hdrLastResolve;
 	gbufferLastView_t	gbufferLast[2];
 
