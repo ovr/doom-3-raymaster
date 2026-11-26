@@ -1,0 +1,30 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 28_rt_bounce: the bounce room of our own map (tools/rt/make_lightlab.py), 15 s. One spot lights a square of the floor
+# between a red and a green wall: three still stops, a slow push in, then the spot goes out and the flashlight sweeps
+# from the red wall to the green one.
+map rt/lightlab
+build
+set fs_resourceLoadPriority 0
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# the whole room, the boxes before the red wall, the alcove
+at 1 setviewpos 1664 36 210 90
+move 1 2 pitch=840
+at 181 setviewpos 1814 90 130 120
+move 181 182 pitch=360
+at 301 setviewpos 1664 200 100 90
+# a push in from the corner, 17 units a second
+at 421 setviewpos 1480 60 140 50
+move 421 422 pitch=360
+move 422 660 forward=18 yaw=-3
+# the flashlight alone
+at 661 trigger bounce_spot
+at 661 setviewpos 1664 110 110 140
+impulse 665 16
+move 680 900 yaw=-22
+end 900
+capture 0 900 every=6 fps=60

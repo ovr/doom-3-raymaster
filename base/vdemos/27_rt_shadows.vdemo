@@ -1,0 +1,42 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 27_rt_shadows: the bays and the stations of our own map (tools/rt/make_lightlab.py), 29 s. Still stops of 2 s before
+# lights of four sizes and a dolly past them; then a monster, a rotor, a strobing light, a caged lamp, shadow flags
+# and a door that opens and closes before a lit room. A stop starts one tic after a captured one: its frames are all still.
+map rt/lightlab
+build
+set fs_resourceLoadPriority 0
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# the bays: light sizes 0.1, 4, 12 and 32
+at 1 setviewpos 128 112 104 90
+move 1 2 pitch=480
+at 121 setviewpos 384 112 104 90
+move 121 122 pitch=480
+at 241 setviewpos 640 112 104 90
+move 241 242 pitch=480
+at 361 setviewpos 896 112 104 90
+move 361 362 pitch=480
+# a dolly from the last bay to the first, 148 units a second
+at 481 setviewpos 900 64 110 90
+move 481 482 pitch=360
+move 482 780 right=-33
+# stations: the hellknight, the rotor, the pole between two lights, the cage, the tables and poles
+at 781 setviewpos 176 960 84 90
+at 901 setviewpos 480 900 150 90
+move 901 902 pitch=1320
+at 1021 setviewpos 800 900 100 90
+move 1021 1022 pitch=300
+at 1141 setviewpos 1120 1040 110 90
+move 1141 1142 pitch=-360
+at 1261 setviewpos 420 1010 120 270
+move 1261 1262 pitch=1080
+# the door: closed, open, closed again
+at 1381 setviewpos 1000 1024 90 0
+at 1411 trigger st_door
+at 1591 trigger st_door
+end 1740
+capture 0 1740 every=6 fps=60

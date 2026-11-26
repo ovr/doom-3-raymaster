@@ -8,7 +8,8 @@ Runs the visual demos (base/vdemos/*.vdemo) in a retail install and collects the
 .DESCRIPTION
 Deploys Doom3BFG.exe (+ pdb, + FFmpeg DLLs, + DXC and the Agility runtime in D3D12\) from a build dir, base/vdemos, base/shaders
 (the HLSL that DXC compiles) and our own maps (base/maps/rt/*.map, which the demos compile with their build directive; stale .map
-files there are removed) into the game dir, starts the game in a 1280x720 window with an isolated fs_savepath (the
+files there are removed) with their textures and materials (base/textures/rt, base/materials/rt_*.mtr) into the game dir,
+starts the game in a 1280x720 window with an isolated fs_savepath (the
 real config in Saved Games is never read or written), runs "vdemo <demos> quit" and copies into
 -OutDir: the frames and vdemo.json of every demo, run.json,
 qconsole.log, the screenshots the demos took (screenshots/) and modules.txt, every module the game
@@ -123,11 +124,20 @@ if ( -not $NoDeploy ) {
 	New-Item -ItemType Directory -Force $mapTarget | Out-Null
 	Get-ChildItem $mapTarget -Filter '*.map' | Remove-Item -Force
 	Copy-Item ( Join-Path $repoRoot 'base\maps\rt\*.map' ) $mapTarget -Force
+	# their textures and materials: the folder textures\rt and the files materials\rt_*.mtr are ours alone
+	$textureTarget = Join-Path $GameDir 'base\textures\rt'
+	if ( Test-Path $textureTarget ) { Remove-Item -Recurse -Force $textureTarget }
+	New-Item -ItemType Directory -Force ( Split-Path -Parent $textureTarget ) | Out-Null
+	Copy-Item ( Join-Path $repoRoot 'base\textures\rt' ) $textureTarget -Recurse -Force
+	$materialTarget = Join-Path $GameDir 'base\materials'
+	New-Item -ItemType Directory -Force $materialTarget | Out-Null
+	Get-ChildItem $materialTarget -Filter 'rt_*.mtr' | Remove-Item -Force
+	Copy-Item ( Join-Path $repoRoot 'base\materials\rt_*.mtr' ) $materialTarget -Force
 	# the HLSL DXC compiles, with its include folder; a file an older deploy left is removed
 	$shaderTarget = Join-Path $GameDir 'base\shaders'
 	if ( Test-Path $shaderTarget ) { Remove-Item -Recurse -Force $shaderTarget }
 	Copy-Item ( Join-Path $repoRoot 'base\shaders' ) $shaderTarget -Recurse -Force
-	Write-Host "deployed $BuildDir, base\vdemos, base\shaders and base\maps\rt to $GameDir"
+	Write-Host "deployed $BuildDir, base\vdemos, base\shaders, base\maps\rt, base\textures\rt and base\materials\rt_*.mtr to $GameDir"
 }
 
 # the save path is ours only: a marker file guards against wiping anything else

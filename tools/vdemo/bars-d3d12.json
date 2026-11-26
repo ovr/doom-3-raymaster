@@ -12,7 +12,9 @@
 		"worst value seen (SSIM - 0.005, fractions x 1.5, blob x 2); a bar is relaxed only with a heat map",
 		"and a named difference in the commit message. Stage 14 set the final bars: the plain bars of 01_camera,",
 		"_x1_resscale and _x5_tools take their O19 filtering difference (blob x 2).",
-		"_x3_perf has no bar: it only measures time."
+		"_x3_perf has no bar: it only measures time.",
+		"20-30 have no OpenGL frames: their bars hold a run to the Direct3D 12 HDR frames of the last gate",
+		"(compare-apis.ps1 -Hdr, research/vdemo/d3d12-hdr-ref), which it equals but for lone driver blocks."
 	],
 	"demos": {
 		"_x4_gui":            { "ssimMin": 0.990, "ssimMean": 0.997, "frac8": 0.003, "blob": 16,  "differences": "O2 O7 O1; run it with +set r_clear 2 against gl-ref-clear: a plain frame keeps the pixels no 2D draws (O11)", "stage": 8 },
@@ -30,6 +32,17 @@
 		"_x2_motionblur":     { "ssimMin": 0.955, "ssimMean": 0.980, "frac8": 0.020, "blob": 128, "differences": "O1, accumulation", "stage": 10 },
 		"_x5_tools":          { "ssimMin": 0.900, "ssimMean": 0.950, "frac8": 0.060, "blob": 184, "differences": "O6 O19 (stage 14: blob 92, the door edge of 01_camera)", "stage": 11 },
 		"_x6_restart":        { "ssimMin": 0.975, "ssimMean": 0.990, "frac8": 0.005, "blob": 64,  "differences": "as 01_camera", "stage": 12 },
-		"_x7_heathaze":       { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1 O9, run alone: loadAttempts 2 on GL", "stage": 9 }
+		"_x7_heathaze":       { "ssimMin": 0.970, "ssimMean": 0.988, "frac8": 0.008, "blob": 64,  "differences": "O1 O9, run alone: loadAttempts 2 on GL", "stage": 9 },
+		"20_rt_gallery":      { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"21_rt_marscity":     { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"22_rt_alphalabs":    { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"23_rt_delta":        { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"24_rt_hell":         { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"25_rt_caverns":      { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"26_rt_enpro":        { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"27_rt_shadows":      { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"28_rt_bounce":       { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"29_rt_emissive":     { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" },
+		"30_rt_glossy":       { "ssimMin": 0.990, "ssimMean": 0.999, "frac8": 0.001, "blob": 64,  "differences": "none: D3D12's own frames", "stage": "light 1" }
 	}
 }

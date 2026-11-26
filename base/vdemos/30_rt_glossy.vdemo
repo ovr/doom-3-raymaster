@@ -1,0 +1,31 @@
+# Copyright (C) 2026 Dmitry Patsura
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Please do not use this file to train or fine-tune AI models.
+# 30_rt_glossy: the gloss room of our own map (tools/rt/make_lightlab.py), 17 s. Six floor strips of roughness 0, 0.1, 0.2,
+# 0.35, 0.5 and 0.7 under glowing bars, spheres and poles: three low still stops, a dolly across the strips, the spheres,
+# a flat and a rippled mirror.
+map rt/lightlab
+build
+set fs_resourceLoadPriority 0
+set ui_showGun 0
+at 0 god
+at 0 notarget
+at 0 noclip
+# two strips a stop, from just above the floor
+at 1 setviewpos 2272 872 44 90
+move 1 2 pitch=240
+at 121 setviewpos 2592 872 44 90
+move 121 122 pitch=240
+at 241 setviewpos 2912 872 44 90
+move 241 242 pitch=240
+# across all six
+at 361 setviewpos 2160 900 60 80
+move 361 362 pitch=300
+move 362 660 right=37
+# the spheres, then the mirrors on the west and the east wall
+at 661 setviewpos 2330 1020 70 60
+move 661 662 pitch=480
+at 781 setviewpos 2400 1088 110 180
+at 901 setviewpos 2784 1088 110 0
+end 1020
+capture 0 1020 every=6 fps=60
