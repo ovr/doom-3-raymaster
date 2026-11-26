@@ -27,7 +27,7 @@ enum class rtDebug_t : uint8 {
 	PRIMARY,	// against the depth: grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face
 	NORMAL,		// the hit's interpolated vertex normal in world space, 0.5 + 0.5 n
 	ALBEDO,		// the hit's diffuse texture times its stage colour, as stored (gamma)
-	REFLECTION,	// the mirror reflections alone, in place of the lights (the passes after them still draw)
+	REFLECTION,	// the reflections alone, in place of the lights (the passes after them still draw)
 	SHADOWS,	// what the traced shadows leave of the traced lights, in place of the lights; blue where none reaches
 	HISTORY,	// how many frames the traced shadows' history holds per pixel, black none, white all it may
 	INDIRECT,	// the indirect light alone, as a white surface takes it, in place of the scene's colour
@@ -49,15 +49,24 @@ struct rtView_t {
 	bool				held = false;			// nothing of the frame could be traced: what the history holds of it stands
 };
 
-// r_rtReflection*: a mirror ray per pixel whose G-buffer may reflect, added to the HDR scene after the lights.
+// r_rtReflection*: a ray per pixel of the main view whose G-buffer may reflect, added to the HDR scene after the
+// lights (R20). A pixel smoother than mirrorRoughness is a mirror: one ray about its normal, the hit lit by the
+// first lights that reach it, the same every frame. A rougher one sends a ray of its GGX lobe, lit by one light,
+// averaged over the eye's history (R18) and the neighbours of the same surface, as wide as the lobe.
 struct rtReflectionSettings_t {
 	bool				enabled = false;	// with scene and gbuffer
 	bool				alone = false;		// rtDebug_t::REFLECTION: the reflections replace the lights' sum
-	bool				shadows = true;		// a shadow ray per light that lights a hit
-	int					maxLights = 8;		// lights per hit, the first that reach it
+	bool				shadows = true;		// a mirror's hit: a shadow ray per light that lights it
+	bool				glossy = true;		// r_rtReflectionGlossy; false: every pixel that reflects is a mirror
+	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
+	bool				reference = false;	// r_rtReference: a plain average while the eye stands still, unfiltered
+	int					maxLights = 8;		// a mirror's hit: lights per hit, the first that reach it
+	int					maxHistory = 16;	// r_rtReflectionHistory: frames a glossy pixel averages
+	int					passes = 4;			// r_rtReflectionPasses: spatial passes, each twice as wide
 	float				scale = 1.0f;
 	float				distance = 2048.0f;	// the longest ray
 	float				maxRoughness = 0.6f;	// rougher pixels send no ray; the weight fades in over 0.15 below it
+	float				mirrorRoughness = 0.08f;	// r_rtReflectionMirror
 };
 
 // r_rtIndirect: one bounce of light in the main view (R19). A ray per texel of a grid of stride pixels leaves the

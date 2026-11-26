@@ -7484,6 +7484,7 @@ void RtReflection( idTestGpu & gpu ) {
 	const textureHandle_t bump = texture( { 128, 128, 128, 128 }, "test reflection bump" );
 	const textureHandle_t white = texture( { 255, 255, 255, 255 }, "test reflection white" );
 	idD3D12RtPasses rtPasses( gpu.device, scene.rays.computeRoot, fixture.passes, gpu.samplers, gpu.buffers, gpu.textures, gpu.barriers );
+	idD3D12RtHistory history( gpu.device, gpu.graveyard, gpu.srvPool );	// mirrors keep none
 	rtPasses.CreateDefaults();
 	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && diffuse != textureHandle_t::NONE
 			&& bump != textureHandle_t::NONE && white != textureHandle_t::NONE, "the geometry and the textures" ) ) {
@@ -7650,7 +7651,8 @@ void RtReflection( idTestGpu & gpu ) {
 		settings.enabled = true;
 		settings.alone = alone;
 		settings.shadows = shadows;
-		rtPasses.Reflections( scene.rays.graph, target, scene.rt, scene.gpuScene, settings, view, { 0, 0, SIZE, SIZE }, PRE_EXPOSURE, nullptr );
+		settings.glossy = false;
+		rtPasses.Reflections( scene.rays.graph, target, history, scene.rt, scene.gpuScene, settings, view, { 0, 0, SIZE, SIZE }, PRE_EXPOSURE, nullptr );
 		idD3D12SceneTarget::surface_t & color = target.Color( true );
 		std::vector<idVec4> texels;
 		for ( uint64 texel : ReadTexels<uint64>( gpu, *color.resource.Get(), color.state ) ) {
@@ -8208,6 +8210,710 @@ void RtIndirectAllSamples( idTestGpu & gpu ) {
 	RtIndirect( gpu, 1 );
 	if ( gpu.device.Features().samples[2] ) {
 		RtIndirect( gpu, 4 );
+	}
+}
+
+/*
+	idD3D12RtPasses::Reflections (R20) with glossy pixels, over a floor at z = 0 that an eye at ( shift, 0, 64 ) sees
+	straight down with perspective: a pixel of the floor a unit, x its column - 31.5 + shift, y its row - 31.5, at
+	clip w 64. Its G-buffer holds the normal +z, an F0 and, per band, a roughness k / 255.
+
+	  sky      an emissive quad over all of it at z = 40: every ray brings the same, so one frame is exact at any
+	           roughness: the sky times the pixel's Fresnel and the fade toward the roughest that reflects
+	  ceiling  at z = 16, emissive where x < 0 and black beyond. A mirror shows the line; a rougher band the part of
+	           its lobe that meets the emissive half, which the CPU sums over the lobe's facets as the eye sees them
+
+	Under an eye that moves along x the line's image moves a fifth slower than the floor does: a history taken only
+	where the floor was would smear it over the pixels beside the line.
+*/
+void RtGlossy( idTestGpu & gpu, UINT samples ) {
+	idTestRtScene scene( gpu, idD3D12RayTracing::UNUSED_BUILDS, idD3D12RayTracing::SCRATCH_BUDGET, samples );
+	if ( !scene.Ready() ) {
+		return;
+	}
+	idTestCopies & fixture = scene.rays.fixture;
+	constexpr int SIZE = idTestCopies::SIZE;
+	constexpr float PRE_EXPOSURE = 2.0f;
+	constexpr float EYE = 64.0f;
+	constexpr float NEAR_PLANE = 1.0f;
+	constexpr float FAR_PLANE = 256.0f;
+	constexpr float DEPTH_A = ( FAR_PLANE + NEAR_PLANE ) / ( FAR_PLANE - NEAR_PLANE );
+	constexpr float DEPTH_B = -2.0f * FAR_PLANE * NEAR_PLANE / ( FAR_PLANE - NEAR_PLANE );
+	constexpr float FLOOR_DEPTH = 0.5f * ( DEPTH_A + DEPTH_B / EYE ) + 0.5f;
+	constexpr float CEILING = 16.0f;
+	constexpr float EXTENT = 1024.0f;		// of the ceiling's halves
+	// rtReflectionSettings_t's defaults and the backend's fade
+	constexpr float MAX_ROUGHNESS = 0.6f;
+	constexpr float FADE = 0.15f;
+	constexpr float MIRROR = 0.08f;
+	const size_t numTexels = static_cast<size_t>( SIZE ) * SIZE;
+	const idVec4 base( 0.1f, 0.2f, 0.3f, 0.5f );
+	const idVec4 dark( 0.0f, 0.0f, 0.0f, 0.5f );
+	const idVec3 sky( 1.0f, R_SRGBToLinear( 0.25f ), 0.0f );
+	// what an sRGB target holds exactly
+	const idVec3 tint( 1.0f, R_SRGBToLinear( 188.0f / 255.0f ), R_SRGBToLinear( 137.0f / 255.0f ) );
+	const idVec3 whole( 1.0f, 1.0f, 1.0f );
+	const idVec3 leaning( idMath::Sin( DEG2RAD( 60.0f ) ), 0.0f, idMath::Cos( DEG2RAD( 60.0f ) ) );
+
+	// the quad of corners 0..4 with its normal toward the side Doom 3 draws, -z
+	std::array<idDrawVert, 4> verts;
+	const idVec3 corners[4] = { idVec3( 0.0f, 0.0f, 0.0f ), idVec3( 4.0f, 0.0f, 0.0f ), idVec3( 4.0f, 4.0f, 0.0f ), idVec3( 0.0f, 4.0f, 0.0f ) };
+	for ( size_t i = 0; i < verts.size(); i++ ) {
+		verts[i].Clear();
+		verts[i].xyz = corners[i];
+		verts[i].SetTexCoord( corners[i].x * 0.25f, corners[i].y * 0.25f );
+		verts[i].SetNormal( idVec3( 0.0f, 0.0f, -1.0f ) );
+		verts[i].SetTangent( idVec3( 1.0f, 0.0f, 0.0f ) );
+		verts[i].SetBiTangentSign( 1.0f );
+	}
+	const bufferHandle_t vertexBuffer = gpu.buffers.Create( bufferType_t::VERTEX, bufferUsage_t::STATIC, sizeof( verts ), verts.data() );
+	const bufferHandle_t indexBuffer = gpu.buffers.Create( bufferType_t::INDEX, bufferUsage_t::STATIC,
+		static_cast<int>( idTestRayScene::INDEXES.size() * sizeof( triIndex_t ) ), idTestRayScene::INDEXES.data() );
+	const auto texture = [&]( std::array<byte, 4> texel, const char * name ) {
+		const textureHandle_t handle = gpu.textures.Create( Opts( FMT_RGBA8, 1, 1, 1 ), textureRole_t::SAMPLED, POINT_CLAMP, name );
+		if ( handle != textureHandle_t::NONE ) {
+			gpu.textures.Upload( handle, 0, 0, 1, 1, texel.data(), 0 );
+		}
+		return handle;
+	};
+	const textureHandle_t diffuse = texture( { 128, 128, 0, 255 }, "test glossy diffuse" );
+	const textureHandle_t bump = texture( { 128, 128, 128, 128 }, "test glossy bump" );
+	const textureHandle_t white = texture( { 255, 255, 255, 255 }, "test glossy white" );
+	idD3D12RtPasses rtPasses( gpu.device, scene.rays.computeRoot, fixture.passes, gpu.samplers, gpu.buffers, gpu.textures, gpu.barriers );
+	idD3D12RtHistory history( gpu.device, gpu.graveyard, gpu.srvPool );
+	rtPasses.CreateDefaults();
+	const auto release = [&]() {
+		gpu.WaitIdle();
+		history.Drop();
+		rtPasses.DestroyDefaults();
+		gpu.buffers.Destroy( vertexBuffer );
+		gpu.buffers.Destroy( indexBuffer );
+		gpu.textures.Destroy( diffuse );
+		gpu.textures.Destroy( bump );
+		gpu.textures.Destroy( white );
+	};
+	idD3D12SceneTarget & target = fixture.scene;
+	target.EnsureHdr( gpu.barriers, gpu );
+	if ( !Check( vertexBuffer != bufferHandle_t::NONE && indexBuffer != bufferHandle_t::NONE && diffuse != textureHandle_t::NONE
+			&& bump != textureHandle_t::NONE && white != textureHandle_t::NONE && target.Color( true ).resource != nullptr && target.EnsureGBuffer(),
+			va( "%u sample(s): the geometry, the textures, the HDR scene and the G-buffer", samples ) ) ) {
+		release();
+		return;
+	}
+
+	constexpr int DIFFUSE = static_cast<int>( gpuSceneTexture_t::DIFFUSE );
+	constexpr int BUMP = static_cast<int>( gpuSceneTexture_t::BUMP );
+	constexpr int EMISSIVE = static_cast<int>( gpuSceneTexture_t::EMISSIVE );
+	constexpr uint32 CASTER = gpuSceneGeometry_t::GEO_OPAQUE | gpuSceneGeometry_t::GEO_CASTS_SHADOW;
+	uint32 sceneSequence = 0;
+	std::array<gpuSceneLightWrite_t, 2> lights;
+	// The sky, or the ceiling of two halves: a full update, built. Without lamps only what is emitted comes back;
+	// with them the half that glowed is white under a red and a blue lamp at one place.
+	const auto apply = [&]( bool ceiling, bool lamps = false ) {
+		rtTestFrame_t frame( ++sceneSequence, true );
+		// a quad of the model over x0..x1 and all of y at z, its drawn side down
+		const auto quad = [&]( int record, float x0, float x1, float y, float z ) -> gpuSceneWrite_t & {
+			frame.Write( record, 0, 6, CASTER );
+			gpuSceneInstance_t & instance = frame.Instance( static_cast<uint32>( record ), GpuScene_InstanceMask( GpuScene_Group( CASTER ), true, true ),
+				0x700, idVec3( x0, -y, z ) );
+			instance.transform[0][0] = ( x1 - x0 ) * 0.25f;
+			instance.transform[1][1] = y * 0.5f;
+			gpuSceneWrite_t & write = frame.writes.back();
+			write.record.flags = CASTER;
+			for ( auto & rows : write.record.matrices ) {
+				rows[0] = idVec4( 1.0f, 0.0f, 0.0f, 0.0f );
+				rows[1] = idVec4( 0.0f, 1.0f, 0.0f, 0.0f );
+			}
+			return write;
+		};
+		const auto emits = []( gpuSceneWrite_t & write, textureHandle_t image ) {
+			write.textures[EMISSIVE] = image;
+			write.record.colors[2] = idVec4( 1.0f, 0.25f, 0.0f, 1.0f );
+		};
+		if ( ceiling ) {
+			gpuSceneWrite_t & bright = quad( 0, -EXTENT, 0.0f, EXTENT, CEILING );
+			if ( lamps ) {
+				bright.textures[DIFFUSE] = diffuse;
+				bright.textures[BUMP] = bump;
+				bright.record.colors[0] = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+			} else {
+				emits( bright, white );
+			}
+			gpuSceneWrite_t & black = quad( 1, 0.0f, EXTENT, EXTENT, CEILING );
+			black.textures[DIFFUSE] = diffuse;
+			black.textures[BUMP] = bump;
+		} else {
+			// so wide that a ray a hundredth off the floor's plane still meets it
+			constexpr float REACH = 1e6f;
+			emits( quad( 0, -REACH, REACH, REACH, 40.0f ), white );
+		}
+		const int numLamps = ( ceiling && lamps ) ? 2 : 0;
+		for ( int i = 0; i < numLamps; i++ ) {
+			// a point light of radius 80 under the lit half: its projection and falloff map its bounds onto [0, 1]
+			constexpr float RADIUS = 80.0f;
+			const idVec3 origin( -16.0f, 0.0f, 2.0f );
+			gpuSceneLightWrite_t & light = lights[i];
+			memset( &light, 0, sizeof( light ) );
+			light.light.origin.Set( origin.x, origin.y, origin.z, 1.0f );
+			light.light.project[0].Set( 0.5f / RADIUS, 0.0f, 0.0f, 0.5f - origin.x * 0.5f / RADIUS );
+			light.light.project[1].Set( 0.0f, 0.5f / RADIUS, 0.0f, 0.5f - origin.y * 0.5f / RADIUS );
+			light.light.project[2].Set( 0.0f, 0.0f, 0.0f, 1.0f );
+			light.light.project[3].Set( 0.0f, 0.0f, 0.5f / RADIUS, 0.5f - origin.z * 0.5f / RADIUS );
+			light.light.color.Set( ( i == 0 ) ? 1.0f : 0.0f, 0.0f, ( i == 0 ) ? 0.0f : 1.0f, 1.0f );
+			light.light.boundsMin.Set( origin.x - RADIUS, origin.y - RADIUS, origin.z - RADIUS, 0.0f );
+			light.light.boundsMax.Set( origin.x + RADIUS, origin.y + RADIUS, origin.z + RADIUS, 0.0f );
+			light.textures[0] = white;
+			light.textures[1] = white;
+		}
+		frame.frame.lights = ( numLamps > 0 ) ? lights.data() : nullptr;
+		frame.frame.numLights = numLamps;
+		gpuSceneStats_t stats;
+		fixture.Bind();
+		const int instances = static_cast<int>( frame.instances.size() );
+		return Check( scene.gpuScene.Update( frame.Update( vertexBuffer, indexBuffer ) ) && scene.gpuScene.NumLights() == numLamps
+			&& scene.rt.Build( scene.rays.graph, scene.gpuScene, nullptr, stats ) && stats.tlasInstances == instances && stats.waiting == 0,
+			va( "%u sample(s): update %u and its build: %s", samples, sceneSequence, RtStats( stats ).c_str() ) );
+	};
+
+	// columns or rows [first, end) of the G-buffer's material
+	struct band_t {
+		int		first, end;
+		idVec3	f0;
+		float	roughness;
+		bool	lean;		// the normal 60 degrees toward +x
+	};
+	// the floor: its depth, the G-buffer's bands, its motion against the frame before, the scene's colour
+	const float leanCode = OctahedralRef( leaning ).x;
+	const auto prepare = [&]( const idVec4 & color, std::span<const band_t> bands, bool rows, float motion ) {
+		fixture.Bind();
+		idD3D12SceneTarget::surface_t & depth = target.Depth();
+		idD3D12SceneTarget::surface_t & sceneColor = target.Color( true );
+		gpu.barriers.Transition( *depth.resource.Get(), depth.state, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+		gpu.barriers.Transition( *sceneColor.resource.Get(), sceneColor.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		for ( size_t i = 0; i < idD3D12SceneTarget::GBUFFER_TARGETS; i++ ) {
+			idD3D12SceneTarget::surface_t & g = target.GBuffer( i );
+			gpu.barriers.Transition( *g.resource.Get(), g.state, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		}
+		gpu.barriers.Flush();
+		ID3D12GraphicsCommandList4 & list = gpu.List();
+		list.ClearDepthStencilView( target.Dsv(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, FLOOR_DEPTH, 0, 0, nullptr );
+		list.ClearRenderTargetView( target.Rtv( false, true ), color.ToFloatPtr(), 0, nullptr );
+		const auto rtvs = target.GBufferRtvs();
+		const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		const float moved[4] = { motion, 0.0f, 0.0f, 0.0f };
+		const float drawn[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		const float lean[4] = { leanCode, 0.0f, 0.0f, 0.0f };
+		list.ClearRenderTargetView( rtvs[0], zero, 0, nullptr );
+		list.ClearRenderTargetView( rtvs[1], zero, 0, nullptr );
+		list.ClearRenderTargetView( rtvs[2], moved, 0, nullptr );
+		list.ClearRenderTargetView( rtvs[3], drawn, 0, nullptr );
+		for ( const band_t & band : bands ) {
+			const D3D12_RECT rect = rows ? D3D12_RECT { 0, band.first, SIZE, band.end } : D3D12_RECT { band.first, 0, band.end, SIZE };
+			const float material[4] = { band.f0.x, band.f0.y, band.f0.z, band.roughness };
+			list.ClearRenderTargetView( rtvs[1], material, 1, &rect );
+			if ( band.lean ) {
+				list.ClearRenderTargetView( rtvs[0], lean, 1, &rect );
+			}
+		}
+	};
+	const auto worldToClip = [&]( float shift ) {
+		const float scale = EYE / 32.0f;
+		return idRenderMatrix( scale, 0.0f, 0.0f, -scale * shift,
+			0.0f, scale, 0.0f, 0.0f,
+			0.0f, 0.0f, -DEPTH_A, DEPTH_A * EYE + DEPTH_B,
+			0.0f, 0.0f, -1.0f, EYE );
+	};
+	const auto viewOf = [&]( float shift, float before, uint32 epoch, uint32 sequence, bool store ) {
+		rtView_t view;
+		const idRenderMatrix now = worldToClip( shift );
+		const idRenderMatrix then = worldToClip( before );
+		idRenderMatrix inverse;
+		if ( !idRenderMatrix::Inverse( now, inverse ) ) {
+			Check( false, "the view inverts" );
+		}
+		for ( int row = 0; row < 4; row++ ) {
+			for ( int column = 0; column < 4; column++ ) {
+				view.clipToWorld[row][column] = inverse[row][column];
+				view.worldToClip[row][column] = now[row][column];
+				view.prevWorldToClip[row][column] = then[row][column];
+			}
+		}
+		view.origin[0] = shift;
+		view.origin[2] = EYE;
+		view.pixelSpread = 1.0f / EYE;
+		view.epoch = epoch;
+		view.sequence = sequence;
+		view.store = store;
+		return view;
+	};
+	struct shot_t {
+		std::span<const band_t>	bands;
+		bool					rows = false;
+		uint32					sequence = 0;
+		idVec4					color = vec4_zero;
+		bool					store = true;
+		float					shift = 0.0f;		// of the eye along x
+		float					before = 0.0f;		// its shift the frame before
+	};
+	uint32 epoch = 0;
+	const auto run = [&]( const rtReflectionSettings_t & settings, const shot_t & shot ) {
+		// the floor was where the eye was not: GL's motion, this frame's pixel less the one before's
+		prepare( shot.color, shot.bands, shot.rows, shot.before - shot.shift );
+		rtPasses.Reflections( scene.rays.graph, target, history, scene.rt, scene.gpuScene, settings,
+			viewOf( shot.shift, shot.before, epoch, shot.sequence, shot.store ), { 0, 0, SIZE, SIZE }, PRE_EXPOSURE, nullptr );
+		return ReadFloatSurface( gpu, target.Color( true ) );
+	};
+	// frames 0 .. count - 1 of a new epoch: the last one's scene
+	const auto runFrames = [&]( const rtReflectionSettings_t & settings, shot_t shot, int count ) {
+		epoch++;
+		std::vector<idVec4> texels;
+		for ( int i = 0; i < count; i++ ) {
+			shot.sequence = static_cast<uint32>( i );
+			texels = run( settings, shot );
+		}
+		return texels;
+	};
+	const auto sameRows = [&]( const std::vector<idVec4> & a, const std::vector<idVec4> & b, int first, int end ) {
+		return a.size() == numTexels && b.size() == numTexels
+			&& memcmp( &a[static_cast<size_t>( first ) * SIZE], &b[static_cast<size_t>( first ) * SIZE], static_cast<size_t>( end - first ) * SIZE * sizeof( idVec4 ) ) == 0;
+	};
+
+	struct region_t {
+		const char *	name;
+		int				column0, column1, row0, row1;	// inclusive
+	};
+	struct error_t {
+		float			worst = 0.0f;		// of a pixel's channel, as a part of what is wanted or of least
+		float			mean = 0.0f;		// of the region's mean
+		idVec4			got = vec4_zero;	// the worst pixel
+		idVec3			want = vec3_zero;
+	};
+	const auto compare = [&]( const std::vector<idVec4> & texels, const region_t & region, float least, auto && want ) {
+		error_t result;
+		if ( texels.size() != numTexels ) {
+			result.worst = result.mean = idMath::INFINITY;
+			return result;
+		}
+		double sumGot[3] = {};
+		double sumWant[3] = {};
+		int count = 0;
+		for ( int row = region.row0; row <= region.row1; row++ ) {
+			for ( int column = region.column0; column <= region.column1; column++ ) {
+				const idVec3 wanted = want( column, row );
+				const idVec4 & got = texels[static_cast<size_t>( row ) * SIZE + column];
+				for ( int c = 0; c < 3; c++ ) {
+					const float error = idMath::Fabs( got[c] - wanted[c] ) / Max( least, idMath::Fabs( wanted[c] ) );
+					if ( error > result.worst ) {
+						result.worst = error;
+						result.got = got;
+						result.want = wanted;
+					}
+					sumGot[c] += got[c];
+					sumWant[c] += wanted[c];
+				}
+				count++;
+			}
+		}
+		for ( int c = 0; c < 3; c++ ) {
+			const double error = idMath::Fabs( static_cast<float>( sumGot[c] - sumWant[c] ) ) / Max( static_cast<double>( least ) * count, sumWant[c] );
+			result.mean = Max( result.mean, static_cast<float>( error ) );
+		}
+		return result;
+	};
+	const auto report = [&]( const char * label, const region_t & region, const error_t & error, float worst, float mean ) {
+		Check( error.worst <= worst && error.mean <= mean, va( "%u sample(s), %s, %s: worst %g (%g allowed), mean %g (%g), %s for %s", samples, label,
+			region.name, error.worst, worst, error.mean, mean, error.got.ToString(), error.want.ToString() ) );
+	};
+	const auto bandAt = []( std::span<const band_t> bands, int at ) -> const band_t & {
+		for ( const band_t & band : bands ) {
+			if ( at >= band.first && at < band.end ) {
+				return band;
+			}
+		}
+		return bands.front();
+	};
+	const auto fadeOf = [&]( const band_t & band ) { return idMath::ClampFloat( 0.0f, 1.0f, ( MAX_ROUGHNESS - band.roughness ) / FADE ); };
+	// The surface's part of what its rays met (internal/rtComposite.hlsl): Schlick's Fresnel times the fade.
+	const auto surfacePart = [&]( const band_t & band, int column, int row ) {
+		const float fade = fadeOf( band );
+		if ( fade <= 0.0f || band.f0 == vec3_zero ) {
+			return vec3_zero;
+		}
+		idVec3 view = idVec3( column - 31.5f, row - 31.5f, 0.0f ) - idVec3( 0.0f, 0.0f, EYE );
+		view.Normalize();
+		const float facing = idMath::ClampFloat( 0.0f, 1.0f, -( view * ( band.lean ? leaning : idVec3( 0.0f, 0.0f, 1.0f ) ) ) );
+		const float grazing = idMath::Pow( 1.0f - facing, 5.0f );
+		idVec3 part;
+		for ( int c = 0; c < 3; c++ ) {
+			part[c] = ( band.f0[c] + ( Max( 1.0f - band.roughness, band.f0[c] ) - band.f0[c] ) * grazing ) * fade;
+		}
+		return part;
+	};
+
+	// ---- the sky: the same from everywhere ----
+	if ( !apply( false ) ) {
+		release();
+		return;
+	}
+	const std::array<band_t, 7> skyBands = { {
+		{ 0, 8, tint, 0.0f, false },
+		{ 8, 20, tint, 26.0f / 255.0f, false },
+		{ 20, 32, tint, 77.0f / 255.0f, false },
+		{ 32, 44, tint, 128.0f / 255.0f, false },
+		{ 44, 52, tint, 77.0f / 255.0f, true },
+		{ 52, 58, vec3_zero, 77.0f / 255.0f, false },
+		{ 58, 64, tint, 204.0f / 255.0f, false },
+	} };
+	const std::array<region_t, 7> skyRegions = { {
+		{ "a mirror", 0, 7, 0, 63 },
+		{ "roughness 0.1", 8, 19, 0, 63 },
+		{ "roughness 0.3", 20, 31, 0, 63 },
+		{ "roughness 0.5, fading", 32, 43, 0, 63 },
+		{ "a leaning normal", 44, 51, 0, 63 },
+		{ "F0 0", 52, 57, 0, 63 },
+		{ "too rough", 58, 63, 0, 63 },
+	} };
+	rtReflectionSettings_t single;
+	single.enabled = true;
+	single.history = false;
+	single.passes = 0;
+	single.distance = 1e7f;
+	rtReflectionSettings_t filtered = single;
+	filtered.history = true;
+	filtered.passes = 4;
+	rtReflectionSettings_t reference = single;
+	reference.history = true;
+	reference.reference = true;
+	reference.maxHistory = 4096;
+	const shot_t skyShot = { skyBands, false, 0, base };
+	// lost: WARP misses the sky with a ray or two of a pixel's 16 that leave almost along the floor
+	const auto checkSky = [&]( const char * what, const rtReflectionSettings_t & settings, int frames, float lost = 2e-3f ) {
+		const std::vector<idVec4> texels = ( frames > 1 ) ? runFrames( settings, skyShot, frames ) : run( settings, skyShot );
+		const idStr label = va( "the sky, %s", what );
+		for ( const region_t & region : skyRegions ) {
+			report( label.c_str(), region, compare( texels, region, 0.25f, [&]( int column, int row ) {
+				const idVec3 part = surfacePart( bandAt( skyBands, column ), column, row ) * ( settings.scale * PRE_EXPOSURE );
+				const idVec3 added( sky.x * part.x, sky.y * part.y, sky.z * part.z );
+				return settings.alone ? added : base.ToVec3() + added;
+			} ), lost, 2e-3f );
+		}
+		bool alpha = !texels.empty();
+		for ( const idVec4 & texel : texels ) {
+			alpha = alpha && texel.w == base.w;
+		}
+		Check( alpha, va( "%u sample(s), %s: the alpha stays", samples, label.c_str() ) );
+	};
+	checkSky( "one frame", single, 1 );
+	rtReflectionSettings_t changed = single;
+	changed.alone = true;
+	checkSky( "alone", changed, 1 );
+	changed = single;
+	changed.scale = 3.0f;
+	checkSky( "scaled", changed, 1 );
+	changed = single;
+	changed.glossy = false;
+	checkSky( "every pixel a mirror", changed, 1 );
+	// over frames and neighbours a constant stays what it is
+	checkSky( "8 frames filtered", filtered, 8 );
+	checkSky( "16 frames of the reference", reference, 16, gpu.device.Features().warp ? 0.13f : 2e-3f );
+	changed = single;
+	changed.passes = 4;
+	checkSky( "one frame through the passes", changed, 1 );
+	if ( samples > 1 ) {
+		release();
+		CheckNoLayerErrors( gpu );
+		return;
+	}
+
+	// ---- the ceiling of two halves ----
+	const std::array<band_t, 4> ceilingBands = { {
+		{ 0, 16, whole, 0.0f, false },
+		{ 16, 32, whole, 26.0f / 255.0f, false },
+		{ 32, 48, whole, 77.0f / 255.0f, false },
+		{ 48, 64, whole, 128.0f / 255.0f, false },
+	} };
+	const std::array<const char *, 4> ceilingNames = { "the mirror", "roughness 0.1", "roughness 0.3", "roughness 0.5" };
+	constexpr int MARGIN = 2;				// rows of a band beside another one
+	constexpr int PROFILE[2] = { 16, 48 };	// columns [first, end) about the line
+	// The part of a pixel's rays that meets the emissive half, over the facets of its GGX lobe, reflected as
+	// internal/rtReflect.hlsl does. Two ways: the facets drawn as the shader draws them (include/rtReflection.hlsli's
+	// RtGgxVisibleNormal, the first `kept` of the lobe), and drawn by the lobe's own density, each as the eye sees
+	// it (its cosine toward the eye over the one toward the normal). Of the whole lobe the two must agree.
+	constexpr int FACETS = 192;
+	constexpr int TURNS = 96;
+	constexpr float LOBE_KEPT = 0.9f;		// RT_REFLECT_LOBE
+	std::array<float, TURNS> turnCos, turnSin;
+	for ( int j = 0; j < TURNS; j++ ) {
+		idMath::SinCos( idMath::TWO_PI * ( j + 0.5f ) / TURNS, turnSin[j], turnCos[j] );
+	}
+	const auto brightPart = [&]( int column, int row, float roughness, float kept, bool byDensity ) {
+		const idVec3 position( column - 31.5f, row - 31.5f, 0.0f );
+		idVec3 view = position - idVec3( 0.0f, 0.0f, EYE );
+		const float eyeDistance = view.Normalize();
+		const idVec3 from = position + idVec3( 0.0f, 0.0f, 0.02f + 0.001f * eyeDistance );
+		const auto meets = [&]( idVec3 direction ) {
+			if ( direction.z < 0.01f ) {
+				direction.z = 0.01f;
+				direction.Normalize();
+			}
+			const idVec3 hit = from + direction * ( ( CEILING - from.z ) / direction.z );
+			return hit.x < 0.0f && hit.x > -EXTENT && idMath::Fabs( hit.y ) < EXTENT;
+		};
+		if ( roughness < MIRROR ) {
+			return meets( idVec3( view.x, view.y, -view.z ) ) ? 1.0f : 0.0f;
+		}
+		// the shader's frame of the normal +z: right is -y, up is +x
+		const float alpha = roughness * roughness;
+		idVec3 toEye( view.y, -view.x, Max( -view.z, 0.05f ) );
+		toEye.Normalize();
+		idVec3 stretched( toEye.x * alpha, toEye.y * alpha, toEye.z );
+		stretched.Normalize();
+		double sum = 0.0;
+		double total = 0.0;
+		for ( int i = 0; i < FACETS; i++ ) {
+			const float u = ( i + 0.5f ) / FACETS;
+			const float tangent = alpha * idMath::Sqrt( u / ( 1.0f - u ) );
+			const float cosine = 1.0f / idMath::Sqrt( 1.0f + tangent * tangent );
+			// the shader's: a point of the sphere's cap above the stretched view's horizon
+			const float capZ = ( 1.0f - u * kept ) * ( 1.0f + stretched.z ) - stretched.z;
+			const float capSine = idMath::Sqrt( idMath::ClampFloat( 0.0f, 1.0f, 1.0f - capZ * capZ ) );
+			for ( int j = 0; j < TURNS; j++ ) {
+				idVec3 facet( tangent * cosine * turnCos[j], tangent * cosine * turnSin[j], cosine );
+				float weight = 1.0f;
+				if ( byDensity ) {
+					weight = ( toEye * facet ) / cosine;
+					if ( weight <= 0.0f ) {
+						continue;
+					}
+				} else {
+					const idVec3 cap( capSine * turnCos[j] + stretched.x, capSine * turnSin[j] + stretched.y, capZ + stretched.z );
+					facet.Set( cap.x * alpha, cap.y * alpha, Max( cap.z, 1e-6f ) );
+					facet.Normalize();
+				}
+				const idVec3 out = facet * ( 2.0f * ( toEye * facet ) ) - toEye;
+				total += weight;
+				if ( meets( idVec3( out.y, -out.x, out.z ) ) ) {
+					sum += weight;
+				}
+			}
+		}
+		return static_cast<float>( sum / total );
+	};
+	std::vector<float> parts( numTexels, 0.0f );
+	float apart = 0.0f;
+	for ( const band_t & band : ceilingBands ) {
+		for ( int row = band.first; row < band.end; row++ ) {
+			for ( int column = PROFILE[0]; column < PROFILE[1]; column++ ) {
+				parts[static_cast<size_t>( row ) * SIZE + column] = brightPart( column, row, band.roughness, LOBE_KEPT, false );
+				// a row of each band: the shader's facets are the lobe's as the eye sees it
+				if ( row == band.first + MARGIN ) {
+					apart = Max( apart, idMath::Fabs( brightPart( column, row, band.roughness, 1.0f, false )
+						- brightPart( column, row, band.roughness, 1.0f, true ) ) );
+				}
+			}
+		}
+	}
+	Check( apart < 0.01f, va( "the facets drawn as the shader draws them and by the lobe's density meet the emissive half alike: %g apart at most", apart ) );
+	// the test's own ground: three pixels beside the line the roughest band shows a mix, a mirror would not
+	{
+		const float beside = parts[static_cast<size_t>( 56 ) * SIZE + 34];
+		Check( beside > 0.05f && beside < 0.45f, va( "the roughest band's lobe meets %g of the emissive half 2.5 units beside the line", beside ) );
+	}
+	struct profile_t {
+		float	mean = 0.0f;		// the worst column's mean over the band's rows, as a part of the emissive half's
+		float	worst = 0.0f;		// the worst pixel
+		int		meanAt = 0;
+		int		worstAt = 0;
+	};
+	// A band's rows clear of its neighbours, per column: the red they show (alone, F0 1) against the CPU's part.
+	const auto profile = [&]( const std::vector<idVec4> & texels, const band_t & band ) {
+		profile_t result;
+		if ( texels.size() != numTexels ) {
+			result.mean = result.worst = idMath::INFINITY;
+			return result;
+		}
+		const float full = fadeOf( band ) * PRE_EXPOSURE;
+		for ( int column = PROFILE[0]; column < PROFILE[1]; column++ ) {
+			double got = 0.0;
+			double want = 0.0;
+			int count = 0;
+			for ( int row = band.first + MARGIN; row < band.end - MARGIN; row++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				const float shown = texels[at].x / full;
+				const float error = idMath::Fabs( shown - parts[at] );
+				if ( error > result.worst ) {
+					result.worst = error;
+					result.worstAt = column;
+				}
+				got += shown;
+				want += parts[at];
+				count++;
+			}
+			const float error = idMath::Fabs( static_cast<float>( got - want ) ) / count;
+			if ( error > result.mean ) {
+				result.mean = error;
+				result.meanAt = column;
+			}
+		}
+		return result;
+	};
+	const auto checkProfiles = [&]( const char * label, const std::vector<idVec4> & texels, float mean, float worst ) {
+		for ( size_t i = 0; i < ceilingBands.size(); i++ ) {
+			const profile_t got = profile( texels, ceilingBands[i] );
+			// a mirror's image is one ray's: exact
+			const bool mirror = ceilingBands[i].roughness < MIRROR;
+			Check( got.mean <= ( mirror ? 2e-3f : mean ) && got.worst <= ( mirror ? 2e-3f : worst ), va( "%s, %s: a column's mean %g off at column %d "
+				"(%g allowed), a pixel %g at column %d (%g)", label, ceilingNames[i], got.mean, got.meanAt, mirror ? 2e-3f : mean, got.worst, got.worstAt,
+				mirror ? 2e-3f : worst ) );
+		}
+	};
+	if ( !apply( true ) ) {
+		release();
+		return;
+	}
+	rtReflectionSettings_t plain = reference;
+	plain.alone = true;
+	plain.distance = 1e5f;
+	rtReflectionSettings_t game = filtered;
+	game.alone = true;
+	game.distance = 1e5f;
+	rtReflectionSettings_t spatial = game;
+	spatial.history = false;
+	const shot_t ceilingShot = { ceilingBands, true, 0, dark };
+
+	// measured: a column's mean 0.002, 0.011 and 0.013 off, a pixel 0.03, 0.05 and 0.07
+	checkProfiles( "the ceiling, 64 frames of the reference", runFrames( plain, ceilingShot, 64 ), 0.03f, 0.15f );
+	// One frame through the passes alone: every pixel a ray, spread as far as its lobe reaches. A lone ray of the
+	// tail of a lobe narrower than a pixel stays a dot: only the columns' means tell (0.07 to 0.10).
+	{
+		const std::vector<idVec4> first = run( spatial, ceilingShot );
+		checkProfiles( "the ceiling, one frame through the passes", first, 0.2f, 1.0f );
+		shot_t later = ceilingShot;
+		later.sequence = 7;
+		Check( sameRows( first, run( spatial, later ), 0, SIZE ), "without a history every frame is the same bytes" );
+	}
+	// as the game runs it: 16 frames and four passes
+	const std::vector<idVec4> gameFrames = runFrames( game, ceilingShot, 32 );
+	// measured: a column's mean 0.006, 0.028 and 0.039 off (the cut takes a little of the lobe's tail), a pixel 0.09
+	checkProfiles( "the ceiling, 32 frames filtered", gameFrames, 0.06f, 0.15f );
+	Check( sameRows( gameFrames, runFrames( game, ceilingShot, 32 ), 0, SIZE ), "the same frames of another epoch give the same bytes" );
+	// a screenshot reads the history and leaves it
+	shot_t next = ceilingShot;
+	next.sequence = 32;
+	next.store = false;
+	const std::vector<idVec4> unstored = run( game, next );
+	next.store = true;
+	const std::vector<idVec4> stored = run( game, next );
+	Check( sameRows( unstored, stored, 0, SIZE ), "the frame after a screenshot is the one without it" );
+
+	// an eye that moves 4 units a frame, 8 frames, the last one where the still eye was: the line's image moved
+	// 3.2 pixels a frame and the floor 4. The pixels three and more beside the line show their own half.
+	constexpr int STRAFE_FRAMES = 8;
+	const auto strafe = [&]( const rtReflectionSettings_t & settings ) {
+		constexpr float STEP = 4.0f;
+		epoch++;
+		std::vector<idVec4> last;
+		shot_t moving = ceilingShot;
+		for ( int i = 0; i < STRAFE_FRAMES; i++ ) {
+			moving.sequence = static_cast<uint32>( i );
+			moving.shift = STEP * ( i + 1 - STRAFE_FRAMES );
+			moving.before = ( i == 0 ) ? moving.shift : moving.shift - STEP;
+			last = run( settings, moving );
+		}
+		return last;
+	};
+	const auto checkSides = [&]( const char * label, const std::vector<idVec4> & moved, float off ) {
+		if ( !Check( moved.size() == numTexels, va( "%s: the scene is read", label ) ) ) {
+			return;
+		}
+		const band_t & band = ceilingBands[1];
+		const float full = fadeOf( band ) * PRE_EXPOSURE;
+		float least = 1.0f;
+		float most = 0.0f;
+		for ( int row = band.first + MARGIN; row < band.end - MARGIN; row++ ) {
+			for ( int column = 24; column < 29; column++ ) {
+				least = Min( least, moved[static_cast<size_t>( row ) * SIZE + column].x / full );
+			}
+			for ( int column = 35; column < 40; column++ ) {
+				most = Max( most, moved[static_cast<size_t>( row ) * SIZE + column].x / full );
+			}
+		}
+		Check( least >= 1.0f - off && most <= off, va( "%s: beside the line the emissive half shows at least %g of itself, the black one at most %g "
+			"(%g allowed off)", label, least, most, off ) );
+	};
+	// measured 0.992; looked for only where the floor was, 0.92
+	checkSides( "a moving eye, filtered", strafe( game ), 0.04f );
+	// what a surface reflects depends on where the eye is: the reference of an eye that moved is that frame alone
+	{
+		const std::vector<idVec4> moved = strafe( plain );
+		epoch++;
+		shot_t alone = ceilingShot;
+		alone.sequence = STRAFE_FRAMES - 1;
+		Check( sameRows( moved, run( plain, alone ), 0, SIZE ), "the reference starts again when the eye moves" );
+	}
+
+	// nothing to trace: a glossy pixel's history stands, a mirror has none, and without a history nothing is added
+	runFrames( game, ceilingShot, 32 );
+	next.sequence = 32;
+	const std::vector<idVec4> traced = run( game, next );
+	scene.rt.Invalidate();
+	next.sequence = 33;
+	const std::vector<idVec4> held = run( game, next );
+	Check( sameRows( held, traced, ceilingBands[1].first, SIZE ), "a frame that cannot trace shows what the history holds of the glossy pixels" );
+	report( "nothing to trace", { "the mirror", 0, 63, 0, ceilingBands[0].end - 1 },
+		compare( held, { "the mirror", 0, 63, 0, ceilingBands[0].end - 1 }, 1.0f, []( int, int ) { return vec3_zero; } ), 1e-5f, 1e-5f );
+	epoch++;
+	shot_t empty = ceilingShot;
+	empty.color = base;
+	rtReflectionSettings_t added = game;
+	added.alone = false;
+	report( "nothing to trace and no history", { "the floor", 0, 63, 0, 63 },
+		compare( run( added, empty ), { "the floor", 0, 63, 0, 63 }, 1.0f, [&]( int, int ) { return base.ToVec3(); } ), 1e-3f, 1e-3f );
+
+	// ---- the lit half under a red and a blue lamp ----
+	// A glossy ray that meets the lit half takes one of the two lamps for both. A pixel beside the line is as red as
+	// it is blue only if the number that picks the lamp does not move with the pair that draws the facet
+	// (include/rtNoise.hlsli's steps): with one step for all a pixel keeps a colour of its own at any frame count.
+	if ( apply( true, true ) ) {
+		constexpr int FRAMES = 128;
+		const std::vector<idVec4> texels = runFrames( plain, ceilingShot, FRAMES );
+		float worst = 0.0f;
+		double apart = 0.0;
+		double shown = 0.0;
+		int count = 0;
+		if ( Check( texels.size() == numTexels, "two lamps: the scene is read" ) ) {
+			for ( size_t i = 1; i < ceilingBands.size(); i++ ) {
+				for ( int row = ceilingBands[i].first + MARGIN; row < ceilingBands[i].end - MARGIN; row++ ) {
+					for ( int column = PROFILE[0]; column < PROFILE[1]; column++ ) {
+						const size_t at = static_cast<size_t>( row ) * SIZE + column;
+						// a quarter and more of the pixel's rays meet the lit half
+						if ( parts[at] < 0.25f ) {
+							continue;
+						}
+						const float both = texels[at].x + texels[at].z;
+						const float off = idMath::Fabs( texels[at].x - texels[at].z ) / Max( both, 1e-6f );
+						worst = Max( worst, off );
+						apart += off;
+						shown += both;
+						count++;
+					}
+				}
+			}
+			// measured 0.40 and 0.038 (a pixel has as few as 32 rays that count); with one step for all pairs 1 and 0.125
+			Check( count > 0 && shown / count > 0.01 && worst <= 0.6f && apart / count <= 0.07,
+				va( "two lamps, %d frames of the reference: a pixel's red and blue %g of their sum apart at most, %g on average, over %d pixels "
+					"that show %g", FRAMES, worst, apart / Max( count, 1 ), count, shown / Max( count, 1 ) ) );
+		}
+	}
+
+	release();
+	CheckNoLayerErrors( gpu );
+}
+
+void RtGlossyAllSamples( idTestGpu & gpu ) {
+	RtGlossy( gpu, 1 );
+	if ( gpu.device.Features().samples[2] ) {
+		RtGlossy( gpu, 4 );
 	}
 }
 
@@ -10653,6 +11359,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Gpu_RtReflection", OnGpu<RtReflection> },
 	{ "Warp_RtIndirect", OnWarp<RtIndirectAllSamples> },
 	{ "Gpu_RtIndirect", OnGpu<RtIndirectAllSamples> },
+	{ "Warp_RtGlossy", OnWarp<RtGlossyAllSamples> },
+	{ "Gpu_RtGlossy", OnGpu<RtGlossyAllSamples> },
 	{ "Warp_RtDraw", OnWarp<RtDrawAllSamples> },
 	{ "Gpu_RtDraw", OnGpu<RtDrawAllSamples> },
 	{ "Warp_RtShadows", OnWarp<RtShadowsAllSamples> },

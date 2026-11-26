@@ -19,8 +19,8 @@
 
 	  RtShade         a mirror's image: the first maxLights that add light, each with a shadow ray toward its
 	                  centre when it casts shadows
-	  RtShadeSampled  a bounce: one light for all that reach the hit, picked as often as it adds light, with a ray
-	                  toward a point of its disk whatever it casts; no highlight
+	  RtShadeSampled  a bounce or a glossy ray: one light for all that reach the hit, picked as often as it adds
+	                  light, with a ray toward a point of its disk whatever it casts; a bounce without the highlight
 */
 
 #ifndef RTLIGHTING_HLSLI
@@ -201,9 +201,10 @@ float3 RtShade( RtHeap heap, RtLighting lighting, RtHit hit, RayDesc ray, float 
 // often as it adds of their sum and counts it that many times more, so the mean over the picks is the sum. One ray
 // toward a point of its disk (spot: RtDisk's) tells its shadow, whatever the light casts in the raster: light that
 // passes a wall there would bounce off the room behind it. An ambient light has no place it comes from, and no ray.
-// emissiveScale: what the hit emits, times this.
+// emissiveScale: what the hit emits, times this. highlight: with the specular term toward the ray's origin, which a
+// reflection shows and light that bounces on does not carry.
 float3 RtShadeSampled( RtHeap heap, RtLighting lighting, RtHit hit, RayDesc ray, float coneDistance, float pixelSpread, float pick, float2 spot,
-	float emissiveScale ) {
+	float emissiveScale, bool highlight ) {
 	const RtGeometry g = RtLoadGeometry( heap, hit.record );
 	if ( ( g.flags & RT_GEO_NO_SHADING ) != 0 ) {
 		return float3( 0.0, 0.0, 0.0 );
@@ -223,7 +224,7 @@ float3 RtShadeSampled( RtHeap heap, RtLighting lighting, RtHit hit, RayDesc ray,
 			continue;
 		}
 		const RtLight light = RtLoadLight( lighting.lights, i );
-		const float3 lit = RtLit( lighting, hit, shaded, light, false );
+		const float3 lit = RtLit( lighting, hit, shaded, light, highlight );
 		const float weight = lit.r + lit.g + lit.b;
 		if ( weight <= 0.0 ) {
 			continue;

@@ -39,7 +39,8 @@ struct rtReflectParms_t {
 	float							clipToWorld[4][4];
 	float							origin[4];		// w the radians per pixel
 	float							viewport[4];
-	float							limits[4];		// distance, the roughness that reflects nothing, the fade below it
+	// distance, the roughness that reflects nothing, the fade below it, the roughness below which a pixel is a mirror
+	float							limits[4];
 	uint32							tlasSrv;
 	uint32							recordsSrv;
 	uint32							instancesSrv;
@@ -56,15 +57,71 @@ struct rtReflectParms_t {
 	uint32							clampSampler;
 	uint32							maxLights;
 	uint32							shadows;
+	int32							first[2];
+	uint32							size[2];		// texels
+	uint32							noiseSrv;
+	uint32							noiseIndex;
+	uint32							unused[2];
 };
-static_assert( sizeof( rtReflectParms_t ) == 176 );
+static_assert( sizeof( rtReflectParms_t ) == 208 );
+
+// b0 of internal/rtReflectTemporal.hlsl.
+struct rtReflectTemporalParms_t {
+	float							clipToWorld[4][4];
+	float							prevWorldToClip[4][4];
+	float							origin[4];
+	float							viewport[4];
+	float							limits[4];		// the roughness that reflects nothing, the fade below it, the mirror's
+	int32							first[2];
+	uint32							size[2];		// texels
+	uint32							signalSrv;
+	uint32							guidesSrv;
+	uint32							reprojectSrv;
+	uint32							slopeSrv;
+	uint32							prevGuidesSrv;
+	uint32							prevColorSrv;
+	uint32							prevAuxSrv;
+	uint32							depthSrv;
+	uint32							materialSrv;
+	uint32							colorUav;
+	uint32							auxUav;
+	uint32							outputUav;
+	uint32							flags;		// bit 0: the three of the frame before are there; 1: a plain average; 2: no ray this frame
+	float							maxHistory;
+	float							leastStep;
+	uint32							unused;
+};
+static_assert( sizeof( rtReflectTemporalParms_t ) == 256 );
+
+// b0 of internal/rtReflectAtrous.hlsl.
+struct rtReflectAtrousParms_t {
+	uint32							size[2];
+	uint32							colorSrv;
+	uint32							spreadSrv;
+	uint32							guidesSrv;
+	uint32							slopeSrv;
+	uint32							colorUav;
+	uint32							spreadUav;
+	int32							stride;
+	float							pixelSpread;
+	uint32							unused[2];
+};
+static_assert( sizeof( rtReflectAtrousParms_t ) == 48 );
 
 // b1 of internal/rtComposite.hlsl.
 struct rtCompositeParms_t {
+	float							clipToWorld[4][4];
+	float							origin[4];
+	float							viewport[4];
+	float							limits[4];		// the roughness that reflects nothing, the fade below it, the scale times preExposure
 	int32							first[2];
-	float							scale;
 	uint32							reflectionSrv;
+	uint32							depthSrv;
+	uint32							normalSrv;
+	uint32							materialSrv;
+	uint32							unused[2];
 };
+static_assert( sizeof( rtCompositeParms_t ) == 144 );
 
 // b1 of internal/rtShadowRatio.hlsl.
 struct rtShadowRatioParms_t {
@@ -336,8 +393,9 @@ ID3D12PipelineState * idD3D12RtPasses::CompositePipeline( UINT samples, bool add
 	idComPtr<ID3D12PipelineState> & pso = composite[( add ? 4 : 0 ) + ( std::countr_zero( samples ) & 3 )];
 	if ( !pso ) {
 		constexpr uint8 RGB = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
-		pso = passes.CreatePipeline( passes.Stage( "internal_rtComposite" ).code, d3d12TargetId_t::HDR_FORMAT, samples, RGB,
-			add ? L"doom3 rt reflection composite" : L"doom3 rt reflection alone", add ? d3d12PassBlend_t::ADD : d3d12PassBlend_t::REPLACE );
+		pso = passes.CreatePipeline( passes.Stage( ( samples > 1 ) ? "internal_rtComposite_msaa" : "internal_rtComposite" ).code,
+			d3d12TargetId_t::HDR_FORMAT, samples, RGB, add ? L"doom3 rt reflection composite" : L"doom3 rt reflection alone",
+			add ? d3d12PassBlend_t::ADD : d3d12PassBlend_t::REPLACE );
 	}
 	return pso.Get();
 }
@@ -370,15 +428,6 @@ ID3D12PipelineState * idD3D12RtPasses::UpsamplePipeline( UINT samples, bool add 
 			add ? d3d12PassBlend_t::ADD : d3d12PassBlend_t::REPLACE );
 	}
 	return pso.Get();
-}
-
-const d3d12ComputePipeline_t * idD3D12RtPasses::ReflectPipeline( bool multisampled ) {
-	d3d12ComputePipeline_t & pipeline = reflect[multisampled ? 1 : 0];
-	if ( !pipeline ) {
-		const d3d12HlslStage_t & stage = passes.Stage( multisampled ? "internal_rtReflect_msaa" : "internal_rtReflect" );
-		pipeline = D3D12_CreateComputePipeline( device, computeRoot, stage.code, stage.reflection, L"doom3 rt reflect" );
-	}
-	return pipeline ? &pipeline : nullptr;
 }
 
 const d3d12ComputePipeline_t * idD3D12RtPasses::ComputePipeline( d3d12ComputePipeline_t & pipeline, const char * stageName, const wchar_t * name ) {
@@ -479,8 +528,12 @@ void idD3D12RtPasses::Debug( idD3D12RenderGraph & graph, idD3D12SceneTarget & sc
 	graph.Execute( groups );
 }
 
-void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, idD3D12RayTracing & rt, idD3D12GpuScene & gpuScene,
-	const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & viewport, float preExposure, idD3D12DebugGroups * groups ) {
+// A mirror's image goes from the rays to the composite as it is. With settings.glossy the rays pass rt reflect
+// temporal, which reads the means of the frame before and writes the next ones only with a history (else they are
+// transients and every pixel starts anew), and the spatial passes; the guides are the shadows' of this frame.
+void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, idD3D12RtHistory & history, idD3D12RayTracing & rt,
+	idD3D12GpuScene & gpuScene, const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & viewport, float preExposure,
+	idD3D12DebugGroups * groups ) {
 	idD3D12SceneTarget::surface_t & sceneColor = scene.Color( true );
 	idD3D12SceneTarget::surface_t & depth = scene.Depth();
 	idD3D12SceneTarget::surface_t & normal = scene.GBuffer( 0 );
@@ -491,78 +544,244 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 		return;
 	}
 	const UINT samples = scene.Samples();
-	const d3d12ComputePipeline_t * trace = ReflectPipeline( samples > 1 );
+	const bool multisampled = samples > 1;
+	const bool glossy = settings.glossy;
+	const int numPasses = glossy ? Min( Max( settings.passes, 0 ), MAX_ATROUS_PASSES ) : 0;
+	const d3d12ComputePipeline_t * tracePipeline = ComputePipeline( reflect[multisampled ? 1 : 0],
+		multisampled ? "internal_rtReflect_msaa" : "internal_rtReflect", L"doom3 rt reflect" );
+	const d3d12ComputePipeline_t * temporalPipeline = glossy ? ComputePipeline( reflectTemporal[multisampled ? 1 : 0],
+		multisampled ? "internal_rtReflectTemporal_msaa" : "internal_rtReflectTemporal", L"doom3 rt reflect temporal" ) : nullptr;
+	const d3d12ComputePipeline_t * atrousPipeline = ( numPasses > 0 )
+		? ComputePipeline( reflectAtrous, "internal_rtReflectAtrous", L"doom3 rt reflect atrous" ) : nullptr;
 	ID3D12PipelineState * pso = CompositePipeline( samples, !settings.alone );
-	if ( trace == nullptr || pso == nullptr || !Traceable( rt, gpuScene ) ) {
+	if ( tracePipeline == nullptr || pso == nullptr || ( glossy && temporalPipeline == nullptr ) || ( numPasses > 0 && atrousPipeline == nullptr ) ) {
 		return;
 	}
 
-	const uint32 width = static_cast<uint32>( scene.Width() );
-	const uint32 height = static_cast<uint32>( scene.Height() );
+	const uint32 width = static_cast<uint32>( rect.width );
+	const uint32 height = static_cast<uint32>( rect.height );
+	// a half float stops counting frames at 2048
+	const DXGI_FORMAT format = settings.reference ? DXGI_FORMAT_R32G32B32A32_FLOAT : d3d12TargetId_t::HDR_FORMAT;
+	idD3D12RtHistory::use_t heldColor, heldAux;
+	if ( glossy && settings.history ) {
+		heldColor = history.Use( rtHistorySlot_t::REFLECTION_COLOR, format, width, height, view );
+		heldAux = history.Use( rtHistorySlot_t::REFLECTION_AUX, MOMENTS_FORMAT, width, height, view );
+	}
+	// a frame that cannot be traced takes what the history holds of its glossy pixels
+	const bool trace = Traceable( rt, gpuScene );
+	if ( !trace && ( heldColor.previous == nullptr || heldAux.previous == nullptr ) ) {
+		return;
+	}
+	guideUses_t frame;
+	if ( glossy ) {
+		const std::optional<guideUses_t> guide = AddGuides( graph, scene, settings.history ? &history : nullptr, view, viewport, rect,
+			{ 1, rtHistorySlot_t::GUIDES, false } );
+		if ( !guide ) {
+			return;
+		}
+		frame = *guide;
+	}
+	const bool store = view.store && heldColor.next != nullptr && heldAux.next != nullptr;
+	// what a surface reflects depends on where the eye is: the reference's plain average starts again when it moves
+	const bool restart = settings.reference && memcmp( view.worldToClip, view.prevWorldToClip, sizeof( view.worldToClip ) ) != 0;
+	const bool read = !restart && frame.previous.IsValid() && heldColor.previous != nullptr && heldAux.previous != nullptr;
+
+	const uint32 sceneWidth = static_cast<uint32>( scene.Width() );
+	const uint32 sceneHeight = static_cast<uint32>( scene.Height() );
 	const d3d12GraphResource_t colorUse = graph.Import( "SceneColor", { sceneColor.resource.Get(), &sceneColor.state, sceneColor.srv, {},
-		scene.Rtv( false, true ), width, height } );
-	const d3d12GraphResource_t depthUse = graph.Import( "Depth", { depth.resource.Get(), &depth.state, depth.srv, {}, {}, width, height } );
-	const d3d12GraphResource_t normalUse = graph.Import( "GBuffer normal", { normal.resource.Get(), &normal.state, normal.srv, {}, {}, width, height } );
+		scene.Rtv( false, true ), sceneWidth, sceneHeight } );
+	const d3d12GraphResource_t depthUse = graph.Import( "Depth", { depth.resource.Get(), &depth.state, depth.srv, {}, {}, sceneWidth, sceneHeight } );
+	const d3d12GraphResource_t normalUse = graph.Import( "GBuffer normal", { normal.resource.Get(), &normal.state, normal.srv, {}, {},
+		sceneWidth, sceneHeight } );
 	const d3d12GraphResource_t materialUse = graph.Import( "GBuffer material", { material.resource.Get(), &material.state, material.srv, {}, {},
-		width, height } );
+		sceneWidth, sceneHeight } );
 	d3d12PoolDesc_t desc;
 	desc.format = d3d12TargetId_t::HDR_FORMAT;
-	desc.width = static_cast<uint32>( viewport.width );
-	desc.height = static_cast<uint32>( viewport.height );
+	desc.width = width;
+	desc.height = height;
 	desc.unorderedAccess = true;
-	const d3d12GraphResource_t reflection = graph.Create( "rt reflection", desc );
-	std::vector<d3d12GraphUse_t> uses = { { depthUse, d3d12GraphAccess_t::DEPTH_READ }, { normalUse, d3d12GraphAccess_t::SRV },
-		{ materialUse, d3d12GraphAccess_t::SRV }, { reflection, d3d12GraphAccess_t::UAV, 0 } };
-	const rtSceneImports_t imports = ImportScene( graph, rt, gpuScene, uses );
-	d3d12GraphResource_t lights;
-	if ( gpuScene.NumLights() > 0 ) {
-		lights = graph.Import( "gpu scene lights", { gpuScene.LightBuffer(), &gpuScene.LightBufferState(), gpuScene.LightBufferSrv(), {}, {}, 0, 0 } );
-		uses.push_back( { lights, d3d12GraphAccess_t::SRV } );
+	const float mirrorRoughness = glossy ? settings.mirrorRoughness : 2.0f;
+
+	// the frame's rays
+	d3d12GraphResource_t ray;
+	if ( trace ) {
+		ray = graph.Create( "rt reflection", desc );
+		std::vector<d3d12GraphUse_t> uses = { { depthUse, d3d12GraphAccess_t::DEPTH_READ }, { normalUse, d3d12GraphAccess_t::SRV },
+			{ materialUse, d3d12GraphAccess_t::SRV }, { ray, d3d12GraphAccess_t::UAV, 0 } };
+		const rtSceneImports_t imports = ImportScene( graph, rt, gpuScene, uses );
+		d3d12GraphResource_t lights;
+		if ( gpuScene.NumLights() > 0 ) {
+			lights = graph.Import( "gpu scene lights", { gpuScene.LightBuffer(), &gpuScene.LightBufferState(), gpuScene.LightBufferSrv(), {}, {}, 0, 0 } );
+			uses.push_back( { lights, d3d12GraphAccess_t::SRV } );
+		}
+		textures.MakeReadable( noise );
+
+		rtReflectParms_t base = {};
+		memcpy( base.clipToWorld, view.clipToWorld, sizeof( base.clipToWorld ) );
+		base.origin[0] = view.origin[0];
+		base.origin[1] = view.origin[1];
+		base.origin[2] = view.origin[2];
+		base.origin[3] = view.pixelSpread;
+		base.viewport[0] = static_cast<float>( viewport.x );
+		base.viewport[1] = static_cast<float>( viewport.y );
+		base.viewport[2] = static_cast<float>( viewport.width );
+		base.viewport[3] = static_cast<float>( viewport.height );
+		base.limits[0] = Max( settings.distance, 1.0f );
+		base.limits[1] = settings.maxRoughness;
+		base.limits[2] = REFLECTION_FADE;
+		base.limits[3] = mirrorRoughness;
+		base.verticesSrv = rt.StaticVerticesSrv().index;
+		base.indexesSrv = rt.StaticIndexesSrv().index;
+		base.numLights = static_cast<uint32>( gpuScene.NumLights() );
+		base.linearSampler = linearSampler;
+		base.clampSampler = clampSampler;
+		base.maxLights = static_cast<uint32>( Max( settings.maxLights, 0 ) );
+		base.shadows = settings.shadows ? 1u : 0u;
+		base.first[0] = rect.x;
+		base.first[1] = rect.y;
+		base.size[0] = width;
+		base.size[1] = height;
+		base.noiseSrv = textures.SampledView( noise, textureKind_t::TEX_2D ).index;
+		// without a history every frame draws the same rays
+		base.noiseIndex = settings.history ? view.sequence : 0;
+		graph.AddPass( "rt reflect", d3d12GraphPass_t::COMPUTE, uses, [tracePipeline, base, depthUse, normalUse, materialUse, ray, imports,
+			lights]( idD3D12GraphContext & context ) {
+			rtReflectParms_t parms = base;
+			parms.tlasSrv = context.Srv( imports.tlas );
+			parms.recordsSrv = context.Srv( imports.records );
+			parms.instancesSrv = imports.table.IsValid() ? context.Srv( imports.table ) : 0;
+			parms.skinnedSrv = imports.skinned.IsValid() ? context.Srv( imports.skinned ) : 0;
+			parms.lightsSrv = lights.IsValid() ? context.Srv( lights ) : 0;
+			parms.depthSrv = context.Srv( depthUse );
+			parms.normalSrv = context.Srv( normalUse );
+			parms.materialSrv = context.Srv( materialUse );
+			parms.outputUav = context.Uav( ray );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( *tracePipeline, &span, parms.size[0], parms.size[1] );
+		} );
 	}
 
-	rtReflectParms_t base = {};
-	memcpy( base.clipToWorld, view.clipToWorld, sizeof( base.clipToWorld ) );
-	base.origin[0] = view.origin[0];
-	base.origin[1] = view.origin[1];
-	base.origin[2] = view.origin[2];
-	base.origin[3] = view.pixelSpread;
-	base.viewport[0] = static_cast<float>( viewport.x );
-	base.viewport[1] = static_cast<float>( viewport.y );
-	base.viewport[2] = static_cast<float>( viewport.width );
-	base.viewport[3] = static_cast<float>( viewport.height );
-	base.limits[0] = Max( settings.distance, 1.0f );
-	base.limits[1] = settings.maxRoughness;
-	base.limits[2] = REFLECTION_FADE;
-	base.verticesSrv = rt.StaticVerticesSrv().index;
-	base.indexesSrv = rt.StaticIndexesSrv().index;
-	base.numLights = static_cast<uint32>( gpuScene.NumLights() );
-	base.linearSampler = linearSampler;
-	base.clampSampler = clampSampler;
-	base.maxLights = static_cast<uint32>( Max( settings.maxLights, 0 ) );
-	base.shadows = settings.shadows ? 1u : 0u;
-	const uint32 threadsX = static_cast<uint32>( viewport.width );
-	const uint32 threadsY = static_cast<uint32>( viewport.height );
-	graph.AddPass( "rt reflect", d3d12GraphPass_t::COMPUTE, uses, [trace, base, depthUse, normalUse, materialUse, reflection, imports, lights,
-		threadsX, threadsY]( idD3D12GraphContext & context ) {
-		rtReflectParms_t parms = base;
-		parms.tlasSrv = context.Srv( imports.tlas );
-		parms.recordsSrv = context.Srv( imports.records );
-		parms.instancesSrv = imports.table.IsValid() ? context.Srv( imports.table ) : 0;
-		parms.skinnedSrv = imports.skinned.IsValid() ? context.Srv( imports.skinned ) : 0;
-		parms.lightsSrv = lights.IsValid() ? context.Srv( lights ) : 0;
-		parms.depthSrv = context.Srv( depthUse );
-		parms.normalSrv = context.Srv( normalUse );
-		parms.materialSrv = context.Srv( materialUse );
-		parms.outputUav = context.Uav( reflection );
-		const d3d12UploadSpan_t span = context.Parms( parms );
-		context.Dispatch( *trace, &span, threadsX, threadsY );
-	} );
+	d3d12GraphResource_t filtered = ray;
+	if ( glossy ) {
+		// over the frames
+		d3d12GraphResource_t color, aux, prevColor, prevAux;
+		if ( store ) {
+			color = ImportHistory( graph, "rt reflection history", *heldColor.next, width, height );
+			aux = ImportHistory( graph, "rt reflection moments", *heldAux.next, width, height );
+			history.Written( rtHistorySlot_t::REFLECTION_COLOR, view );
+			history.Written( rtHistorySlot_t::REFLECTION_AUX, view );
+		} else {
+			desc.format = format;
+			color = graph.Create( "rt reflection history", desc );
+			desc.format = MOMENTS_FORMAT;
+			aux = graph.Create( "rt reflection moments", desc );
+			desc.format = d3d12TargetId_t::HDR_FORMAT;
+		}
+		d3d12GraphResource_t spread = graph.Create( "rt reflection spread", desc );
+		std::vector<d3d12GraphUse_t> temporalUses = { { frame.guides, d3d12GraphAccess_t::SRV }, { frame.reproject, d3d12GraphAccess_t::SRV },
+			{ frame.slope, d3d12GraphAccess_t::SRV }, { depthUse, d3d12GraphAccess_t::DEPTH_READ }, { materialUse, d3d12GraphAccess_t::SRV },
+			{ color, d3d12GraphAccess_t::UAV, 0 }, { aux, d3d12GraphAccess_t::UAV, 0 }, { spread, d3d12GraphAccess_t::UAV, 0 } };
+		if ( trace ) {
+			temporalUses.push_back( { ray, d3d12GraphAccess_t::SRV } );
+		}
+		if ( read ) {
+			prevColor = ImportHistory( graph, "rt reflection history before", *heldColor.previous, width, height );
+			prevAux = ImportHistory( graph, "rt reflection moments before", *heldAux.previous, width, height );
+			temporalUses.push_back( { frame.previous, d3d12GraphAccess_t::SRV } );
+			temporalUses.push_back( { prevColor, d3d12GraphAccess_t::SRV } );
+			temporalUses.push_back( { prevAux, d3d12GraphAccess_t::SRV } );
+		}
+		rtReflectTemporalParms_t temporalBase = {};
+		memcpy( temporalBase.clipToWorld, view.clipToWorld, sizeof( temporalBase.clipToWorld ) );
+		memcpy( temporalBase.prevWorldToClip, view.prevWorldToClip, sizeof( temporalBase.prevWorldToClip ) );
+		temporalBase.origin[0] = view.origin[0];
+		temporalBase.origin[1] = view.origin[1];
+		temporalBase.origin[2] = view.origin[2];
+		temporalBase.viewport[0] = static_cast<float>( viewport.x );
+		temporalBase.viewport[1] = static_cast<float>( viewport.y );
+		temporalBase.viewport[2] = static_cast<float>( viewport.width );
+		temporalBase.viewport[3] = static_cast<float>( viewport.height );
+		temporalBase.limits[0] = settings.maxRoughness;
+		temporalBase.limits[1] = REFLECTION_FADE;
+		temporalBase.limits[2] = mirrorRoughness;
+		temporalBase.first[0] = rect.x;
+		temporalBase.first[1] = rect.y;
+		temporalBase.size[0] = width;
+		temporalBase.size[1] = height;
+		temporalBase.flags = ( read ? 1u : 0u ) | ( settings.reference ? 2u : 0u ) | ( trace ? 0u : 4u );
+		temporalBase.maxHistory = static_cast<float>( Max( settings.maxHistory, 1 ) );
+		// a half float's; the reference counts every frame alike in 32 bits
+		temporalBase.leastStep = settings.reference ? 0.0f : 1.0f / 1024.0f;
+		graph.AddPass( "rt reflect temporal", d3d12GraphPass_t::COMPUTE, temporalUses, [temporalPipeline, temporalBase, frame, ray, depthUse, materialUse,
+			color, aux, prevColor, prevAux, spread, read, trace]( idD3D12GraphContext & context ) {
+			rtReflectTemporalParms_t parms = temporalBase;
+			parms.signalSrv = trace ? context.Srv( ray ) : 0;
+			parms.guidesSrv = context.Srv( frame.guides );
+			parms.reprojectSrv = context.Srv( frame.reproject );
+			parms.slopeSrv = context.Srv( frame.slope );
+			parms.prevGuidesSrv = read ? context.Srv( frame.previous ) : 0;
+			parms.prevColorSrv = read ? context.Srv( prevColor ) : 0;
+			parms.prevAuxSrv = read ? context.Srv( prevAux ) : 0;
+			parms.depthSrv = context.Srv( depthUse );
+			parms.materialSrv = context.Srv( materialUse );
+			parms.colorUav = context.Uav( color );
+			parms.auxUav = context.Uav( aux );
+			parms.outputUav = context.Uav( spread );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( *temporalPipeline, &span, parms.size[0], parms.size[1] );
+		} );
 
-	const rtCompositeParms_t compositeBase = { { viewport.x, viewport.y }, settings.scale * preExposure, 0 };
-	graph.AddPass( "rt composite", d3d12GraphPass_t::RASTER, { { reflection, d3d12GraphAccess_t::SRV }, { colorUse, d3d12GraphAccess_t::RTV, 0 } },
-		[pso, compositeBase, reflection, colorUse, rect]( idD3D12GraphContext & context ) {
+		// over the neighbours; the graph keeps the names
+		static constexpr std::array<const char *, MAX_ATROUS_PASSES> NAMES = { "rt reflect atrous 1", "rt reflect atrous 2", "rt reflect atrous 3",
+			"rt reflect atrous 4", "rt reflect atrous 5" };
+		static constexpr std::array<const char *, MAX_ATROUS_PASSES> SPREAD_NAMES = { "rt reflection spread 1", "rt reflection spread 2",
+			"rt reflection spread 3", "rt reflection spread 4", "rt reflection spread 5" };
+		filtered = color;
+		for ( int pass = 0; pass < numPasses; pass++ ) {
+			const d3d12GraphResource_t wider = graph.Create( NAMES[pass], desc );
+			const d3d12GraphResource_t widerSpread = graph.Create( SPREAD_NAMES[pass], desc );
+			const rtReflectAtrousParms_t atrousBase = { { width, height }, 0, 0, 0, 0, 0, 0, 1 << pass, view.pixelSpread, {} };
+			graph.AddPass( NAMES[pass], d3d12GraphPass_t::COMPUTE, { { filtered, d3d12GraphAccess_t::SRV }, { spread, d3d12GraphAccess_t::SRV },
+				{ frame.guides, d3d12GraphAccess_t::SRV }, { frame.slope, d3d12GraphAccess_t::SRV }, { wider, d3d12GraphAccess_t::UAV, 0 },
+				{ widerSpread, d3d12GraphAccess_t::UAV, 0 } },
+				[atrousPipeline, atrousBase, filtered, spread, frame, wider, widerSpread]( idD3D12GraphContext & context ) {
+					rtReflectAtrousParms_t parms = atrousBase;
+					parms.colorSrv = context.Srv( filtered );
+					parms.spreadSrv = context.Srv( spread );
+					parms.guidesSrv = context.Srv( frame.guides );
+					parms.slopeSrv = context.Srv( frame.slope );
+					parms.colorUav = context.Uav( wider );
+					parms.spreadUav = context.Uav( widerSpread );
+					const d3d12UploadSpan_t span = context.Parms( parms );
+					context.Dispatch( *atrousPipeline, &span, parms.size[0], parms.size[1] );
+				} );
+			filtered = wider;
+			spread = widerSpread;
+		}
+	}
+
+	rtCompositeParms_t compositeBase = {};
+	memcpy( compositeBase.clipToWorld, view.clipToWorld, sizeof( compositeBase.clipToWorld ) );
+	compositeBase.origin[0] = view.origin[0];
+	compositeBase.origin[1] = view.origin[1];
+	compositeBase.origin[2] = view.origin[2];
+	compositeBase.viewport[0] = static_cast<float>( viewport.x );
+	compositeBase.viewport[1] = static_cast<float>( viewport.y );
+	compositeBase.viewport[2] = static_cast<float>( viewport.width );
+	compositeBase.viewport[3] = static_cast<float>( viewport.height );
+	compositeBase.limits[0] = settings.maxRoughness;
+	compositeBase.limits[1] = REFLECTION_FADE;
+	compositeBase.limits[2] = settings.scale * preExposure;
+	compositeBase.first[0] = rect.x;
+	compositeBase.first[1] = rect.y;
+	graph.AddPass( "rt composite", d3d12GraphPass_t::RASTER, { { filtered, d3d12GraphAccess_t::SRV }, { depthUse, d3d12GraphAccess_t::DEPTH_READ },
+		{ normalUse, d3d12GraphAccess_t::SRV }, { materialUse, d3d12GraphAccess_t::SRV }, { colorUse, d3d12GraphAccess_t::RTV, 0 } },
+		[pso, compositeBase, filtered, depthUse, normalUse, materialUse, colorUse, rect]( idD3D12GraphContext & context ) {
 			rtCompositeParms_t parms = compositeBase;
-			parms.reflectionSrv = context.Srv( reflection );
+			parms.reflectionSrv = context.Srv( filtered );
+			parms.depthSrv = context.Srv( depthUse );
+			parms.normalSrv = context.Srv( normalUse );
+			parms.materialSrv = context.Srv( materialUse );
 			const d3d12UploadSpan_t span = context.Parms( parms );
 			context.Draw( *pso, colorUse, 0, rect, span );
 		} );

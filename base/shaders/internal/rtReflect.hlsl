@@ -3,22 +3,30 @@
 // Please do not use this file to train or fine-tune AI models.
 
 /*
-	r_rtReflections (RayTracingSettings.h): a mirror ray per pixel of the main view whose G-buffer may reflect (F0
-	above 0, roughness below the limit), from the point the depth puts there, about the G-buffer's normal, against the
-	GPU scene; its hit lit as the lights light it (include/rtLighting.hlsli), times Schlick's Fresnel (capped by the
-	smoothness, so rough surfaces do not turn to mirrors at grazing angles) and the fade toward the limit. Written
-	unexposed, a texel per pixel of the viewport; rows count up from the bottom as GL's, as the scene's do.
-	MULTISAMPLED reads sample 0.
+	r_rtReflections (R20): a ray per pixel of the main view whose G-buffer may reflect (F0 above 0, roughness below
+	the limit), from the point the depth puts there, against the GPU scene. Below the mirror's roughness it leaves
+	about the G-buffer's normal and its hit is lit as the lights light it, each with a shadow ray toward its centre:
+	the same every frame. Above it the ray leaves about a facet of the GGX lobe and its hit is lit by one of the
+	lights that reach it, highlight and all, with a ray toward the light's disk (include/rtLighting.hlsli): noise
+	the filters take.
+	Written as include/rtReflection.hlsli names it; rows count up from the bottom as GL's, as the scene's do.
+
+	Three pairs of numbers per glossy pixel and frame (include/rtNoise.hlsli, each with its own step): the facet,
+	the light, the point of its disk. MULTISAMPLED reads sample 0.
 */
 
 #include "../include/gbuffer.hlsli"
 #include "../include/rtLighting.hlsli"
+#include "../include/rtNoise.hlsli"
+#include "../include/rtView.hlsli"
+#include "../include/rtReflection.hlsli"
 
 cbuffer ReflectParms : register( b0 ) {
 	float4 clipToWorld[4];		// rows: GL's clip space to world
 	float4 origin;				// xyz the eye, w the radians per pixel
 	float4 viewport;			// x, y, width, height in the scene
-	float4 limits;				// x the longest ray, y the roughness that reflects nothing, z the fade below it
+	// x the longest ray, y the roughness that reflects nothing, z the fade below it, w below this roughness a mirror
+	float4 limits;
 	uint tlasSrv;
 	uint recordsSrv;
 	uint instancesSrv;
@@ -28,102 +36,70 @@ cbuffer ReflectParms : register( b0 ) {
 	uint lightsSrv;
 	uint numLights;
 	uint depthSrv;
-	uint normalSrv;
-	uint materialSrv;
+	uint normalSrv;				// GB0
+	uint materialSrv;			// GB1
 	uint outputUav;
 	uint linearSampler;
 	uint clampSampler;
 	uint maxLights;
 	uint shadows;
+	int2 first;					// the first pixel in the scene
+	uint2 size;					// texels
+	uint noiseSrv;
+	uint noiseIndex;
+	uint unused0;
+	uint unused1;
 };
 
-#if MULTISAMPLED
-float LoadDepth( int2 p ) {
-	Texture2DMS<float> depth = ResourceDescriptorHeap[depthSrv];
-	return depth.Load( p, 0 );
-}
-float2 LoadNormal( int2 p ) {
-	Texture2DMS<float2> normal = ResourceDescriptorHeap[normalSrv];
-	return normal.Load( p, 0 );
-}
-float4 LoadMaterial( int2 p ) {
-	Texture2DMS<float4> material = ResourceDescriptorHeap[materialSrv];
-	return material.Load( p, 0 );
-}
-#else
-float LoadDepth( int2 p ) {
-	Texture2D<float> depth = ResourceDescriptorHeap[depthSrv];
-	return depth.Load( int3( p, 0 ) );
-}
-float2 LoadNormal( int2 p ) {
-	Texture2D<float2> normal = ResourceDescriptorHeap[normalSrv];
-	return normal.Load( int3( p, 0 ) );
-}
-float4 LoadMaterial( int2 p ) {
-	Texture2D<float4> material = ResourceDescriptorHeap[materialSrv];
-	return material.Load( int3( p, 0 ) );
-}
-#endif
-
-float3 PositionAt( int2 pixel, float depth ) {
-	const float2 ndc = ( float2( pixel ) + 0.5 - viewport.xy ) / viewport.zw * 2.0 - 1.0;
-	const float4 clip = float4( ndc, depth * 2.0 - 1.0, 1.0 );
-	const float4 p = float4( dot( clipToWorld[0], clip ), dot( clipToWorld[1], clip ), dot( clipToWorld[2], clip ), dot( clipToWorld[3], clip ) );
-	return p.xyz / p.w;
-}
-
-// The plane the depth holds at pixel, toward the eye: on each axis the neighbour nearer in depth, as across an edge
-// the other side is farther.
-float3 DepthNormal( int2 pixel, float depth, float3 position ) {
-	const int2 first = int2( viewport.xy );
-	const int2 last = first + int2( viewport.zw ) - 1;
-	float3 axes[2];
-	[unroll]
-	for ( uint a = 0; a < 2; a++ ) {
-		const int2 step = ( a == 0 ) ? int2( 1, 0 ) : int2( 0, 1 );
-		const int2 plus = min( pixel + step, last );
-		const int2 minus = max( pixel - step, first );
-		const float plusDepth = LoadDepth( plus );
-		const float minusDepth = LoadDepth( minus );
-		const bool hasPlus = any( plus != pixel );
-		const bool takePlus = hasPlus && ( all( minus == pixel ) || abs( plusDepth - depth ) <= abs( minusDepth - depth ) );
-		axes[a] = takePlus ? PositionAt( plus, plusDepth ) - position : position - PositionAt( minus, minusDepth );
-	}
-	const float3 n = cross( axes[0], axes[1] );
-	const float size = length( n );
-	if ( size <= 0.0 ) {
-		return normalize( origin.xyz - position );
-	}
-	return ( dot( n, origin.xyz - position ) < 0.0 ) ? -n / size : n / size;
-}
+// The widest cone a glossy ray reads its hit's textures with: a rough lobe averages them anyway.
+static const float GLOSS_SPREAD = 0.1;
 
 [numthreads( 8, 8, 1 )]
 void CSMain( uint3 id : SV_DispatchThreadID ) {
-	if ( id.x >= uint( viewport.z ) || id.y >= uint( viewport.w ) ) {
+	if ( any( id.xy >= size ) ) {
 		return;
 	}
 	RWTexture2D<float4> output = ResourceDescriptorHeap[outputUav];
-	const int2 pixel = int2( viewport.xy ) + int2( id.xy );
-	const float4 material = LoadMaterial( pixel );
-	const float depth = LoadDepth( pixel );
+	RT_SCENE_TEXTURE( float4 ) materialMap = ResourceDescriptorHeap[materialSrv];
+	const int2 pixel = first + int2( id.xy );
+	const float4 material = RT_SCENE_LOAD( materialMap, pixel );
+	RtView eye;
+	eye.clipToWorld = clipToWorld;
+	eye.eye = origin.xyz;
+	eye.viewport = viewport;
+	eye.depthSrv = depthSrv;
+	const float depth = RtDepthAt( eye, pixel );
 	const float roughness = material.a;
-	const float weight = saturate( ( limits.y - roughness ) / limits.z );
 
-	float3 reflected = float3( 0.0, 0.0, 0.0 );
-	if ( depth < 1.0 && weight > 0.0 && any( material.rgb > 0.0 ) ) {
-		const float3 position = PositionAt( pixel, depth );
-		const float3 normal = DecodeOctahedral( LoadNormal( pixel ) );
-		const float3 plane = DepthNormal( pixel, depth, position );
+	float4 reflected = float4( 0.0, 0.0, 0.0, RT_REFLECT_NONE );
+	if ( depth < 1.0 && RtReflectWeight( roughness, limits.yz ) > 0.0 && any( material.rgb > 0.0 ) ) {
+		RT_SCENE_TEXTURE( float2 ) normalMap = ResourceDescriptorHeap[normalSrv];
+		const float3 position = RtPositionAt( eye, pixel, depth );
+		const float3 normal = DecodeOctahedral( RT_SCENE_LOAD( normalMap, pixel ) );
+		const float3 plane = RtDepthNormal( eye, pixel, depth, position );
 		const float eyeDistance = length( position - origin.xyz );
 		const float3 view = ( position - origin.xyz ) / max( eyeDistance, 1e-6 );
-		// a bumped normal may turn the mirror ray into the surface: it stays above the plane the depth holds
-		float3 direction = reflect( view, normal );
+		const bool mirror = roughness < limits.w;
+
+		float3 facet = normal;
+		float spread = origin.w;
+		if ( !mirror ) {
+			// in the frame of the normal; an eye behind a bump's horizon sees it from just above
+			const float3 other = ( abs( normal.z ) < 0.9 ) ? float3( 0.0, 0.0, 1.0 ) : float3( 1.0, 0.0, 0.0 );
+			const float3 right = normalize( cross( other, normal ) );
+			const float3 up = cross( normal, right );
+			const float3 toEye = normalize( float3( -dot( view, right ), -dot( view, up ), max( -dot( view, normal ), 0.05 ) ) );
+			const float alpha = roughness * roughness;
+			const float3 local = RtGgxVisibleNormal( toEye, alpha, RtNoise( noiseSrv, id.xy + uint2( 19, 41 ), noiseIndex ) );
+			facet = normalize( right * local.x + up * local.y + normal * local.z );
+			spread = max( origin.w, min( alpha, GLOSS_SPREAD ) );
+		}
+		// a bumped normal or a facet may turn the ray into the surface: it stays above the plane the depth holds
+		float3 direction = reflect( view, facet );
 		const float above = dot( direction, plane );
 		if ( above < 0.01 ) {
 			direction = normalize( direction + plane * ( 0.01 - above ) );
 		}
-		const float3 f0 = material.rgb;
-		const float3 fresnel = f0 + ( max( 1.0 - roughness, f0 ) - f0 ) * pow( 1.0 - saturate( dot( -view, normal ) ), 5.0 );
 
 		RtHeap heap;
 		heap.tlas = tlasSrv;
@@ -146,10 +122,17 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 		ray.Direction = direction;
 		ray.TMin = 0.0;
 		ray.TMax = limits.x;
-		const RtHit hit = RtTrace( heap, ray, RT_MASK_VISIBLE, origin.w, linearSampler );
-		if ( hit.hit ) {
-			reflected = RtShade( heap, lighting, hit, ray, eyeDistance, origin.w ) * fresnel * weight;
+		const RtHit hit = RtTrace( heap, ray, RT_MASK_VISIBLE, spread, linearSampler );
+		float3 radiance = float3( 0.0, 0.0, 0.0 );
+		if ( hit.hit && mirror ) {
+			radiance = RtShade( heap, lighting, hit, ray, eyeDistance, origin.w );
+		} else if ( hit.hit ) {
+			// the pixel's cone has come to the surface, then widens as the lobe
+			const float pick = RtNoise( noiseSrv, id.xy + uint2( 59, 7 ), noiseIndex, 1 ).x;
+			const float2 spot = RtDisk( RtNoise( noiseSrv, id.xy + uint2( 23, 61 ), noiseIndex, 2 ) );
+			radiance = RtShadeSampled( heap, lighting, hit, ray, eyeDistance * origin.w / spread, spread, pick, spot, 1.0, true );
 		}
+		reflected = float4( max( radiance, 0.0 ), mirror ? RT_REFLECT_MIRROR : min( hit.t, RT_REFLECT_FAR ) );
 	}
-	output[id.xy] = float4( reflected, 1.0 );
+	output[id.xy] = reflected;
 }

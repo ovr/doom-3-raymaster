@@ -482,7 +482,7 @@ void idD3D12Context::DrawRayTracedReflections( const rtReflectionSettings_t & se
 		return;
 	}
 	recorder.EndPass();
-	rtPasses.Reflections( graph, scene, rayTracing, gpuScene, settings, view, viewport, preExposure, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	rtPasses.Reflections( graph, scene, rtHistory, rayTracing, gpuScene, settings, view, viewport, preExposure, ( groups.Depth() > 0 ) ? &groups : nullptr );
 	recorder.Invalidate();
 }
 
