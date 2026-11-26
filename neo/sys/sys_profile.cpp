@@ -259,6 +259,8 @@ void idProfileMgr::OnSaveSettingsCompleted( idSaveLoadParms * parms ) {
 	common->Dialog().ShowSaveIndicator( false );
 
 	if ( parms->GetError() != SAVEGAME_E_NONE ) {
+		// the dialog draws over the frames: a scripted run has to see it in the log
+		idLib::Warning( "profile save failed: error 0x%x", static_cast<unsigned>( parms->GetError() ) );
 		common->Dialog().AddDialog( GDM_PROFILE_SAVE_ERROR, DIALOG_CONTINUE, NULL, NULL, false );
 	}
 	if ( game ) {
