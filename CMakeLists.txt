@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.30)
 
 project(Doom3BFG LANGUAGES C CXX)
 
@@ -70,6 +70,29 @@ if(NOT EXISTS "${D3BFG_ZLIB_DIR}/zlib.h")
 	message(FATAL_ERROR "third_party/zlib is empty: run git submodule update --init")
 endif()
 
+# DXC, the Agility SDK and WARP (tools/d3d12/install-d3d12-sdk.ps1), checked in neo/; NRD's shaders build with its DXC
+set(D3BFG_D3D12_SDK_ROOT "${CMAKE_SOURCE_DIR}/external/d3d12-x64" CACHE PATH
+	"DXC, the Agility SDK and WARP for the Direct3D 12 backend (tools/d3d12/install-d3d12-sdk.ps1)")
+
+# NVIDIA NRD denoises the ray traced passes. It is under the NVIDIA RTX SDKs License, not the GPL, so it stays an
+# option: without it the passes run with our own filter or none.
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/NRD/Include/NRD.h")
+	set(_nrd_default ON)
+else()
+	set(_nrd_default OFF)
+endif()
+option(D3BFG_NRD "Denoise the ray traced passes with NVIDIA NRD (third_party/NRD, NVIDIA RTX SDKs License)" ${_nrd_default})
+if(D3BFG_NRD)
+	foreach(_file NRD/Include/NRD.h MathLib/ml.h ShaderMake/CMakeLists.txt)
+		if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/${_file}")
+			message(FATAL_ERROR "third_party/${_file} is missing: run git submodule update --init (or configure with -DD3BFG_NRD=OFF)")
+		endif()
+	endforeach()
+	message(STATUS "NRD: denoiser on (third_party/NRD)")
+else()
+	message(STATUS "NRD: off")
+endif()
+
 # Debug / Release(Retail) code generation, matching _Debug.props / _Release.props.
 #   WITH_INLINES  - _WithInlines.props (Debug only: /Ob1 + _INLINEDEBUG)
 #   WARNING_LEVEL - 3 or 4
@@ -111,6 +134,9 @@ function(d3bfg_neo_common tgt)
 	target_include_directories(${tgt} PRIVATE "${D3BFG_NEO_DIR}" "${D3BFG_ZLIB_DIR}")
 endfunction()
 
+if(D3BFG_NRD)
+	add_subdirectory(third_party)
+endif()
 add_subdirectory(doomclassic)
 enable_testing()
 add_subdirectory(neo)

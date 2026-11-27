@@ -228,6 +228,11 @@ d3d12PipelineDesc_t D3D12_PipelineDescFor( const pipelineKey_t & key, uint16 pro
 	target.LogicOp = D3D12_LOGIC_OP_NOOP;
 	target.RenderTargetWriteMask = static_cast<UINT8>( ~Field( bits, GLS_REDMASK | GLS_GREENMASK | GLS_BLUEMASK | GLS_ALPHAMASK ) & 0xF );
 	std::ranges::fill( desc.blend.RenderTarget, target );
+	// R16: the light target's alpha is a sum, interaction_rt's penumbrae for NRD
+	if ( targetId.IsLights() && target.BlendOpAlpha == D3D12_BLEND_OP_MAX ) {
+		desc.blend.IndependentBlendEnable = TRUE;
+		desc.blend.RenderTarget[1].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+	}
 
 	D3D12_RASTERIZER_DESC & raster = desc.raster;
 	raster.FillMode = ( !lines && ( bits & GLS_POLYMODE_LINE ) != 0 ) ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;

@@ -273,6 +273,7 @@ set(D3D12_SOURCES
 	renderer/D3D12/d3d12_RayTracing.cpp
 	renderer/D3D12/d3d12_RenderBackend.cpp
 	renderer/D3D12/d3d12_RenderGraph.cpp
+	renderer/D3D12/d3d12_Nrd.cpp
 	renderer/D3D12/d3d12_RingAllocator.cpp
 	renderer/D3D12/d3d12_RtHistory.cpp
 	renderer/D3D12/d3d12_RtPasses.cpp

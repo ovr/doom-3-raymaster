@@ -114,9 +114,8 @@ set_property(GLOBAL PROPERTY D3BFG_FFMPEG_FOUND "${D3BFG_FFMPEG_FOUND}")
 
 # DXC, the Agility SDK and WARP (tools/d3d12/install-d3d12-sdk.ps1). The D3D12 backend compiles with the Agility
 # headers and DXC's dxcapi.h; dxcompiler.dll, dxil.dll and the Agility runtime ship next to the exe.
-set(D3BFG_D3D12_SDK_ROOT "${CMAKE_SOURCE_DIR}/external/d3d12-x64" CACHE PATH
-	"DXC, the Agility SDK and WARP for the Direct3D 12 backend (tools/d3d12/install-d3d12-sdk.ps1)")
-foreach(_file dxc/inc/dxcapi.h dxc/bin/x64/dxcompiler.dll dxc/bin/x64/dxil.dll agility/include/d3d12.h
+# D3BFG_D3D12_SDK_ROOT is set in the root CMakeLists.txt; dxc.exe compiles NRD's shaders at build time.
+foreach(_file dxc/inc/dxcapi.h dxc/bin/x64/dxc.exe dxc/bin/x64/dxcompiler.dll dxc/bin/x64/dxil.dll agility/include/d3d12.h
 		agility/bin/x64/D3D12Core.dll agility/bin/x64/d3d12SDKLayers.dll warp/bin/x64/d3d10warp.dll)
 	if(NOT EXISTS "${D3BFG_D3D12_SDK_ROOT}/${_file}")
 		message(FATAL_ERROR "${D3BFG_D3D12_SDK_ROOT}/${_file} is missing: run tools/d3d12/install-d3d12-sdk.ps1 "
@@ -126,6 +125,12 @@ endforeach()
 set(D3BFG_D3D12_INCLUDES "${D3BFG_D3D12_SDK_ROOT}/agility/include" "${D3BFG_D3D12_SDK_ROOT}/dxc/inc")
 # before the Windows SDK, whose older d3d12.h would win otherwise
 target_include_directories(engine SYSTEM BEFORE PRIVATE ${D3BFG_D3D12_INCLUDES})
+
+# NRD (third_party/CMakeLists.txt), the denoiser of the ray traced passes: its headers come in as system includes
+if(D3BFG_NRD)
+	target_compile_definitions(engine PRIVATE USE_NRD)
+	target_link_libraries(engine PRIVATE NRD)
+endif()
 
 # DXC next to the exe and the Agility runtime in D3D12\ beside it (D3D12SDKPath, d3d12_Agility.cpp). WARP with
 # feature level 12_2 only for the tests: its license allows testing, not shipping it with the game.
@@ -167,6 +172,9 @@ function(d3bfg_link_engine tgt)
 		$<$<CONFIG:Debug>:/MAP>
 		$<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>
 	)
+	if(D3BFG_NRD)
+		target_link_libraries(${tgt} PRIVATE NRD)
+	endif()
 	get_property(_found GLOBAL PROPERTY D3BFG_FFMPEG_FOUND)
 	if(_found)
 		get_property(_implibs GLOBAL PROPERTY D3BFG_FFMPEG_IMPLIBS)
@@ -244,6 +252,7 @@ add_executable(d3d12Tests
 	renderer/D3D12/d3d12_HlslCompiler.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
 	renderer/D3D12/d3d12_Memory.cpp
+	renderer/D3D12/d3d12_Nrd.cpp
 	renderer/D3D12/d3d12_Output.cpp
 	renderer/D3D12/d3d12_Pipelines.cpp
 	renderer/D3D12/d3d12_Programs.cpp
@@ -272,6 +281,10 @@ target_compile_definitions(d3d12Tests PRIVATE
 target_precompile_headers(d3d12Tests PRIVATE "${D3BFG_PCH}")
 target_include_directories(d3d12Tests SYSTEM BEFORE PRIVATE ${D3BFG_D3D12_INCLUDES})
 target_link_libraries(d3d12Tests PRIVATE idLib winmm dbghelp dxguid)
+if(D3BFG_NRD)
+	target_compile_definitions(d3d12Tests PRIVATE USE_NRD)
+	target_link_libraries(d3d12Tests PRIVATE NRD)
+endif()
 d3bfg_copy_d3d12_runtime(d3d12Tests WITH_WARP)
 target_link_options(d3d12Tests PRIVATE /DEBUG)
 set_target_properties(d3d12Tests PROPERTIES FOLDER "tests")

@@ -10,9 +10,8 @@
 namespace {
 
 constexpr std::array<const wchar_t *, static_cast<size_t>( rtHistorySlot_t::COUNT )> NAMES = {
-	L"doom3 rt history guides", L"doom3 rt history shadow colour", L"doom3 rt history shadow aux",
-	L"doom3 rt history indirect guides", L"doom3 rt history indirect amount", L"doom3 rt history indirect aux",
-	L"doom3 rt history reflection colour", L"doom3 rt history reflection aux"
+	L"doom3 rt reference shadow", L"doom3 rt reference indirect amount", L"doom3 rt reference indirect aux",
+	L"doom3 rt reference reflection"
 };
 
 [[nodiscard]] uint32 BytesPerTexel( DXGI_FORMAT format ) {
@@ -60,15 +59,17 @@ idD3D12RtHistory::use_t idD3D12RtHistory::Use( rtHistorySlot_t slot, DXGI_FORMAT
 	use_t use;
 	use.previous = ( previous >= 0 ) ? &pair.surfaces[previous] : nullptr;
 	use.next = &pair.surfaces[pair.next];
+	use.frames = ( previous >= 0 ) ? pair.frames[previous] : 0;
 	return use;
 }
 
-void idD3D12RtHistory::Written( rtHistorySlot_t slot, const rtView_t & view ) {
+void idD3D12RtHistory::Written( rtHistorySlot_t slot, const rtView_t & view, uint32 frames ) {
 	pair_t & pair = eyes[view.eye & 1][static_cast<size_t>( slot )];
 	if ( pair.surfaces[pair.next].resource ) {
 		pair.held[pair.next] = true;
 		pair.epoch[pair.next] = view.epoch;
 		pair.sequence[pair.next] = view.sequence;
+		pair.frames[pair.next] = frames;
 	}
 }
 

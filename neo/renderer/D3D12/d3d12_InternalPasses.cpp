@@ -87,9 +87,6 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "rtDebug", shaderStageType_t::FRAGMENT, "internal_rtDebug_msaa", "MULTISAMPLED=1" },
 	{ "rtReflect", shaderStageType_t::COMPUTE, "internal_rtReflect", nullptr },
 	{ "rtReflect", shaderStageType_t::COMPUTE, "internal_rtReflect_msaa", "MULTISAMPLED=1" },
-	{ "rtReflectTemporal", shaderStageType_t::COMPUTE, "internal_rtReflectTemporal", nullptr },
-	{ "rtReflectTemporal", shaderStageType_t::COMPUTE, "internal_rtReflectTemporal_msaa", "MULTISAMPLED=1" },
-	{ "rtReflectAtrous", shaderStageType_t::COMPUTE, "internal_rtReflectAtrous", nullptr },
 	{ "rtComposite", shaderStageType_t::FRAGMENT, "internal_rtComposite", nullptr },
 	{ "rtComposite", shaderStageType_t::FRAGMENT, "internal_rtComposite_msaa", "MULTISAMPLED=1" },
 	{ "rtShadowRatio", shaderStageType_t::FRAGMENT, "internal_rtShadowRatio", nullptr },
@@ -97,15 +94,23 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "rtShadowApply", shaderStageType_t::FRAGMENT, "internal_rtShadowApply", nullptr },
 	{ "rtGuides", shaderStageType_t::COMPUTE, "internal_rtGuides", nullptr },
 	{ "rtGuides", shaderStageType_t::COMPUTE, "internal_rtGuides_msaa", "MULTISAMPLED=1" },
-	{ "rtGradient", shaderStageType_t::COMPUTE, "internal_rtGradient", nullptr },
-	{ "rtTemporal", shaderStageType_t::COMPUTE, "internal_rtTemporal", nullptr },
-	{ "rtAtrous", shaderStageType_t::COMPUTE, "internal_rtAtrous", nullptr },
+	{ "rtAccumulate", shaderStageType_t::COMPUTE, "internal_rtAccumulate", nullptr },
 	{ "rtIndirect", shaderStageType_t::COMPUTE, "internal_rtIndirect", nullptr },
 	{ "rtIndirect", shaderStageType_t::COMPUTE, "internal_rtIndirect_msaa", "MULTISAMPLED=1" },
-	{ "rtIndirectTemporal", shaderStageType_t::COMPUTE, "internal_rtIndirectTemporal", nullptr },
-	{ "rtIndirectAtrous", shaderStageType_t::COMPUTE, "internal_rtIndirectAtrous", nullptr },
 	{ "rtUpsample", shaderStageType_t::FRAGMENT, "internal_rtUpsample", nullptr },
 	{ "rtUpsample", shaderStageType_t::FRAGMENT, "internal_rtUpsample_msaa", "MULTISAMPLED=1" },
+#if defined( USE_NRD )
+	{ "nrdGuides", shaderStageType_t::COMPUTE, "internal_nrdGuides", nullptr },
+	{ "nrdGuides", shaderStageType_t::COMPUTE, "internal_nrdGuides_msaa", "MULTISAMPLED=1" },
+	{ "nrdReflectPack", shaderStageType_t::COMPUTE, "internal_nrdReflectPack", nullptr },
+	{ "nrdReflectUnpack", shaderStageType_t::COMPUTE, "internal_nrdReflectUnpack", nullptr },
+	{ "nrdIndirectPack", shaderStageType_t::COMPUTE, "internal_nrdIndirectPack", nullptr },
+	{ "nrdIndirectUnpack", shaderStageType_t::COMPUTE, "internal_nrdIndirectUnpack", nullptr },
+	{ "nrdShadowPack", shaderStageType_t::COMPUTE, "internal_nrdShadowPack", nullptr },
+	{ "nrdShadowPack", shaderStageType_t::COMPUTE, "internal_nrdShadowPack_msaa", "MULTISAMPLED=1" },
+	{ "nrdShadowUnpack", shaderStageType_t::COMPUTE, "internal_nrdShadowUnpack", nullptr },
+	{ "nrdValidation", shaderStageType_t::FRAGMENT, "internal_nrdValidation", nullptr },
+#endif
 };
 
 }	// namespace
@@ -179,6 +184,12 @@ idComPtr<ID3D12PipelineState> idD3D12InternalPasses::CreatePipeline( const d3d12
 	target.SrcBlend = target.SrcBlendAlpha = multiply ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE;
 	target.DestBlend = multiply ? D3D12_BLEND_SRC_COLOR : ( target.BlendEnable ? D3D12_BLEND_ONE : D3D12_BLEND_ZERO );
 	target.DestBlendAlpha = multiply ? D3D12_BLEND_SRC_ALPHA : target.DestBlend;
+	if ( blend == d3d12PassBlend_t::ALPHA ) {
+		target.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+		target.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+		target.SrcBlendAlpha = D3D12_BLEND_ZERO;
+		target.DestBlendAlpha = D3D12_BLEND_ONE;
+	}
 	target.BlendOp = target.BlendOpAlpha = D3D12_BLEND_OP_ADD;
 	target.LogicOp = D3D12_LOGIC_OP_NOOP;
 	target.RenderTargetWriteMask = writeMask;

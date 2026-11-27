@@ -332,11 +332,38 @@ bool RtOccluded( RtHeap heap, float3 origin, float3 direction, float tMax, float
 	return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
-// Whether a caster stands between a point of a surface and a point of a light's disk, which faces it. side: the
-// surface's plane toward where it is seen from. disk: the point on the disk, RtDisk's times the radius. The ray
-// ends a radius short of the disk, so what a lamp is mounted on does not shadow it.
-bool RtDiskOccluded( RtHeap heap, float3 position, float3 side, float3 lightOrigin, float radius, float2 disk, float footprint, uint samplerIndex,
-	uint mask ) {
+// RtOccluded's caster nearest to the origin: false where none stands within tMax, else t its distance.
+bool RtNearestOccluder( RtHeap heap, float3 origin, float3 direction, float tMax, float footprint, uint samplerIndex, uint mask, out float t ) {
+	RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[heap.tlas];
+	RayDesc ray;
+	ray.Origin = origin;
+	ray.Direction = direction;
+	ray.TMin = 0.0;
+	ray.TMax = tMax;
+	RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
+	query.TraceRayInline( tlas, RAY_FLAG_NONE, mask, ray );
+	while ( query.Proceed() ) {
+		if ( query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE
+			&& RtCandidatePasses( heap, query.CandidateInstanceID() + query.CandidateGeometryIndex(), query.CandidateInstanceIndex(),
+				query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(),
+				query.CandidateObjectToWorld3x4(), query.CandidateWorldToObject3x4(), 1.0, footprint, direction, samplerIndex, true ) ) {
+			query.CommitNonOpaqueTriangleHit();
+		}
+	}
+	t = query.CommittedRayT();
+	return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+}
+
+// The ray from a point of a surface to a point of a light's disk, which faces it. side: the surface's plane toward
+// where it is seen from. disk: the point on the disk, RtDisk's times the radius. False: the point lies in the disk.
+struct RtDiskRay {
+	float3 origin;
+	float3 direction;
+	float reach;			// the distance to the disk's point
+};
+
+bool RtDiskRayOf( float3 position, float3 side, float3 lightOrigin, float radius, float2 disk, float footprint, out RtDiskRay diskRay ) {
+	diskRay = ( RtDiskRay )0;
 	const float3 toLight = lightOrigin - position;
 	const float range = length( toLight );
 	if ( range <= radius ) {
@@ -359,8 +386,29 @@ bool RtDiskOccluded( RtHeap heap, float3 position, float3 side, float3 lightOrig
 	const float rise = dot( aim, side );
 	const float3 origin = ( rise > 0.0 ) ? position + side * lift : position - aim * ( lift / max( -rise, 0.05 ) );
 	const float3 path = emitter - origin;
-	const float reach = length( path );
-	return reach > radius && RtOccluded( heap, origin, path / reach, reach - radius, footprint, samplerIndex, mask );
+	diskRay.origin = origin;
+	diskRay.reach = length( path );
+	diskRay.direction = path / diskRay.reach;
+	return diskRay.reach > radius;
+}
+
+// Whether a caster stands between a point of a surface and a point of a light's disk (RtDiskRayOf). The ray ends a
+// radius short of the disk, so what a lamp is mounted on does not shadow it.
+bool RtDiskOccluded( RtHeap heap, float3 position, float3 side, float3 lightOrigin, float radius, float2 disk, float footprint, uint samplerIndex,
+	uint mask ) {
+	RtDiskRay diskRay;
+	return RtDiskRayOf( position, side, lightOrigin, radius, disk, footprint, diskRay )
+		&& RtOccluded( heap, diskRay.origin, diskRay.direction, diskRay.reach - radius, footprint, samplerIndex, mask );
+}
+
+// RtDiskOccluded's caster nearest to the surface, for NRD's penumbra: occluder its distance, emitter the disk point's.
+bool RtDiskOccluder( RtHeap heap, float3 position, float3 side, float3 lightOrigin, float radius, float2 disk, float footprint, uint samplerIndex,
+	uint mask, out float occluder, out float emitter ) {
+	RtDiskRay diskRay;
+	occluder = 0.0;
+	const bool aims = RtDiskRayOf( position, side, lightOrigin, radius, disk, footprint, diskRay );
+	emitter = diskRay.reach;
+	return aims && RtNearestOccluder( heap, diskRay.origin, diskRay.direction, diskRay.reach - radius, footprint, samplerIndex, mask, occluder );
 }
 
 #endif

@@ -141,9 +141,11 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	gpuScene( device, *this, graveyard, srvPool, barriers, uploader, textures ),
 	rayTracing( device, *this, graveyard, srvPool, barriers, uploader, buffers ),
 	rtPasses( device, computeRootSignature, passes, samplers, buffers, textures, barriers ),
-	rtHistory( device, graveyard, srvPool ) {
+	rtHistory( device, graveyard, srvPool ),
+	nrd( device, library, graveyard, srvPool, passes, computeRootSignature ) {
 	// the recorder is older than what it asks
 	recorder.SetTraceSource( [this] { return rtPasses.DrawResources( rayTracing, gpuScene ); } );
+	rtPasses.SetNrd( &nrd );
 }
 
 // Safe after a mid-frame error: the open list is closed without running. The library is written while
@@ -156,6 +158,7 @@ idD3D12Context::~idD3D12Context() {
 	}
 	SavePipelines( !device.IsLost() );
 	rtHistory.Drop();
+	nrd.Drop();
 	rtPasses.DestroyDefaults();
 	buffers.DestroyAll();
 	textures.DestroyAll();
@@ -385,6 +388,7 @@ void idD3D12Context::ResolveHdrScene( const postProcessSettings_t & settings, co
 		return;
 	}
 	hdr.Resolve( graph, scene, settings, viewport, preExposure, step, ( groups.Depth() > 0 ) ? &groups : nullptr );
+	nrd.DrawValidation( graph, scene, viewport, ( groups.Depth() > 0 ) ? &groups : nullptr );
 	recorder.Invalidate();
 }
 
@@ -554,6 +558,7 @@ void idD3D12Context::Resize( int width, int height ) {
 	recorder.Invalidate();
 	hdr.ResetExposure();
 	rtHistory.Drop();
+	nrd.Drop();
 	// the old scene target dies after the next wait: a leak shows as memory that grows from resize to resize
 	const d3d12VideoMemory_t memory = device.VideoMemory();
 	common->DPrintf( "d3d12: output resized to %d x %d; %d graves, %.1f MB of video memory in use\n", width, height, graveyard.Pending(),
@@ -588,6 +593,7 @@ void idD3D12Context::EndLevelLoad() {
 	SavePipelines( false );
 	hdr.ResetExposure();
 	rtHistory.Drop();
+	nrd.Drop();
 }
 
 // The file system outlives the renderer (common's Shutdown), but not a failed Init.
@@ -629,6 +635,7 @@ void idD3D12Context::PrintInfo() const {
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), D3D12_PlacementName( buffers.FramePlacement() ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ),
 		Megabytes( buffers.MirrorBytes() ) );
 	common->Printf( "D3D12 render graph: %d pooled resources, %.1f MB\n", resourcePool.Num(), Megabytes( resourcePool.Bytes() ) );
+	common->Printf( "D3D12 ray tracing filters: NRD %.1f MB, r_rtReference means %.1f MB\n", Megabytes( nrd.Bytes() ), Megabytes( rtHistory.Bytes() ) );
 	common->Printf( "D3D12 textures: %d, %.1f MB; shader-visible SRVs %d of %u, samplers %d of %u; unaligned BC %s, anisotropic point mips %s\n",
 		textures.Num(), textures.Bytes() / ( 1024.0 * 1024.0 ), srvPool.Used(), SHADER_VISIBLE_SRVS, samplers.Used(), idD3D12SamplerHeap::SIZE,
 		device.Features().unalignedBlocks ? "yes" : "decoded",

@@ -38,7 +38,8 @@ struct d3d12InternalStage_t {
 enum class d3d12PassBlend_t : uint8 {
 	REPLACE,
 	ADD,			// target + colour
-	MULTIPLY		// target * colour
+	MULTIPLY,		// target * colour
+	ALPHA			// colour over the target by its alpha
 };
 
 class idD3D12InternalPasses {

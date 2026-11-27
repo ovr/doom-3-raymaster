@@ -146,6 +146,7 @@ public:
 	explicit						idD3D12Graveyard( const idD3D12Queue & queue ) : queue( queue ) {}
 	void							Bury( idComPtr<ID3D12Pageable> object );	// tagged LastSignaled() + 1: the open list
 	void							Bury( idD3D12DescriptorPool & pool, d3d12Descriptor_t slot );	// back into the pool then
+	void							BuryRange( idD3D12DescriptorPool & pool, d3d12Descriptor_t first, uint32 count );
 	void							Bury( idD3D12SamplerHeap & heap, uint32 slot );					// the same for a sampler
 	void							Collect();		// graves whose fence <= queue.Waited()
 	void							CollectAll();	// Shutdown, after WaitIdle or device loss; slots go back too
@@ -158,6 +159,7 @@ private:
 		d3d12Descriptor_t			slot;
 		idD3D12SamplerHeap *		samplers = nullptr;	// so does the sampler heap
 		uint32						samplerSlot = 0;
+		uint32						rangeCount = 0;		// a range of the pool from slot; 0 one slot (last: graves are aggregates)
 	};
 	static void						Release( grave_t & grave );
 	const idD3D12Queue &			queue;

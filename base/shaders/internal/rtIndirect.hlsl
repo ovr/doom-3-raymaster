@@ -9,7 +9,8 @@
 	(include/rtLighting.hlsli). Written unexposed as include/rtBounce.hlsli names it, the frame's one ray:
 
 	  amount  RGBA16F  a the luminance that came, rgb that times the ray's direction
-	  chroma  RG16F    Co and Cg of it
+	  chroma  RGBA16F  rg Co and Cg of it, b how far the ray went (the longest on a miss), a 1: what
+	                   internal/rtUpsample.hlsl takes as its aux without a filter
 
 	Three pairs of numbers per texel and frame (include/rtNoise.hlsli, at three places of the tile, each with its
 	own step): the ray's direction, the light, the point of its disk. MULTISAMPLED reads sample 0.
@@ -59,13 +60,14 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 		return;
 	}
 	RWTexture2D<float4> amount = ResourceDescriptorHeap[amountUav];
-	RWTexture2D<float2> chroma = ResourceDescriptorHeap[chromaUav];
+	RWTexture2D<float4> chroma = ResourceDescriptorHeap[chromaUav];
 	RT_SCENE_TEXTURE( float4 ) albedoMap = ResourceDescriptorHeap[albedoSrv];
 	const int2 pixel = first + int2( id.xy ) * int( stride );
 	const float drawn = RT_SCENE_LOAD( albedoMap, pixel ).a;
 
 	float3 radiance = float3( 0.0, 0.0, 0.0 );
 	float3 direction = float3( 0.0, 0.0, 1.0 );
+	float travelled = 0.0;
 	if ( GBufferDrawn( drawn ) ) {
 		RtView view;
 		view.clipToWorld = clipToWorld;
@@ -110,6 +112,7 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 		ray.TMin = 0.0;
 		ray.TMax = limits.x;
 		const RtHit hit = RtTrace( heap, ray, RT_MASK_VISIBLE, BOUNCE_SPREAD, linearSampler );
+		travelled = hit.hit ? hit.t : limits.x;
 		if ( hit.hit ) {
 			const float pick = RtNoise( noiseSrv, id.xy + uint2( 37, 5 ), noiseIndex, 1 ).x;
 			const float2 spot = RtDisk( RtNoise( noiseSrv, id.xy + uint2( 53, 47 ), noiseIndex, 2 ) );
@@ -123,5 +126,5 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 		coded *= most / coded.x;
 	}
 	amount[id.xy] = float4( direction * coded.x, coded.x );
-	chroma[id.xy] = coded.yz;
+	chroma[id.xy] = float4( coded.yz, travelled, 1.0 );
 }

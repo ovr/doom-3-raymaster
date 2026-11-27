@@ -19,7 +19,13 @@ cmake --preset vs2022-x64            # configure (VS 2022 generator, x64)
 cmake --build --preset release       # also: debug, retail
 ```
 
+- The build needs CMake 3.30 or newer (NRD's own `CMakeLists.txt` asks for it).
 - zlib is a git submodule in `third_party/zlib` (upstream madler/zlib at a release tag), compiled into the `external` target from its `.c` files. After cloning run `git submodule update --init`, or configure stops with that hint.
+- NVIDIA NRD 4.18.0, the denoiser of the ray traced passes, is a submodule in `third_party/NRD`, with the MathLib (v11) and ShaderMake it pins in `third_party/MathLib` and `third_party/ShaderMake`.
+  - `third_party/CMakeLists.txt` points NRD's FetchContent at those submodules, so the configure needs no network. It builds NRD as a static library whose DXIL ShaderMake compiles with the `dxc.exe` of `external\d3d12-x64`.
+  - `D3BFG_NRD` (ON when the submodule is there) links it into the exe and the tests and defines `USE_NRD`; `-DD3BFG_NRD=OFF` builds without it.
+  - NRD is under the NVIDIA RTX SDKs License, not the GPL: an exe built with it can't be passed on as GPL software (README.txt).
+  - The configure copies `NRD.hlsli` and its generated `NRDConfig.hlsli` into `base/shaders/include/nrd/` (gitignored), from where the render programs include them at run time.
 - The output is `build\vs2022-x64\bin\<Config>\Doom3BFG.exe`. The generated `.sln` in `build\vs2022-x64` can also be opened in Visual Studio.
 - For Ninja, run these from an "x64 Native Tools Command Prompt for VS 2022": `cmake --preset ninja-x64`, then `cmake --build --preset ninja-release` (or `ninja-debug`, `ninja-retail`).
 - `Retail` is `Release` plus `ID_RETAIL`.
@@ -95,7 +101,7 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 - Windows' `d3d12.dll` and `dxgi.dll` are loaded at Init only from System32, never linked and never from the exe's folder; the DLLs that ship with the exe (FFmpeg, DXC's `dxcompiler.dll` and `dxil.dll`) load only from its folder. The runtime is the Agility SDK's `D3D12\D3D12Core.dll` when it is newer than the system's.
 - Ask the device through `D3D12_CheckFeature`: the Agility debug layer warns at every plain `CheckFeatureSupport` (#989).
 - The render programs are HLSL 2021 in `base/shaders`, compiled by DXC at run time: `<name>` is `shaders/<name>.hlsl` with `VSMain` (`vs_6_6`) and `PSMain` (`ps_6_6`), `<name>_skinned` the same file with `SKINNED=1`. The backend's own passes are `shaders/internal/*.hlsl` (compute stages `CSMain`, `cs_6_6`). The programs are the table `renderer/RenderProgTable.cpp`. Copy `base/shaders` into the game install with the exe.
-- A stage's parms are the `float4` members of its cbuffer (b0 VS, b1 PS) named like `renderParm_t`, in that order; b2 is the joint block, b3 the bindless slots of `include/bindless.hlsli`, b4 only in programs that trace. Everything is read through `ResourceDescriptorHeap`/`SamplerDescriptorHeap`: a `register( t# )`, `s#` or `u#` binding is refused.
+- A stage's parms are the `float4` members of its cbuffer (b0 VS, b1 PS) named like `renderParm_t`, in that order; b2 is the joint block, b3 the bindless slots of `include/bindless.hlsli`, b4 only in programs that trace. Everything is read through `ResourceDescriptorHeap`/`SamplerDescriptorHeap`: a `register( t# )`, `s#` or `u#` binding is refused. Only NRD's own compiled DXIL binds registers, under root signatures of its own (`d3d12_Nrd.h`).
 - Ports of id's programs are one to one: the same math in the same order, with GL's conventions (`include/common.hlsli`). `Hlsl_ProgramInterfaces` holds every program to `neo/tests/d3d12_golden/renderProgInfo.txt` (a wanted change of an interface is a change of its line); `Hlsl_SourcesCompile` allows no DXC warning.
 - Shaders compile on worker threads: code there must not call `va` (shared buffers) or `fileSystem`.
 - Caches: the DXIL in `fs_savepath/base/shaders/cache`, the PSOs in `fs_savepath/base/renderprogs/dxbc`. Delete both folders for a cold start; a stale or broken file is rebuilt on its own.
@@ -163,4 +169,4 @@ build/vs2022-x64/bin/Release/idlibTests.exe all noftz       # run without FTZ/DA
 ## Not included (from README.txt)
 
 - Steam integration, Bink video and the patented "depth fail" stencil shadows (Carmack's Reverse) have been removed.
-- These third-party pieces are under their own licenses: jpeg-6 (`neo/renderer/jpeg-6`), zlib (`third_party/zlib`, a submodule) and Base64 (`neo/idlib/Base64.cpp`).
+- These third-party pieces are under their own licenses: jpeg-6 (`neo/renderer/jpeg-6`), zlib (`third_party/zlib`, a submodule), Base64 (`neo/idlib/Base64.cpp`), and the optional NRD (`third_party/NRD`, NVIDIA RTX SDKs License) with MathLib and ShaderMake (MIT, submodules).

@@ -481,6 +481,11 @@ void idD3D12Device::FillCaps( renderCaps_t & caps ) const {
 	caps.depthBoundsTest = features.depthBounds;
 	caps.debugGroups = true;
 	caps.rayTracing = features.raytracingTier >= D3D12_RAYTRACING_TIER_1_1;
+#if defined( USE_NRD )
+	caps.nrd = caps.rayTracing;
+#else
+	caps.nrd = false;
+#endif
 }
 
 int idD3D12Device::DrainMessages() const {
@@ -704,13 +709,24 @@ void idD3D12Graveyard::Bury( idD3D12DescriptorPool & pool, d3d12Descriptor_t slo
 	}
 }
 
+void idD3D12Graveyard::BuryRange( idD3D12DescriptorPool & pool, d3d12Descriptor_t first, uint32 count ) {
+	if ( first.IsValid() && count > 0 ) {
+		graves.push_back( { queue.LastSignaled() + 1, nullptr, &pool, first } );
+		graves.back().rangeCount = count;
+	}
+}
+
 void idD3D12Graveyard::Bury( idD3D12SamplerHeap & heap, uint32 slot ) {
 	graves.push_back( { queue.LastSignaled() + 1, nullptr, nullptr, {}, &heap, slot } );
 }
 
 void idD3D12Graveyard::Release( grave_t & grave ) {
 	if ( grave.pool != nullptr ) {
-		grave.pool->Free( grave.slot );
+		if ( grave.rangeCount > 0 ) {
+			grave.pool->FreeRange( grave.slot, grave.rangeCount );
+		} else {
+			grave.pool->Free( grave.slot );
+		}
 		grave.pool = nullptr;
 	}
 	if ( grave.samplers != nullptr ) {

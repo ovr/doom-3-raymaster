@@ -29,8 +29,14 @@ enum class rtDebug_t : uint8 {
 	ALBEDO,		// the hit's diffuse texture times its stage colour, as stored (gamma)
 	REFLECTION,	// the reflections alone, in place of the lights (the passes after them still draw)
 	SHADOWS,	// what the traced shadows leave of the traced lights, in place of the lights; blue where none reaches
-	HISTORY,	// how many frames the traced shadows' history holds per pixel, black none, white all it may
 	INDIRECT,	// the indirect light alone, as a white surface takes it, in place of the scene's colour
+	COUNT
+};
+
+// r_rtDenoiser: what averages the noise of a ray traced pass over the frames and the neighbours (R18).
+enum class rtDenoiser_t : uint8 {
+	NONE,		// every frame's rays as they are
+	NRD,		// NVIDIA NRD: needs renderCaps_t::nrd
 	COUNT
 };
 
@@ -40,6 +46,12 @@ struct rtView_t {
 	float				clipToWorld[4][4] = {};	// rows of the inverse of the view's MVP
 	float				worldToClip[4][4] = {};	// rows of the MVP
 	float				prevWorldToClip[4][4] = {};	// of the frame before; this frame's when there is none
+	// GL's model view of the world and projection, columns one after the other (glLoadMatrixf's order)
+	float				worldToView[16] = {};
+	float				viewToClip[16] = {};
+	float				prevWorldToView[16] = {};	// of the frame before; this frame's when there is none
+	float				prevViewToClip[16] = {};
+	float				frameMs = 0.0f;			// the view's time since the frame before of the epoch; 0 at its first
 	float				origin[3] = {};
 	float				pixelSpread = 0.0f;		// radians per pixel of the viewport's height: the texture level of a hit
 	uint32				epoch = 0;				// changes when the history starts again: a new view, size, a gap, time going back
@@ -52,17 +64,18 @@ struct rtView_t {
 // r_rtReflection*: a ray per pixel of the main view whose G-buffer may reflect, added to the HDR scene after the
 // lights (R20). A pixel smoother than mirrorRoughness is a mirror: one ray about its normal, the hit lit by the
 // first lights that reach it, the same every frame. A rougher one sends a ray of its GGX lobe, lit by one light,
-// averaged over the eye's history (R18) and the neighbours of the same surface, as wide as the lobe.
+// filtered by NRD over the frames and the neighbours of the same surface (R18).
 struct rtReflectionSettings_t {
+	static constexpr float	FADE = 0.15f;	// the roughness over which the reflections fade out below maxRoughness
+	rtDenoiser_t		denoiser = rtDenoiser_t::NRD;	// of the glossy pixels
 	bool				enabled = false;	// with scene and gbuffer
+	bool				validation = false;	// r_rtNrdValidation 1: NRD's view of its inputs over the output
 	bool				alone = false;		// rtDebug_t::REFLECTION: the reflections replace the lights' sum
 	bool				shadows = true;		// a mirror's hit: a shadow ray per light that lights it
 	bool				glossy = true;		// r_rtReflectionGlossy; false: every pixel that reflects is a mirror
 	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
-	bool				reference = false;	// r_rtReference: a plain average while the eye stands still, unfiltered
+	bool				reference = false;	// r_rtReference: the glossy pixels' plain mean while the eye stands still
 	int					maxLights = 8;		// a mirror's hit: lights per hit, the first that reach it
-	int					maxHistory = 16;	// r_rtReflectionHistory: frames a glossy pixel averages
-	int					passes = 4;			// r_rtReflectionPasses: spatial passes, each twice as wide
 	float				scale = 1.0f;
 	float				distance = 2048.0f;	// the longest ray
 	float				maxRoughness = 0.6f;	// rougher pixels send no ray; the weight fades in over 0.15 below it
@@ -71,15 +84,15 @@ struct rtReflectionSettings_t {
 
 // r_rtIndirect: one bounce of light in the main view (R19). A ray per texel of a grid of stride pixels leaves the
 // surface by the cosine about the plane its depth holds; what it hits is lit by one of the lights that reach it and
-// by what it emits. The amount and the direction it came from are averaged over the eye's history (R18) and the
-// neighbours of the same surface, then every pixel takes them by its own bumped normal, times its albedo.
+// by what it emits. NRD filters the amount and the direction it came from over the frames and the neighbours of
+// the same surface (R18), then every pixel takes them by its own bumped normal, times its albedo.
 struct rtIndirectSettings_t {
+	rtDenoiser_t		denoiser = rtDenoiser_t::NRD;
 	bool				enabled = false;	// with scene and gbuffer
+	bool				validation = false;	// r_rtNrdValidation 2: NRD's view of its inputs over the output
 	bool				alone = false;		// rtDebug_t::INDIRECT
 	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
-	bool				reference = false;	// r_rtReference: a plain average of up to maxHistory frames, unfiltered
-	int					maxHistory = 24;	// r_rtIndirectHistory: frames a texel averages
-	int					passes = 4;			// r_rtIndirectPasses: spatial passes, each twice as wide
+	bool				reference = false;	// r_rtReference: a plain mean while the eye stands still, unfiltered
 	int					stride = 2;			// pixels a side per texel, from r_rtIndirectResolution
 	float				scale = 1.0f;		// r_rtIndirectScale
 	float				emissiveScale = 1.0f;	// r_rtEmissiveScale: what a hit emits, times this
@@ -95,22 +108,21 @@ struct rtIndirectSettings_t {
 
 // r_rtShadows: the main view's lights that cast shadows trace them in their interactions (R16, R17), a ray per
 // lit pixel and light toward the light's disk, instead of drawing stencil shadow volumes.
-// What is left of the lights is filtered before the scene takes it (R18): over the eye's history, then over the
-// pixel's neighbours of the same surface, wider where the history still varies.
+// NRD filters what is left of the lights before the scene takes it (R18), from the penumbra of the nearest caster.
 // The front end makes no stencil shadow volumes for such a view once the back end has traced its world's main view
 // (volumes false): a frame that then cannot trace keeps the shadows its history holds, and the next has volumes.
 struct rtShadowSettings_t {
+	// NRD: the light target's alpha holds the luminance a caster takes times its penumbra's radius times this
+	static constexpr float	PENUMBRA_SCALE = 1.0f / 64.0f;
+	rtDenoiser_t		denoiser = rtDenoiser_t::NRD;
 	bool				enabled = false;	// with scene; never in a view that is not its frame's main one
 	bool				volumes = true;		// the view's traced lights have their stencil shadow volumes
 	bool				keepVolumes = false;	// r_rtShadowVolumes: they are made whatever the back end traced
 	bool				show = false;		// rtDebug_t::SHADOWS
-	bool				showLength = false;	// rtDebug_t::HISTORY
 	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
-	bool				reference = false;	// r_rtReference: a plain average of up to maxHistory frames, 32-bit, unfiltered
-	int					maxHistory = 16;	// r_rtShadowHistory: frames a pixel averages
-	int					passes = 3;			// r_rtShadowPasses: spatial passes, each twice as wide; 0 with no history = raw
-	// the filter reads the G-buffer
-	[[nodiscard]] bool	Filtered() const { return enabled && ( history || passes > 0 ); }
+	bool				reference = false;	// r_rtReference: a plain mean while the eye stands still, unfiltered
+	// the interactions send NRD the nearest caster's penumbra; NRD reads the G-buffer
+	[[nodiscard]] bool	Penumbrae() const { return enabled && denoiser == rtDenoiser_t::NRD; }
 	// A view the back end never traces (a subview, a portal sky's): its shadows are the stencil ones.
 	void				KeepStencil() { enabled = false; volumes = true; }
 	// no volume is made for a light the view would trace

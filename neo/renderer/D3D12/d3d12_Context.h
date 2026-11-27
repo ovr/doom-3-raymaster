@@ -48,7 +48,8 @@
 	      ├── idD3D12GpuScene                 R15: the geometry records in a DEFAULT buffer, kept by the updates
 	      ├── idD3D12RayTracing               R15: the BLAS cache, the skinned BLAS and the TLAS, built on the graph
 	      ├── idD3D12RtPasses                 R15: the passes that trace them (r_rtDebug)
-	      └── idD3D12RtHistory                R18: what the traced passes keep per eye for the next frame
+	      ├── idD3D12RtHistory                R18: what the traced passes keep per eye for the next frame
+	      └── idD3D12Nrd                      R18: NRD's instances, textures and pipelines (r_rtDenoiser 1)
 
 	Sync points: every wait is explicit, and everything that frees or reuses memory reads
 	idD3D12Queue::Waited(), never the fence, so two runs record the same commands.
@@ -74,6 +75,7 @@
 #include "d3d12_Draw.h"
 #include "d3d12_GpuScene.h"
 #include "d3d12_Hdr.h"
+#include "d3d12_Nrd.h"
 #include "d3d12_Programs.h"
 #include "d3d12_RayTracing.h"
 #include "d3d12_RenderGraph.h"
@@ -184,6 +186,7 @@ public:
 	idD3D12RayTracing				rayTracing;
 	idD3D12RtPasses					rtPasses;
 	idD3D12RtHistory				rtHistory;
+	idD3D12Nrd						nrd;
 
 private:
 									idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device && createdDevice );

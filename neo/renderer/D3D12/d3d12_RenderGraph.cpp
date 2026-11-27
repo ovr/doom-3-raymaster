@@ -378,6 +378,20 @@ void idD3D12GraphContext::Draw( ID3D12PipelineState & pso, d3d12GraphResource_t 
 	list.DrawInstanced( 3, 1, 0, 0 );
 }
 
+void idD3D12GraphContext::DispatchTable( ID3D12RootSignature & root, ID3D12PipelineState & pso, const d3d12UploadSpan_t * parms,
+	D3D12_GPU_DESCRIPTOR_HANDLE table, uint32 groupsX, uint32 groupsY ) {
+	ID3D12GraphicsCommandList4 & list = List();
+	graph.barriers.Flush();
+	list.SetComputeRootSignature( &root );
+	computeRootList = 0;
+	list.SetPipelineState( &pso );
+	if ( parms != nullptr ) {
+		list.SetComputeRootConstantBufferView( 0, parms->gpu );
+	}
+	list.SetComputeRootDescriptorTable( 1, table );
+	list.Dispatch( groupsX, groupsY, 1 );
+}
+
 void idD3D12GraphContext::UavBarrier( d3d12GraphResource_t resource ) {
 	CheckUse( resource, { d3d12GraphAccess_t::UAV } );
 	graph.barriers.Uav( Resource( resource ) );

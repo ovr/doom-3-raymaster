@@ -1189,6 +1189,7 @@ With added sorting and trivial path work.
 struct tracedLight_t {
 	uint32	mask;		// gpuSceneInstance_t::MASK_SHADOW*: the casters the surfaces drawn take shadows of
 	int		noise;		// the index of the noise: the point of the light's disk a pixel aims at
+	float	penumbra;	// rtShadowSettings_t::PENUMBRA_SCALE for NRD, else 0
 };
 
 static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t * vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds,
@@ -1201,7 +1202,7 @@ static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t
 	if ( traced != nullptr ) {
 		const idVec3 & origin = vLight->globalLightOrigin;
 		const float rtLight[4] = { origin.x, origin.y, origin.z, vLight->emitterRadius };
-		const float rtShadow[4] = { static_cast<float>( traced->mask ), static_cast<float>( traced->noise ), 0.0f, 0.0f };
+		const float rtShadow[4] = { static_cast<float>( traced->mask ), static_cast<float>( traced->noise ), traced->penumbra, 0.0f };
 		SetFragmentParm( RENDERPARM_RT_LIGHT, rtLight );
 		SetFragmentParm( RENDERPARM_RT_SHADOW, rtShadow );
 	}
@@ -1823,6 +1824,7 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 	// with a history every frame takes other points of the disks (R18); without one each frame the same
 	const rtShadowSettings_t & shadow = backEnd.viewDef->rayTracing.shadow;
 	tracedLight_t traced = {};
+	traced.penumbra = shadow.Penumbrae() ? rtShadowSettings_t::PENUMBRA_SCALE : 0.0f;
 	const int sequence = shadow.history ? static_cast<int>( backEnd.viewSequence & 0xFFFFu ) : 0;
 	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != nullptr; vLight = vLight->next ) {
 		if ( !RB_LightTracesShadows( *vLight ) ) {
@@ -3034,6 +3036,20 @@ rtView_t RB_RayTracingView( const viewDef_t & viewDef ) {
 			view.prevWorldToClip[row][column] = prevMvp[row][column];
 		}
 	}
+	memcpy( view.worldToView, viewDef.worldSpace.modelViewMatrix, sizeof( view.worldToView ) );
+	memcpy( view.viewToClip, viewDef.projectionMatrix, sizeof( view.viewToClip ) );
+	memcpy( view.prevWorldToView, view.worldToView, sizeof( view.prevWorldToView ) );
+	memcpy( view.prevViewToClip, view.viewToClip, sizeof( view.prevViewToClip ) );
+	if ( backEnd.viewFollows ) {
+		const gbufferLastView_t & last = RB_LastMainView( viewDef );
+		memcpy( view.prevWorldToView, last.worldModelView, sizeof( view.prevWorldToView ) );
+		for ( int row = 0; row < 4; row++ ) {
+			for ( int column = 0; column < 4; column++ ) {
+				view.prevViewToClip[column * 4 + row] = last.projection[row][column];
+			}
+		}
+		view.frameMs = static_cast<float>( viewDef.renderView.time[0] - last.time );
+	}
 	view.epoch = backEnd.viewEpoch;
 	view.sequence = backEnd.viewSequence;
 	view.eye = ( viewDef.renderView.viewEyeBuffer == 1 ) ? 1 : 0;
@@ -3115,8 +3131,7 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		}
 		const rtDebug_t rtDebug = backEnd.viewDef->rayTracing.rtDebug;
 		// drawn before the resolve
-		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS || rtDebug == rtDebug_t::HISTORY
-			|| rtDebug == rtDebug_t::INDIRECT );
+		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS || rtDebug == rtDebug_t::INDIRECT );
 		if ( rtDebug != rtDebug_t::NONE && !inScene && backEnd.viewDef->gpuScene != nullptr ) {
 			renderLog.OpenMainBlock( MRB_RAY_TRACING );
 			renderBackend->DrawRayTracingDebug( rtDebug, RB_RayTracingView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
