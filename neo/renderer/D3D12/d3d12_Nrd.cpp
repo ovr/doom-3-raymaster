@@ -67,8 +67,10 @@ constexpr nrd::Identifier IDENTIFIER = 0;
 constexpr size_t GUIDE_VIEW_Z = 0;
 constexpr size_t GUIDE_NORMAL_ROUGHNESS = 1;
 constexpr size_t GUIDE_MOTION = 2;
-constexpr std::array<DXGI_FORMAT, 3> GUIDE_FORMATS = { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT };
-constexpr std::array<const char *, 3> GUIDE_NAMES = { "nrd view z", "nrd normal roughness", "nrd motion" };
+constexpr size_t GUIDE_SPEC_VIEW_Z = 3;		// the pixels' set only
+constexpr std::array<DXGI_FORMAT, 4> GUIDE_FORMATS = { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+	DXGI_FORMAT_R32_FLOAT };
+constexpr std::array<const char *, 4> GUIDE_NAMES = { "nrd view z", "nrd normal roughness", "nrd motion", "nrd specular view z" };
 constexpr DXGI_FORMAT SIGNAL_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr DXGI_FORMAT PENUMBRA_FORMAT = DXGI_FORMAT_R16_FLOAT;
 // SIGMA blurs as wide as the penumbra it is given, which washes out the wide soft shadows of large lights (27_rt_shadows:
@@ -95,8 +97,9 @@ struct nrdGuidesParms_t {
 	uint32							normalRoughnessUav;
 	uint32							motionUav;
 	uint32							stride;
-	uint32							flags;			// bit 0: the plane, roughness 1, no material
-	uint32							unused[2];
+	uint32							flags;			// bit 0: the plane, roughness 1, no material; bit 1: the specular view z
+	uint32							specViewZUav;
+	uint32							unused;
 };
 static_assert( sizeof( nrdGuidesParms_t ) == 208 );
 
@@ -573,8 +576,9 @@ idD3D12Nrd::guides_t * idD3D12Nrd::Guides( int eye, size_t set, uint32 width, ui
 	if ( width == 0 || height == 0 || device.IsLost() ) {
 		return nullptr;
 	}
-	static constexpr std::array<const wchar_t *, 3> NAMES = { L"doom3 nrd view z", L"doom3 nrd normal roughness", L"doom3 nrd motion" };
-	for ( size_t i = 0; i < eyeGuides.textures.size(); i++ ) {
+	static constexpr std::array<const wchar_t *, 4> NAMES = { L"doom3 nrd view z", L"doom3 nrd normal roughness", L"doom3 nrd motion",
+		L"doom3 nrd specular view z" };
+	for ( size_t i = 0; i < GuideCount( set ); i++ ) {
 		if ( !CreateTexture( eyeGuides.textures[i], GUIDE_FORMATS[i], width, height, NAMES[i] ) ) {
 			BuryGuides( eyeGuides );
 			return nullptr;
@@ -667,8 +671,8 @@ bool idD3D12Nrd::WriteGuides( idD3D12RenderGraph & graph, idD3D12SceneTarget & s
 	const renderRect_t & rect, const std::optional<std::array<float, 3>> & limits, std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported ) {
 	const uint32 width = eyeGuides.width;
 	const uint32 height = eyeGuides.height;
-	std::array<d3d12GraphResource_t, 3> uses;
-	for ( size_t i = 0; i < uses.size(); i++ ) {
+	std::array<d3d12GraphResource_t, 4> uses = {};
+	for ( size_t i = 0; i < GuideCount( set ); i++ ) {
 		uses[i] = Import( graph, GUIDE_NAMES[i], eyeGuides.textures[i], width, height, imported );
 	}
 	const std::array<float, 3> used = limits.value_or( eyeGuides.limits );
@@ -720,12 +724,17 @@ bool idD3D12Nrd::WriteGuides( idD3D12RenderGraph & graph, idD3D12SceneTarget & s
 	base.size[0] = width;
 	base.size[1] = height;
 	base.stride = eyeGuides.stride;
-	base.flags = ( set == GRID ) ? 1u : 0u;
-	graph.AddPass( "nrd guides", d3d12GraphPass_t::COMPUTE, { { depthUse, d3d12GraphAccess_t::DEPTH_READ }, { normalUse, d3d12GraphAccess_t::SRV },
+	const bool specular = ( set == PIXELS );
+	base.flags = ( set == GRID ? 1u : 0u ) | ( specular ? 2u : 0u );
+	std::vector<d3d12GraphUse_t> passUses = { { depthUse, d3d12GraphAccess_t::DEPTH_READ }, { normalUse, d3d12GraphAccess_t::SRV },
 		{ materialUse, d3d12GraphAccess_t::SRV }, { motionUse, d3d12GraphAccess_t::SRV }, { albedoUse, d3d12GraphAccess_t::SRV },
 		{ uses[GUIDE_VIEW_Z], d3d12GraphAccess_t::UAV, 0 }, { uses[GUIDE_NORMAL_ROUGHNESS], d3d12GraphAccess_t::UAV, 0 },
-		{ uses[GUIDE_MOTION], d3d12GraphAccess_t::UAV, 0 } },
-		[pipeline, base, depthUse, normalUse, materialUse, motionUse, albedoUse, uses]( idD3D12GraphContext & context ) {
+		{ uses[GUIDE_MOTION], d3d12GraphAccess_t::UAV, 0 } };
+	if ( specular ) {
+		passUses.push_back( { uses[GUIDE_SPEC_VIEW_Z], d3d12GraphAccess_t::UAV, 0 } );
+	}
+	graph.AddPass( "nrd guides", d3d12GraphPass_t::COMPUTE, passUses,
+		[pipeline, base, depthUse, normalUse, materialUse, motionUse, albedoUse, uses, specular]( idD3D12GraphContext & context ) {
 			nrdGuidesParms_t parms = base;
 			parms.depthSrv = context.Srv( depthUse );
 			parms.normalSrv = context.Srv( normalUse );
@@ -735,6 +744,7 @@ bool idD3D12Nrd::WriteGuides( idD3D12RenderGraph & graph, idD3D12SceneTarget & s
 			parms.viewZUav = context.Uav( uses[GUIDE_VIEW_Z] );
 			parms.normalRoughnessUav = context.Uav( uses[GUIDE_NORMAL_ROUGHNESS] );
 			parms.motionUav = context.Uav( uses[GUIDE_MOTION] );
+			parms.specViewZUav = specular ? context.Uav( uses[GUIDE_SPEC_VIEW_Z] ) : 0;
 			const d3d12UploadSpan_t span = context.Parms( parms );
 			context.Dispatch( *pipeline, &span, parms.size[0], parms.size[1] );
 		} );
@@ -841,7 +851,10 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 			texture_t * texture = nullptr;
 			const char * name = nrd::GetResourceTypeString( resource.type );
 			switch ( resource.type ) {
-				case nrd::ResourceType::IN_VIEWZ:				texture = &eyeGuides.textures[GUIDE_VIEW_Z]; break;
+				// REBLUR_SPECULAR's leaves out the pixels that are not glossy
+				case nrd::ResourceType::IN_VIEWZ:
+					texture = &eyeGuides.textures[denoiser.signal == signal_t::REFLECTION ? GUIDE_SPEC_VIEW_Z : GUIDE_VIEW_Z];
+					break;
 				case nrd::ResourceType::IN_NORMAL_ROUGHNESS:	texture = &eyeGuides.textures[GUIDE_NORMAL_ROUGHNESS]; break;
 				case nrd::ResourceType::IN_MV:					texture = &eyeGuides.textures[GUIDE_MOTION]; break;
 				case nrd::ResourceType::PERMANENT_POOL:

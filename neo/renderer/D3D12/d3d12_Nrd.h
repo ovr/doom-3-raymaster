@@ -18,11 +18,13 @@
 	                     size (the viewport's; the indirect light's grid), committed and imported into the graphs:
 	                     REBLUR_SPECULAR, REBLUR_DIFFUSE_SH, SIGMA_SHADOW_TRANSLUCENCY;
 	                     RESTART for a new epoch, a skipped frame or r_rtHistory 0, CLEAR_AND_RESTART for new
-	                     textures and after a level load, which keeps them. A screenshot (rtView_t::store false) has instances of its own that start anew
-	                     each time; they stay while screenshots come (com_aviDemo takes one a frame) and go
-	                     SCREENSHOT_IDLE stored frames after the last.
+	                     textures and after a level load, which keeps them. A screenshot (rtView_t::store false)
+	                     has instances of its own that start anew each time; they stay while screenshots come
+	                     (com_aviDemo takes one a frame) and go SCREENSHOT_IDLE stored frames after the last.
 	  guides             per eye and set (the pixels; the grid), NRD's IN_VIEWZ, IN_NORMAL_ROUGHNESS and IN_MV
-	                     (internal/nrdGuides.hlsl), written once per frame for the signals that share them.
+	                     (internal/nrdGuides.hlsl), written once per frame for the signals that share them. The
+	                     pixels' also hold REBLUR_SPECULAR's IN_VIEWZ, the sky's where a pixel is not glossy: NRD
+	                     skips the tiles without a glossy pixel.
 
 	NRD's textures hold rows from the top, as the D3D clip space of the matrices it is given: GL's projection
 	with its z made 0 .. 1, GL's model view (NRD takes it as the right-handed one it is). View z is the clip w,
@@ -95,6 +97,7 @@ private:
 	static constexpr size_t			PIXELS = 0;	// guide sets: a texel per pixel, the bumped normal
 	static constexpr size_t			GRID = 1;	// the indirect light's grid, the plane
 	static constexpr size_t			GUIDE_SETS = 2;
+	[[nodiscard]] static constexpr size_t GuideCount( size_t set ) { return ( set == PIXELS ) ? 4 : 3; }
 	static constexpr uint32			SCREENSHOT_IDLE = 60;	// stored frames a screenshot's instances outlive it
 
 	struct texture_t {
@@ -105,7 +108,7 @@ private:
 		uint64						bytes = 0;
 	};
 	struct guides_t {
-		std::array<texture_t, 3>	textures;	// IN_VIEWZ, IN_NORMAL_ROUGHNESS, IN_MV
+		std::array<texture_t, 4>	textures;	// IN_VIEWZ, IN_NORMAL_ROUGHNESS, IN_MV; the pixels' also REBLUR_SPECULAR's IN_VIEWZ
 		uint32						width = 0;
 		uint32						height = 0;
 		uint32						stride = 1;			// pixels a side per texel
