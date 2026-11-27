@@ -14,3 +14,5 @@ CMakeUserPresets.json
 /external/d3d12-*/
 /external/doom3-gpl/
 __pycache__/
+# NRD.hlsli and NRDConfig.hlsli, copied there by the configure (third_party/CMakeLists.txt)
+/base/shaders/include/nrd/
