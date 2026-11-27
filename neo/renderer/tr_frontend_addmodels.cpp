@@ -41,7 +41,7 @@ idCVar r_useParallelAddModels( "r_useParallelAddModels", "1", CVAR_RENDERER | CV
 idCVar r_useParallelAddShadows( "r_useParallelAddShadows", "1", CVAR_RENDERER | CVAR_INTEGER, "0 = off, 1 = threaded", 0, 1 );
 idCVar r_useShadowPreciseInsideTest( "r_useShadowPreciseInsideTest", "1", CVAR_RENDERER | CVAR_BOOL, "use a precise and more expensive test to determine whether the view is inside a shadow volume" );
 idCVar r_cullDynamicShadowTriangles( "r_cullDynamicShadowTriangles", "1", CVAR_RENDERER | CVAR_BOOL, "cull occluder triangles that are outside the light frustum so they do not contribute to the dynamic shadow volume" );
-idCVar r_cullDynamicLightTriangles( "r_cullDynamicLightTriangles", "1", CVAR_RENDERER | CVAR_BOOL, "cull surface triangles that are outside the light frustum so they do not get rendered for interactions" );
+idCVar r_cullDynamicLightTriangles( "r_cullDynamicLightTriangles", "1", CVAR_RENDERER | CVAR_BOOL, "cull surface triangles that are outside the light frustum so they do not get rendered for interactions (not for the lights whose shadows are ray traced)" );
 idCVar r_forceShadowCaps( "r_forceShadowCaps", "0", CVAR_RENDERER | CVAR_BOOL, "0 = skip rendering shadow caps if view is outside shadow volume, 1 = always render shadow caps" );
 
 static const float CHECK_BOUNDS_EPSILON = 1.0f;
@@ -908,8 +908,10 @@ void R_AddSingleModel( viewEntity_t * vEntity ) {
 						lightDrawSurf->numIndexes = tri->numIndexes;
 						lightDrawSurf->indexCache = tri->indexCache;
 
-						// optionally cull the triangles to the light volume
-						if ( r_cullDynamicLightTriangles.GetBool() ) {
+						// optionally cull the triangles to the light volume. Not for a light whose shadows are traced: the
+						// cull skins the surface on the CPU per light, the GPU draws it whole for less; stencil frames stay
+						const bool traced = viewDef->rayTracing.shadow.WithoutVolumes() && R_LightTracesShadows( vLight->castsShadows, *vLight->lightShader );
+						if ( r_cullDynamicLightTriangles.GetBool() && !traced ) {
 
 							vertCacheHandle_t lightIndexCache = vertexCache.AllocIndex( NULL, ALIGN( lightDrawSurf->numIndexes * sizeof( triIndex_t ), INDEX_CACHE_ALIGN ) );
 							if ( vertexCache.CacheIsCurrent( lightIndexCache ) ) {
