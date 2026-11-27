@@ -39,7 +39,8 @@ Contains the RenderLog declaration.
 #endif
 
 // The render passes of the backend. A main block can be opened inside another one: the light
-// passes are opened inside MRB_DRAW_INTERACTIONS. r_pix 1 times each main block on the GPU.
+// passes are opened inside MRB_DRAW_INTERACTIONS. r_pix 1 times each main block on the GPU. Open each one
+// at one depth only: its row then counts it once, and the rows of a depth add up to the block around them.
 enum renderLogMainBlock_t {
 	MRB_NONE,
 	MRB_BEGIN_DRAWING_VIEW,
@@ -49,6 +50,7 @@ enum renderLogMainBlock_t {
 	MRB_STENCIL_SHADOWS,			// inside MRB_DRAW_INTERACTIONS
 	MRB_LIGHT_INTERACTIONS,			// inside MRB_DRAW_INTERACTIONS
 	MRB_TRANSLUCENT_INTERACTIONS,	// inside MRB_DRAW_INTERACTIONS
+	MRB_RT_SHADOWS,					// inside MRB_DRAW_INTERACTIONS: the traced shadows' resolve and filter (R18)
 	MRB_DRAW_SHADER_PASSES,
 	MRB_DRAW_GUI,					// the shader passes of 2D views: menus, HUD, console
 	MRB_FOG_ALL_LIGHTS,
@@ -58,7 +60,9 @@ enum renderLogMainBlock_t {
 	MRB_POSTPROCESS,
 	MRB_HDR,						// the resolve of the HDR scene: exposure, bloom, tonemap
 	MRB_RT_SCENE,					// the GPU scene's update and acceleration structures (R15)
-	MRB_RAY_TRACING,				// the passes that trace the GPU scene: r_rtDebug
+	MRB_RT_REFLECTIONS,				// the reflections with their filter (R20)
+	MRB_RT_INDIRECT,				// the indirect light with its filter (R19)
+	MRB_RT_DEBUG,					// r_rtDebug's views of the GPU scene
 	MRB_GPU_SYNC,
 	MRB_END_FRAME,
 	MRB_BINK_FRAME,

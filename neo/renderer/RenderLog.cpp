@@ -60,6 +60,9 @@ GPU. About once a second the GPU and CPU milliseconds of each pass, per frame, a
 r_pix 2 wraps every main block and block in a debug group (a PIX event), so PIX, RenderDoc, Radeon
 GPU Profiler and Nsight show named passes, views, lights and materials.
 
+r_pix 4 has the backend time each of its own passes (renderBackend->TimePasses): the render graph's,
+NRD's dispatches among them, printed by name about once a second. The bits add up.
+
 Only the backend opens blocks, and the backend runs on the main thread with com_smp 0 and 1, the
 thread that records the command lists. Events from any other thread are dropped. The results are read
 back in SwapCommandBuffers, while the game thread is idle, so the com_showFPS overlay can read them
@@ -68,10 +71,11 @@ while the game thread builds the next frame.
 */
 
 idCVar r_pix( "r_pix", "0", CVAR_RENDERER | CVAR_INTEGER,
-	"GPU time per render pass: 1 = print the GPU and CPU ms of each pass about once a second "
+	"GPU time per render pass, bits: 1 = print the GPU and CPU ms of each pass about once a second "
 	"(GPU timestamps, also adds the top passes to com_showFPS), 2 = debug groups named after "
-	"the passes, views, lights and materials for PIX / RenderDoc / Radeon GPU Profiler / Nsight, 3 = both",
-	0, 3 );
+	"the passes, views, lights and materials for PIX / RenderDoc / Radeon GPU Profiler / Nsight, "
+	"4 = print the GPU ms of every render graph pass (NRD's by denoiser) about once a second",
+	0, 7 );
 
 /*
 ========================
@@ -90,6 +94,7 @@ static constexpr const char * RenderPassName( const renderLogMainBlock_t pass ) 
 		case MRB_STENCIL_SHADOWS:			return "Stencil shadows";
 		case MRB_LIGHT_INTERACTIONS:		return "Light interactions";
 		case MRB_TRANSLUCENT_INTERACTIONS:	return "Translucent interactions";
+		case MRB_RT_SHADOWS:				return "Traced shadows";
 		case MRB_DRAW_SHADER_PASSES:		return "Shader passes";
 		case MRB_DRAW_GUI:					return "GUI";
 		case MRB_FOG_ALL_LIGHTS:			return "Fog and blend lights";
@@ -99,7 +104,9 @@ static constexpr const char * RenderPassName( const renderLogMainBlock_t pass ) 
 		case MRB_POSTPROCESS:				return "Post process";
 		case MRB_HDR:						return "HDR resolve";
 		case MRB_RT_SCENE:					return "Ray tracing scene";
-		case MRB_RAY_TRACING:				return "Ray tracing";
+		case MRB_RT_REFLECTIONS:			return "Reflections";
+		case MRB_RT_INDIRECT:				return "Indirect light";
+		case MRB_RT_DEBUG:					return "Ray tracing debug";
 		case MRB_GPU_SYNC:					return "GPU sync";
 		case MRB_END_FRAME:					return "End frame";
 		case MRB_BINK_FRAME:				return "Bink frame";
@@ -130,6 +137,7 @@ public:
 private:
 	static constexpr int	TIMING			= BIT( 0 );	// r_pix 1
 	static constexpr int	DEBUG_GROUPS	= BIT( 1 );	// r_pix 2
+	static constexpr int	BACKEND_PASSES	= BIT( 2 );	// r_pix 4
 
 	static constexpr int	QUERY_FRAMES	= TIMESTAMP_SETS;	// frames of timestamps in flight
 	static constexpr int	MAX_BLOCKS		= 1024;		// timed main blocks in a frame, the frame itself included
@@ -236,6 +244,8 @@ void idRenderPassTimer::BeginFrame() {
 	}
 
 	int flags = r_pix.GetInteger();
+	renderBackend->TimePasses( ( flags & BACKEND_PASSES ) != 0 && renderBackend->Caps().timestamps );
+	flags &= TIMING | DEBUG_GROUPS;
 	if ( flags != requestedFlags ) {
 		requestedFlags = flags;
 		if ( ( flags & TIMING ) != 0 && !renderBackend->Caps().timestamps ) {

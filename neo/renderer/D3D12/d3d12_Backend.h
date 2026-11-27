@@ -104,6 +104,7 @@ public:
 	bool							TimestampReady( int set, int index ) override;
 	void							ReadTimestamps( int set, int count, uint64 * nanoseconds ) override;
 	void							FreeTimestamps() override;
+	void							TimePasses( bool on ) override;
 	void							PushDebugGroup( const char * name ) override;
 	void							PopDebugGroup() override;
 

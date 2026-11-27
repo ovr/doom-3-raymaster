@@ -113,6 +113,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	graveyard( queue ),
 	commands( device, queue ),
 	timers( device, queue ),
+	passTimer( device, queue ),
 	barriers( *this ),
 	srvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SHADER_VISIBLE_SRVS ),
 	rtvPool( device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV ),
@@ -145,6 +146,7 @@ idD3D12Context::idD3D12Context( idD3D12Library && loadedLibrary, idD3D12Device &
 	nrd( device, library, graveyard, srvPool, passes, computeRootSignature ) {
 	// the recorder is older than what it asks
 	recorder.SetTraceSource( [this] { return rtPasses.DrawResources( rayTracing, gpuScene ); } );
+	graph.SetPassTimer( &passTimer );
 	rtPasses.SetNrd( &nrd );
 }
 
@@ -245,6 +247,7 @@ void idD3D12Context::BeginFrame( int width, int height ) {
 	recorder.BeginFrame();
 	if ( !device.IsLost() ) {
 		timers.BeginFrame( List() );
+		passTimer.BeginFrame( Sys_Milliseconds() );
 	}
 }
 
@@ -253,6 +256,7 @@ void idD3D12Context::EndFrame() {
 	recorder.EndPass();
 	if ( !device.IsLost() ) {
 		timers.EndFrame( List() );
+		passTimer.EndFrame( List() );
 	}
 	SubmitChunk();
 }

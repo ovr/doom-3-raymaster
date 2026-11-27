@@ -7,6 +7,11 @@
 #include "d3d12_Device.h"
 
 #include <bitset>
+#include <deque>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
 
 /*
 	GPU timestamps: one TIMESTAMP query heap, resolved into a READBACK buffer with the same slots.
@@ -64,6 +69,77 @@ private:
 	uint64							frameReadFence = 0;		// frameMicroseconds is the time of this list's frame
 	uint64							frameMicroseconds = 0;
 	int								writes = 0;
+};
+
+/*
+	r_pix 4: the GPU time of every render graph pass, by its name (NRD's carry their denoiser's), in a TIMESTAMP
+	heap of its own: FRAMES frames of MAX_PASSES pairs. EndFrame resolves the frame's pairs, tagged with the fence
+	of the list it submits; BeginFrame adds up the frames the queue has waited for, never waits, and prints the
+	passes about once a second, the most expensive first. A frame whose slots are still in flight is not timed.
+*/
+class idD3D12PassTimer {
+public:
+	static constexpr int			FRAMES = 4;
+	static constexpr int			MAX_PASSES = 1024;
+
+	struct passTime_t {
+		const char *				name;
+		double						gpuMilliseconds;	// per frame, over the period
+		double						maxMilliseconds;	// of one frame
+		double						count;				// instances per frame
+	};
+
+									idD3D12PassTimer( const idD3D12Device & device, const idD3D12Queue & queue );
+	void							Enable( bool on );	// off drops the frames in flight and the period
+	[[nodiscard]] bool				Enabled() const { return enabled; }
+	void							BeginFrame( int nowMilliseconds );
+	void							Begin( ID3D12GraphicsCommandList4 & list, const char * name );
+	void							End( ID3D12GraphicsCommandList4 & list );
+	void							EndFrame( ID3D12GraphicsCommandList4 & list );
+	[[nodiscard]] int				PeriodFrames() const { return periodFrames; }
+	[[nodiscard]] std::vector<passTime_t>	PeriodTimes() const;	// the most expensive first; names stay valid
+
+private:
+	struct frame_t {
+		std::vector<uint16>			names;		// per timed pass, into names
+		uint64						fence = 0;	// 0: nothing in flight
+	};
+	struct stats_t {
+		double						sum = 0.0;
+		double						max = 0.0;
+		int							count = 0;
+	};
+
+	void							Collect();
+	void							Print( int periodMilliseconds ) const;
+	void							ResetPeriod();
+	[[nodiscard]] uint16			NameId( const char * name );
+
+	const idD3D12Device &			device;
+	const idD3D12Queue &			queue;
+	idComPtr<ID3D12QueryHeap>		heap;
+	idComPtr<ID3D12Resource>		readback;
+	uint64							frequency = 0;
+	bool							enabled = false;
+	bool							timing = false;		// this frame's passes are timed
+	bool							opened = false;		// the outermost pass has its first stamp
+	int								depth = 0;			// passes recorded inside a pass are part of it
+	int								current = 0;
+	std::array<frame_t, FRAMES>		frames;
+	struct nameHash_t {
+		using is_transparent = void;
+		[[nodiscard]] size_t		operator()( std::string_view name ) const { return std::hash<std::string_view>{}( name ); }
+	};
+	std::deque<std::string>			names;				// a deque: PeriodTimes hands out their pointers
+	std::unordered_map<std::string, uint16, nameHash_t, std::equal_to<>>	nameIds;
+	std::vector<stats_t>			period;				// by name
+	std::vector<double>				frameMs;			// scratch of Collect, by name
+	std::vector<int>				frameCount;
+	std::vector<uint64>				ticks;
+	int								periodFrames = 0;
+	int								periodSkipped = 0;	// frames not timed: their slots were in flight
+	int								periodUntimed = 0;	// passes over MAX_PASSES
+	int								periodStart = -1;
 };
 
 /*

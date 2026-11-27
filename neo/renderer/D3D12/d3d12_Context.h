@@ -20,6 +20,7 @@
 	      ├── idD3D12CommandStream            ID3D12GraphicsCommandList4 + allocators reused by fence
 	      ├── idD3D12DebugGroups              r_pix 2: the group stack, ended at a submit and begun again in the next list
 	      ├── idD3D12GpuTimers                r_pix 1 and the frame's GPU time: a TIMESTAMP query heap resolved in EndFrame
+	      ├── idD3D12PassTimer                r_pix 4: every render graph pass by name, a query heap of its own
 	      ├── idD3D12Barriers                 transitions batched until the next draw, clear, copy or submit
 	      ├── idD3D12DescriptorPool x 3       SRV, RTV, DSV: the permanent views; the SRVs also in the one
 	      │                                   shader-visible heap, which draws index (bindless.hlsli)
@@ -156,6 +157,7 @@ public:
 	idD3D12CommandStream			commands;
 	idD3D12DebugGroups				groups;
 	idD3D12GpuTimers				timers;
+	idD3D12PassTimer				passTimer;
 	idD3D12Barriers					barriers;
 	idD3D12DescriptorPool			srvPool;
 	idD3D12DescriptorPool			rtvPool;

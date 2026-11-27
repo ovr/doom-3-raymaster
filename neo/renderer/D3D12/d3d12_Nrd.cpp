@@ -279,6 +279,7 @@ struct idD3D12Nrd::denoiser_t {
 	std::vector<texture_t>			transient;
 	std::array<texture_t, static_cast<size_t>( nrd::ResourceType::MAX_NUM )>	io;	// the signal's own, by type
 	std::unordered_map<std::string, table_t>	tables;	// by pipeline and textures
+	std::string						family;					// "nrd <denoiser>", before each pass's name
 	std::unordered_set<std::string>	names;					// the graph keeps the passes' names
 	std::vector<byte>				constants;				// the last dispatch's
 	float							smoothedMs = DEFAULT_FRAME_MS;
@@ -585,6 +586,7 @@ idD3D12Nrd::denoiser_t * idD3D12Nrd::Denoiser( signal_t signal, int eye, uint32 
 	static constexpr std::array<nrd::Denoiser, static_cast<size_t>( signal_t::COUNT )> DENOISERS = { nrd::Denoiser::REBLUR_SPECULAR,
 		nrd::Denoiser::REBLUR_DIFFUSE_SH, nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY };
 	const nrd::DenoiserDesc denoiserDesc = { IDENTIFIER, DENOISERS[static_cast<size_t>( signal )] };
+	made->family = std::string( "nrd " ) + nrd::GetDenoiserString( denoiserDesc.denoiser );
 	nrd::InstanceCreationDesc creation = {};
 	creation.denoisers = &denoiserDesc;
 	creation.denoisersNum = 1;
@@ -866,7 +868,13 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 			denoiser.constants.assign( dispatch.constantBufferData, dispatch.constantBufferData + dispatch.constantBufferDataSize );
 		}
 		std::vector<byte> constants = pipelineDesc.hasConstantData ? denoiser.constants : std::vector<byte>();
-		const char * passName = denoiser.names.emplace( ( dispatch.name != nullptr ) ? dispatch.name : "nrd" ).first->c_str();
+		// "nrd REBLUR_SPECULAR: Blur" for NRD's "REBLUR_Specular - Blur" (REBLUR_DIFFUSE_SH's say "DENOISER_NAME - "):
+		// r_pix 4 sums a denoiser's passes by the part before the colon
+		std::string_view dispatchName = ( dispatch.name != nullptr ) ? dispatch.name : "?";
+		if ( const size_t dash = dispatchName.find( " - " ); dash != std::string_view::npos ) {
+			dispatchName.remove_prefix( dash + 3 );
+		}
+		const char * passName = denoiser.names.emplace( denoiser.family + ": " + std::string( dispatchName ) ).first->c_str();
 		const uint32 groupsX = dispatch.gridWidth;
 		const uint32 groupsY = dispatch.gridHeight;
 		graph.AddPass( passName, d3d12GraphPass_t::COMPUTE, uses, [root, pso, constants = std::move( constants ), table, groupsX, groupsY](

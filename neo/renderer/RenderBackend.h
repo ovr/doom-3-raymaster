@@ -388,6 +388,8 @@ public:
 	virtual void			ReadTimestamps( int set, int count, uint64 * nanoseconds ) = 0;
 	// Releases every timestamp slot.
 	virtual void			FreeTimestamps() = 0;
+	// r_pix 4: the backend times each of its own passes (the render graph's) and prints them about once a second.
+	virtual void			TimePasses( bool on ) = 0;
 	// Named group for capture tools; nests up to caps.maxDebugGroupDepth; nothing without caps.debugGroups.
 	virtual void			PushDebugGroup( const char * name ) = 0;
 	virtual void			PopDebugGroup() = 0;

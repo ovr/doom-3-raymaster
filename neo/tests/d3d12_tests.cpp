@@ -2836,6 +2836,49 @@ void Timestamps( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+// r_pix 4: two named passes and one inside another, over two lists. A frame is read only once its list is
+// waited for; the frame after it, while its slots are free, is timed again; off forgets the period.
+void PassTimes( idTestGpu & gpu ) {
+	idD3D12PassTimer timer( gpu.device, gpu.queue );
+	timer.Enable( true );
+	if ( !Check( timer.Enabled(), "a direct queue has pass timestamps" ) ) {
+		return;
+	}
+	timer.BeginFrame( 0 );
+	timer.Begin( gpu.List(), "nrd SIGMA: Blur" );
+	timer.Begin( gpu.List(), "inner" );
+	timer.End( gpu.List() );
+	timer.End( gpu.List() );
+	gpu.SubmitChunk();
+	timer.Begin( gpu.List(), "rt reflect" );
+	timer.End( gpu.List() );
+	timer.Begin( gpu.List(), "nrd SIGMA: Blur" );
+	timer.End( gpu.List() );
+	timer.EndFrame( gpu.List() );
+	const uint64 fence = gpu.SubmitChunk();
+	gpu.FinishUnwaited();
+	timer.BeginFrame( 1 );
+	Check( timer.PeriodFrames() == 0, "a frame not waited for is not read" );
+	timer.EndFrame( gpu.List() );
+	gpu.WaitFor( fence );
+	timer.BeginFrame( 2 );
+	const std::vector<idD3D12PassTimer::passTime_t> times = timer.PeriodTimes();
+	Check( timer.PeriodFrames() == 1 && times.size() == 2, "one frame of two names: the inner pass is part of the outer one" );
+	const auto find = [&times]( const char * name ) {
+		return std::ranges::find_if( times, [name]( const idD3D12PassTimer::passTime_t & t ) { return idStr::Cmp( t.name, name ) == 0; } );
+	};
+	const auto blur = find( "nrd SIGMA: Blur" );
+	const auto reflect = find( "rt reflect" );
+	Check( blur != times.end() && reflect != times.end() && blur->count == 2.0 && reflect->count == 1.0, "the instances per frame" );
+	Check( blur != times.end() && blur->gpuMilliseconds >= 0.0 && blur->maxMilliseconds >= blur->gpuMilliseconds, "a frame's sum is its max" );
+	timer.EndFrame( gpu.List() );
+	timer.Enable( false );
+	timer.Enable( true );
+	Check( timer.PeriodFrames() == 0 && timer.PeriodTimes().empty(), "off forgets the period" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
 // ---- GL's rasterization rules through the real root signature, programs and PSOs -----------------------------
 
 // A SIZE x SIZE RGBA8 + D24S8 target drawn as the recorder draws: base/shaders programs, GL clip space through
@@ -11320,6 +11363,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_DebugGroups", Test_WarpDebugGroups },
 	{ "Warp_Timestamps", OnWarp<Timestamps> },
 	{ "Gpu_Timestamps", OnGpu<Timestamps> },
+	{ "Warp_PassTimes", OnWarp<PassTimes> },
+	{ "Gpu_PassTimes", OnGpu<PassTimes> },
 	{ "Warp_RasterGlRows", OnWarp<RasterGlRows> },
 	{ "Gpu_RasterGlRows", OnGpu<RasterGlRows> },
 	{ "Warp_RasterCull", OnWarp<RasterCull> },

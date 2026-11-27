@@ -329,6 +329,12 @@ void idRenderBackendD3D12::FreeTimestamps() {
 	}
 }
 
+void idRenderBackendD3D12::TimePasses( bool on ) {
+	if ( context ) {
+		context->passTimer.Enable( on );
+	}
+}
+
 void idRenderBackendD3D12::PushDebugGroup( const char * name ) {
 	context->PushGroup( name );
 }
