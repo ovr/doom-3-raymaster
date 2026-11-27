@@ -8657,13 +8657,14 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		bool					store = true;
 		float					shift = 0.0f;		// of the eye along x
 		float					before = 0.0f;		// its shift the frame before
+		int						width = SIZE;		// of the viewport, a part of the scene from its left
 	};
 	uint32 epoch = 0;
 	const auto run = [&]( const rtReflectionSettings_t & settings, const shot_t & shot ) {
 		// the floor was where the eye was not: GL's motion, this frame's pixel less the one before's
 		prepare( shot.color, shot.bands, shot.rows, shot.before - shot.shift );
 		rtPasses.Reflections( scene.rays.graph, target, history, scene.rt, scene.gpuScene, settings,
-			viewOf( shot.shift, shot.before, epoch, shot.sequence, shot.store ), { 0, 0, SIZE, SIZE }, PRE_EXPOSURE, nullptr );
+			viewOf( shot.shift, shot.before, epoch, shot.sequence, shot.store ), { 0, 0, shot.width, SIZE }, PRE_EXPOSURE, nullptr );
 		std::vector<idVec4> texels = ReadFloatSurface( gpu, target.Color( true ) );
 		// the read waited for the GPU: what the frame took of the ring is free again
 		fixture.constants.CloseChunk( gpu.WaitedFence() );
@@ -8828,6 +8829,14 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		rtReflectionSettings_t checkered = throughNrd;
 		checkered.checkerboard = true;
 		checkSky( "8 frames through NRD's checkerboard", checkered, 8, 0.01f, 0.006f );
+		// a resolution scale: the viewport a part of the scene that changes, which makes NRD's textures again no more
+		const uint32 made = nrd.Made();
+		shot_t part = skyShot;
+		part.width = SIZE - 8;
+		runFrames( throughNrd, part, 4 );
+		Check( nrd.Made() == made, va( "%u sample(s): NRD keeps its textures for a part of the scene (%u made, %u before)", samples, nrd.Made(),
+			made ) );
+		checkSky( "8 frames through NRD after a part of the scene", throughNrd, 8, 0.01f, 0.006f );
 	}
 	changed = single;
 	changed.history = true;

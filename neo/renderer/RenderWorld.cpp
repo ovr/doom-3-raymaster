@@ -857,7 +857,10 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView, bool auxil
 		const idScreenRect & crop = tr.renderCrops[tr.currentRenderCrop];
 		windowWidth = crop.x2 - crop.x1 + 1;
 		windowHeight = crop.y2 - crop.y1 + 1;
-	} else {
+	}
+	// the indirect light's stride by the height before the resolution scale: a scale that moves keeps the grid
+	parms->rayTracing.indirect.stride = R_IndirectStride( windowHeight );
+	if ( !cropped ) {
 		tr.PerformResolutionScaling( windowWidth, windowHeight );
 	}
 
@@ -868,7 +871,6 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView, bool auxil
 	}
 	tr.CropRenderSize( windowWidth, windowHeight );
 	tr.GetCroppedViewport( &parms->viewport );
-	parms->rayTracing.indirect.stride = R_IndirectStride( parms->viewport.GetHeight() );
 
 	// the scissor bounds may be shrunk in subviews even if
 	// the viewport stays the same
