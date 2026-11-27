@@ -938,6 +938,8 @@ extern idCVar r_hdrGammaBlend;
 postProcessSettings_t R_DefaultPostProcessSettings();
 // The r_gbuffer* and r_rt* cvars, and whether the main view writes the G-buffer at all.
 rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & postProcess );
+// The indirect light's stride (rtIndirectSettings_t) for a view of viewHeight rows: r_rtIndirectResolution's.
+[[nodiscard]] int R_IndirectStride( int viewHeight );
 extern idCVar r_flareSize;					// scale the flare deforms from the material def
 
 extern idCVar r_gamma;						// changes gamma tables

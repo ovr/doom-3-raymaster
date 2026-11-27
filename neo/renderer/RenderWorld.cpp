@@ -868,6 +868,7 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView, bool auxil
 	}
 	tr.CropRenderSize( windowWidth, windowHeight );
 	tr.GetCroppedViewport( &parms->viewport );
+	parms->rayTracing.indirect.stride = R_IndirectStride( parms->viewport.GetHeight() );
 
 	// the scissor bounds may be shrunk in subviews even if
 	// the viewport stays the same

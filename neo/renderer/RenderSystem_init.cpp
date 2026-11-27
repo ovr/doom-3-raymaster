@@ -215,9 +215,19 @@ idCVar r_rtIndirect( "r_rtIndirect", "1", CVAR_RENDERER | CVAR_BOOL, "one bounce
 idCVar r_rtIndirectScale( "r_rtIndirectScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced indirect light", 0.0f, 8.0f );
 idCVar r_rtEmissiveScale( "r_rtEmissiveScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales what a surface emits into the ray traced indirect light", 0.0f, 64.0f );
 idCVar r_rtIndirectDistance( "r_rtIndirectDistance", "1024", CVAR_RENDERER | CVAR_FLOAT, "the longest ray of the indirect light, in world units", 16.0f, 65536.0f );
-idCVar r_rtIndirectResolution( "r_rtIndirectResolution", "0.5", CVAR_RENDERER | CVAR_FLOAT, "rays of the indirect light per pixel along a side: 1, 0.5, 0.33 or 0.25", 0.25f, 1.0f );
+idCVar r_rtIndirectResolution( "r_rtIndirectResolution", "0", CVAR_RENDERER | CVAR_FLOAT, "rays of the indirect light per pixel along a side: 1, 0.5, 0.33 or 0.25; "
+	"0 = by the view's height, about as many rays on the screen as 0.5 at 1080p: 0.5 below 1350 rows, 0.33 below 1890, 0.25 above", 0.0f, 1.0f );
 idCVar r_rtIndirectClamp( "r_rtIndirectClamp", "8", CVAR_RENDERER | CVAR_FLOAT, "the most a ray of the indirect light brings, as the exposed scene's value (1 is about white); 0 = no limit", 0.0f, 1024.0f );
 idCVar r_rtFillLightScale( "r_rtFillLightScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the lights that stand in for bounced light (ambient lights, point lights without shadows) in the main view while r_rtIndirect is on", 0.0f, 1.0f );
+
+// The indirect light's grid grows with the view: its light is smooth, and the rays and NRD's grid cost per texel.
+int R_IndirectStride( const int viewHeight ) {
+	const float resolution = r_rtIndirectResolution.GetFloat();
+	if ( resolution > 0.0f ) {
+		return idMath::ClampInt( 1, 4, idMath::Ftoi( 1.0f / Max( resolution, 0.25f ) + 0.5f ) );
+	}
+	return idMath::ClampInt( 2, 4, idMath::Ftoi( static_cast<float>( viewHeight ) / 540.0f + 0.5f ) );
+}
 
 rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & postProcess ) {
 	rayTracingSettings_t settings;
@@ -268,7 +278,6 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	indirect.enabled = tracing && ( indirect.alone || ( r_rtIndirect.GetBool() && !reflection.alone && !shadow.show ) );
 	indirect.reference = r_rtReference.GetBool();
 	indirect.history = r_rtHistory.GetBool() || indirect.reference;
-	indirect.stride = idMath::ClampInt( 1, 4, idMath::Ftoi( 1.0f / Max( r_rtIndirectResolution.GetFloat(), 0.25f ) + 0.5f ) );
 	indirect.scale = r_rtIndirectScale.GetFloat();
 	indirect.emissiveScale = r_rtEmissiveScale.GetFloat();
 	indirect.distance = r_rtIndirectDistance.GetFloat();

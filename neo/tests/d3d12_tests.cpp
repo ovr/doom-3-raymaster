@@ -8139,7 +8139,7 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 	single.history = false;
 	single.distance = 1e7f;
 	single.maxRadiance = 0.0f;
-	for ( const int stride : { 1, 2, 4 } ) {
+	for ( const int stride : { 1, 2, 3, 4 } ) {
 		single.stride = stride;
 		const auto checkFlat = [&]( const char * what, const rtIndirectSettings_t & settings, float part ) {
 			const std::vector<idVec4> texels = run( settings, 0, base );
@@ -8197,7 +8197,7 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 	throughNrd.history = true;
 	throughNrd.denoiser = rtDenoiser_t::NRD;
 	if ( idD3D12Nrd::Available() ) {
-		for ( const int stride : { 1, 2, 4 } ) {
+		for ( const int stride : { 1, 2, 3, 4 } ) {
 			throughNrd.stride = stride;
 			const std::vector<idVec4> texels = runFrames( throughNrd, 8, base );
 			const idStr label = va( "the sky, 8 frames through NRD, a texel %d pixels", stride );

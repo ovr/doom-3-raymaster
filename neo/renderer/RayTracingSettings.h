@@ -93,7 +93,7 @@ struct rtIndirectSettings_t {
 	bool				alone = false;		// rtDebug_t::INDIRECT
 	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
 	bool				reference = false;	// r_rtReference: a plain mean while the eye stands still, unfiltered
-	int					stride = 2;			// pixels a side per texel, from r_rtIndirectResolution
+	int					stride = 2;			// pixels a side per texel: R_IndirectStride of the view's height
 	float				scale = 1.0f;		// r_rtIndirectScale
 	float				emissiveScale = 1.0f;	// r_rtEmissiveScale: what a hit emits, times this
 	float				distance = 1024.0f;	// the longest ray
