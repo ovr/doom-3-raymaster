@@ -364,11 +364,15 @@ void idD3D12Nrd::BuryTexture( texture_t & texture ) {
 	texture = {};
 }
 
-void idD3D12Nrd::BuryDenoiser( denoiser_t & denoiser ) {
+void idD3D12Nrd::BuryTables( denoiser_t & denoiser ) {
 	for ( auto & [key, table] : denoiser.tables ) {
 		graveyard.BuryRange( srvPool, table.first, table.count );
 	}
 	denoiser.tables.clear();
+}
+
+void idD3D12Nrd::BuryDenoiser( denoiser_t & denoiser ) {
+	BuryTables( denoiser );
 	for ( std::vector<texture_t> * pool : { &denoiser.permanent, &denoiser.transient } ) {
 		for ( texture_t & texture : *pool ) {
 			BuryTexture( texture );
@@ -418,6 +422,23 @@ void idD3D12Nrd::BuryScreenshot() {
 	for ( guides_t & set : guides[2] ) {
 		BuryGuides( set );
 	}
+}
+
+int idD3D12Nrd::Eye( const rtView_t & view ) {
+	if ( !view.store ) {
+		screenshotIdle = 0;
+		return 2;
+	}
+	const int eye = view.eye & 1;
+	// a frame's signals share its epoch and sequence: each frame counts once
+	if ( eye == 0 && ( view.epoch != idleEpoch || view.sequence != idleSequence ) ) {
+		idleEpoch = view.epoch;
+		idleSequence = view.sequence;
+		if ( screenshotIdle < SCREENSHOT_IDLE && ++screenshotIdle == SCREENSHOT_IDLE ) {
+			BuryScreenshot();
+		}
+	}
+	return eye;
 }
 
 ID3D12RootSignature * idD3D12Nrd::RootSignature( uint32 textures, uint32 storage ) {
@@ -519,6 +540,12 @@ idD3D12Nrd::guides_t * idD3D12Nrd::Guides( int eye, size_t set, uint32 width, ui
 	guides_t & eyeGuides = guides[eye][set];
 	if ( eyeGuides.textures[0].resource && eyeGuides.width == width && eyeGuides.height == height && eyeGuides.stride == stride ) {
 		return &eyeGuides;
+	}
+	// the eye's tables hold copies of the old guides' views
+	for ( std::unique_ptr<denoiser_t> & denoiser : denoisers[eye] ) {
+		if ( denoiser ) {
+			BuryTables( *denoiser );
+		}
 	}
 	BuryGuides( eyeGuides );
 	if ( width == 0 || height == 0 || device.IsLost() ) {
@@ -856,10 +883,7 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 
 std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene,
 	const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & rect, d3d12GraphResource_t rays ) {
-	const int eye = view.store ? ( view.eye & 1 ) : 2;
-	if ( view.store ) {
-		BuryScreenshot();
-	}
+	const int eye = Eye( view );
 	const uint32 width = static_cast<uint32>( rect.width );
 	const uint32 height = static_cast<uint32>( rect.height );
 	guides_t * eyeGuides = Guides( eye, PIXELS, width, height, 1 );
@@ -899,7 +923,7 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 				const d3d12UploadSpan_t span = context.Parms( parms );
 				context.Dispatch( *pack, &span, parms.size[0], parms.size[1] );
 			} );
-		const bool restart = !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
+		const bool restart = !view.store || !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
 		if ( !AddDispatches( graph, *denoiser, *eyeGuides, view, restart, {}, imported ) ) {
 			return std::nullopt;
 		}
@@ -945,10 +969,7 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene,
 	const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & rect, uint32 stride, d3d12GraphResource_t amount,
 	d3d12GraphResource_t chroma ) {
-	const int eye = view.store ? ( view.eye & 1 ) : 2;
-	if ( view.store ) {
-		BuryScreenshot();
-	}
+	const int eye = Eye( view );
 	const uint32 width = DivideUp( static_cast<uint32>( rect.width ), stride );
 	const uint32 height = DivideUp( static_cast<uint32>( rect.height ), stride );
 	guides_t * grid = Guides( eye, GRID, width, height, stride );
@@ -999,7 +1020,7 @@ std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderG
 		map.scale[1] = s * static_cast<float>( height ) / viewHeight;
 		map.offset[0] = ( 0.5f - 0.5f * s ) / viewWidth;
 		map.offset[1] = ( viewHeight - s * static_cast<float>( height ) + 0.5f * s - 0.5f ) / viewHeight;
-		const bool restart = !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
+		const bool restart = !view.store || !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
 		if ( !AddDispatches( graph, *denoiser, *grid, view, restart, map, imported ) ) {
 			return std::nullopt;
 		}
@@ -1043,10 +1064,7 @@ std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderG
 
 std::optional<d3d12GraphResource_t> idD3D12Nrd::Shadows( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const rtShadowSettings_t & settings,
 	const rtView_t & view, const renderRect_t & rect, d3d12GraphResource_t ratio, d3d12GraphResource_t lights ) {
-	const int eye = view.store ? ( view.eye & 1 ) : 2;
-	if ( view.store ) {
-		BuryScreenshot();
-	}
+	const int eye = Eye( view );
 	const uint32 width = static_cast<uint32>( rect.width );
 	const uint32 height = static_cast<uint32>( rect.height );
 	const UINT samples = scene.Samples();
@@ -1088,7 +1106,7 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Shadows( idD3D12RenderGraph & gr
 				const d3d12UploadSpan_t span = context.Parms( parms );
 				context.Dispatch( *pack, &span, parms.size[0], parms.size[1] );
 			} );
-		const bool restart = !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
+		const bool restart = !view.store || !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
 		if ( !AddDispatches( graph, *denoiser, *eyeGuides, view, restart, {}, imported ) ) {
 			return std::nullopt;
 		}

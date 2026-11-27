@@ -12,13 +12,15 @@
 	                     two samplers static, a table of t0.. and u0.. in space0. NRD's DXIL binds registers, ours
 	                     does not: these are the only root signatures besides the backend's two.
 	  descriptor tables  a range of the shader-visible heap per pipeline and texture set, copied once from the
-	                     textures' views and kept while the textures live: no slot is written again.
+	                     textures' views and kept while the textures live (guides made again take their eye's
+	                     along): no slot is written again.
 	  denoiser           per signal and eye, an NRD instance with its pools, inputs and outputs at the signal's
 	                     size (the viewport's; the indirect light's grid), committed and imported into the graphs:
 	                     REBLUR_SPECULAR, REBLUR_DIFFUSE_SH, SIGMA_SHADOW_TRANSLUCENCY;
 	                     RESTART for a new epoch, a skipped frame or r_rtHistory 0, CLEAR_AND_RESTART for new
 	                     textures. A screenshot (rtView_t::store false) has instances of its own that start anew
-	                     and go with the frame.
+	                     each time; they stay while screenshots come (com_aviDemo takes one a frame) and go
+	                     SCREENSHOT_IDLE stored frames after the last.
 	  guides             per eye and set (the pixels; the grid), NRD's IN_VIEWZ, IN_NORMAL_ROUGHNESS and IN_MV
 	                     (internal/nrdGuides.hlsl), written once per frame for the signals that share them.
 
@@ -90,6 +92,7 @@ private:
 	static constexpr size_t			PIXELS = 0;	// guide sets: a texel per pixel, the bumped normal
 	static constexpr size_t			GRID = 1;	// the indirect light's grid, the plane
 	static constexpr size_t			GUIDE_SETS = 2;
+	static constexpr uint32			SCREENSHOT_IDLE = 60;	// stored frames a screenshot's instances outlive it
 
 	struct texture_t {
 		idComPtr<ID3D12Resource>	resource;
@@ -135,8 +138,10 @@ private:
 	// The denoiser's dispatches of the frame, a graph pass each, after SetCommonSettings for view.
 	[[nodiscard]] bool				AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoiser, guides_t & guides, const rtView_t & view,
 										bool restart, const texelMap_t & map, std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported );
-	// A screenshot's instances live until the next frame that is none: its graph has been executed then.
+	// view's instances, a stored frame's eye or a screenshot's 2; counts the stored frames since the last screenshot.
+	[[nodiscard]] int				Eye( const rtView_t & view );
 	void							BuryScreenshot();
+	void							BuryTables( denoiser_t & denoiser );
 	[[nodiscard]] bool				CreateTexture( texture_t & texture, DXGI_FORMAT format, uint32 width, uint32 height, const wchar_t * name );
 	void							BuryTexture( texture_t & texture );
 	void							BuryDenoiser( denoiser_t & denoiser );
@@ -168,4 +173,7 @@ private:
 	uint64							bytes = 0;
 	int								validationEye = -1;		// whose signal left a validation view to draw
 	signal_t						validationSignal = signal_t::REFLECTION;
+	uint32							screenshotIdle = SCREENSHOT_IDLE;	// stored frames since the last screenshot
+	uint32							idleEpoch = 0;			// the last stored frame counted, of eye 0
+	uint32							idleSequence = 0;
 };

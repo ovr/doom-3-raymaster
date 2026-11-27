@@ -751,6 +751,15 @@ void Test_WarpDescriptorSlots() {
 	const d3d12Descriptor_t slot = pool.Allocate();
 	Check( slot.index == 0 && pool.Used() == 1 && pool.ShaderVisibleHeap() != nullptr && pool.ShaderVisibleHeap()->GetDesc().NumDescriptors == 8,
 		"the pool's shader-visible heap" );
+	idD3D12DescriptorPool tables( gpu->device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16 );
+	const d3d12Descriptor_t a = tables.AllocateRange( 2 );
+	const d3d12Descriptor_t b = tables.AllocateRange( 3 );
+	const d3d12Descriptor_t c = tables.AllocateRange( 2 );
+	tables.FreeRange( a, 2 );
+	tables.FreeRange( c, 2 );
+	tables.FreeRange( b, 3 );
+	Check( a.index == 0 && b.index == 2 && c.index == 5 && tables.AllocateRange( 7 ).index == 0,
+		"a freed range merges with the free ones on both sides" );
 	CheckNoLayerErrors( *gpu );
 }
 
