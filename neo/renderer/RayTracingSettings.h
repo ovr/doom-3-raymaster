@@ -34,12 +34,26 @@ enum class rtDebug_t : uint8 {
 	COUNT
 };
 
+// r_rtDenoiser: what averages the noise of a ray traced pass over the frames and the neighbours (R18).
+enum class rtDenoiser_t : uint8 {
+	NONE,		// every frame's rays as they are
+	NRD,		// NVIDIA NRD: needs renderCaps_t::nrd
+	OWN,		// the passes' own history and a-trous filters
+	COUNT
+};
+
 // The main view as its rays need it: GL's clip space of shared code, the eye, the angle of a pixel; and its
 // place in the eye's history (R18), which a pass reads only from the frame before of the same epoch.
 struct rtView_t {
 	float				clipToWorld[4][4] = {};	// rows of the inverse of the view's MVP
 	float				worldToClip[4][4] = {};	// rows of the MVP
 	float				prevWorldToClip[4][4] = {};	// of the frame before; this frame's when there is none
+	// GL's model view of the world and projection, columns one after the other (glLoadMatrixf's order)
+	float				worldToView[16] = {};
+	float				viewToClip[16] = {};
+	float				prevWorldToView[16] = {};	// of the frame before; this frame's when there is none
+	float				prevViewToClip[16] = {};
+	float				frameMs = 0.0f;			// the view's time since the frame before of the epoch; 0 at its first
 	float				origin[3] = {};
 	float				pixelSpread = 0.0f;		// radians per pixel of the viewport's height: the texture level of a hit
 	uint32				epoch = 0;				// changes when the history starts again: a new view, size, a gap, time going back
@@ -54,7 +68,10 @@ struct rtView_t {
 // first lights that reach it, the same every frame. A rougher one sends a ray of its GGX lobe, lit by one light,
 // averaged over the eye's history (R18) and the neighbours of the same surface, as wide as the lobe.
 struct rtReflectionSettings_t {
+	static constexpr float	FADE = 0.15f;	// the roughness over which the reflections fade out below maxRoughness
+	rtDenoiser_t		denoiser = rtDenoiser_t::OWN;	// of the glossy pixels; r_rtReference averages as OWN does
 	bool				enabled = false;	// with scene and gbuffer
+	bool				validation = false;	// r_rtNrdValidation: NRD's view of its inputs over the output
 	bool				alone = false;		// rtDebug_t::REFLECTION: the reflections replace the lights' sum
 	bool				shadows = true;		// a mirror's hit: a shadow ray per light that lights it
 	bool				glossy = true;		// r_rtReflectionGlossy; false: every pixel that reflects is a mirror

@@ -3034,6 +3034,20 @@ rtView_t RB_RayTracingView( const viewDef_t & viewDef ) {
 			view.prevWorldToClip[row][column] = prevMvp[row][column];
 		}
 	}
+	memcpy( view.worldToView, viewDef.worldSpace.modelViewMatrix, sizeof( view.worldToView ) );
+	memcpy( view.viewToClip, viewDef.projectionMatrix, sizeof( view.viewToClip ) );
+	memcpy( view.prevWorldToView, view.worldToView, sizeof( view.prevWorldToView ) );
+	memcpy( view.prevViewToClip, view.viewToClip, sizeof( view.prevViewToClip ) );
+	if ( backEnd.viewFollows ) {
+		const gbufferLastView_t & last = RB_LastMainView( viewDef );
+		memcpy( view.prevWorldToView, last.worldModelView, sizeof( view.prevWorldToView ) );
+		for ( int row = 0; row < 4; row++ ) {
+			for ( int column = 0; column < 4; column++ ) {
+				view.prevViewToClip[column * 4 + row] = last.projection[row][column];
+			}
+		}
+		view.frameMs = static_cast<float>( viewDef.renderView.time[0] - last.time );
+	}
 	view.epoch = backEnd.viewEpoch;
 	view.sequence = backEnd.viewSequence;
 	view.eye = ( viewDef.renderView.viewEyeBuffer == 1 ) ? 1 : 0;

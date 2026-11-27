@@ -161,6 +161,10 @@ public:
 										const d3d12UploadSpan_t & parms );
 	// Between two dispatches of one pass that write and then read the same UAV.
 	void							UavBarrier( d3d12GraphResource_t resource );
+	// Groups of compiled shaders that bind registers (NRD's) under a root signature of their own: parms the root
+	// CBV of parameter 0, table that of parameter 1. The next Dispatch sets the compute root signature again.
+	void							DispatchTable( ID3D12RootSignature & root, ID3D12PipelineState & pso, const d3d12UploadSpan_t * parms,
+										D3D12_GPU_DESCRIPTOR_HANDLE table, uint32 groupsX, uint32 groupsY );
 
 private:
 	friend class idD3D12RenderGraph;

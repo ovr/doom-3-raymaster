@@ -17,6 +17,10 @@ public:
 									idD3D12DescriptorPool( const idD3D12Device & device, D3D12_DESCRIPTOR_HEAP_TYPE type, uint32 shaderVisible = 0 );
 	[[nodiscard]] d3d12Descriptor_t	Allocate();					// the lowest free slot; past the shader-visible slots a fatal error
 	void							Free( d3d12Descriptor_t slot );
+	// count slots one after the other, a descriptor table's (NRD's compiled shaders bind registers); freed as one
+	[[nodiscard]] d3d12Descriptor_t	AllocateRange( uint32 count );
+	void							FreeRange( d3d12Descriptor_t first, uint32 count );
+	void							Copy( d3d12Descriptor_t destination, d3d12Descriptor_t source );	// the view and its mirror
 	[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE	Cpu( d3d12Descriptor_t slot ) const;
 	// The view in its slot and in the shader-visible heap. A slot a submitted list may still read is buried, never
 	// written again: the GPU reads the heap when it runs the list.
@@ -38,6 +42,7 @@ private:
 	std::vector<idComPtr<ID3D12DescriptorHeap>>	heaps;
 	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE>	starts;		// of each heap
 	std::vector<uint32>				freeSlots;					// a min-heap
+	std::vector<std::pair<uint32, uint32>>	freeRanges;			// first and count, never mixed with freeSlots
 	uint32							next = 0;
 	uint32							visibleSize = 0;
 	idComPtr<ID3D12DescriptorHeap>	visible;

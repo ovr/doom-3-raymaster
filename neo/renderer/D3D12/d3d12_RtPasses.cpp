@@ -9,6 +9,7 @@
 #include "../tr_local.h"
 #include "../BlueNoise.h"
 #include "d3d12_InternalPasses.h"
+#include "d3d12_Nrd.h"
 #include "d3d12_Output.h"
 #include "d3d12_RtHistory.h"
 #include "d3d12_RtPasses.h"
@@ -310,7 +311,7 @@ constexpr DXGI_FORMAT MOMENTS_FORMAT = DXGI_FORMAT_R16G16_FLOAT;
 	return graph.Import( name, { surface.resource.Get(), &surface.state, surface.srv, surface.uav, {}, width, height } );
 }
 
-constexpr float REFLECTION_FADE = 0.15f;	// the roughness over which the reflections fade out below the limit
+constexpr float REFLECTION_FADE = rtReflectionSettings_t::FADE;
 
 // What every trace reads, imported into one graph.
 struct rtSceneImports_t {
@@ -546,15 +547,19 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 	const UINT samples = scene.Samples();
 	const bool multisampled = samples > 1;
 	const bool glossy = settings.glossy;
-	const int numPasses = glossy ? Min( Max( settings.passes, 0 ), MAX_ATROUS_PASSES ) : 0;
+	// NRD's matrices are the viewport's: it all has to be in the scene
+	const bool useNrd = glossy && settings.denoiser == rtDenoiser_t::NRD && nrd != nullptr && rect.x == viewport.x && rect.y == viewport.y
+		&& rect.width == viewport.width && rect.height == viewport.height;
+	const bool own = glossy && !useNrd && settings.denoiser != rtDenoiser_t::NONE;
+	const int numPasses = own ? Min( Max( settings.passes, 0 ), MAX_ATROUS_PASSES ) : 0;
 	const d3d12ComputePipeline_t * tracePipeline = ComputePipeline( reflect[multisampled ? 1 : 0],
 		multisampled ? "internal_rtReflect_msaa" : "internal_rtReflect", L"doom3 rt reflect" );
-	const d3d12ComputePipeline_t * temporalPipeline = glossy ? ComputePipeline( reflectTemporal[multisampled ? 1 : 0],
+	const d3d12ComputePipeline_t * temporalPipeline = own ? ComputePipeline( reflectTemporal[multisampled ? 1 : 0],
 		multisampled ? "internal_rtReflectTemporal_msaa" : "internal_rtReflectTemporal", L"doom3 rt reflect temporal" ) : nullptr;
 	const d3d12ComputePipeline_t * atrousPipeline = ( numPasses > 0 )
 		? ComputePipeline( reflectAtrous, "internal_rtReflectAtrous", L"doom3 rt reflect atrous" ) : nullptr;
 	ID3D12PipelineState * pso = CompositePipeline( samples, !settings.alone );
-	if ( tracePipeline == nullptr || pso == nullptr || ( glossy && temporalPipeline == nullptr ) || ( numPasses > 0 && atrousPipeline == nullptr ) ) {
+	if ( tracePipeline == nullptr || pso == nullptr || ( own && temporalPipeline == nullptr ) || ( numPasses > 0 && atrousPipeline == nullptr ) ) {
 		return;
 	}
 
@@ -563,7 +568,7 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 	// a half float stops counting frames at 2048
 	const DXGI_FORMAT format = settings.reference ? DXGI_FORMAT_R32G32B32A32_FLOAT : d3d12TargetId_t::HDR_FORMAT;
 	idD3D12RtHistory::use_t heldColor, heldAux;
-	if ( glossy && settings.history ) {
+	if ( own && settings.history ) {
 		heldColor = history.Use( rtHistorySlot_t::REFLECTION_COLOR, format, width, height, view );
 		heldAux = history.Use( rtHistorySlot_t::REFLECTION_AUX, MOMENTS_FORMAT, width, height, view );
 	}
@@ -571,11 +576,11 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 	const bool restart = settings.reference && memcmp( view.worldToClip, view.prevWorldToClip, sizeof( view.worldToClip ) ) != 0;
 	// a frame that cannot be traced takes what the history holds of its glossy pixels, and without one adds nothing
 	const bool trace = Traceable( rt, gpuScene );
-	if ( !trace && ( restart || heldColor.previous == nullptr || heldAux.previous == nullptr ) ) {
+	if ( !trace && !useNrd && ( restart || heldColor.previous == nullptr || heldAux.previous == nullptr ) ) {
 		return;
 	}
 	guideUses_t frame;
-	if ( glossy ) {
+	if ( own ) {
 		const std::optional<guideUses_t> guide = AddGuides( graph, scene, settings.history ? &history : nullptr, view, viewport, rect,
 			{ 1, rtHistorySlot_t::GUIDES, false } );
 		if ( !guide ) {
@@ -662,7 +667,16 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 	}
 
 	d3d12GraphResource_t filtered = ray;
-	if ( glossy ) {
+	if ( useNrd ) {
+		const std::optional<d3d12GraphResource_t> denoised = nrd->Reflections( graph, scene, settings, view, rect, ray );
+		if ( denoised ) {
+			filtered = *denoised;
+		} else if ( !trace ) {
+			graph.Execute( groups );
+			return;
+		}
+	}
+	if ( own ) {
 		// over the frames
 		d3d12GraphResource_t color, aux, prevColor, prevAux;
 		if ( store ) {

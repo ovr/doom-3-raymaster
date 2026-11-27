@@ -175,6 +175,8 @@ If you have questions concerning this license or the applicable additional terms
 		G-buffer's motion, so such a pass needs the G-buffer of its frame. With rtView_t::held the frame
 		traced nothing: ResolveTracedShadows takes what the history holds of a pixel in place of the
 		frame's value and counts no frame; a pixel without a history, and a resolve without one, is lit whole.
+		The settings name the filter of a signal (rtDenoiser_t): the backend's own, NVIDIA NRD with
+		caps.nrd (its own history, the same rules), or none.
 	R19	DrawRayTracedIndirect, in the linear phase after the lights, with the G-buffer of the frame: a ray per
 		texel of a grid of settings.stride pixels of the main view gathers the light of one bounce (the hit lit
 		by one light of the update's, picked by what it adds, with a shadow ray also for a light that casts no
@@ -195,7 +197,7 @@ If you have questions concerning this license or the applicable additional terms
 		on the eye) and the neighbours of the same surface as far as the lobe reaches. What the rays met,
 		times the surface's Fresnel and settings.scale, is added to the scene (settings.alone: in the scene's
 		place). While the scene is refused a glossy pixel takes what the history holds; a mirror and a pixel
-		without a history, nothing.
+		without a history, nothing. Through NRD (settings.denoiser) the glossy pixels are REBLUR's.
 
 ===============================================================================
 */

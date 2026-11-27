@@ -166,6 +166,7 @@ struct renderCaps_t {
 	bool			debugGroups;
 	bool			hdrScene;				// BeginHdrScene .. ResolveHdrScene draw into a linear float scene
 	bool			rayTracing;				// inline ray queries against the GPU scene (DXR 1.1)
+	bool			nrd;					// with rayTracing: the ray traced passes may denoise with NVIDIA NRD
 };
 
 struct renderBackendInit_t {
