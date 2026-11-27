@@ -37,7 +37,7 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 }
 
 std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderGraph &, idD3D12SceneTarget &, const rtIndirectSettings_t &,
-	const rtView_t &, const renderRect_t &, uint32, d3d12GraphResource_t, d3d12GraphResource_t, d3d12GraphResource_t ) {
+	const rtView_t &, const renderRect_t &, uint32, d3d12GraphResource_t, d3d12GraphResource_t ) {
 	return std::nullopt;
 }
 
@@ -127,8 +127,8 @@ struct nrdIndirectPackParms_t {
 	uint32							size[2];
 	uint32							amountSrv;
 	uint32							chromaSrv;
-	uint32							hitSrv;
 	uint32							viewZSrv;
+	uint32							unused;
 	uint32							sh0Uav;
 	uint32							sh1Uav;
 };
@@ -944,7 +944,7 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 
 std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene,
 	const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & rect, uint32 stride, d3d12GraphResource_t amount,
-	d3d12GraphResource_t chroma, d3d12GraphResource_t hit ) {
+	d3d12GraphResource_t chroma ) {
 	const int eye = view.store ? ( view.eye & 1 ) : 2;
 	if ( view.store ) {
 		BuryScreenshot();
@@ -966,7 +966,7 @@ std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderG
 	const auto io = [this, &graph, &imported, denoiser, width, height]( nrd::ResourceType type ) {
 		return Import( graph, nrd::GetResourceTypeString( type ), denoiser->io[static_cast<size_t>( type )], width, height, imported );
 	};
-	const bool trace = amount.IsValid() && chroma.IsValid() && hit.IsValid();
+	const bool trace = amount.IsValid() && chroma.IsValid();
 	const bool again = denoiser->ran && denoiser->epoch == view.epoch && denoiser->sequence == view.sequence;
 	if ( trace && !again ) {
 		const d3d12GraphResource_t sh0 = io( nrd::ResourceType::IN_DIFF_SH0 );
@@ -979,12 +979,11 @@ std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderG
 		packBase.size[0] = width;
 		packBase.size[1] = height;
 		graph.AddPass( "nrd indirect pack", d3d12GraphPass_t::COMPUTE, { { amount, d3d12GraphAccess_t::SRV }, { chroma, d3d12GraphAccess_t::SRV },
-			{ hit, d3d12GraphAccess_t::SRV }, { viewZ, d3d12GraphAccess_t::SRV }, { sh0, d3d12GraphAccess_t::UAV, 0 }, { sh1, d3d12GraphAccess_t::UAV, 0 } },
-			[pack, packBase, amount, chroma, hit, viewZ, sh0, sh1]( idD3D12GraphContext & context ) {
+			{ viewZ, d3d12GraphAccess_t::SRV }, { sh0, d3d12GraphAccess_t::UAV, 0 }, { sh1, d3d12GraphAccess_t::UAV, 0 } },
+			[pack, packBase, amount, chroma, viewZ, sh0, sh1]( idD3D12GraphContext & context ) {
 				nrdIndirectPackParms_t parms = packBase;
 				parms.amountSrv = context.Srv( amount );
 				parms.chromaSrv = context.Srv( chroma );
-				parms.hitSrv = context.Srv( hit );
 				parms.viewZSrv = context.Srv( viewZ );
 				parms.sh0Uav = context.Uav( sh0 );
 				parms.sh1Uav = context.Uav( sh1 );

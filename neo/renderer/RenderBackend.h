@@ -156,10 +156,9 @@ If you have questions concerning this license or the applicable additional terms
 		Only programs with both outputs draw there, and nothing clears. The light target holds until the
 		next BeginTracedLights. ResolveTracedShadows, after the bracket: per pixel of the viewport and
 		channel, the light target over the scene (0 where the scene is black) is the part
-		the shadows take, and the scene is multiplied by what is left, filtered when settings.Filtered()
-		(R18: over the eye's history and the neighbours of the same surface); settings.show puts that in
-		its place, settings.showLength the length of the history. With settings.Penumbrae() (NRD) the light
-		target's alpha holds, summed over the lights a caster shadows, the luminance each takes times the
+		the shadows take, and the scene is multiplied by what is left, filtered (R18) when
+		settings.Penumbrae() (NRD) or averaged with settings.reference; settings.show puts that in its
+		place. With settings.Penumbrae() the light target's alpha holds, summed over the lights a caster shadows, the luminance each takes times the
 		width of its penumbra there in world units (the nearest caster's) times PENUMBRA_SCALE; else 0.
 	R17	A program whose table row traces (renderProgDef_t::traces) reads, in its pixel stage, what the last
 		applied UpdateGpuScene built, and a noise texture. While nothing may be traced (no update yet, a
@@ -169,22 +168,22 @@ If you have questions concerning this license or the applicable additional terms
 		(rtShadowSettings_t::volumes, rtShadowLatch_t), in the one view of a frame it leaves unmarked as
 		the main one (viewDef_t::notMainView): a frame that then cannot trace has no shadow of its own
 		(rtView_t::held, R18), says so, and the views two frames on have their volumes again.
-	R18	A ray traced pass may keep its result per eye for the next frame, with the G-buffer's normal and
-		depth of that frame (the history). It reads only what the frame before of the same rtView_t::epoch
-		stored (sequence - 1): shared code starts an epoch for a new view, viewport size, a frame without
-		the view, or a time that went back, and the backend drops everything at ResizeOutput and
-		EndLevelLoad. With rtView_t::store false (a screenshot) the pass reads the history and leaves it
-		as it is: the frame after is the one without the screenshot. What it reads is found through the
-		G-buffer's motion, so such a pass needs the G-buffer of its frame. With rtView_t::held the frame
-		traced nothing: ResolveTracedShadows takes what the history holds of a pixel in place of the
-		frame's value and counts no frame; a pixel without a history, and a resolve without one, is lit whole.
-		The settings name the filter of a signal (rtDenoiser_t): the backend's own, NVIDIA NRD with
-		caps.nrd (its own history, the same rules), or none.
+	R18	A ray traced pass may keep a history per eye for the next frame: that of its filter, NVIDIA NRD
+		(rtDenoiser_t::NRD, with caps.nrd), or with settings.reference the plain mean of its rays while the
+		eye stands still (it starts again when the eye moves). It reads only what the frame before of the
+		same rtView_t::epoch stored (sequence - 1): shared code starts an epoch for a new view, viewport
+		size, a frame without the view, or a time that went back, and the backend drops everything at
+		ResizeOutput and EndLevelLoad. With rtView_t::store false (a screenshot) the pass reads the history
+		and leaves it as it is: the frame after is the one without the screenshot. NRD finds what it reads
+		through the G-buffer's motion, so it needs the G-buffer of its frame. With rtView_t::held the frame
+		traced nothing: a pass takes what its history holds and counts no frame; without one the shadows'
+		resolve lights the pixel whole and the other passes add nothing. Without a filter
+		(rtDenoiser_t::NONE) every frame's rays go as they are.
 	R19	DrawRayTracedIndirect, in the linear phase after the lights, with the G-buffer of the frame: a ray per
 		texel of a grid of settings.stride pixels of the main view gathers the light of one bounce (the hit lit
 		by one light of the update's, picked by what it adds, with a shadow ray also for a light that casts no
 		stencil shadow, only not for an ambient one, plus what the hit emits), kept as its amount and
-		direction, averaged over the eye's history (R18) and the neighbours of the same surface. Every pixel
+		direction, filtered (R18) over the frames and the neighbours of the same surface. Every pixel
 		takes it by its own normal, times its albedo, added to the scene (settings.alone: as a white surface
 		takes it, in the scene's place). While the scene is refused the frame takes what the history holds,
 		and nothing where it holds nothing. Shared code dims the lights that stand in for bounced light
@@ -196,12 +195,10 @@ If you have questions concerning this license or the applicable additional terms
 		leaves about its normal and the hit is lit by the first settings.maxLights lights of the update's
 		that reach it, each with a shadow ray toward its centre; the same every frame, kept nowhere. A
 		rougher pixel's ray leaves about a normal of its GGX lobe, its hit lit as R19's and with its
-		highlight, averaged over the eye's history (R18, found where the surface was and where the reflected
-		image was; settings.reference starts again when the eye moves, since what a surface reflects depends
-		on the eye) and the neighbours of the same surface as far as the lobe reaches. What the rays met,
-		times the surface's Fresnel and settings.scale, is added to the scene (settings.alone: in the scene's
-		place). While the scene is refused a glossy pixel takes what the history holds; a mirror and a pixel
-		without a history, nothing. Through NRD (settings.denoiser) the glossy pixels are REBLUR's.
+		highlight, filtered (R18) through NRD's REBLUR (settings.denoiser). What the rays met, times the
+		surface's Fresnel and settings.scale, is added to the scene (settings.alone: in the scene's place).
+		While the scene is refused a glossy pixel takes what NRD holds, a mirror and a pixel without a
+		history nothing; with settings.reference every pixel keeps its mean.
 
 ===============================================================================
 */

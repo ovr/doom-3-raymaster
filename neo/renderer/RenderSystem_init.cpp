@@ -195,21 +195,17 @@ postProcessSettings_t R_DefaultPostProcessSettings() {
 idCVar r_rayTracing( "r_rayTracing", "1", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_BOOL, "1 = the main view traces what r_rtShadows, r_rtIndirect and r_rtReflections pick (where the GPU can and the view is HDR), 0 = no ray: stencil shadows, no indirect light, no reflections" );
 idCVar r_gbufferDebug( "r_gbufferDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows the main view's thin G-buffer: 1 = the world normal, 2 = F0, 3 = the roughness, 4 = the motion (hue = direction, 8 pixels = full), 5 = the albedo", 0, 5 );
 idCVar r_gbufferGloss( "r_gbufferGloss", "1.2", CVAR_RENDERER | CVAR_FLOAT, "the G-buffer's gloss is the square root of the specular luminance times this; the roughness is 1 - gloss", 0.0f, 4.0f );
-idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the reflections alone, 6 = what the traced shadows leave of the lights (blue where none reaches), 7 = the length of their history (white = all it may hold), 8 = the indirect light alone, as a white surface takes it", 0, 8 );
+idCVar r_rtDebug( "r_rtDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "shows what a ray per pixel of the main view hits: 1 = the instances, 2 = the rays against the depth (grey agrees, red misses a drawn surface, blue hits in front of one, yellow a back face), 3 = the hit normal, 4 = the hit's diffuse colour, 5 = the reflections alone, 6 = what the traced shadows leave of the lights (blue where none reaches), 7 = the indirect light alone, as a white surface takes it", 0, 7 );
 idCVar r_rtShadows( "r_rtShadows", "1", CVAR_RENDERER | CVAR_BOOL, "ray traced shadows of the main view's lights, soft by the size of each light, instead of stencil shadow volumes (needs r_useGPUSkinning 1)" );
-idCVar r_rtHistory( "r_rtHistory", "1", CVAR_RENDERER | CVAR_BOOL, "the ray traced passes average their noise over the frames before; 0 = every frame alone, with the same noise" );
-idCVar r_rtShadowHistory( "r_rtShadowHistory", "16", CVAR_RENDERER | CVAR_INTEGER, "frames the ray traced shadows average per pixel", 1, 64 );
-idCVar r_rtShadowPasses( "r_rtShadowPasses", "3", CVAR_RENDERER | CVAR_INTEGER, "spatial filter passes over the ray traced shadows, each twice as wide as the one before; 0 = none", 0, 5 );
+idCVar r_rtHistory( "r_rtHistory", "1", CVAR_RENDERER | CVAR_BOOL, "the denoiser of the ray traced passes averages their noise over the frames before; 0 = every frame alone, with the same noise (only the spatial filter)" );
 idCVar r_rtShadowVolumes( "r_rtShadowVolumes", "0", CVAR_RENDERER | CVAR_BOOL, "the front end makes the stencil shadow volumes also for a view whose shadows are ray traced: a frame that cannot trace then draws them (to measure what they cost)" );
-idCVar r_rtDenoiser( "r_rtDenoiser", "2", CVAR_RENDERER | CVAR_INTEGER, "what filters the noise of the ray traced passes over the frames and the neighbours: 0 = nothing, 1 = NVIDIA NRD, 2 = the passes' own filters", 0, 2 );
+idCVar r_rtDenoiser( "r_rtDenoiser", "1", CVAR_RENDERER | CVAR_INTEGER, "what filters the noise of the ray traced passes over the frames and the neighbours: 0 = nothing, 1 = NVIDIA NRD (where the build has it)", 0, 1 );
 idCVar r_rtNrdValidation( "r_rtNrdValidation", "0", CVAR_RENDERER | CVAR_INTEGER, "with r_rtDenoiser 1: NRD's validation view of a signal's inputs over the main view: 1 = the glossy reflections, 2 = the indirect light (SIGMA has none)", 0, 2 );
-idCVar r_rtReference("r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a still camera: the ray traced passes average up to 4096 frames and skip their spatial filters" );
+idCVar r_rtReference( "r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a still camera: the ray traced passes show the plain mean of their rays over the frames, unfiltered; it starts again when the camera moves" );
 idCVar r_rtLightSize( "r_rtLightSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the emitter of every light for the ray traced shadows (its light_size, by default 2 % of the light's reach within 2 .. 10 units); 0 = point lights", 0.0f, 16.0f );
 idCVar r_rtReflections( "r_rtReflections", "1", CVAR_RENDERER | CVAR_BOOL, "ray traced reflections of the main view on the surfaces whose specular may reflect" );
-idCVar r_rtReflectionGlossy( "r_rtReflectionGlossy", "1", CVAR_RENDERER | CVAR_BOOL, "a rough surface reflects as wide as its roughness says, filtered over frames and neighbours; 0 = every surface that reflects is a mirror" );
+idCVar r_rtReflectionGlossy( "r_rtReflectionGlossy", "1", CVAR_RENDERER | CVAR_BOOL, "a rough surface reflects as wide as its roughness says, filtered by NRD; 0 = every surface that reflects is a mirror" );
 idCVar r_rtReflectionMirror( "r_rtReflectionMirror", "0.08", CVAR_RENDERER | CVAR_FLOAT, "pixels of less than this G-buffer roughness are mirrors: one ray, every light with a hard shadow, no filter", 0.0f, 1.0f );
-idCVar r_rtReflectionHistory( "r_rtReflectionHistory", "16", CVAR_RENDERER | CVAR_INTEGER, "frames the glossy reflections average per pixel", 1, 64 );
-idCVar r_rtReflectionPasses( "r_rtReflectionPasses", "4", CVAR_RENDERER | CVAR_INTEGER, "spatial filter passes over the glossy reflections, each twice as wide as the one before; 0 = none", 0, 5 );
 idCVar r_rtReflectionScale( "r_rtReflectionScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced reflections", 0.0f, 4.0f );
 idCVar r_rtReflectionDistance( "r_rtReflectionDistance", "2048", CVAR_RENDERER | CVAR_FLOAT, "the longest reflection ray, in world units", 16.0f, 65536.0f );
 idCVar r_rtReflectionLights( "r_rtReflectionLights", "8", CVAR_RENDERER | CVAR_INTEGER, "lights that may light a point a mirror reflects, the first that reach it", 0, 64 );
@@ -220,8 +216,6 @@ idCVar r_rtIndirectScale( "r_rtIndirectScale", "1", CVAR_RENDERER | CVAR_FLOAT, 
 idCVar r_rtEmissiveScale( "r_rtEmissiveScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales what a surface emits into the ray traced indirect light", 0.0f, 64.0f );
 idCVar r_rtIndirectDistance( "r_rtIndirectDistance", "1024", CVAR_RENDERER | CVAR_FLOAT, "the longest ray of the indirect light, in world units", 16.0f, 65536.0f );
 idCVar r_rtIndirectResolution( "r_rtIndirectResolution", "0.5", CVAR_RENDERER | CVAR_FLOAT, "rays of the indirect light per pixel along a side: 1, 0.5, 0.33 or 0.25", 0.25f, 1.0f );
-idCVar r_rtIndirectHistory( "r_rtIndirectHistory", "24", CVAR_RENDERER | CVAR_INTEGER, "frames the ray traced indirect light averages", 1, 64 );
-idCVar r_rtIndirectPasses( "r_rtIndirectPasses", "4", CVAR_RENDERER | CVAR_INTEGER, "spatial filter passes over the ray traced indirect light, each twice as wide as the one before; 0 = none", 0, 5 );
 idCVar r_rtIndirectClamp( "r_rtIndirectClamp", "8", CVAR_RENDERER | CVAR_FLOAT, "the most a ray of the indirect light brings, as the exposed scene's value (1 is about white); 0 = no limit", 0.0f, 1024.0f );
 idCVar r_rtFillLightScale( "r_rtFillLightScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the lights that stand in for bounced light (ambient lights, point lights without shadows) in the main view while r_rtIndirect is on", 0.0f, 1.0f );
 
@@ -238,7 +232,7 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	if ( tracing && denoiser == rtDenoiser_t::NRD && !renderBackend->Caps().nrd ) {
 		static bool warned = false;
 		if ( !warned ) {
-			common->Warning( "r_rtDenoiser 1: this build has no NVIDIA NRD, the ray traced passes are not filtered" );
+			common->Warning( "r_rtDenoiser 1: this build has no NVIDIA NRD, the ray traced passes are not filtered (r_rtDenoiser 0)" );
 			warned = true;
 		}
 		denoiser = rtDenoiser_t::NONE;
@@ -256,41 +250,34 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	reflection.mirrorRoughness = r_rtReflectionMirror.GetFloat();
 	reflection.reference = r_rtReference.GetBool();
 	reflection.history = r_rtHistory.GetBool() || reflection.reference;
-	reflection.maxHistory = reflection.reference ? 4096 : r_rtReflectionHistory.GetInteger();
-	reflection.passes = reflection.reference ? 0 : r_rtReflectionPasses.GetInteger();
-	reflection.denoiser = reflection.reference ? rtDenoiser_t::OWN : denoiser;
+	reflection.denoiser = reflection.reference ? rtDenoiser_t::NONE : denoiser;
 	reflection.validation = r_rtNrdValidation.GetInteger() == 1 && reflection.denoiser == rtDenoiser_t::NRD;
 
 	// without GPU skinning no MD5 is in the GPU scene: none would cast a shadow
 	rtShadowSettings_t & shadow = settings.shadow;
 	shadow.show = ( settings.rtDebug == rtDebug_t::SHADOWS );
-	shadow.showLength = ( settings.rtDebug == rtDebug_t::HISTORY );
-	shadow.enabled = tracing && r_useGPUSkinning.GetBool() && ( r_rtShadows.GetBool() || shadow.show || shadow.showLength );
+	shadow.enabled = tracing && r_useGPUSkinning.GetBool() && ( r_rtShadows.GetBool() || shadow.show );
 	shadow.keepVolumes = r_rtShadowVolumes.GetBool();
 	shadow.reference = r_rtReference.GetBool();
 	shadow.history = r_rtHistory.GetBool() || shadow.reference;
-	shadow.maxHistory = shadow.reference ? 4096 : r_rtShadowHistory.GetInteger();
-	shadow.passes = shadow.reference ? 0 : r_rtShadowPasses.GetInteger();
-	shadow.denoiser = shadow.reference ? rtDenoiser_t::OWN : denoiser;
+	shadow.denoiser = shadow.reference ? rtDenoiser_t::NONE : denoiser;
 
 	// another picture in the scene's place takes nothing on top
 	rtIndirectSettings_t & indirect = settings.indirect;
 	indirect.alone = ( settings.rtDebug == rtDebug_t::INDIRECT );
-	indirect.enabled = tracing && ( indirect.alone || ( r_rtIndirect.GetBool() && !reflection.alone && !shadow.show && !shadow.showLength ) );
+	indirect.enabled = tracing && ( indirect.alone || ( r_rtIndirect.GetBool() && !reflection.alone && !shadow.show ) );
 	indirect.reference = r_rtReference.GetBool();
 	indirect.history = r_rtHistory.GetBool() || indirect.reference;
-	indirect.maxHistory = indirect.reference ? 4096 : r_rtIndirectHistory.GetInteger();
-	indirect.passes = indirect.reference ? 0 : r_rtIndirectPasses.GetInteger();
 	indirect.stride = idMath::ClampInt( 1, 4, idMath::Ftoi( 1.0f / Max( r_rtIndirectResolution.GetFloat(), 0.25f ) + 0.5f ) );
 	indirect.scale = r_rtIndirectScale.GetFloat();
 	indirect.emissiveScale = r_rtEmissiveScale.GetFloat();
 	indirect.distance = r_rtIndirectDistance.GetFloat();
 	indirect.maxRadiance = r_rtIndirectClamp.GetFloat();
-	indirect.denoiser = indirect.reference ? rtDenoiser_t::OWN : denoiser;
+	indirect.denoiser = indirect.reference ? rtDenoiser_t::NONE : denoiser;
 	indirect.validation = r_rtNrdValidation.GetInteger() == 2 && indirect.denoiser == rtDenoiser_t::NRD;
 	settings.fillLightScale = ( indirect.enabled && !indirect.alone ) ? r_rtFillLightScale.GetFloat() : 1.0f;
 
-	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled || shadow.Filtered() || indirect.enabled );
+	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled || shadow.Penumbrae() || indirect.enabled );
 	settings.scene = tracing && ( r_rtStats.GetBool() || settings.rtDebug != rtDebug_t::NONE || reflection.enabled || shadow.enabled || indirect.enabled );
 	return settings;
 }

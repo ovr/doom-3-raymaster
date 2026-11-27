@@ -6,13 +6,13 @@
 	The indirect light (R19) into the HDR scene's viewport: every pixel takes, of the four texels of the coarse grid
 	around it, those of its surface (the plane of the texel's depth through the pixel's, the facing), each by the
 	pixel's own bumped normal (include/rtBounce.hlsli), times its albedo, the scale and preExposure. The blend adds
-	it, or puts it in the colour's place as a white surface takes it (r_rtDebug 8); the write mask keeps the alpha.
+	it, or puts it in the colour's place as a white surface takes it (r_rtDebug 7); the write mask keeps the alpha.
 	Where none of the four is of the pixel's surface (something thinner than the grid) the twelve around them are
 	asked, and where none of those is either, the four stand in whatever their surface. MULTISAMPLED reads sample 0.
 */
 
 #include "../include/srgb.hlsli"
-#include "../include/rtDenoise.hlsli"
+#include "../include/rtGuide.hlsli"
 #include "../include/rtView.hlsli"
 #include "../include/rtBounce.hlsli"
 

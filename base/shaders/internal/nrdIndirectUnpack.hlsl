@@ -4,8 +4,8 @@
 
 /*
 	NRD's OUT_DIFF_SH0 and OUT_DIFF_SH1 of the indirect light's grid (rows from the top) back into what
-	internal/rtUpsample.hlsl reads of the passes' own filter (include/rtBounce.hlsli, rows from the bottom): the
-	amount, and the chroma with a frame in aux.a; a texel beyond NRD's denoising range (nothing drawn) holds nothing.
+	internal/rtUpsample.hlsl reads of the rays (include/rtBounce.hlsli, rows from the bottom): the amount, and
+	the chroma with a ray in aux.a; a texel beyond NRD's denoising range (nothing drawn) holds nothing.
 */
 
 cbuffer UnpackParms : register( b0 ) {

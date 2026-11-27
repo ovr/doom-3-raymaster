@@ -65,12 +65,12 @@ public:
 		d3d12GraphResource_t		amount;
 		d3d12GraphResource_t		aux;
 	};
-	// The indirect light's grid (a texel per stride pixels of rect) through REBLUR_DIFFUSE_SH: amount, chroma and hit
-	// are rt indirect's, invalid when the frame traces nothing. Returns what rt indirect upsample reads (the passes'
-	// own layout); nullopt as Reflections.
+	// The indirect light's grid (a texel per stride pixels of rect) through REBLUR_DIFFUSE_SH: amount and chroma are
+	// rt indirect's, invalid when the frame traces nothing. Returns what rt indirect upsample reads, in rt indirect's
+	// layout; nullopt as Reflections.
 	[[nodiscard]] std::optional<indirectOutput_t>	Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene,
 										const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & rect, uint32 stride,
-										d3d12GraphResource_t amount, d3d12GraphResource_t chroma, d3d12GraphResource_t hit );
+										d3d12GraphResource_t amount, d3d12GraphResource_t chroma );
 	// The traced shadows of rect (the viewport, inside the scene) through SIGMA_SHADOW_TRANSLUCENCY: ratio is rt shadow
 	// ratio's, lights the light target with the penumbrae in its alpha (R16), read unless view.held (then NRD's last
 	// output stands). Returns what rt shadow apply reads; nullopt as Reflections.

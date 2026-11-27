@@ -44,7 +44,8 @@ For Ninja, run from an "x64 Native Tools Command Prompt for VS 2022":
 
 Options: -DD3BFG_WARNINGS_AS_ERRORS=ON enables /WX for the engine code.
 -DD3BFG_NRD=OFF builds without NVIDIA NRD, the denoiser of the ray traced
-passes (on when third_party/NRD is checked out; see EXCLUDED CODE below).
+passes (on when third_party/NRD is checked out; see EXCLUDED CODE below);
+without it the traced shadows, indirect light and reflections are unfiltered.
 
 
 The editor:

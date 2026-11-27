@@ -3131,8 +3131,7 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		}
 		const rtDebug_t rtDebug = backEnd.viewDef->rayTracing.rtDebug;
 		// drawn before the resolve
-		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS || rtDebug == rtDebug_t::HISTORY
-			|| rtDebug == rtDebug_t::INDIRECT );
+		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS || rtDebug == rtDebug_t::INDIRECT );
 		if ( rtDebug != rtDebug_t::NONE && !inScene && backEnd.viewDef->gpuScene != nullptr ) {
 			renderLog.OpenMainBlock( MRB_RAY_TRACING );
 			renderBackend->DrawRayTracingDebug( rtDebug, RB_RayTracingView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
