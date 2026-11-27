@@ -15,6 +15,7 @@
 #include "../renderer/D3D12/d3d12_Hdr.h"
 #include "../renderer/D3D12/d3d12_Dxc.h"
 #include "../renderer/D3D12/d3d12_HlslCompiler.h"
+#include "../renderer/D3D12/d3d12_Nrd.h"
 #include "../renderer/D3D12/d3d12_Pipelines.h"
 #include "../renderer/D3D12/d3d12_Programs.h"
 #include "../renderer/D3D12/d3d12_RenderGraph.h"
@@ -8321,10 +8322,13 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 	const textureHandle_t white = texture( { 255, 255, 255, 255 }, "test glossy white" );
 	idD3D12RtPasses rtPasses( gpu.device, scene.rays.computeRoot, fixture.passes, gpu.samplers, gpu.buffers, gpu.textures, gpu.barriers );
 	idD3D12RtHistory history( gpu.device, gpu.graveyard, gpu.srvPool );
+	idD3D12Nrd nrd( gpu.device, gpu.library, gpu.graveyard, gpu.srvPool, fixture.passes, scene.rays.computeRoot );
 	rtPasses.CreateDefaults();
+	rtPasses.SetNrd( &nrd );
 	const auto release = [&]() {
 		gpu.WaitIdle();
 		history.Drop();
+		nrd.Drop();
 		rtPasses.DestroyDefaults();
 		gpu.buffers.Destroy( vertexBuffer );
 		gpu.buffers.Destroy( indexBuffer );
@@ -8467,6 +8471,25 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		rtView_t view;
 		const idRenderMatrix now = worldToClip( shift );
 		const idRenderMatrix then = worldToClip( before );
+		// worldToClip's two halves as GL has them, columns one after the other: the eye looks down -z
+		const auto modelView = []( float x, float ( &m )[16] ) {
+			memset( m, 0, sizeof( m ) );
+			m[0] = m[5] = m[10] = m[15] = 1.0f;
+			m[12] = -x;
+			m[14] = -EYE;
+		};
+		const auto projection = []( float ( &m )[16] ) {
+			memset( m, 0, sizeof( m ) );
+			m[0] = m[5] = EYE / 32.0f;
+			m[10] = -DEPTH_A;
+			m[11] = -1.0f;
+			m[14] = DEPTH_B;
+		};
+		modelView( shift, view.worldToView );
+		modelView( before, view.prevWorldToView );
+		projection( view.viewToClip );
+		projection( view.prevViewToClip );
+		view.frameMs = ( sequence > 0 ) ? 1000.0f / 60.0f : 0.0f;
 		idRenderMatrix inverse;
 		if ( !idRenderMatrix::Inverse( now, inverse ) ) {
 			Check( false, "the view inverts" );
@@ -8501,7 +8524,11 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		prepare( shot.color, shot.bands, shot.rows, shot.before - shot.shift );
 		rtPasses.Reflections( scene.rays.graph, target, history, scene.rt, scene.gpuScene, settings,
 			viewOf( shot.shift, shot.before, epoch, shot.sequence, shot.store ), { 0, 0, SIZE, SIZE }, PRE_EXPOSURE, nullptr );
-		return ReadFloatSurface( gpu, target.Color( true ) );
+		std::vector<idVec4> texels = ReadFloatSurface( gpu, target.Color( true ) );
+		// the read waited for the GPU: what the frame took of the ring is free again
+		fixture.constants.CloseChunk( gpu.WaitedFence() );
+		fixture.constants.Retire( gpu.WaitedFence() );
+		return texels;
 	};
 	// frames 0 .. count - 1 of a new epoch: the last one's scene
 	const auto runFrames = [&]( const rtReflectionSettings_t & settings, shot_t shot, int count ) {
@@ -8627,7 +8654,7 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 	reference.maxHistory = 4096;
 	const shot_t skyShot = { skyBands, false, 0, base };
 	// lost: WARP misses the sky with a ray or two of a pixel's 16 that leave almost along the floor
-	const auto checkSky = [&]( const char * what, const rtReflectionSettings_t & settings, int frames, float lost = 2e-3f ) {
+	const auto checkSky = [&]( const char * what, const rtReflectionSettings_t & settings, int frames, float lost = 2e-3f, float mean = 2e-3f ) {
 		const std::vector<idVec4> texels = ( frames > 1 ) ? runFrames( settings, skyShot, frames ) : run( settings, skyShot );
 		const idStr label = va( "the sky, %s", what );
 		for ( const region_t & region : skyRegions ) {
@@ -8635,7 +8662,7 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 				const idVec3 part = surfacePart( bandAt( skyBands, column ), column, row ) * ( settings.scale * PRE_EXPOSURE );
 				const idVec3 added( sky.x * part.x, sky.y * part.y, sky.z * part.z );
 				return settings.alone ? added : base.ToVec3() + added;
-			} ), lost, 2e-3f );
+			} ), lost, mean );
 		}
 		bool alpha = !texels.empty();
 		for ( const idVec4 & texel : texels ) {
@@ -8659,6 +8686,14 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 	changed = single;
 	changed.passes = 4;
 	checkSky( "one frame through the passes", changed, 1 );
+	rtReflectionSettings_t throughNrd = filtered;
+	throughNrd.denoiser = rtDenoiser_t::NRD;
+	if ( idD3D12Nrd::Available() ) {
+		// measured: a pixel 0.005 and a region's mean 0.004 dark (REBLUR's YCoCg in half floats)
+		checkSky( "8 frames through NRD", throughNrd, 8, 0.01f, 0.006f );
+	}
+	changed.denoiser = rtDenoiser_t::NONE;
+	checkSky( "one frame unfiltered", changed, 1 );
 	if ( samples > 1 ) {
 		release();
 		CheckNoLayerErrors( gpu );
@@ -8766,7 +8801,8 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		int		worstAt = 0;
 	};
 	// A band's rows clear of its neighbours, per column: the red they show (alone, F0 1) against the CPU's part.
-	const auto profile = [&]( const std::vector<idVec4> & texels, const band_t & band ) {
+	// gap: the columns that near the line are left out.
+	const auto profile = [&]( const std::vector<idVec4> & texels, const band_t & band, int gap = 0 ) {
 		profile_t result;
 		if ( texels.size() != numTexels ) {
 			result.mean = result.worst = idMath::INFINITY;
@@ -8774,6 +8810,9 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		}
 		const float full = fadeOf( band ) * PRE_EXPOSURE;
 		for ( int column = PROFILE[0]; column < PROFILE[1]; column++ ) {
+			if ( idMath::Fabs( column + 0.5f - SIZE / 2 ) < gap ) {
+				continue;
+			}
 			double got = 0.0;
 			double want = 0.0;
 			int count = 0;
@@ -8797,9 +8836,9 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		}
 		return result;
 	};
-	const auto checkProfiles = [&]( const char * label, const std::vector<idVec4> & texels, float mean, float worst ) {
+	const auto checkProfiles = [&]( const char * label, const std::vector<idVec4> & texels, float mean, float worst, int gap = 0 ) {
 		for ( size_t i = 0; i < ceilingBands.size(); i++ ) {
-			const profile_t got = profile( texels, ceilingBands[i] );
+			const profile_t got = profile( texels, ceilingBands[i], gap );
 			// a mirror's image is one ray's: exact
 			const bool mirror = ceilingBands[i].roughness < MIRROR;
 			Check( got.mean <= ( mirror ? 2e-3f : mean ) && got.worst <= ( mirror ? 2e-3f : worst ), va( "%s, %s: a column's mean %g off at column %d "
@@ -8846,6 +8885,25 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 	const std::vector<idVec4> stored = run( game, next );
 	Check( sameRows( unstored, stored, 0, SIZE ), "the frame after a screenshot is the one without it" );
 
+	// NRD (r_rtDenoiser 1) as the game runs it
+	rtReflectionSettings_t nrdGame = game;
+	nrdGame.denoiser = rtDenoiser_t::NRD;
+	if ( idD3D12Nrd::Available() ) {
+		const std::vector<idVec4> nrdFrames = runFrames( nrdGame, ceilingShot, 32 );
+		// NRD's radii are pixels made for 1080p and more: over these 64 it blurs the line about 6 pixels wide.
+		// Measured beyond them: a column's mean 0.009, 0.13 and 0.16 off, a pixel 0.03, 0.14 and 0.17.
+		checkProfiles( "the ceiling, 32 frames through NRD, 6 pixels and more from the line", nrdFrames, 0.2f, 0.25f, 6 );
+		Check( sameRows( nrdFrames, runFrames( nrdGame, ceilingShot, 32 ), 0, SIZE ), "NRD: the same frames of another epoch give the same bytes" );
+		shot_t after = ceilingShot;
+		after.sequence = 32;
+		after.store = false;
+		const std::vector<idVec4> shot = run( nrdGame, after );
+		after.store = true;
+		const std::vector<idVec4> kept = run( nrdGame, after );
+		runFrames( nrdGame, ceilingShot, 32 );
+		Check( !shot.empty() && sameRows( kept, run( nrdGame, after ), 0, SIZE ), "NRD: the frame after a screenshot is the one without it" );
+	}
+
 	// an eye that moves 4 units a frame, 8 frames, the last one where the still eye was: the line's image moved
 	// 3.2 pixels a frame and the floor 4. The pixels three and more beside the line show their own half.
 	constexpr int STRAFE_FRAMES = 8;
@@ -8883,6 +8941,10 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 	};
 	// measured 0.992; looked for only where the floor was, 0.92
 	checkSides( "a moving eye, filtered", strafe( game ), 0.04f );
+	if ( idD3D12Nrd::Available() ) {
+		// measured 0.78: NRD's reflection trails the moving eye
+		checkSides( "a moving eye, through NRD", strafe( nrdGame ), 0.25f );
+	}
 	// what a surface reflects depends on where the eye is: the reference of an eye that moved is that frame alone
 	{
 		const std::vector<idVec4> moved = strafe( plain );
@@ -8892,6 +8954,22 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		Check( sameRows( moved, run( plain, alone ), 0, SIZE ), "the reference starts again when the eye moves" );
 	}
 
+	// nothing to trace: NRD's last output stands for the glossy pixels
+	if ( idD3D12Nrd::Available() ) {
+		runFrames( nrdGame, ceilingShot, 32 );
+		next.sequence = 32;
+		const std::vector<idVec4> nrdTraced = run( nrdGame, next );
+		scene.rt.Invalidate();
+		next.sequence = 33;
+		const std::vector<idVec4> nrdHeld = run( nrdGame, next );
+		Check( sameRows( nrdHeld, nrdTraced, ceilingBands[1].first, SIZE ), "NRD: a frame that cannot trace shows its last output of the glossy pixels" );
+		report( "NRD, nothing to trace", { "the mirror", 0, 63, 0, ceilingBands[0].end - 1 },
+			compare( nrdHeld, { "the mirror", 0, 63, 0, ceilingBands[0].end - 1 }, 1.0f, []( int, int ) { return vec3_zero; } ), 1e-5f, 1e-5f );
+		if ( !apply( true ) ) {
+			release();
+			return;
+		}
+	}
 	// nothing to trace: a glossy pixel's history stands, a mirror has none, and without a history nothing is added
 	runFrames( game, ceilingShot, 32 );
 	next.sequence = 32;

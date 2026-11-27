@@ -53,6 +53,7 @@
 #include "d3d12_RenderGraph.h"
 
 class idD3D12InternalPasses;
+class idD3D12Nrd;
 class idD3D12RtHistory;
 enum class rtHistorySlot_t : uint8;
 class idD3D12SceneTarget;
@@ -67,6 +68,7 @@ public:
 									idD3D12RtPasses( const idD3D12RtPasses & ) = delete;
 	idD3D12RtPasses &				operator=( const idD3D12RtPasses & ) = delete;
 	void							CreateDefaults();	// the samplers and the noise texture
+	void							SetNrd( idD3D12Nrd * denoiser ) { nrd = denoiser; }	// nullptr: r_rtDenoiser 1 filters as 2
 	void							DestroyDefaults();	// the noise texture, before the texture store's DestroyAll
 
 	// b4 of a draw that traces: the heap indices of what the last build holds, their transitions queued for the
@@ -156,4 +158,5 @@ private:
 	std::array<idComPtr<ID3D12PipelineState>, 8>	upsample;	// by add, then log2 of the samples
 	uint32							linearSampler = 0;
 	uint32							clampSampler = 0;
+	idD3D12Nrd *					nrd = nullptr;
 };

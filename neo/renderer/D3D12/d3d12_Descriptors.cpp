@@ -69,6 +69,43 @@ d3d12Descriptor_t idD3D12DescriptorPool::Allocate() {
 	return { next++ };
 }
 
+d3d12Descriptor_t idD3D12DescriptorPool::AllocateRange( uint32 count ) {
+	assert( count > 0 );
+	for ( auto it = freeRanges.begin(); it != freeRanges.end(); ++it ) {
+		if ( it->second >= count ) {
+			const uint32 first = it->first;
+			it->first += count;
+			it->second -= count;
+			if ( it->second == 0 ) {
+				freeRanges.erase( it );
+			}
+			return { first };
+		}
+	}
+	if ( visibleSize > 0 && next + count > visibleSize ) {
+		common->FatalError( "d3d12: more than %u shader resource views live at once", visibleSize );
+	}
+	const uint32 first = next;
+	for ( uint32 i = 0; i < count; i++ ) {
+		if ( next == heaps.size() * HEAP_SIZE ) {
+			heaps.push_back( CreateHeap( device, type, HEAP_SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, PoolName( type ) ) );
+			starts.push_back( heaps.back() ? heaps.back()->GetCPUDescriptorHandleForHeapStart() : D3D12_CPU_DESCRIPTOR_HANDLE{} );
+		}
+		next++;
+	}
+	return { first };
+}
+
+void idD3D12DescriptorPool::FreeRange( d3d12Descriptor_t first, uint32 count ) {
+	assert( first.IsValid() && first.index + count <= next );
+	freeRanges.emplace_back( first.index, count );
+}
+
+void idD3D12DescriptorPool::Copy( d3d12Descriptor_t destination, d3d12Descriptor_t source ) {
+	device.Get().CopyDescriptorsSimple( 1, Cpu( destination ), Cpu( source ), type );
+	Mirror( destination );
+}
+
 void idD3D12DescriptorPool::Free( d3d12Descriptor_t slot ) {
 	assert( slot.IsValid() && slot.index < next );
 	freeSlots.push_back( slot.index );

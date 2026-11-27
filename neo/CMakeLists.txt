@@ -252,6 +252,7 @@ add_executable(d3d12Tests
 	renderer/D3D12/d3d12_HlslCompiler.cpp
 	renderer/D3D12/d3d12_InternalPasses.cpp
 	renderer/D3D12/d3d12_Memory.cpp
+	renderer/D3D12/d3d12_Nrd.cpp
 	renderer/D3D12/d3d12_Output.cpp
 	renderer/D3D12/d3d12_Pipelines.cpp
 	renderer/D3D12/d3d12_Programs.cpp
