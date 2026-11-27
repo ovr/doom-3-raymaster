@@ -18,7 +18,7 @@
 	                     size (the viewport's; the indirect light's grid), committed and imported into the graphs:
 	                     REBLUR_SPECULAR, REBLUR_DIFFUSE_SH, SIGMA_SHADOW_TRANSLUCENCY;
 	                     RESTART for a new epoch, a skipped frame or r_rtHistory 0, CLEAR_AND_RESTART for new
-	                     textures. A screenshot (rtView_t::store false) has instances of its own that start anew
+	                     textures and after a level load, which keeps them. A screenshot (rtView_t::store false) has instances of its own that start anew
 	                     each time; they stay while screenshots come (com_aviDemo takes one a frame) and go
 	                     SCREENSHOT_IDLE stored frames after the last.
 	  guides             per eye and set (the pixels; the grid), NRD's IN_VIEWZ, IN_NORMAL_ROUGHNESS and IN_MV
@@ -83,7 +83,10 @@ public:
 	// output, once, executed. Nothing when there is none of that size.
 	void							DrawValidation( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const renderRect_t & viewport,
 										idD3D12DebugGroups * groups );
-	void							Drop();		// every instance and texture through the graveyard: Resize, EndLevelLoad, Shutdown
+	void							Drop();		// every instance and texture through the graveyard: Resize, Shutdown
+	// EndLevelLoad: every history starts again as with new textures (CLEAR_AND_RESTART), the instances and their
+	// textures stay at their size; making them again cost the first frame of a map 25-65 ms.
+	void							Restart();
 	[[nodiscard]] uint64			Bytes() const { return bytes; }
 
 private:

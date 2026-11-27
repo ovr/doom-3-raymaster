@@ -10266,6 +10266,9 @@ void RtHistory( idTestGpu & gpu, UINT samples ) {
 		Check( sameBytes( sigma16, again16 ) && sameBytes( again16, heldSigma ) && sameBytes( stored17, after17 ), va( "%u sample(s): through NRD another "
 			"epoch gives the same bytes %s, a held frame %s, a screenshot leaves the history %s", samples, sameBytes( sigma16, again16 ) ? "yes" : "no",
 			sameBytes( again16, heldSigma ) ? "yes" : "no", sameBytes( stored17, after17 ) ? "yes" : "no" ) );
+		// a level load keeps the instances (Restart): their first frames are those of new ones
+		nrd.Restart();
+		Check( sameBytes( sigma16, run( sigma, 0, 15 ) ), va( "%u sample(s): after a level load NRD gives the bytes of new instances", samples ) );
 		bed.penumbraScale = 0.0f;
 		bed.fixture.recorder.EndPass();
 		gpu.WaitIdle();

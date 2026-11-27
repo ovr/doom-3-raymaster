@@ -52,6 +52,9 @@ void idD3D12Nrd::DrawValidation( idD3D12RenderGraph &, idD3D12SceneTarget &, con
 void idD3D12Nrd::Drop() {
 }
 
+void idD3D12Nrd::Restart() {
+}
+
 #else
 
 namespace {
@@ -408,6 +411,24 @@ void idD3D12Nrd::Drop() {
 	for ( auto & eye : guides ) {
 		for ( guides_t & set : eye ) {
 			BuryGuides( set );
+		}
+	}
+	validationEye = -1;
+}
+
+// What a new instance does at its first frame: NRD's first use is CLEAR_AND_RESTART too, which resets its matrices.
+void idD3D12Nrd::Restart() {
+	for ( auto & eye : denoisers ) {
+		for ( std::unique_ptr<denoiser_t> & denoiser : eye ) {
+			if ( denoiser ) {
+				denoiser->fresh = true;
+				denoiser->ran = false;
+			}
+		}
+	}
+	for ( auto & eye : guides ) {
+		for ( guides_t & set : eye ) {
+			set.written = false;
 		}
 	}
 	validationEye = -1;

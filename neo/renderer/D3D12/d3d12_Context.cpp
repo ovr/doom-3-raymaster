@@ -597,7 +597,7 @@ void idD3D12Context::EndLevelLoad() {
 	SavePipelines( false );
 	hdr.ResetExposure();
 	rtHistory.Drop();
-	nrd.Drop();
+	nrd.Restart();
 }
 
 // The file system outlives the renderer (common's Shutdown), but not a failed Init.
