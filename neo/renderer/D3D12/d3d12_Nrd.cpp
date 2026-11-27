@@ -596,7 +596,7 @@ idD3D12Nrd::guides_t * idD3D12Nrd::Guides( int eye, size_t set, uint32 width, ui
 	eyeGuides.width = width;
 	eyeGuides.height = height;
 	eyeGuides.stride = stride;
-	made++;
+	creations++;
 	return &eyeGuides;
 }
 
@@ -674,7 +674,7 @@ idD3D12Nrd::denoiser_t * idD3D12Nrd::Denoiser( signal_t signal, int eye, uint32 
 		return nullptr;
 	}
 	slot = std::move( made );
-	this->made++;
+	creations++;
 	return slot.get();
 }
 

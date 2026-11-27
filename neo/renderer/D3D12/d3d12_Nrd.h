@@ -92,7 +92,7 @@ public:
 	// textures stay at their size; making them again cost the first frame of a map 25-65 ms.
 	void							Restart();
 	[[nodiscard]] uint64			Bytes() const { return bytes; }
-	[[nodiscard]] uint32			Made() const { return made; }	// instances and guide sets made since Init
+	[[nodiscard]] uint32			Made() const { return creations; }	// instances and guide sets made since Init
 
 private:
 	enum class signal_t : uint8 { REFLECTION, INDIRECT, SHADOW, COUNT };
@@ -184,7 +184,7 @@ private:
 	d3d12ComputePipeline_t			shadowUnpack;
 	std::array<idComPtr<ID3D12PipelineState>, 4>	validation;	// by log2 of the output's samples
 	uint64							bytes = 0;
-	uint32							made = 0;
+	uint32							creations = 0;
 	int								validationEye = -1;		// whose signal left a validation view to draw
 	signal_t						validationSignal = signal_t::REFLECTION;
 	uint32							screenshotIdle = SCREENSHOT_IDLE;	// stored frames since the last screenshot
