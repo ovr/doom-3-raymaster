@@ -87,7 +87,8 @@ public:
 										const renderRect_t & viewport, float preExposure, idD3D12DebugGroups * groups );
 	// In the HDR scene's linear phase, after the bracket of the traced lights: viewport of the scene loses what the
 	// light target holds of it, executed (settings.show: what is left, in the scene's place). Nothing without one.
-	// settings.Filtered() and a G-buffer of the frame: what is left goes through view's history and the spatial filter.
+	// settings.Filtered() and a G-buffer of the frame: what is left goes through view's history and the spatial filter,
+	// or through NRD (settings.denoiser), which takes the light target's penumbrae as well.
 	void							Shadows( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, idD3D12RtHistory & history,
 										const rtShadowSettings_t & settings, const rtView_t & view, const renderRect_t & viewport,
 										float preExposure, idD3D12DebugGroups * groups );

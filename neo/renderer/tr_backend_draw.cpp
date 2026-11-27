@@ -1189,6 +1189,7 @@ With added sorting and trivial path work.
 struct tracedLight_t {
 	uint32	mask;		// gpuSceneInstance_t::MASK_SHADOW*: the casters the surfaces drawn take shadows of
 	int		noise;		// the index of the noise: the point of the light's disk a pixel aims at
+	float	penumbra;	// rtShadowSettings_t::PENUMBRA_SCALE for NRD, else 0
 };
 
 static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t * vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds,
@@ -1201,7 +1202,7 @@ static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t
 	if ( traced != nullptr ) {
 		const idVec3 & origin = vLight->globalLightOrigin;
 		const float rtLight[4] = { origin.x, origin.y, origin.z, vLight->emitterRadius };
-		const float rtShadow[4] = { static_cast<float>( traced->mask ), static_cast<float>( traced->noise ), 0.0f, 0.0f };
+		const float rtShadow[4] = { static_cast<float>( traced->mask ), static_cast<float>( traced->noise ), traced->penumbra, 0.0f };
 		SetFragmentParm( RENDERPARM_RT_LIGHT, rtLight );
 		SetFragmentParm( RENDERPARM_RT_SHADOW, rtShadow );
 	}
@@ -1823,6 +1824,7 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 	// with a history every frame takes other points of the disks (R18); without one each frame the same
 	const rtShadowSettings_t & shadow = backEnd.viewDef->rayTracing.shadow;
 	tracedLight_t traced = {};
+	traced.penumbra = shadow.Penumbrae() ? rtShadowSettings_t::PENUMBRA_SCALE : 0.0f;
 	const int sequence = shadow.history ? static_cast<int>( backEnd.viewSequence & 0xFFFFu ) : 0;
 	for ( const viewLight_t * vLight = backEnd.viewDef->viewLights; vLight != nullptr; vLight = vLight->next ) {
 		if ( !RB_LightTracesShadows( *vLight ) ) {

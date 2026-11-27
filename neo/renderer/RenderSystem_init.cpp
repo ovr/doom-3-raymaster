@@ -201,8 +201,8 @@ idCVar r_rtHistory( "r_rtHistory", "1", CVAR_RENDERER | CVAR_BOOL, "the ray trac
 idCVar r_rtShadowHistory( "r_rtShadowHistory", "16", CVAR_RENDERER | CVAR_INTEGER, "frames the ray traced shadows average per pixel", 1, 64 );
 idCVar r_rtShadowPasses( "r_rtShadowPasses", "3", CVAR_RENDERER | CVAR_INTEGER, "spatial filter passes over the ray traced shadows, each twice as wide as the one before; 0 = none", 0, 5 );
 idCVar r_rtShadowVolumes( "r_rtShadowVolumes", "0", CVAR_RENDERER | CVAR_BOOL, "the front end makes the stencil shadow volumes also for a view whose shadows are ray traced: a frame that cannot trace then draws them (to measure what they cost)" );
-idCVar r_rtDenoiser( "r_rtDenoiser", "2", CVAR_RENDERER | CVAR_INTEGER, "what filters the noise of the ray traced passes over the frames and the neighbours: 0 = nothing, 1 = NVIDIA NRD (the glossy reflections), 2 = the passes' own filters", 0, 2 );
-idCVar r_rtNrdValidation( "r_rtNrdValidation", "0", CVAR_RENDERER | CVAR_BOOL, "with r_rtDenoiser 1: NRD's validation view of the glossy reflections' inputs over the main view" );
+idCVar r_rtDenoiser( "r_rtDenoiser", "2", CVAR_RENDERER | CVAR_INTEGER, "what filters the noise of the ray traced passes over the frames and the neighbours: 0 = nothing, 1 = NVIDIA NRD, 2 = the passes' own filters", 0, 2 );
+idCVar r_rtNrdValidation( "r_rtNrdValidation", "0", CVAR_RENDERER | CVAR_INTEGER, "with r_rtDenoiser 1: NRD's validation view of a signal's inputs over the main view: 1 = the glossy reflections, 2 = the indirect light (SIGMA has none)", 0, 2 );
 idCVar r_rtReference("r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a still camera: the ray traced passes average up to 4096 frames and skip their spatial filters" );
 idCVar r_rtLightSize( "r_rtLightSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the emitter of every light for the ray traced shadows (its light_size, by default 2 % of the light's reach within 2 .. 10 units); 0 = point lights", 0.0f, 16.0f );
 idCVar r_rtReflections( "r_rtReflections", "1", CVAR_RENDERER | CVAR_BOOL, "ray traced reflections of the main view on the surfaces whose specular may reflect" );
@@ -259,7 +259,7 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	reflection.maxHistory = reflection.reference ? 4096 : r_rtReflectionHistory.GetInteger();
 	reflection.passes = reflection.reference ? 0 : r_rtReflectionPasses.GetInteger();
 	reflection.denoiser = reflection.reference ? rtDenoiser_t::OWN : denoiser;
-	reflection.validation = r_rtNrdValidation.GetBool() && reflection.denoiser == rtDenoiser_t::NRD;
+	reflection.validation = r_rtNrdValidation.GetInteger() == 1 && reflection.denoiser == rtDenoiser_t::NRD;
 
 	// without GPU skinning no MD5 is in the GPU scene: none would cast a shadow
 	rtShadowSettings_t & shadow = settings.shadow;
@@ -271,6 +271,7 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	shadow.history = r_rtHistory.GetBool() || shadow.reference;
 	shadow.maxHistory = shadow.reference ? 4096 : r_rtShadowHistory.GetInteger();
 	shadow.passes = shadow.reference ? 0 : r_rtShadowPasses.GetInteger();
+	shadow.denoiser = shadow.reference ? rtDenoiser_t::OWN : denoiser;
 
 	// another picture in the scene's place takes nothing on top
 	rtIndirectSettings_t & indirect = settings.indirect;
@@ -285,6 +286,8 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	indirect.emissiveScale = r_rtEmissiveScale.GetFloat();
 	indirect.distance = r_rtIndirectDistance.GetFloat();
 	indirect.maxRadiance = r_rtIndirectClamp.GetFloat();
+	indirect.denoiser = indirect.reference ? rtDenoiser_t::OWN : denoiser;
+	indirect.validation = r_rtNrdValidation.GetInteger() == 2 && indirect.denoiser == rtDenoiser_t::NRD;
 	settings.fillLightScale = ( indirect.enabled && !indirect.alone ) ? r_rtFillLightScale.GetFloat() : 1.0f;
 
 	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled || shadow.Filtered() || indirect.enabled );

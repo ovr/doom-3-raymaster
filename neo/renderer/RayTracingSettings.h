@@ -71,7 +71,7 @@ struct rtReflectionSettings_t {
 	static constexpr float	FADE = 0.15f;	// the roughness over which the reflections fade out below maxRoughness
 	rtDenoiser_t		denoiser = rtDenoiser_t::OWN;	// of the glossy pixels; r_rtReference averages as OWN does
 	bool				enabled = false;	// with scene and gbuffer
-	bool				validation = false;	// r_rtNrdValidation: NRD's view of its inputs over the output
+	bool				validation = false;	// r_rtNrdValidation 1: NRD's view of its inputs over the output
 	bool				alone = false;		// rtDebug_t::REFLECTION: the reflections replace the lights' sum
 	bool				shadows = true;		// a mirror's hit: a shadow ray per light that lights it
 	bool				glossy = true;		// r_rtReflectionGlossy; false: every pixel that reflects is a mirror
@@ -91,7 +91,9 @@ struct rtReflectionSettings_t {
 // by what it emits. The amount and the direction it came from are averaged over the eye's history (R18) and the
 // neighbours of the same surface, then every pixel takes them by its own bumped normal, times its albedo.
 struct rtIndirectSettings_t {
+	rtDenoiser_t		denoiser = rtDenoiser_t::OWN;	// r_rtReference averages as OWN does
 	bool				enabled = false;	// with scene and gbuffer
+	bool				validation = false;	// r_rtNrdValidation 2: NRD's view of its inputs over the output
 	bool				alone = false;		// rtDebug_t::INDIRECT
 	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
 	bool				reference = false;	// r_rtReference: a plain average of up to maxHistory frames, unfiltered
@@ -117,6 +119,9 @@ struct rtIndirectSettings_t {
 // The front end makes no stencil shadow volumes for such a view once the back end has traced its world's main view
 // (volumes false): a frame that then cannot trace keeps the shadows its history holds, and the next has volumes.
 struct rtShadowSettings_t {
+	// NRD: the light target's alpha holds the luminance a caster takes times its penumbra's radius times this
+	static constexpr float	PENUMBRA_SCALE = 1.0f / 64.0f;
+	rtDenoiser_t		denoiser = rtDenoiser_t::OWN;	// r_rtReference averages as OWN does
 	bool				enabled = false;	// with scene; never in a view that is not its frame's main one
 	bool				volumes = true;		// the view's traced lights have their stencil shadow volumes
 	bool				keepVolumes = false;	// r_rtShadowVolumes: they are made whatever the back end traced
@@ -126,8 +131,11 @@ struct rtShadowSettings_t {
 	bool				reference = false;	// r_rtReference: a plain average of up to maxHistory frames, 32-bit, unfiltered
 	int					maxHistory = 16;	// r_rtShadowHistory: frames a pixel averages
 	int					passes = 3;			// r_rtShadowPasses: spatial passes, each twice as wide; 0 with no history = raw
-	// the filter reads the G-buffer
-	[[nodiscard]] bool	Filtered() const { return enabled && ( history || passes > 0 ); }
+	[[nodiscard]] bool	OwnFilter() const { return enabled && denoiser == rtDenoiser_t::OWN && ( history || passes > 0 ); }
+	// the interactions send NRD the nearest caster's penumbra
+	[[nodiscard]] bool	Penumbrae() const { return enabled && denoiser == rtDenoiser_t::NRD; }
+	// a filter reads the G-buffer
+	[[nodiscard]] bool	Filtered() const { return OwnFilter() || Penumbrae(); }
 	// A view the back end never traces (a subview, a portal sky's): its shadows are the stencil ones.
 	void				KeepStencil() { enabled = false; volumes = true; }
 	// no volume is made for a light the view would trace

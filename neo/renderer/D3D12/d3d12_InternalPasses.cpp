@@ -111,6 +111,11 @@ constexpr d3d12InternalStage_t INTERNAL_STAGES[] = {
 	{ "nrdGuides", shaderStageType_t::COMPUTE, "internal_nrdGuides_msaa", "MULTISAMPLED=1" },
 	{ "nrdReflectPack", shaderStageType_t::COMPUTE, "internal_nrdReflectPack", nullptr },
 	{ "nrdReflectUnpack", shaderStageType_t::COMPUTE, "internal_nrdReflectUnpack", nullptr },
+	{ "nrdIndirectPack", shaderStageType_t::COMPUTE, "internal_nrdIndirectPack", nullptr },
+	{ "nrdIndirectUnpack", shaderStageType_t::COMPUTE, "internal_nrdIndirectUnpack", nullptr },
+	{ "nrdShadowPack", shaderStageType_t::COMPUTE, "internal_nrdShadowPack", nullptr },
+	{ "nrdShadowPack", shaderStageType_t::COMPUTE, "internal_nrdShadowPack_msaa", "MULTISAMPLED=1" },
+	{ "nrdShadowUnpack", shaderStageType_t::COMPUTE, "internal_nrdShadowUnpack", nullptr },
 	{ "nrdValidation", shaderStageType_t::FRAGMENT, "internal_nrdValidation", nullptr },
 #endif
 };

@@ -36,6 +36,16 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 	return std::nullopt;
 }
 
+std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderGraph &, idD3D12SceneTarget &, const rtIndirectSettings_t &,
+	const rtView_t &, const renderRect_t &, uint32, d3d12GraphResource_t, d3d12GraphResource_t, d3d12GraphResource_t ) {
+	return std::nullopt;
+}
+
+std::optional<d3d12GraphResource_t> idD3D12Nrd::Shadows( idD3D12RenderGraph &, idD3D12SceneTarget &, const rtShadowSettings_t &, const rtView_t &,
+	const renderRect_t &, d3d12GraphResource_t, d3d12GraphResource_t ) {
+	return std::nullopt;
+}
+
 void idD3D12Nrd::DrawValidation( idD3D12RenderGraph &, idD3D12SceneTarget &, const renderRect_t &, idD3D12DebugGroups * ) {
 }
 
@@ -57,6 +67,10 @@ constexpr size_t GUIDE_MOTION = 2;
 constexpr std::array<DXGI_FORMAT, 3> GUIDE_FORMATS = { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT };
 constexpr std::array<const char *, 3> GUIDE_NAMES = { "nrd view z", "nrd normal roughness", "nrd motion" };
 constexpr DXGI_FORMAT SIGNAL_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
+constexpr DXGI_FORMAT PENUMBRA_FORMAT = DXGI_FORMAT_R16_FLOAT;
+// SIGMA blurs as wide as the penumbra it is given, which washes out the wide soft shadows of large lights (27_rt_shadows:
+// thin poles before the 32-unit light); a quarter of it keeps them and stays smooth (0.125 shows grain)
+constexpr float SIGMA_PENUMBRA = 0.25f;
 constexpr DXGI_FORMAT VALIDATION_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 // b0 of internal/nrdGuides.hlsl.
@@ -77,8 +91,11 @@ struct nrdGuidesParms_t {
 	uint32							viewZUav;
 	uint32							normalRoughnessUav;
 	uint32							motionUav;
+	uint32							stride;
+	uint32							flags;			// bit 0: the plane, roughness 1, no material
+	uint32							unused[2];
 };
-static_assert( sizeof( nrdGuidesParms_t ) == 192 );
+static_assert( sizeof( nrdGuidesParms_t ) == 208 );
 
 // b0 of internal/nrdReflectPack.hlsl.
 struct nrdReflectPackParms_t {
@@ -104,12 +121,60 @@ struct nrdReflectUnpackParms_t {
 };
 static_assert( sizeof( nrdReflectUnpackParms_t ) == 32 );
 
+// b0 of internal/nrdIndirectPack.hlsl.
+struct nrdIndirectPackParms_t {
+	float							hitDistParams[4];
+	uint32							size[2];
+	uint32							amountSrv;
+	uint32							chromaSrv;
+	uint32							hitSrv;
+	uint32							viewZSrv;
+	uint32							sh0Uav;
+	uint32							sh1Uav;
+};
+static_assert( sizeof( nrdIndirectPackParms_t ) == 48 );
+
+// b0 of internal/nrdIndirectUnpack.hlsl.
+struct nrdIndirectUnpackParms_t {
+	uint32							size[2];
+	uint32							sh0Srv;
+	uint32							sh1Srv;
+	uint32							viewZSrv;
+	uint32							amountUav;
+	uint32							auxUav;
+	float							range;
+};
+static_assert( sizeof( nrdIndirectUnpackParms_t ) == 32 );
+
+// b0 of internal/nrdShadowPack.hlsl.
+struct nrdShadowPackParms_t {
+	int32							first[2];
+	uint32							size[2];
+	uint32							ratioSrv;
+	uint32							lightsSrv;
+	uint32							samples;
+	float							penumbraScale;	// the light target's alpha over its luminance to world units
+	uint32							penumbraUav;
+	uint32							translucencyUav;
+	uint32							unused[2];
+};
+static_assert( sizeof( nrdShadowPackParms_t ) == 48 );
+
+// b0 of internal/nrdShadowUnpack.hlsl.
+struct nrdShadowUnpackParms_t {
+	uint32							size[2];
+	uint32							shadowSrv;
+	uint32							outputUav;
+};
+static_assert( sizeof( nrdShadowUnpackParms_t ) == 16 );
+
 // b1 of internal/nrdValidation.hlsl.
 struct nrdValidationParms_t {
 	int32							first[2];
 	uint32							size[2];
 	uint32							validationSrv;
-	uint32							unused[3];
+	uint32							stride;
+	uint32							unused[2];
 };
 static_assert( sizeof( nrdValidationParms_t ) == 32 );
 
@@ -178,7 +243,19 @@ void D3DProjection( const float ( &gl )[16], float ( &d3d )[16] ) {
 	}
 }
 
-// REBLUR's normalization of a hit distance, in world units; internal/nrdReflectPack.hlsl takes the same numbers.
+// A texel's clip x and y as NRD reads them, where its centre is uv' and the view's uv = scale uv' + offset (v from the
+// top): x' = x / a + ( ( 1 - 2 b ) / a - 1 ) w, y' = y / a + ( ( a + 2 b - 1 ) / a ) w, row by row of the projection.
+void MapProjection( float ( &d3d )[16], const float ( &scale )[2], const float ( &offset )[2] ) {
+	const float x = ( 1.0f - 2.0f * offset[0] ) / scale[0] - 1.0f;
+	const float y = ( scale[1] + 2.0f * offset[1] - 1.0f ) / scale[1];
+	for ( int column = 0; column < 4; column++ ) {
+		const float w = d3d[column * 4 + 3];
+		d3d[column * 4 + 0] = d3d[column * 4 + 0] / scale[0] + x * w;
+		d3d[column * 4 + 1] = d3d[column * 4 + 1] / scale[1] + y * w;
+	}
+}
+
+// REBLUR's normalization of a hit distance, in world units; internal/nrd*Pack.hlsl take the same numbers.
 [[nodiscard]] nrd::ReblurHitDistanceParameters HitDistanceParameters() {
 	nrd::ReblurHitDistanceParameters parameters;
 	parameters.A *= UNITS_PER_METRE;
@@ -193,8 +270,10 @@ void D3DProjection( const float ( &gl )[16], float ( &d3d )[16] ) {
 
 struct idD3D12Nrd::denoiser_t {
 	nrd::Instance *					instance = nullptr;
+	signal_t						signal = signal_t::REFLECTION;
 	uint32							width = 0;
 	uint32							height = 0;
+	uint32							stride = 1;				// pixels a side per texel
 	bool							validation = false;		// OUT_VALIDATION is there and NRD writes it
 	std::vector<texture_t>			permanent;
 	std::vector<texture_t>			transient;
@@ -321,10 +400,24 @@ void idD3D12Nrd::Drop() {
 			}
 		}
 	}
-	for ( guides_t & eyeGuides : guides ) {
-		BuryGuides( eyeGuides );
+	for ( auto & eye : guides ) {
+		for ( guides_t & set : eye ) {
+			BuryGuides( set );
+		}
 	}
 	validationEye = -1;
+}
+
+void idD3D12Nrd::BuryScreenshot() {
+	for ( std::unique_ptr<denoiser_t> & denoiser : denoisers[2] ) {
+		if ( denoiser ) {
+			BuryDenoiser( *denoiser );
+			denoiser.reset();
+		}
+	}
+	for ( guides_t & set : guides[2] ) {
+		BuryGuides( set );
+	}
 }
 
 ID3D12RootSignature * idD3D12Nrd::RootSignature( uint32 textures, uint32 storage ) {
@@ -422,9 +515,9 @@ d3d12GraphResource_t idD3D12Nrd::Import( idD3D12RenderGraph & graph, const char 
 	return it->second;
 }
 
-idD3D12Nrd::guides_t * idD3D12Nrd::Guides( int eye, uint32 width, uint32 height ) {
-	guides_t & eyeGuides = guides[eye];
-	if ( eyeGuides.textures[0].resource && eyeGuides.width == width && eyeGuides.height == height ) {
+idD3D12Nrd::guides_t * idD3D12Nrd::Guides( int eye, size_t set, uint32 width, uint32 height, uint32 stride ) {
+	guides_t & eyeGuides = guides[eye][set];
+	if ( eyeGuides.textures[0].resource && eyeGuides.width == width && eyeGuides.height == height && eyeGuides.stride == stride ) {
 		return &eyeGuides;
 	}
 	BuryGuides( eyeGuides );
@@ -440,12 +533,13 @@ idD3D12Nrd::guides_t * idD3D12Nrd::Guides( int eye, uint32 width, uint32 height 
 	}
 	eyeGuides.width = width;
 	eyeGuides.height = height;
+	eyeGuides.stride = stride;
 	return &eyeGuides;
 }
 
-idD3D12Nrd::denoiser_t * idD3D12Nrd::Denoiser( signal_t signal, int eye, uint32 width, uint32 height, bool validate ) {
+idD3D12Nrd::denoiser_t * idD3D12Nrd::Denoiser( signal_t signal, int eye, uint32 width, uint32 height, uint32 stride, bool validate ) {
 	std::unique_ptr<denoiser_t> & slot = denoisers[eye][static_cast<size_t>( signal )];
-	if ( slot && slot->width == width && slot->height == height && slot->validation == validate ) {
+	if ( slot && slot->width == width && slot->height == height && slot->stride == stride && slot->validation == validate ) {
 		return slot.get();
 	}
 	if ( slot ) {
@@ -456,10 +550,14 @@ idD3D12Nrd::denoiser_t * idD3D12Nrd::Denoiser( signal_t signal, int eye, uint32 
 		return nullptr;
 	}
 	auto made = std::make_unique<denoiser_t>();
+	made->signal = signal;
 	made->width = width;
 	made->height = height;
+	made->stride = stride;
 	made->validation = validate;
-	const nrd::DenoiserDesc denoiserDesc = { IDENTIFIER, nrd::Denoiser::REBLUR_SPECULAR };
+	static constexpr std::array<nrd::Denoiser, static_cast<size_t>( signal_t::COUNT )> DENOISERS = { nrd::Denoiser::REBLUR_SPECULAR,
+		nrd::Denoiser::REBLUR_DIFFUSE_SH, nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY };
+	const nrd::DenoiserDesc denoiserDesc = { IDENTIFIER, DENOISERS[static_cast<size_t>( signal )] };
 	nrd::InstanceCreationDesc creation = {};
 	creation.denoisers = &denoiserDesc;
 	creation.denoisersNum = 1;
@@ -493,8 +591,19 @@ idD3D12Nrd::denoiser_t * idD3D12Nrd::Denoiser( signal_t signal, int eye, uint32 
 	const auto createIo = [this, &made, width, height]( nrd::ResourceType type, DXGI_FORMAT format, const wchar_t * name ) {
 		return CreateTexture( made->io[static_cast<size_t>( type )], format, width, height, name );
 	};
-	created = created && createIo( nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST, SIGNAL_FORMAT, L"doom3 nrd specular in" )
-		&& createIo( nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST, SIGNAL_FORMAT, L"doom3 nrd specular out" );
+	if ( signal == signal_t::REFLECTION ) {
+		created = created && createIo( nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST, SIGNAL_FORMAT, L"doom3 nrd specular in" )
+			&& createIo( nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST, SIGNAL_FORMAT, L"doom3 nrd specular out" );
+	} else if ( signal == signal_t::INDIRECT ) {
+		created = created && createIo( nrd::ResourceType::IN_DIFF_SH0, SIGNAL_FORMAT, L"doom3 nrd diffuse sh0 in" )
+			&& createIo( nrd::ResourceType::IN_DIFF_SH1, SIGNAL_FORMAT, L"doom3 nrd diffuse sh1 in" )
+			&& createIo( nrd::ResourceType::OUT_DIFF_SH0, SIGNAL_FORMAT, L"doom3 nrd diffuse sh0 out" )
+			&& createIo( nrd::ResourceType::OUT_DIFF_SH1, SIGNAL_FORMAT, L"doom3 nrd diffuse sh1 out" );
+	} else {
+		created = created && createIo( nrd::ResourceType::IN_PENUMBRA, PENUMBRA_FORMAT, L"doom3 nrd penumbra" )
+			&& createIo( nrd::ResourceType::IN_TRANSLUCENCY, SIGNAL_FORMAT, L"doom3 nrd translucency" )
+			&& createIo( nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY, SIGNAL_FORMAT, L"doom3 nrd shadow out" );
+	}
 	created = created && ( !validate || createIo( nrd::ResourceType::OUT_VALIDATION, VALIDATION_FORMAT, L"doom3 nrd validation" ) );
 	if ( !created ) {
 		BuryDenoiser( *made );
@@ -504,15 +613,16 @@ idD3D12Nrd::denoiser_t * idD3D12Nrd::Denoiser( signal_t signal, int eye, uint32 
 	return slot.get();
 }
 
-bool idD3D12Nrd::WriteGuides( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, guides_t & eyeGuides, const rtView_t & view,
-	const renderRect_t & rect, const rtReflectionSettings_t & reflection, std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported ) {
+bool idD3D12Nrd::WriteGuides( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, guides_t & eyeGuides, size_t set, const rtView_t & view,
+	const renderRect_t & rect, const std::optional<std::array<float, 3>> & limits, std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported ) {
 	const uint32 width = eyeGuides.width;
 	const uint32 height = eyeGuides.height;
 	std::array<d3d12GraphResource_t, 3> uses;
 	for ( size_t i = 0; i < uses.size(); i++ ) {
 		uses[i] = Import( graph, GUIDE_NAMES[i], eyeGuides.textures[i], width, height, imported );
 	}
-	if ( eyeGuides.written && eyeGuides.epoch == view.epoch && eyeGuides.sequence == view.sequence ) {
+	const std::array<float, 3> used = limits.value_or( eyeGuides.limits );
+	if ( eyeGuides.written && eyeGuides.epoch == view.epoch && eyeGuides.sequence == view.sequence && eyeGuides.limits == used ) {
 		return true;
 	}
 	idD3D12SceneTarget::surface_t & depth = scene.Depth();
@@ -551,14 +661,16 @@ bool idD3D12Nrd::WriteGuides( idD3D12RenderGraph & graph, idD3D12SceneTarget & s
 	base.viewport[1] = static_cast<float>( rect.y );
 	base.viewport[2] = static_cast<float>( rect.width );
 	base.viewport[3] = static_cast<float>( rect.height );
-	base.limits[0] = reflection.maxRoughness;
-	base.limits[1] = rtReflectionSettings_t::FADE;
-	base.limits[2] = reflection.glossy ? reflection.mirrorRoughness : 2.0f;
+	base.limits[0] = used[0];
+	base.limits[1] = used[1];
+	base.limits[2] = used[2];
 	base.limits[3] = SKY_VIEW_Z;
 	base.first[0] = rect.x;
 	base.first[1] = rect.y;
 	base.size[0] = width;
 	base.size[1] = height;
+	base.stride = eyeGuides.stride;
+	base.flags = ( set == GRID ) ? 1u : 0u;
 	graph.AddPass( "nrd guides", d3d12GraphPass_t::COMPUTE, { { depthUse, d3d12GraphAccess_t::DEPTH_READ }, { normalUse, d3d12GraphAccess_t::SRV },
 		{ materialUse, d3d12GraphAccess_t::SRV }, { motionUse, d3d12GraphAccess_t::SRV }, { albedoUse, d3d12GraphAccess_t::SRV },
 		{ uses[GUIDE_VIEW_Z], d3d12GraphAccess_t::UAV, 0 }, { uses[GUIDE_NORMAL_ROUGHNESS], d3d12GraphAccess_t::UAV, 0 },
@@ -577,13 +689,14 @@ bool idD3D12Nrd::WriteGuides( idD3D12RenderGraph & graph, idD3D12SceneTarget & s
 			context.Dispatch( *pipeline, &span, parms.size[0], parms.size[1] );
 		} );
 	eyeGuides.written = true;
+	eyeGuides.limits = used;
 	eyeGuides.epoch = view.epoch;
 	eyeGuides.sequence = view.sequence;
 	return true;
 }
 
 bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoiser, guides_t & eyeGuides, const rtView_t & view, bool restart,
-	std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported ) {
+	const texelMap_t & map, std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported ) {
 	const uint16 width = static_cast<uint16>( denoiser.width );
 	const uint16 height = static_cast<uint16>( denoiser.height );
 	const float frameMs = ( view.frameMs > 0.0f ) ? view.frameMs : DEFAULT_FRAME_MS;
@@ -598,10 +711,15 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 	nrd::CommonSettings settings = {};
 	D3DProjection( view.viewToClip, settings.viewToClipMatrix );
 	D3DProjection( view.prevViewToClip, settings.viewToClipMatrixPrev );
+	if ( map.scale[0] != 1.0f || map.scale[1] != 1.0f || map.offset[0] != 0.0f || map.offset[1] != 0.0f ) {
+		MapProjection( settings.viewToClipMatrix, map.scale, map.offset );
+		MapProjection( settings.viewToClipMatrixPrev, map.scale, map.offset );
+	}
 	memcpy( settings.worldToViewMatrix, view.worldToView, sizeof( settings.worldToViewMatrix ) );
 	memcpy( settings.worldToViewMatrixPrev, view.prevWorldToView, sizeof( settings.worldToViewMatrixPrev ) );
-	settings.motionVectorScale[0] = 1.0f;
-	settings.motionVectorScale[1] = 1.0f;
+	// the guides' motion is in the view's uv
+	settings.motionVectorScale[0] = 1.0f / map.scale[0];
+	settings.motionVectorScale[1] = 1.0f / map.scale[1];
 	settings.motionVectorScale[2] = 1.0f;
 	settings.resourceSize[0] = settings.resourceSizePrev[0] = settings.rectSize[0] = settings.rectSizePrev[0] = width;
 	settings.resourceSize[1] = settings.resourceSizePrev[1] = settings.rectSize[1] = settings.rectSizePrev[1] = height;
@@ -617,6 +735,8 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 
 	// NRD's accumulation in seconds, as its defaults at 60 frames a second
 	const float fps = 1000.0f / Max( denoiser.smoothedMs, 0.1f );
+	nrd::SigmaSettings sigma;
+	sigma.maxStabilizedFrameNum = Min( nrd::GetMaxAccumulatedFrameNum( nrd::SIGMA_DEFAULT_ACCUMULATION_TIME, fps ), nrd::SIGMA_MAX_HISTORY_FRAME_NUM );
 	nrd::ReblurSettings reblur;
 	reblur.hitDistanceParameters = HitDistanceParameters();
 	reblur.maxAccumulatedFrameNum = idMath::ClampInt( 1, static_cast<int>( nrd::REBLUR_MAX_HISTORY_FRAME_NUM ),
@@ -625,8 +745,11 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 	reblur.maxStabilizedFrameNum = reblur.maxAccumulatedFrameNum;
 	reblur.historyFixFrameNum = Min( reblur.historyFixFrameNum, reblur.maxFastAccumulatedFrameNum - 1 );
 	// a glossy pixel (material 1 of the guides) takes no mirror and no pixel that reflects nothing
-	reblur.minMaterialForSpecular = 0.0f;
-	if ( nrd::SetDenoiserSettings( *denoiser.instance, IDENTIFIER, &reblur ) != nrd::Result::SUCCESS ) {
+	if ( denoiser.signal == signal_t::REFLECTION ) {
+		reblur.minMaterialForSpecular = 0.0f;
+	}
+	const void * denoiserSettings = ( denoiser.signal == signal_t::SHADOW ) ? static_cast<const void *>( &sigma ) : &reblur;
+	if ( nrd::SetDenoiserSettings( *denoiser.instance, IDENTIFIER, denoiserSettings ) != nrd::Result::SUCCESS ) {
 		return false;
 	}
 
@@ -734,23 +857,21 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene,
 	const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & rect, d3d12GraphResource_t rays ) {
 	const int eye = view.store ? ( view.eye & 1 ) : 2;
-	// a screenshot's instance lives until the next frame that is none: its graph has been executed then
-	if ( view.store && denoisers[2][static_cast<size_t>( signal_t::REFLECTION )] ) {
-		BuryDenoiser( *denoisers[2][static_cast<size_t>( signal_t::REFLECTION )] );
-		denoisers[2][static_cast<size_t>( signal_t::REFLECTION )].reset();
-		BuryGuides( guides[2] );
+	if ( view.store ) {
+		BuryScreenshot();
 	}
 	const uint32 width = static_cast<uint32>( rect.width );
 	const uint32 height = static_cast<uint32>( rect.height );
-	guides_t * eyeGuides = Guides( eye, width, height );
-	denoiser_t * denoiser = ( eyeGuides != nullptr ) ? Denoiser( signal_t::REFLECTION, eye, width, height, settings.validation ) : nullptr;
+	guides_t * eyeGuides = Guides( eye, PIXELS, width, height, 1 );
+	denoiser_t * denoiser = ( eyeGuides != nullptr ) ? Denoiser( signal_t::REFLECTION, eye, width, height, 1, settings.validation ) : nullptr;
 	const d3d12ComputePipeline_t * pack = ComputePipeline( reflectPack, "internal_nrdReflectPack", L"doom3 nrd reflect pack" );
 	const d3d12ComputePipeline_t * unpack = ComputePipeline( reflectUnpack, "internal_nrdReflectUnpack", L"doom3 nrd reflect unpack" );
 	if ( denoiser == nullptr || pack == nullptr || unpack == nullptr ) {
 		return std::nullopt;
 	}
 	std::unordered_map<const texture_t *, d3d12GraphResource_t> imported;
-	if ( !WriteGuides( graph, scene, *eyeGuides, view, rect, settings, imported ) ) {
+	const std::array<float, 3> limits = { settings.maxRoughness, rtReflectionSettings_t::FADE, settings.glossy ? settings.mirrorRoughness : 2.0f };
+	if ( !WriteGuides( graph, scene, *eyeGuides, PIXELS, view, rect, limits, imported ) ) {
 		return std::nullopt;
 	}
 	const d3d12GraphResource_t viewZ = imported[&eyeGuides->textures[GUIDE_VIEW_Z]];
@@ -779,12 +900,15 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 				context.Dispatch( *pack, &span, parms.size[0], parms.size[1] );
 			} );
 		const bool restart = !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
-		if ( !AddDispatches( graph, *denoiser, *eyeGuides, view, restart, imported ) ) {
+		if ( !AddDispatches( graph, *denoiser, *eyeGuides, view, restart, {}, imported ) ) {
 			return std::nullopt;
 		}
 		denoiser->ran = true;
 		denoiser->fresh = false;
-		validationEye = denoiser->validation ? eye : -1;
+		if ( denoiser->validation ) {
+			validationEye = eye;
+			validationSignal = signal_t::REFLECTION;
+		}
 		denoiser->epoch = view.epoch;
 		denoiser->sequence = view.sequence;
 	} else if ( !denoiser->ran || denoiser->epoch != view.epoch ) {
@@ -818,13 +942,192 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 	return output;
 }
 
+std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene,
+	const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & rect, uint32 stride, d3d12GraphResource_t amount,
+	d3d12GraphResource_t chroma, d3d12GraphResource_t hit ) {
+	const int eye = view.store ? ( view.eye & 1 ) : 2;
+	if ( view.store ) {
+		BuryScreenshot();
+	}
+	const uint32 width = DivideUp( static_cast<uint32>( rect.width ), stride );
+	const uint32 height = DivideUp( static_cast<uint32>( rect.height ), stride );
+	guides_t * grid = Guides( eye, GRID, width, height, stride );
+	denoiser_t * denoiser = ( grid != nullptr ) ? Denoiser( signal_t::INDIRECT, eye, width, height, stride, settings.validation ) : nullptr;
+	const d3d12ComputePipeline_t * pack = ComputePipeline( indirectPack, "internal_nrdIndirectPack", L"doom3 nrd indirect pack" );
+	const d3d12ComputePipeline_t * unpack = ComputePipeline( indirectUnpack, "internal_nrdIndirectUnpack", L"doom3 nrd indirect unpack" );
+	if ( denoiser == nullptr || pack == nullptr || unpack == nullptr ) {
+		return std::nullopt;
+	}
+	std::unordered_map<const texture_t *, d3d12GraphResource_t> imported;
+	if ( !WriteGuides( graph, scene, *grid, GRID, view, rect, std::nullopt, imported ) ) {
+		return std::nullopt;
+	}
+	const d3d12GraphResource_t viewZ = imported[&grid->textures[GUIDE_VIEW_Z]];
+	const auto io = [this, &graph, &imported, denoiser, width, height]( nrd::ResourceType type ) {
+		return Import( graph, nrd::GetResourceTypeString( type ), denoiser->io[static_cast<size_t>( type )], width, height, imported );
+	};
+	const bool trace = amount.IsValid() && chroma.IsValid() && hit.IsValid();
+	const bool again = denoiser->ran && denoiser->epoch == view.epoch && denoiser->sequence == view.sequence;
+	if ( trace && !again ) {
+		const d3d12GraphResource_t sh0 = io( nrd::ResourceType::IN_DIFF_SH0 );
+		const d3d12GraphResource_t sh1 = io( nrd::ResourceType::IN_DIFF_SH1 );
+		nrdIndirectPackParms_t packBase = {};
+		const nrd::ReblurHitDistanceParameters hitDistance = HitDistanceParameters();
+		packBase.hitDistParams[0] = hitDistance.A;
+		packBase.hitDistParams[1] = hitDistance.B;
+		packBase.hitDistParams[2] = hitDistance.C;
+		packBase.size[0] = width;
+		packBase.size[1] = height;
+		graph.AddPass( "nrd indirect pack", d3d12GraphPass_t::COMPUTE, { { amount, d3d12GraphAccess_t::SRV }, { chroma, d3d12GraphAccess_t::SRV },
+			{ hit, d3d12GraphAccess_t::SRV }, { viewZ, d3d12GraphAccess_t::SRV }, { sh0, d3d12GraphAccess_t::UAV, 0 }, { sh1, d3d12GraphAccess_t::UAV, 0 } },
+			[pack, packBase, amount, chroma, hit, viewZ, sh0, sh1]( idD3D12GraphContext & context ) {
+				nrdIndirectPackParms_t parms = packBase;
+				parms.amountSrv = context.Srv( amount );
+				parms.chromaSrv = context.Srv( chroma );
+				parms.hitSrv = context.Srv( hit );
+				parms.viewZSrv = context.Srv( viewZ );
+				parms.sh0Uav = context.Uav( sh0 );
+				parms.sh1Uav = context.Uav( sh1 );
+				const d3d12UploadSpan_t span = context.Parms( parms );
+				context.Dispatch( *pack, &span, parms.size[0], parms.size[1] );
+			} );
+		// a texel's centre is its block's first pixel's, and the last column and row may reach past the viewport
+		const float viewWidth = static_cast<float>( rect.width );
+		const float viewHeight = static_cast<float>( rect.height );
+		const float s = static_cast<float>( stride );
+		texelMap_t map;
+		map.scale[0] = s * static_cast<float>( width ) / viewWidth;
+		map.scale[1] = s * static_cast<float>( height ) / viewHeight;
+		map.offset[0] = ( 0.5f - 0.5f * s ) / viewWidth;
+		map.offset[1] = ( viewHeight - s * static_cast<float>( height ) + 0.5f * s - 0.5f ) / viewHeight;
+		const bool restart = !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
+		if ( !AddDispatches( graph, *denoiser, *grid, view, restart, map, imported ) ) {
+			return std::nullopt;
+		}
+		denoiser->ran = true;
+		denoiser->fresh = false;
+		if ( denoiser->validation ) {
+			validationEye = eye;
+			validationSignal = signal_t::INDIRECT;
+		}
+		denoiser->epoch = view.epoch;
+		denoiser->sequence = view.sequence;
+	} else if ( !denoiser->ran || denoiser->epoch != view.epoch ) {
+		return std::nullopt;
+	}
+
+	const d3d12GraphResource_t sh0 = io( nrd::ResourceType::OUT_DIFF_SH0 );
+	const d3d12GraphResource_t sh1 = io( nrd::ResourceType::OUT_DIFF_SH1 );
+	d3d12PoolDesc_t desc;
+	desc.format = SIGNAL_FORMAT;
+	desc.width = width;
+	desc.height = height;
+	desc.unorderedAccess = true;
+	indirectOutput_t output;
+	output.amount = graph.Create( "rt indirect nrd", desc );
+	output.aux = graph.Create( "rt indirect nrd chroma", desc );
+	const nrdIndirectUnpackParms_t unpackBase = { { width, height }, 0, 0, 0, 0, 0, DENOISING_RANGE };
+	graph.AddPass( "nrd indirect unpack", d3d12GraphPass_t::COMPUTE, { { sh0, d3d12GraphAccess_t::SRV }, { sh1, d3d12GraphAccess_t::SRV },
+		{ viewZ, d3d12GraphAccess_t::SRV }, { output.amount, d3d12GraphAccess_t::UAV, 0 }, { output.aux, d3d12GraphAccess_t::UAV, 0 } },
+		[unpack, unpackBase, sh0, sh1, viewZ, output]( idD3D12GraphContext & context ) {
+			nrdIndirectUnpackParms_t parms = unpackBase;
+			parms.sh0Srv = context.Srv( sh0 );
+			parms.sh1Srv = context.Srv( sh1 );
+			parms.viewZSrv = context.Srv( viewZ );
+			parms.amountUav = context.Uav( output.amount );
+			parms.auxUav = context.Uav( output.aux );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( *unpack, &span, parms.size[0], parms.size[1] );
+		} );
+	return output;
+}
+
+std::optional<d3d12GraphResource_t> idD3D12Nrd::Shadows( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const rtShadowSettings_t & settings,
+	const rtView_t & view, const renderRect_t & rect, d3d12GraphResource_t ratio, d3d12GraphResource_t lights ) {
+	const int eye = view.store ? ( view.eye & 1 ) : 2;
+	if ( view.store ) {
+		BuryScreenshot();
+	}
+	const uint32 width = static_cast<uint32>( rect.width );
+	const uint32 height = static_cast<uint32>( rect.height );
+	const UINT samples = scene.Samples();
+	guides_t * eyeGuides = Guides( eye, PIXELS, width, height, 1 );
+	denoiser_t * denoiser = ( eyeGuides != nullptr ) ? Denoiser( signal_t::SHADOW, eye, width, height, 1, false ) : nullptr;
+	const d3d12ComputePipeline_t * pack = ComputePipeline( shadowPack[( samples > 1 ) ? 1 : 0],
+		( samples > 1 ) ? "internal_nrdShadowPack_msaa" : "internal_nrdShadowPack", L"doom3 nrd shadow pack" );
+	const d3d12ComputePipeline_t * unpack = ComputePipeline( shadowUnpack, "internal_nrdShadowUnpack", L"doom3 nrd shadow unpack" );
+	if ( denoiser == nullptr || pack == nullptr || unpack == nullptr ) {
+		return std::nullopt;
+	}
+	std::unordered_map<const texture_t *, d3d12GraphResource_t> imported;
+	if ( !WriteGuides( graph, scene, *eyeGuides, PIXELS, view, rect, std::nullopt, imported ) ) {
+		return std::nullopt;
+	}
+	const auto io = [this, &graph, &imported, denoiser, width, height]( nrd::ResourceType type ) {
+		return Import( graph, nrd::GetResourceTypeString( type ), denoiser->io[static_cast<size_t>( type )], width, height, imported );
+	};
+	const bool trace = !view.held;
+	const bool again = denoiser->ran && denoiser->epoch == view.epoch && denoiser->sequence == view.sequence;
+	if ( trace && !again ) {
+		const d3d12GraphResource_t penumbra = io( nrd::ResourceType::IN_PENUMBRA );
+		const d3d12GraphResource_t translucency = io( nrd::ResourceType::IN_TRANSLUCENCY );
+		nrdShadowPackParms_t packBase = {};
+		packBase.first[0] = rect.x;
+		packBase.first[1] = rect.y;
+		packBase.size[0] = width;
+		packBase.size[1] = height;
+		packBase.samples = samples;
+		packBase.penumbraScale = SIGMA_PENUMBRA / rtShadowSettings_t::PENUMBRA_SCALE;
+		graph.AddPass( "nrd shadow pack", d3d12GraphPass_t::COMPUTE, { { ratio, d3d12GraphAccess_t::SRV }, { lights, d3d12GraphAccess_t::SRV },
+			{ penumbra, d3d12GraphAccess_t::UAV, 0 }, { translucency, d3d12GraphAccess_t::UAV, 0 } },
+			[pack, packBase, ratio, lights, penumbra, translucency]( idD3D12GraphContext & context ) {
+				nrdShadowPackParms_t parms = packBase;
+				parms.ratioSrv = context.Srv( ratio );
+				parms.lightsSrv = context.Srv( lights );
+				parms.penumbraUav = context.Uav( penumbra );
+				parms.translucencyUav = context.Uav( translucency );
+				const d3d12UploadSpan_t span = context.Parms( parms );
+				context.Dispatch( *pack, &span, parms.size[0], parms.size[1] );
+			} );
+		const bool restart = !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
+		if ( !AddDispatches( graph, *denoiser, *eyeGuides, view, restart, {}, imported ) ) {
+			return std::nullopt;
+		}
+		denoiser->ran = true;
+		denoiser->fresh = false;
+		denoiser->epoch = view.epoch;
+		denoiser->sequence = view.sequence;
+	} else if ( !denoiser->ran || denoiser->epoch != view.epoch ) {
+		return std::nullopt;
+	}
+
+	const d3d12GraphResource_t denoised = io( nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY );
+	d3d12PoolDesc_t desc;
+	desc.format = SIGNAL_FORMAT;
+	desc.width = width;
+	desc.height = height;
+	desc.unorderedAccess = true;
+	const d3d12GraphResource_t output = graph.Create( "rt shadow nrd", desc );
+	const nrdShadowUnpackParms_t unpackBase = { { width, height }, 0, 0 };
+	graph.AddPass( "nrd shadow unpack", d3d12GraphPass_t::COMPUTE, { { denoised, d3d12GraphAccess_t::SRV }, { output, d3d12GraphAccess_t::UAV, 0 } },
+		[unpack, unpackBase, denoised, output]( idD3D12GraphContext & context ) {
+			nrdShadowUnpackParms_t parms = unpackBase;
+			parms.shadowSrv = context.Srv( denoised );
+			parms.outputUav = context.Uav( output );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( *unpack, &span, parms.size[0], parms.size[1] );
+		} );
+	return output;
+}
+
 void idD3D12Nrd::DrawValidation( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const renderRect_t & viewport,
 	idD3D12DebugGroups * groups ) {
 	const int eye = std::exchange( validationEye, -1 );
-	denoiser_t * denoiser = ( eye >= 0 ) ? denoisers[eye][static_cast<size_t>( signal_t::REFLECTION )].get() : nullptr;
+	denoiser_t * denoiser = ( eye >= 0 ) ? denoisers[eye][static_cast<size_t>( validationSignal )].get() : nullptr;
 	idD3D12SceneTarget::surface_t & output = scene.Color( false );
 	if ( denoiser == nullptr || !denoiser->validation || !denoiser->ran || !output.resource || viewport.x < 0 || viewport.y < 0
-			|| denoiser->width != static_cast<uint32>( viewport.width ) || denoiser->height != static_cast<uint32>( viewport.height )
+			|| denoiser->width != DivideUp( static_cast<uint32>( viewport.width ), denoiser->stride )
+			|| denoiser->height != DivideUp( static_cast<uint32>( viewport.height ), denoiser->stride )
 			|| viewport.x + viewport.width > scene.Width() || viewport.y + viewport.height > scene.Height() ) {
 		return;
 	}
@@ -843,7 +1146,7 @@ void idD3D12Nrd::DrawValidation( idD3D12RenderGraph & graph, idD3D12SceneTarget 
 		denoiser->width, denoiser->height, imported );
 	const d3d12GraphResource_t target = graph.Import( "Output", { output.resource.Get(), &output.state, output.srv, {}, scene.Rtv( false ),
 		static_cast<uint32>( scene.Width() ), static_cast<uint32>( scene.Height() ) } );
-	const nrdValidationParms_t base = { { viewport.x, viewport.y }, { denoiser->width, denoiser->height }, 0, {} };
+	const nrdValidationParms_t base = { { viewport.x, viewport.y }, { denoiser->width, denoiser->height }, 0, denoiser->stride, {} };
 	ID3D12PipelineState * state = pso.Get();
 	graph.AddPass( "nrd validation", d3d12GraphPass_t::RASTER, { { layer, d3d12GraphAccess_t::SRV }, { target, d3d12GraphAccess_t::RTV, 0 } },
 		[state, base, layer, target, viewport]( idD3D12GraphContext & context ) {

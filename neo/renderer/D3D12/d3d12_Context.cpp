@@ -635,6 +635,7 @@ void idD3D12Context::PrintInfo() const {
 		Megabytes( buffers.Bytes( bufferUsage_t::FRAME ) ), D3D12_PlacementName( buffers.FramePlacement() ), Megabytes( buffers.Bytes( bufferUsage_t::STATIC ) ),
 		Megabytes( buffers.MirrorBytes() ) );
 	common->Printf( "D3D12 render graph: %d pooled resources, %.1f MB\n", resourcePool.Num(), Megabytes( resourcePool.Bytes() ) );
+	common->Printf( "D3D12 ray tracing filters: own histories %.1f MB, NRD %.1f MB\n", Megabytes( rtHistory.Bytes() ), Megabytes( nrd.Bytes() ) );
 	common->Printf( "D3D12 textures: %d, %.1f MB; shader-visible SRVs %d of %u, samplers %d of %u; unaligned BC %s, anisotropic point mips %s\n",
 		textures.Num(), textures.Bytes() / ( 1024.0 * 1024.0 ), srvPool.Used(), SHADER_VISIBLE_SRVS, samplers.Used(), idD3D12SamplerHeap::SIZE,
 		device.Features().unalignedBlocks ? "yes" : "decoded",

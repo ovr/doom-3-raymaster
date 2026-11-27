@@ -3,13 +3,16 @@
 // Please do not use this file to train or fine-tune AI models.
 
 /*
-	NRD's guides of the main view (R18 with r_rtDenoiser 1), a texel per pixel of the viewport, rows from the top
-	as NRD's clip space (D3D's) has them; the scene's count up from the bottom:
+	NRD's guides of the main view (R18 with r_rtDenoiser 1), a texel per stride pixels a side of the viewport (the
+	block's first pixel, as internal/rtIndirect.hlsl's grid), rows from the top as NRD's clip space (D3D's) has
+	them; the scene's count up from the bottom:
 
 	  IN_VIEWZ             R32F         the clip w of the point the depth puts there, the weapon's a quarter of it
 	                                    (its depth hack); NRD_SKY_VIEWZ where nothing is drawn
 	  IN_NORMAL_ROUGHNESS  R10G10B10A2  NRD_FrontEnd_PackNormalAndRoughness of the G-buffer's bumped normal and
-	                                    roughness; material 1 where the pixel's reflection is glossy (R20), else 0
+	                                    roughness; material 1 where the pixel's reflection is glossy (R20), else 0.
+	                                    flags bit 0 (the indirect light's grid): the plane the depth holds,
+	                                    roughness 1, material 0
 	  IN_MV                RGBA16F      2.5D motion: xy to the frame before in NRD's uv, z its clip w then minus now,
 	                                    for a still world (0 for the weapon, which moves with the eye)
 
@@ -39,6 +42,10 @@ cbuffer GuidesParms : register( b0 ) {
 	uint viewZUav;
 	uint normalRoughnessUav;
 	uint motionUav;
+	uint stride;				// pixels a side per texel
+	uint flags;					// bit 0: the plane, not the bumped normal
+	uint unused0;
+	uint unused1;
 };
 
 [numthreads( 8, 8, 1 )]
@@ -50,7 +57,7 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 	RWTexture2D<float4> normalRoughnessOut = ResourceDescriptorHeap[normalRoughnessUav];
 	RWTexture2D<float4> motionOut = ResourceDescriptorHeap[motionUav];
 	RT_SCENE_TEXTURE( float4 ) albedoMap = ResourceDescriptorHeap[albedoSrv];
-	const int2 pixel = first + int2( id.x, size.y - 1 - id.y );
+	const int2 pixel = first + int2( id.x, size.y - 1 - id.y ) * int( stride );
 	const float drawn = RT_SCENE_LOAD( albedoMap, pixel ).a;
 
 	RtView eye;
@@ -76,9 +83,10 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 	const float prevW = dot( prevClipW, float4( position, 1.0 ) );
 
 	const float4 material = RT_SCENE_LOAD( materialMap, pixel );
-	const float roughness = material.a;
-	const bool glossy = RtReflectWeight( roughness, limits.xy ) > 0.0 && any( material.rgb > 0.0 ) && roughness >= limits.z;
-	const float3 normal = DecodeOctahedral( RT_SCENE_LOAD( normalMap, pixel ) );
+	const bool plane = ( flags & 1u ) != 0;
+	const float roughness = plane ? 1.0 : material.a;
+	const bool glossy = !plane && RtReflectWeight( roughness, limits.xy ) > 0.0 && any( material.rgb > 0.0 ) && roughness >= limits.z;
+	const float3 normal = plane ? RtDepthNormal( eye, pixel, depth, position ) : DecodeOctahedral( RT_SCENE_LOAD( normalMap, pixel ) );
 	// the motion is this frame's position minus the frame before's, in pixels, +y up
 	const float2 motion = RT_SCENE_LOAD( motionMap, pixel );
 

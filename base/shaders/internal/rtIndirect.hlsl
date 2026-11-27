@@ -10,6 +10,7 @@
 
 	  amount  RGBA16F  a the luminance that came, rgb that times the ray's direction
 	  chroma  RG16F    Co and Cg of it
+	  hit     R16F     with flags bit 0 (NRD's input, r_rtDenoiser 1): how far the ray went, the longest on a miss
 
 	Three pairs of numbers per texel and frame (include/rtNoise.hlsli, at three places of the tile, each with its
 	own step): the ray's direction, the light, the point of its disk. MULTISAMPLED reads sample 0.
@@ -45,9 +46,9 @@ cbuffer IndirectParms : register( b0 ) {
 	int2 first;					// the first pixel in the scene
 	uint2 size;					// texels
 	uint stride;				// pixels a side per texel
+	uint hitUav;
+	uint flags;					// bit 0: write the hit
 	uint unused0;
-	uint unused1;
-	uint unused2;
 };
 
 // The cone of a ray that stands for a part of the half sphere: the hit's textures are read that coarse.
@@ -66,6 +67,7 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 
 	float3 radiance = float3( 0.0, 0.0, 0.0 );
 	float3 direction = float3( 0.0, 0.0, 1.0 );
+	float travelled = 0.0;
 	if ( GBufferDrawn( drawn ) ) {
 		RtView view;
 		view.clipToWorld = clipToWorld;
@@ -110,6 +112,7 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 		ray.TMin = 0.0;
 		ray.TMax = limits.x;
 		const RtHit hit = RtTrace( heap, ray, RT_MASK_VISIBLE, BOUNCE_SPREAD, linearSampler );
+		travelled = hit.hit ? hit.t : limits.x;
 		if ( hit.hit ) {
 			const float pick = RtNoise( noiseSrv, id.xy + uint2( 37, 5 ), noiseIndex, 1 ).x;
 			const float2 spot = RtDisk( RtNoise( noiseSrv, id.xy + uint2( 53, 47 ), noiseIndex, 2 ) );
@@ -124,4 +127,8 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 	}
 	amount[id.xy] = float4( direction * coded.x, coded.x );
 	chroma[id.xy] = coded.yz;
+	if ( ( flags & 1u ) != 0 ) {
+		RWTexture2D<float> hits = ResourceDescriptorHeap[hitUav];
+		hits[id.xy] = travelled;
+	}
 }

@@ -14,13 +14,18 @@
 	of a point, the stencil volumes': the ray starts on the side of the surface that the eye sees and stops at
 	the triangles that face away from the light (RtOccluded), so a surface with the light behind it shadows
 	itself. While nothing may be traced (rtFlags) the light target gets nothing: the frame stays lit.
-	SKINNED=1 is interaction_rt_skinned.
+	With rpRtShadow.z (NRD's SIGMA) the ray finds the caster nearest to the surface, and the alpha of the light target
+	sums the radius of its penumbra (SIGMA_FrontEnd_PackPenumbra's for a local light) times the luminance it takes
+	times rpRtShadow.z, for internal/nrdShadowPack.hlsl. SKINNED=1 is interaction_rt_skinned.
 */
 
 #define INTERACTION_RT 1
 #include "include/interaction.hlsli"
 #include "include/rtDraw.hlsli"
 #include "include/rtNoise.hlsli"
+
+// world units: SIGMA_FrontEnd_PackPenumbra's most
+static const float PENUMBRA_MOST = 32768.0;
 
 struct PSOutput {
 	float4 scene : SV_Target0;
@@ -50,7 +55,13 @@ PSOutput PSMain( VSOutput input ) {
 	const float area = length( side );
 	side = ( area > 1e-16 ) ? side / area : normalize( input.toEye.xyz );
 	side = ( dot( side, input.toEye.xyz ) < 0.0 ) ? -side : side;
-	if ( RtDiskOccluded( RtDrawHeap(), position, side, rpRtLight.xyz, radius, disk, footprint, rtSampler, uint( rpRtShadow.x ) ) ) {
+	if ( rpRtShadow.z > 0.0 ) {
+		float occluder, emitter;
+		if ( RtDiskOccluder( RtDrawHeap(), position, side, rpRtLight.xyz, radius, disk, footprint, rtSampler, uint( rpRtShadow.x ), occluder, emitter ) ) {
+			const float penumbra = min( radius * occluder / max( emitter - occluder, 1e-4 ), PENUMBRA_MOST );
+			output.lights = float4( output.scene.rgb, dot( output.scene.rgb, float3( 0.2126, 0.7152, 0.0722 ) ) * penumbra * rpRtShadow.z );
+		}
+	} else if ( RtDiskOccluded( RtDrawHeap(), position, side, rpRtLight.xyz, radius, disk, footprint, rtSampler, uint( rpRtShadow.x ) ) ) {
 		output.lights = float4( output.scene.rgb, 0.0 );
 	}
 	return output;

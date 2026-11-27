@@ -152,12 +152,15 @@ If you have questions concerning this license or the applicable additional terms
 	R16	In the HDR scene's linear phase: BeginTracedLights clears a rectangle of the light target (a second
 		float surface of the scene's size and sample count) to zero and sends the draws until EndTracedLights
 		to both: a program's first colour output to the scene, its second to the light target, each through
-		the draw's one blend. Only programs with both outputs draw there, and nothing clears. The light
-		target holds until the next BeginTracedLights. ResolveTracedShadows, after the bracket: per pixel of
-		the viewport and channel, the light target over the scene (0 where the scene is black) is the part
+		the draw's one blend; where it keeps the destination's alpha (ONE), the light target's alpha adds.
+		Only programs with both outputs draw there, and nothing clears. The light target holds until the
+		next BeginTracedLights. ResolveTracedShadows, after the bracket: per pixel of the viewport and
+		channel, the light target over the scene (0 where the scene is black) is the part
 		the shadows take, and the scene is multiplied by what is left, filtered when settings.Filtered()
 		(R18: over the eye's history and the neighbours of the same surface); settings.show puts that in
-		its place, settings.showLength the length of the history.
+		its place, settings.showLength the length of the history. With settings.Penumbrae() (NRD) the light
+		target's alpha holds, summed over the lights a caster shadows, the luminance each takes times the
+		width of its penumbra there in world units (the nearest caster's) times PENUMBRA_SCALE; else 0.
 	R17	A program whose table row traces (renderProgDef_t::traces) reads, in its pixel stage, what the last
 		applied UpdateGpuScene built, and a noise texture. While nothing may be traced (no update yet, a
 		refused one, a lost device) the draw still runs and is told so: it sends nothing to the light target.
@@ -186,6 +189,7 @@ If you have questions concerning this license or the applicable additional terms
 		takes it, in the scene's place). While the scene is refused the frame takes what the history holds,
 		and nothing where it holds nothing. Shared code dims the lights that stand in for bounced light
 		(R_FillLight) by rayTracingSettings_t::fillLightScale, in the main view's interactions and for the rays.
+		Through NRD (settings.denoiser) the grid is REBLUR_DIFFUSE_SH's; without a filter every frame's rays.
 	R20	DrawRayTracedReflections, in the linear phase after the lights, with the G-buffer of the frame: a ray per
 		pixel of the main view whose G-buffer reflects (F0 above 0, roughness below settings.maxRoughness).
 		Smoother than settings.mirrorRoughness, or without settings.glossy, the pixel is a mirror: the ray

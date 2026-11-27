@@ -2322,8 +2322,9 @@ void Test_PipelineRaster() {
 	const D3D12_RENDER_TARGET_BLEND_DESC & second = lights.blend.RenderTarget[1];
 	Check( lights.numTargets == 2 && lights.colorFormats[0] == DXGI_FORMAT_R16G16B16A16_FLOAT && lights.colorFormats[1] == DXGI_FORMAT_R16G16B16A16_FLOAT
 		&& lights.sample.Count == 4, "the scene with the light target: two float targets, the scene's samples" );
-	Check( !lights.blend.IndependentBlendEnable && second.BlendEnable && second.SrcBlend == D3D12_BLEND_ONE && second.DestBlend == D3D12_BLEND_ONE
-		&& second.BlendOpAlpha == D3D12_BLEND_OP_MAX, "the light target takes the scene's blend, alpha by MAX" );
+	Check( lights.blend.IndependentBlendEnable && second.BlendEnable && second.SrcBlend == D3D12_BLEND_ONE && second.DestBlend == D3D12_BLEND_ONE
+		&& lights.blend.RenderTarget[0].BlendOpAlpha == D3D12_BLEND_OP_MAX && second.BlendOpAlpha == D3D12_BLEND_OP_ADD,
+		"the light target takes the scene's blend, its alpha added where the scene's goes by MAX (R16)" );
 	Check( plain.raster.DepthClipEnable && !plain.raster.MultisampleEnable && !plain.raster.AntialiasedLineEnable, "depth clip, aliased lines" );
 }
 
@@ -6607,7 +6608,8 @@ void LightTarget( idTestGpu & gpu, UINT samples ) {
 	const idVec4 base( PRE_EXPOSURE, PRE_EXPOSURE, PRE_EXPOSURE, 1.0f );
 	pair_t texels = read();
 	checkStripe( texels.scene, 0, idVec4( base.x + 2.0f * once.x, base.y + 2.0f * once.y, base.z + 2.0f * once.z, 1.0f ), "the scene under two draws of the bracket" );
-	checkStripe( texels.lights, 0, idVec4( 2.0f * quarter.x, 2.0f * quarter.y, 2.0f * quarter.z, c.w ), "the light target under them, across a submit" );
+	// the light target's alpha adds where the scene's goes by MAX (R16: NRD's penumbrae)
+	checkStripe( texels.lights, 0, idVec4( 2.0f * quarter.x, 2.0f * quarter.y, 2.0f * quarter.z, 2.0f * c.w ), "the light target under them, across a submit" );
 	checkStripe( texels.scene, 1, once, "the scene under one draw" );
 	checkStripe( texels.lights, 1, quarter, "the light target under it" );
 	checkStripe( texels.scene, 2, base, "a draw after the bracket reaches the scene" );
@@ -7812,10 +7814,13 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 	const textureHandle_t white = texture( { 255, 255, 255, 255 }, "test indirect white" );
 	idD3D12RtPasses rtPasses( gpu.device, scene.rays.computeRoot, fixture.passes, gpu.samplers, gpu.buffers, gpu.textures, gpu.barriers );
 	idD3D12RtHistory history( gpu.device, gpu.graveyard, gpu.srvPool );
+	idD3D12Nrd nrd( gpu.device, gpu.library, gpu.graveyard, gpu.srvPool, fixture.passes, scene.rays.computeRoot );
 	rtPasses.CreateDefaults();
+	rtPasses.SetNrd( &nrd );
 	const auto release = [&]() {
 		gpu.WaitIdle();
 		history.Drop();
+		nrd.Drop();
 		rtPasses.DestroyDefaults();
 		gpu.buffers.Destroy( vertexBuffer );
 		gpu.buffers.Destroy( indexBuffer );
@@ -7958,6 +7963,19 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 		view.worldToClip[2][2] = 0.1f;
 		view.worldToClip[3][3] = 1.0f;
 		memcpy( view.prevWorldToClip, view.worldToClip, sizeof( view.prevWorldToClip ) );
+		// as NRD takes it: GL's model view puts the floor 1 below the eye (its view z, the clip w), GL's orthographic
+		// projection a unit per pixel
+		memset( view.worldToView, 0, sizeof( view.worldToView ) );
+		view.worldToView[0] = view.worldToView[5] = view.worldToView[10] = view.worldToView[15] = 1.0f;
+		view.worldToView[14] = -1.0f;
+		memset( view.viewToClip, 0, sizeof( view.viewToClip ) );
+		view.viewToClip[0] = view.viewToClip[5] = 1.0f / 32.0f;
+		view.viewToClip[10] = -2.0f / 99.9f;
+		view.viewToClip[14] = -100.1f / 99.9f;
+		view.viewToClip[15] = 1.0f;
+		memcpy( view.prevWorldToView, view.worldToView, sizeof( view.prevWorldToView ) );
+		memcpy( view.prevViewToClip, view.viewToClip, sizeof( view.prevViewToClip ) );
+		view.frameMs = ( sequence > 0 ) ? 1000.0f / 60.0f : 0.0f;
 		view.origin[0] = eye.x;
 		view.origin[1] = eye.y;
 		view.origin[2] = eye.z;
@@ -7972,7 +7990,11 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 		prepare( color );
 		rtPasses.Indirect( scene.rays.graph, target, history, scene.rt, scene.gpuScene, settings, viewOf( epoch, sequence, store ), { 0, 0, SIZE, SIZE },
 			PRE_EXPOSURE, nullptr );
-		return ReadFloatSurface( gpu, target.Color( true ) );
+		std::vector<idVec4> texels = ReadFloatSurface( gpu, target.Color( true ) );
+		// the read waited for the GPU: what the frame took of the ring (NRD's dispatches, a kilobyte each) is free again
+		fixture.constants.CloseChunk( gpu.WaitedFence() );
+		fixture.constants.Retire( gpu.WaitedFence() );
+		return texels;
 	};
 	// frames 0 .. count - 1 of a new epoch: the last one's scene
 	const auto runFrames = [&]( const rtIndirectSettings_t & settings, int count, const idVec4 & color ) {
@@ -8122,6 +8144,26 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 				exact ? 0.15f : 0.08f, exact ? 0.02f : 0.04f );
 		}
 	}
+	// NRD's REBLUR_DIFFUSE_SH on the grid in place of the passes' own filter. Its textures are half floats: the
+	// constant within half a percent (worst 0.47 %), the leaning bands within 4 (mean 2.4)
+	rtIndirectSettings_t throughNrd = filtered;
+	throughNrd.denoiser = rtDenoiser_t::NRD;
+	if ( idD3D12Nrd::Available() ) {
+		for ( const int stride : { 1, 2, 4 } ) {
+			throughNrd.stride = stride;
+			const std::vector<idVec4> texels = runFrames( throughNrd, 8, base );
+			const idStr label = va( "the sky, 8 frames through NRD, a texel %d pixels", stride );
+			for ( const region_t & region : flat ) {
+				report( label.c_str(), region, compare( texels, region, 0.25f, [&]( int column, int ) { return skyAt( column, 1.0f, false, base ); } ),
+					0.006f, 0.005f );
+			}
+			for ( const region_t & region : leaning ) {
+				report( label.c_str(), region, compare( texels, region, 0.25f, [&]( int column, int ) { return skyAt( column, 0.75f, false, base ); } ),
+					0.05f, 0.035f );
+			}
+		}
+		throughNrd.stride = 2;
+	}
 
 	// ---- the room ----
 	const float bumpXY = 128.0f / 255.0f - 0.5f;
@@ -8227,6 +8269,63 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 		epoch++;
 		const std::vector<idVec4> empty = run( whiteFiltered, 0, base );
 		report( "the room, nothing to trace and no history", { "the floor", 0, 63, 0, 63 },
+			compare( empty, { "the floor", 0, 63, 0, 63 }, 1.0f, [&]( int, int ) { return base.ToVec3(); } ), 1e-3f, 1e-3f );
+	}
+	// the same through NRD, as the game runs it
+	rtIndirectSettings_t whiteNrd = whiteFiltered;
+	whiteNrd.denoiser = rtDenoiser_t::NRD;
+	if ( idD3D12Nrd::Available() && apply( oneLamp, red ) ) {
+		// NRD's radii are a full frame's: on 64 x 64 pixels they spread the light over the floor, which no edge of the
+		// G-buffer parts. What it keeps is the floor's sum, as the reference has it (the CPU's holds only where the
+		// light falls: the reference's whole floor is 0.82 of it), and the light's place.
+		const size_t numTexels = static_cast<size_t>( SIZE ) * SIZE;
+		const auto luminance = []( const idVec4 & c ) { return 0.25 * c.x + 0.5 * c.y + 0.25 * c.z; };
+		const auto regionMean = [&]( const std::vector<idVec4> & texels, const region_t & region ) {
+			double sum = 0.0;
+			for ( int row = region.row0; row <= region.row1 && texels.size() == numTexels; row++ ) {
+				for ( int column = region.column0; column <= region.column1; column++ ) {
+					sum += luminance( texels[static_cast<size_t>( row ) * SIZE + column] );
+				}
+			}
+			return sum / ( ( region.row1 - region.row0 + 1 ) * ( region.column1 - region.column0 + 1 ) );
+		};
+		// the floor but the hole and the leaning bands, which a bumped normal takes otherwise
+		const std::array<region_t, 3> floorParts = { { { "left", 0, 7, 0, 63 }, { "middle", 12, 39, 0, 63 }, { "right", 48, 63, 0, 63 } } };
+		const auto floorSum = [&]( const std::vector<idVec4> & texels ) {
+			double sum = 0.0;
+			for ( const region_t & part : floorParts ) {
+				sum += regionMean( texels, part ) * ( part.column1 - part.column0 + 1 );
+			}
+			return sum;
+		};
+		whiteReference.stride = whiteNrd.stride;
+		const double referenceSum = Max( floorSum( runFrames( whiteReference, 128, dark ) ), 1e-9 );
+		const auto checkRoom = [&]( const char * label, const std::vector<idVec4> & texels, double sumError, double contrast ) {
+			const double sum = floorSum( texels ) / referenceSum;
+			const double ratio = regionMean( texels, lit ) / Max( Max( regionMean( texels, shadowed ), regionMean( texels, behind ) ), 1e-9 );
+			Check( idMath::Fabs( static_cast<float>( sum - 1.0 ) ) <= sumError && ratio >= contrast, va( "%u sample(s), %s: the floor's sum %g of the "
+				"reference's (%g off allowed), before the wall %g times beside or behind it (%g at least)", samples, label, sum, sumError, ratio, contrast ) );
+		};
+		// a first frame is NRD's spatial passes alone: 0.99 of the sum, as bright beside the wall as before it
+		checkRoom( "the room, a first frame through NRD", runFrames( whiteNrd, 1, dark ), 0.03, 0.0 );
+		// 0.94 of the sum and 1.5 times (the passes' own filter: 0.92, and 300 times)
+		std::vector<idVec4> texels = runFrames( whiteNrd, 32, dark );
+		checkRoom( "the room, 32 frames through NRD", texels, 0.1, 1.3 );
+		const std::vector<idVec4> again = runFrames( whiteNrd, 32, dark );
+		Check( sameBytes( texels, again ), va( "%u sample(s), NRD: the same frames of another epoch give the same bytes", samples ) );
+		// a screenshot's instance starts anew and leaves the eye's as it is
+		const std::vector<idVec4> shot = run( whiteNrd, 32, dark, false );
+		const std::vector<idVec4> nextStored = run( whiteNrd, 32, dark );
+		runFrames( whiteNrd, 32, dark );
+		Check( !shot.empty() && sameBytes( nextStored, run( whiteNrd, 32, dark ) ), va( "%u sample(s), NRD: the frame after a screenshot is the one "
+			"without it", samples ) );
+		// NRD's last output stands while nothing can be traced, and with none of the epoch nothing is added
+		scene.rt.Invalidate();
+		const std::vector<idVec4> held = run( whiteNrd, 33, dark );
+		Check( sameBytes( held, nextStored ), va( "%u sample(s), NRD: a frame that cannot trace shows NRD's last output", samples ) );
+		epoch++;
+		const std::vector<idVec4> empty = run( whiteNrd, 0, base );
+		report( "the room through NRD, nothing to trace and no output", { "the floor", 0, 63, 0, 63 },
 			compare( empty, { "the floor", 0, 63, 0, 63 }, 1.0f, [&]( int, int ) { return base.ToVec3(); } ), 1e-3f, 1e-3f );
 	}
 
@@ -9110,6 +9209,7 @@ public:
 	bool							traceable = true;	// false: the recorder is told that nothing may be traced
 	int								asked = 0;			// how often it asked
 	bool							leans = false;		// the bump leans toward +x: a light above the floor lights it
+	float							penumbraScale = 0.0f;	// rpRtShadow.z: NRD's penumbrae into the light target's alpha
 	std::array<idVec4, MAX_RENDER_PARMS>	parms;
 	renderLatch_t					latch;
 
@@ -9310,7 +9410,7 @@ void idTestTracedFloor::Draw( programHandle_t program, const light_t & light, ui
 	parms[RENDERPARM_LOCALLIGHTORIGIN].Set( ( light.origin.x + 32.0f ) / 16.0f, ( light.origin.y + 32.0f ) / 16.0f, light.origin.z, 1.0f );
 	parms[RENDERPARM_DIFFUSEMODIFIER].Set( light.color.x, light.color.y, light.color.z, 1.0f );
 	parms[RENDERPARM_RT_LIGHT].Set( light.origin.x, light.origin.y, light.origin.z, light.radius );
-	parms[RENDERPARM_RT_SHADOW].Set( static_cast<float>( mask ), static_cast<float>( noiseIndex ), 0.0f, 0.0f );
+	parms[RENDERPARM_RT_SHADOW].Set( static_cast<float>( mask ), static_cast<float>( noiseIndex ), penumbraScale, 0.0f );
 	latch.textures[0][static_cast<size_t>( textureKind_t::TEX_2D )] = leans ? leaning : bump;
 	DrawQuad( program, depthFunc | GLS_DEPTHMASK | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
 }
@@ -9771,6 +9871,54 @@ void RtShadows( idTestGpu & gpu, UINT samples ) {
 		Check( worst < 0.12f && mean < 0.006f && penumbra > 200, va( "%u sample(s), radius %g over %u noise indices: the shadow is off the hidden part of "
 			"the light by %.3f at most and %.4f on average, %d pixels of penumbra", samples, wide.radius, ROUNDS, worst, mean, penumbra ) );
 	}
+
+	// NRD's penumbrae: where a caster takes the light, the light target's alpha holds the luminance taken times the
+	// radius of the nearest caster's penumbra, SIGMA's for a local light; without them it holds nothing. The disk
+	// faces the pixel: its point lies within 6 sin of the axis' tilt above or below the light, which bounds the radius.
+	const auto alphaOf = [&]( float scale ) {
+		std::vector<idVec4> lights;
+		bed.penumbraScale = scale;
+		if ( bed.Begin( true ) ) {
+			bed.Draw( bed.traced, wide, EVERY, 0 );
+			bed.fixture.recorder.SetLights( false );
+			lights = bed.Read( true ).lights;
+		}
+		bed.penumbraScale = 0.0f;
+		return lights;
+	};
+	const std::vector<idVec4> plainAlpha = alphaOf( 0.0f );
+	const std::vector<idVec4> penumbrae = alphaOf( rtShadowSettings_t::PENUMBRA_SCALE );
+	if ( Check( plainAlpha.size() == numTexels && penumbrae.size() == numTexels, va( "%u sample(s): the light target's alpha is read", samples ) ) ) {
+		int nonzero = 0, taken = 0, wrong = 0;
+		idStr firstWrong;
+		const float lift = bed_t::START;
+		for ( int row = 0; row < SIZE; row++ ) {
+			for ( int column = 0; column < SIZE; column++ ) {
+				const size_t at = static_cast<size_t>( row ) * SIZE + column;
+				nonzero += ( plainAlpha[at].w != 0.0f ) ? 1 : 0;
+				const idVec4 & texel = penumbrae[at];
+				const float luminance = 0.2126f * texel.x + 0.7152f * texel.y + 0.0722f * texel.z;
+				if ( luminance <= 1e-6f ) {
+					continue;
+				}
+				taken++;
+				const float x = column - 31.5f;
+				const float y = row - 31.5f;
+				const float reach = idMath::Sqrt( x * x + y * y );
+				const float tilt = reach / idMath::Sqrt( reach * reach + wide.origin.z * wide.origin.z );
+				const float toCaster = -bed_t::CASTER_Z - lift;
+				const auto radiusAt = [&]( float toEmitter ) { return wide.radius * toCaster / ( toEmitter - toCaster ); };
+				const float least = radiusAt( -wide.origin.z - lift + wide.radius * tilt );
+				const float most = radiusAt( -wide.origin.z - lift - wide.radius * tilt );
+				const float radius = texel.w / ( luminance * rtShadowSettings_t::PENUMBRA_SCALE );
+				if ( ( radius < least * 0.98f || radius > most * 1.02f ) && wrong++ == 0 ) {
+					firstWrong = va( "( %d, %d ) holds %.3f, not %.3f .. %.3f", column, row, radius, least, most );
+				}
+			}
+		}
+		Check( nonzero == 0 && taken > 300 && wrong == 0, va( "%u sample(s): without the penumbrae %d pixels of the light target's alpha are not 0; "
+			"with them %d of %d taken pixels hold another radius; %s", samples, nonzero, wrong, taken, firstWrong.c_str() ) );
+	}
 }
 
 void RtShadowsAllSamples( idTestGpu & gpu ) {
@@ -9847,6 +9995,28 @@ void RtHistory( idTestGpu & gpu, UINT samples ) {
 		rtView_t view;
 		const idRenderMatrix now = worldToClip( shift );
 		const idRenderMatrix then = worldToClip( before );
+		// worldToClip's two halves as GL has them, columns one after the other: the eye looks down +z, so the model
+		// view turns the world half a turn about x and the projection turns y back
+		const auto modelView = []( float x, float ( &m )[16] ) {
+			memset( m, 0, sizeof( m ) );
+			m[0] = m[15] = 1.0f;
+			m[5] = m[10] = -1.0f;
+			m[12] = -x;
+			m[14] = -EYE;
+		};
+		const auto projection = []( float ( &m )[16] ) {
+			memset( m, 0, sizeof( m ) );
+			m[0] = EYE / 32.0f;
+			m[5] = -EYE / 32.0f;
+			m[10] = -DEPTH_A;
+			m[11] = -1.0f;
+			m[14] = DEPTH_B;
+		};
+		modelView( shift, view.worldToView );
+		modelView( before, view.prevWorldToView );
+		projection( view.viewToClip );
+		projection( view.prevViewToClip );
+		view.frameMs = ( sequence > 0 ) ? 1000.0f / 60.0f : 0.0f;
 		idRenderMatrix inverse;
 		Check( idRenderMatrix::Inverse( now, inverse ), "the view inverts" );
 		for ( int row = 0; row < 4; row++ ) {
@@ -10365,6 +10535,60 @@ void RtHistory( idTestGpu & gpu, UINT samples ) {
 	reference.settings.maxHistory = 4096;
 	const float after32 = penumbraError( run( reference, 0, 31 ), softAlone, 0.0f );
 	Check( after32 < after16, va( "%u sample(s): the reference is off by %.3f after 32 frames (%.3f after 16)", samples, after32, after16 ) );
+
+	// NRD (r_rtDenoiser 1): SIGMA_SHADOW_TRANSLUCENCY over the same frames, from the light target's penumbrae
+	if ( idD3D12Nrd::Available() ) {
+		idD3D12Nrd nrd( gpu.device, gpu.library, gpu.graveyard, gpu.srvPool, bed.fixture.passes, bed.computeRoot );
+		bed.rtPasses.SetNrd( &nrd );
+		bed.penumbraScale = rtShadowSettings_t::PENUMBRA_SCALE;
+		shot_t sigma = base;
+		sigma.settings.denoiser = rtDenoiser_t::NRD;
+		// measured: a first frame 0.351 (0.425 unfiltered), 16 frames 0.070 (0.057 the own history without passes); a quarter
+		// of the penumbra (SIGMA_PENUMBRA) is a few pixels here, so SIGMA blurs little
+		const float sigma1 = penumbraError( run( sigma, 0, 0 ), softAlone, 0.0f );
+		const std::vector<idVec4> sigma16 = run( sigma, 1, 15 );
+		const float sigmaAfter16 = penumbraError( sigma16, softAlone, 0.0f );
+		Check( sigma1 < after1 * 0.9f && sigmaAfter16 < after16 * 1.4f, va( "%u sample(s): NRD leaves one frame off by %.3f (%.3f unfiltered) and 16 by "
+			"%.3f (%.3f the own history)", samples, sigma1, after1, sigmaAfter16, after16 ) );
+		// A hard shadow is a penumbra of no width, but a lit pixel has none of its own: SIGMA's first 5x5 mixes its
+		// neighbours in, and the edge softens by a pixel or two. Further off it nothing changes.
+		shot_t sigmaSharp = sigma;
+		sigmaSharp.light = hard;
+		const std::vector<idVec4> sigmaHard = run( sigmaSharp, 0, 4 );
+		if ( Check( sigmaHard.size() == numTexels && unfiltered.size() == numTexels, va( "%u sample(s): NRD's hard shadow is read", samples ) ) ) {
+			int blurred = 0, away = 0;
+			for ( int row = 0; row < SIZE; row++ ) {
+				for ( int column = 0; column < SIZE; column++ ) {
+					const size_t at = static_cast<size_t>( row ) * SIZE + column;
+					const bool differs = idMath::Fabs( sigmaHard[at].x - unfiltered[at].x ) > 0.02f * Max( softAlone[at].x, 1e-5f );
+					const float depth = bed_t::DepthIn( column - 31.5f, row - 31.5f, hard.origin, BOTH );
+					blurred += differs ? 1 : 0;
+					away += ( differs && idMath::Fabs( depth ) > 2.5f ) ? 1 : 0;
+				}
+			}
+			Check( away == 0 && blurred < 160, va( "%u sample(s): NRD softens a hard shadow in %d pixels, %d of them over 2.5 pixels off its edges",
+				samples, blurred, away ) );
+		}
+		// the same bytes for another epoch; a held frame shows NRD's last output; a screenshot leaves the history
+		const std::vector<idVec4> again16 = run( sigma, 0, 15 );
+		shot_t sigmaHeld = sigma;
+		sigmaHeld.held = true;
+		const std::vector<idVec4> heldSigma = run( sigmaHeld, 16, 16 );
+		const std::vector<idVec4> stored17 = run( sigma, 0, 17 );
+		static_cast<void>( run( sigma, 0, 16 ) );
+		shot_t sigmaShot = sigma;
+		sigmaShot.store = false;
+		static_cast<void>( run( sigmaShot, 17, 17 ) );
+		const std::vector<idVec4> after17 = run( sigma, 17, 17 );
+		Check( sameBytes( sigma16, again16 ) && sameBytes( again16, heldSigma ) && sameBytes( stored17, after17 ), va( "%u sample(s): through NRD another "
+			"epoch gives the same bytes %s, a held frame %s, a screenshot leaves the history %s", samples, sameBytes( sigma16, again16 ) ? "yes" : "no",
+			sameBytes( again16, heldSigma ) ? "yes" : "no", sameBytes( stored17, after17 ) ? "yes" : "no" ) );
+		bed.penumbraScale = 0.0f;
+		bed.fixture.recorder.EndPass();
+		gpu.WaitIdle();
+		nrd.Drop();
+		bed.rtPasses.SetNrd( nullptr );
+	}
 
 	bed.fixture.recorder.SetHdr( false, 1.0f );
 	bed.fixture.recorder.EndPass();

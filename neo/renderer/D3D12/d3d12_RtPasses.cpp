@@ -242,7 +242,9 @@ struct rtIndirectParms_t {
 	int32							first[2];
 	uint32							size[2];		// texels
 	uint32							stride;
-	uint32							unused[3];
+	uint32							hitUav;
+	uint32							flags;			// bit 0: write the hit (NRD's)
+	uint32							unused;
 };
 static_assert( sizeof( rtIndirectParms_t ) == 208 );
 
@@ -1080,10 +1082,16 @@ void idD3D12RtPasses::Shadows( idD3D12RenderGraph & graph, idD3D12SceneTarget & 
 			context.Draw( *ratioPso, ratio, 0, ratioRect, span );
 		} );
 
-	// R18: what is left, over the frames and the neighbours of the same surface
+	// R18: what is left, over the frames and the neighbours of the same surface; NRD's matrices are the viewport's
 	d3d12GraphResource_t length;
-	const d3d12GraphResource_t left = settings.Filtered()
-		? FilterShadows( graph, scene, history, settings, view, viewport, rect, ratio, preExposure, length ) : ratio;
+	d3d12GraphResource_t left = ratio;
+	const bool useNrd = settings.denoiser == rtDenoiser_t::NRD && nrd != nullptr && rect.x == viewport.x && rect.y == viewport.y
+		&& rect.width == viewport.width && rect.height == viewport.height;
+	if ( useNrd ) {
+		left = nrd->Shadows( graph, scene, settings, view, rect, ratio, lightsUse ).value_or( ratio );
+	} else if ( settings.enabled && settings.denoiser != rtDenoiser_t::NONE && ( settings.history || settings.passes > 0 ) ) {
+		left = FilterShadows( graph, scene, history, settings, view, viewport, rect, ratio, preExposure, length );
+	}
 	const bool showLength = settings.showLength && length.IsValid();
 
 	rtShadowApplyParms_t applyBase = {};
@@ -1114,6 +1122,7 @@ void idD3D12RtPasses::Shadows( idD3D12RenderGraph & graph, idD3D12SceneTarget & 
 
 // The grid is a texel per stride pixels of rect, its block's first pixel. The means are read from the frame before
 // and written for the next one only with a history; without one they are transients and every texel starts anew.
+// NRD (r_rtDenoiser 1) takes the place of the temporal and a-trous passes; without a filter the rays go as they are.
 void idD3D12RtPasses::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, idD3D12RtHistory & history, idD3D12RayTracing & rt,
 	idD3D12GpuScene & gpuScene, const rtIndirectSettings_t & settings, const rtView_t & view, const renderRect_t & viewport, float preExposure,
 	idD3D12DebugGroups * groups ) {
@@ -1128,7 +1137,12 @@ void idD3D12RtPasses::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget &
 	}
 	const UINT samples = scene.Samples();
 	const bool multisampled = samples > 1;
-	const int numPasses = Min( Max( settings.passes, 0 ), MAX_ATROUS_PASSES );
+	// NRD's matrices are the viewport's: it all has to be in the scene
+	const bool useNrd = settings.denoiser == rtDenoiser_t::NRD && nrd != nullptr && rect.x == viewport.x && rect.y == viewport.y
+		&& rect.width == viewport.width && rect.height == viewport.height;
+	const bool own = !useNrd && settings.denoiser != rtDenoiser_t::NONE;
+	const bool kept = own && settings.history;
+	const int numPasses = own ? Min( Max( settings.passes, 0 ), MAX_ATROUS_PASSES ) : 0;
 	const d3d12ComputePipeline_t * tracePipeline = ComputePipeline( indirect[multisampled ? 1 : 0],
 		multisampled ? "internal_rtIndirect_msaa" : "internal_rtIndirect", L"doom3 rt indirect" );
 	const d3d12ComputePipeline_t * temporalPipeline = ComputePipeline( indirectTemporal, "internal_rtIndirectTemporal", L"doom3 rt indirect temporal" );
@@ -1145,16 +1159,17 @@ void idD3D12RtPasses::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget &
 	// a half float stops counting frames at 2048
 	const DXGI_FORMAT format = settings.reference ? DXGI_FORMAT_R32G32B32A32_FLOAT : d3d12TargetId_t::HDR_FORMAT;
 	idD3D12RtHistory::use_t heldAmount, heldAux;
-	if ( settings.history ) {
+	if ( kept ) {
 		heldAmount = history.Use( rtHistorySlot_t::INDIRECT_AMOUNT, format, width, height, view );
 		heldAux = history.Use( rtHistorySlot_t::INDIRECT_AUX, format, width, height, view );
 	}
 	// a frame that cannot be traced takes what the history holds of it
 	const bool trace = Traceable( rt, gpuScene );
-	if ( !trace && ( heldAmount.previous == nullptr || heldAux.previous == nullptr ) ) {
+	if ( !trace && !useNrd && ( heldAmount.previous == nullptr || heldAux.previous == nullptr ) ) {
 		return;
 	}
-	const std::optional<guideUses_t> guide = AddGuides( graph, scene, settings.history ? &history : nullptr, view, viewport, rect,
+	// the upsample's; NRD keeps a history of its own
+	const std::optional<guideUses_t> guide = AddGuides( graph, scene, kept ? &history : nullptr, view, viewport, rect,
 		{ stride, rtHistorySlot_t::INDIRECT_GUIDES, true } );
 	if ( !guide ) {
 		return;
@@ -1179,14 +1194,19 @@ void idD3D12RtPasses::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget &
 	desc.format = d3d12TargetId_t::HDR_FORMAT;
 
 	// the frame's ray
-	d3d12GraphResource_t ray, rayChroma;
+	d3d12GraphResource_t ray, rayChroma, rayHit;
 	if ( trace ) {
 		ray = graph.Create( "rt indirect ray", desc );
 		desc.format = MOMENTS_FORMAT;
 		rayChroma = graph.Create( "rt indirect ray chroma", desc );
-		desc.format = d3d12TargetId_t::HDR_FORMAT;
 		std::vector<d3d12GraphUse_t> uses = { { depthUse, d3d12GraphAccess_t::DEPTH_READ }, { albedoUse, d3d12GraphAccess_t::SRV },
 			{ ray, d3d12GraphAccess_t::UAV, 0 }, { rayChroma, d3d12GraphAccess_t::UAV, 0 } };
+		if ( useNrd ) {
+			desc.format = DXGI_FORMAT_R16_FLOAT;
+			rayHit = graph.Create( "rt indirect ray hit", desc );
+			uses.push_back( { rayHit, d3d12GraphAccess_t::UAV, 0 } );
+		}
+		desc.format = d3d12TargetId_t::HDR_FORMAT;
 		const rtSceneImports_t imports = ImportScene( graph, rt, gpuScene, uses );
 		d3d12GraphResource_t lights;
 		if ( gpuScene.NumLights() > 0 ) {
@@ -1221,7 +1241,8 @@ void idD3D12RtPasses::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget &
 		base.size[0] = width;
 		base.size[1] = height;
 		base.stride = stride;
-		graph.AddPass( "rt indirect", d3d12GraphPass_t::COMPUTE, uses, [tracePipeline, base, depthUse, albedoUse, ray, rayChroma, imports,
+		base.flags = useNrd ? 1u : 0u;
+		graph.AddPass( "rt indirect", d3d12GraphPass_t::COMPUTE, uses, [tracePipeline, base, depthUse, albedoUse, ray, rayChroma, rayHit, imports,
 			lights]( idD3D12GraphContext & context ) {
 			rtIndirectParms_t parms = base;
 			parms.tlasSrv = context.Srv( imports.tlas );
@@ -1233,90 +1254,105 @@ void idD3D12RtPasses::Indirect( idD3D12RenderGraph & graph, idD3D12SceneTarget &
 			parms.albedoSrv = context.Srv( albedoUse );
 			parms.amountUav = context.Uav( ray );
 			parms.chromaUav = context.Uav( rayChroma );
+			parms.hitUav = rayHit.IsValid() ? context.Uav( rayHit ) : 0;
 			const d3d12UploadSpan_t span = context.Parms( parms );
 			context.Dispatch( *tracePipeline, &span, parms.size[0], parms.size[1] );
 		} );
 	}
 
-	// over the frames
-	d3d12GraphResource_t amount, aux, prevAmount, prevAux;
-	if ( store ) {
-		amount = ImportHistory( graph, "rt indirect history", *heldAmount.next, width, height );
-		aux = ImportHistory( graph, "rt indirect moments", *heldAux.next, width, height );
-		history.Written( rtHistorySlot_t::INDIRECT_AMOUNT, view );
-		history.Written( rtHistorySlot_t::INDIRECT_AUX, view );
-	} else {
-		desc.format = format;
-		amount = graph.Create( "rt indirect history", desc );
-		aux = graph.Create( "rt indirect moments", desc );
-		desc.format = d3d12TargetId_t::HDR_FORMAT;
+	d3d12GraphResource_t filtered, spread;
+	if ( useNrd ) {
+		const std::optional<idD3D12Nrd::indirectOutput_t> denoised = nrd->Indirect( graph, scene, settings, view, rect, stride, ray, rayChroma, rayHit );
+		if ( denoised ) {
+			filtered = denoised->amount;
+			spread = denoised->aux;
+		} else if ( !trace ) {
+			graph.Execute( groups );
+			return;
+		}
 	}
-	d3d12GraphResource_t spread = graph.Create( "rt indirect spread", desc );
-	std::vector<d3d12GraphUse_t> temporalUses = { { frame.guides, d3d12GraphAccess_t::SRV }, { frame.reproject, d3d12GraphAccess_t::SRV },
-		{ frame.slope, d3d12GraphAccess_t::SRV }, { amount, d3d12GraphAccess_t::UAV, 0 }, { aux, d3d12GraphAccess_t::UAV, 0 },
-		{ spread, d3d12GraphAccess_t::UAV, 0 } };
-	if ( trace ) {
-		temporalUses.push_back( { ray, d3d12GraphAccess_t::SRV } );
-		temporalUses.push_back( { rayChroma, d3d12GraphAccess_t::SRV } );
-	}
-	if ( read ) {
-		prevAmount = ImportHistory( graph, "rt indirect history before", *heldAmount.previous, width, height );
-		prevAux = ImportHistory( graph, "rt indirect moments before", *heldAux.previous, width, height );
-		temporalUses.push_back( { frame.previous, d3d12GraphAccess_t::SRV } );
-		temporalUses.push_back( { prevAmount, d3d12GraphAccess_t::SRV } );
-		temporalUses.push_back( { prevAux, d3d12GraphAccess_t::SRV } );
-	}
-	rtIndirectTemporalParms_t temporalBase = {};
-	temporalBase.size[0] = width;
-	temporalBase.size[1] = height;
-	temporalBase.flags = ( read ? 1u : 0u ) | ( trace ? 0u : 4u );
-	temporalBase.maxHistory = static_cast<float>( Max( settings.maxHistory, 1 ) );
-	// a half float's; the reference counts every frame alike in 32 bits
-	temporalBase.leastStep = settings.reference ? 0.0f : 1.0f / 1024.0f;
-	graph.AddPass( "rt indirect temporal", d3d12GraphPass_t::COMPUTE, temporalUses, [temporalPipeline, temporalBase, frame, ray, rayChroma, amount, aux,
-		prevAmount, prevAux, spread, read, trace]( idD3D12GraphContext & context ) {
-		rtIndirectTemporalParms_t parms = temporalBase;
-		parms.amountSrv = trace ? context.Srv( ray ) : 0;
-		parms.chromaSrv = trace ? context.Srv( rayChroma ) : 0;
-		parms.guidesSrv = context.Srv( frame.guides );
-		parms.reprojectSrv = context.Srv( frame.reproject );
-		parms.slopeSrv = context.Srv( frame.slope );
-		parms.prevGuidesSrv = read ? context.Srv( frame.previous ) : 0;
-		parms.prevAmountSrv = read ? context.Srv( prevAmount ) : 0;
-		parms.prevAuxSrv = read ? context.Srv( prevAux ) : 0;
-		parms.amountUav = context.Uav( amount );
-		parms.auxUav = context.Uav( aux );
-		parms.outputUav = context.Uav( spread );
-		const d3d12UploadSpan_t span = context.Parms( parms );
-		context.Dispatch( *temporalPipeline, &span, parms.size[0], parms.size[1] );
-	} );
 
-	// over the neighbours; the graph keeps the names
-	static constexpr std::array<const char *, MAX_ATROUS_PASSES> NAMES = { "rt indirect atrous 1", "rt indirect atrous 2", "rt indirect atrous 3",
-		"rt indirect atrous 4", "rt indirect atrous 5" };
-	static constexpr std::array<const char *, MAX_ATROUS_PASSES> SPREAD_NAMES = { "rt indirect spread 1", "rt indirect spread 2",
-		"rt indirect spread 3", "rt indirect spread 4", "rt indirect spread 5" };
-	d3d12GraphResource_t filtered = amount;
-	for ( int pass = 0; pass < numPasses; pass++ ) {
-		const d3d12GraphResource_t wider = graph.Create( NAMES[pass], desc );
-		const d3d12GraphResource_t widerSpread = graph.Create( SPREAD_NAMES[pass], desc );
-		const rtIndirectAtrousParms_t atrousBase = { { width, height }, 0, 0, 0, 0, 0, 0, 1 << pass, {} };
-		graph.AddPass( NAMES[pass], d3d12GraphPass_t::COMPUTE, { { filtered, d3d12GraphAccess_t::SRV }, { spread, d3d12GraphAccess_t::SRV },
-			{ frame.guides, d3d12GraphAccess_t::SRV }, { frame.slope, d3d12GraphAccess_t::SRV }, { wider, d3d12GraphAccess_t::UAV, 0 },
-			{ widerSpread, d3d12GraphAccess_t::UAV, 0 } },
-			[atrousPipeline, atrousBase, filtered, spread, frame, wider, widerSpread]( idD3D12GraphContext & context ) {
-				rtIndirectAtrousParms_t parms = atrousBase;
-				parms.amountSrv = context.Srv( filtered );
-				parms.auxSrv = context.Srv( spread );
-				parms.guidesSrv = context.Srv( frame.guides );
-				parms.slopeSrv = context.Srv( frame.slope );
-				parms.amountUav = context.Uav( wider );
-				parms.auxUav = context.Uav( widerSpread );
-				const d3d12UploadSpan_t span = context.Parms( parms );
-				context.Dispatch( *atrousPipeline, &span, parms.size[0], parms.size[1] );
-			} );
-		filtered = wider;
-		spread = widerSpread;
+	if ( !filtered.IsValid() ) {
+		// over the frames
+		d3d12GraphResource_t amount, aux, prevAmount, prevAux;
+		if ( store ) {
+			amount = ImportHistory( graph, "rt indirect history", *heldAmount.next, width, height );
+			aux = ImportHistory( graph, "rt indirect moments", *heldAux.next, width, height );
+			history.Written( rtHistorySlot_t::INDIRECT_AMOUNT, view );
+			history.Written( rtHistorySlot_t::INDIRECT_AUX, view );
+		} else {
+			desc.format = format;
+			amount = graph.Create( "rt indirect history", desc );
+			aux = graph.Create( "rt indirect moments", desc );
+			desc.format = d3d12TargetId_t::HDR_FORMAT;
+		}
+		spread = graph.Create( "rt indirect spread", desc );
+		std::vector<d3d12GraphUse_t> temporalUses = { { frame.guides, d3d12GraphAccess_t::SRV }, { frame.reproject, d3d12GraphAccess_t::SRV },
+			{ frame.slope, d3d12GraphAccess_t::SRV }, { amount, d3d12GraphAccess_t::UAV, 0 }, { aux, d3d12GraphAccess_t::UAV, 0 },
+			{ spread, d3d12GraphAccess_t::UAV, 0 } };
+		if ( trace ) {
+			temporalUses.push_back( { ray, d3d12GraphAccess_t::SRV } );
+			temporalUses.push_back( { rayChroma, d3d12GraphAccess_t::SRV } );
+		}
+		if ( read ) {
+			prevAmount = ImportHistory( graph, "rt indirect history before", *heldAmount.previous, width, height );
+			prevAux = ImportHistory( graph, "rt indirect moments before", *heldAux.previous, width, height );
+			temporalUses.push_back( { frame.previous, d3d12GraphAccess_t::SRV } );
+			temporalUses.push_back( { prevAmount, d3d12GraphAccess_t::SRV } );
+			temporalUses.push_back( { prevAux, d3d12GraphAccess_t::SRV } );
+		}
+		rtIndirectTemporalParms_t temporalBase = {};
+		temporalBase.size[0] = width;
+		temporalBase.size[1] = height;
+		temporalBase.flags = ( read ? 1u : 0u ) | ( trace ? 0u : 4u );
+		temporalBase.maxHistory = static_cast<float>( Max( settings.maxHistory, 1 ) );
+		// a half float's; the reference counts every frame alike in 32 bits
+		temporalBase.leastStep = settings.reference ? 0.0f : 1.0f / 1024.0f;
+		graph.AddPass( "rt indirect temporal", d3d12GraphPass_t::COMPUTE, temporalUses, [temporalPipeline, temporalBase, frame, ray, rayChroma, amount, aux,
+			prevAmount, prevAux, spread, read, trace]( idD3D12GraphContext & context ) {
+			rtIndirectTemporalParms_t parms = temporalBase;
+			parms.amountSrv = trace ? context.Srv( ray ) : 0;
+			parms.chromaSrv = trace ? context.Srv( rayChroma ) : 0;
+			parms.guidesSrv = context.Srv( frame.guides );
+			parms.reprojectSrv = context.Srv( frame.reproject );
+			parms.slopeSrv = context.Srv( frame.slope );
+			parms.prevGuidesSrv = read ? context.Srv( frame.previous ) : 0;
+			parms.prevAmountSrv = read ? context.Srv( prevAmount ) : 0;
+			parms.prevAuxSrv = read ? context.Srv( prevAux ) : 0;
+			parms.amountUav = context.Uav( amount );
+			parms.auxUav = context.Uav( aux );
+			parms.outputUav = context.Uav( spread );
+			const d3d12UploadSpan_t span = context.Parms( parms );
+			context.Dispatch( *temporalPipeline, &span, parms.size[0], parms.size[1] );
+		} );
+
+		// over the neighbours; the graph keeps the names
+		static constexpr std::array<const char *, MAX_ATROUS_PASSES> NAMES = { "rt indirect atrous 1", "rt indirect atrous 2", "rt indirect atrous 3",
+			"rt indirect atrous 4", "rt indirect atrous 5" };
+		static constexpr std::array<const char *, MAX_ATROUS_PASSES> SPREAD_NAMES = { "rt indirect spread 1", "rt indirect spread 2",
+			"rt indirect spread 3", "rt indirect spread 4", "rt indirect spread 5" };
+		filtered = amount;
+		for ( int pass = 0; pass < numPasses; pass++ ) {
+			const d3d12GraphResource_t wider = graph.Create( NAMES[pass], desc );
+			const d3d12GraphResource_t widerSpread = graph.Create( SPREAD_NAMES[pass], desc );
+			const rtIndirectAtrousParms_t atrousBase = { { width, height }, 0, 0, 0, 0, 0, 0, 1 << pass, {} };
+			graph.AddPass( NAMES[pass], d3d12GraphPass_t::COMPUTE, { { filtered, d3d12GraphAccess_t::SRV }, { spread, d3d12GraphAccess_t::SRV },
+				{ frame.guides, d3d12GraphAccess_t::SRV }, { frame.slope, d3d12GraphAccess_t::SRV }, { wider, d3d12GraphAccess_t::UAV, 0 },
+				{ widerSpread, d3d12GraphAccess_t::UAV, 0 } },
+				[atrousPipeline, atrousBase, filtered, spread, frame, wider, widerSpread]( idD3D12GraphContext & context ) {
+					rtIndirectAtrousParms_t parms = atrousBase;
+					parms.amountSrv = context.Srv( filtered );
+					parms.auxSrv = context.Srv( spread );
+					parms.guidesSrv = context.Srv( frame.guides );
+					parms.slopeSrv = context.Srv( frame.slope );
+					parms.amountUav = context.Uav( wider );
+					parms.auxUav = context.Uav( widerSpread );
+					const d3d12UploadSpan_t span = context.Parms( parms );
+					context.Dispatch( *atrousPipeline, &span, parms.size[0], parms.size[1] );
+				} );
+			filtered = wider;
+			spread = widerSpread;
+		}
 	}
 
 	rtUpsampleParms_t upsampleBase = {};

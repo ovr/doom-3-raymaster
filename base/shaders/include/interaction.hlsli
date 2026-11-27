@@ -50,7 +50,7 @@ cbuffer VertexParms : register( b0 ) {
 };
 
 // rpRtLight: the light's world origin, w the radius of the disk that emits. rpRtShadow: x the instance mask of
-// the casters (RtShadowMask of the surface drawn), y the index of the noise.
+// the casters (RtShadowMask of the surface drawn), y the index of the noise, z NRD's penumbra scale or 0.
 cbuffer PixelParms : register( b1 ) {
 	float4 rpDiffuseModifier;
 	float4 rpSpecularModifier;
