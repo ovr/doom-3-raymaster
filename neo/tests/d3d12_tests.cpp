@@ -25,6 +25,10 @@
 #include "../renderer/D3D12/d3d12_Timers.h"
 #include "../renderer/DXT/DXTCodec.h"
 
+#if defined( USE_NRD )
+#include <NRD.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -11248,6 +11252,52 @@ void Test_HdrSettings() {
 	Check( idMath::Fabs( d3d12Lut::Coordinate( d3d12Lut::Value( 0.3f ) ) - 0.3f ) < 1e-5f, "Coordinate inverts Value" );
 }
 
+#if defined( USE_NRD )
+// The library the build made: its version, the encodings our guides pack, the register layout of its DXIL and the
+// DXIL itself, signed by dxil.dll, for the three denoisers the ray traced passes use.
+void Test_NrdLibrary() {
+	const nrd::LibraryDesc * library = nrd::GetLibraryDesc();
+	if ( !Check( library != nullptr, "NRD's library desc" ) ) {
+		return;
+	}
+	Check( library->versionMajor == 4 && library->versionMinor == 18 && library->versionBuild == 0,
+		va( "NRD 4.18.0 (%u.%u.%u)", library->versionMajor, library->versionMinor, library->versionBuild ) );
+	Check( library->normalEncoding == nrd::NormalEncoding::R10_G10_B10_A2_UNORM, "normals in R10G10B10A2, with a material ID" );
+	Check( library->roughnessEncoding == nrd::RoughnessEncoding::LINEAR, "linear roughness" );
+
+	const nrd::DenoiserDesc denoisers[] = {
+		{ 0, nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY },
+		{ 1, nrd::Denoiser::REBLUR_SPECULAR },
+		{ 2, nrd::Denoiser::REBLUR_DIFFUSE_SH },
+	};
+	nrd::InstanceCreationDesc creation = {};
+	creation.denoisers = denoisers;
+	creation.denoisersNum = static_cast<uint32_t>( std::size( denoisers ) );
+	nrd::Instance * instance = nullptr;
+	if ( !Check( nrd::CreateInstance( creation, instance ) == nrd::Result::SUCCESS && instance != nullptr, "an instance of SIGMA and REBLUR" ) ) {
+		return;
+	}
+	const nrd::InstanceDesc & desc = *nrd::GetInstanceDesc( *instance );
+	Check( desc.resourcesSpaceIndex == 0 && desc.constantBufferAndSamplersSpaceIndex == 1 && desc.constantBufferRegisterIndex == 0 &&
+		desc.samplersBaseRegisterIndex == 0 && desc.resourcesBaseRegisterIndex == 0, "the register layout of NRD.hlsli" );
+	Check( desc.samplersNum == 2, va( "two samplers (%u)", desc.samplersNum ) );
+	Check( desc.pipelinesNum > 0 && desc.permanentPoolSize > 0 && desc.transientPoolSize > 0,
+		va( "pipelines %u, permanent %u, transient %u", desc.pipelinesNum, desc.permanentPoolSize, desc.transientPoolSize ) );
+	int unsigned_ = 0;
+	for ( uint32_t i = 0; i < desc.pipelinesNum; i++ ) {
+		const nrd::PipelineDesc & pipeline = desc.pipelines[i];
+		const nrd::ComputeShaderDesc & dxil = pipeline.computeShaderDXIL;
+		if ( dxil.bytecode == nullptr || dxil.size == 0 ||
+			!D3D12_DxilSigned( std::span<const byte>( static_cast<const byte *>( dxil.bytecode ), static_cast<size_t>( dxil.size ) ) ) ) {
+			unsigned_++;
+		}
+		Check( pipeline.resourceRangesNum <= 2, va( "%s: at most an SRV and a UAV range", pipeline.shaderIdentifier ) );
+	}
+	Check( unsigned_ == 0, va( "every pipeline has signed DXIL (%d without)", unsigned_ ) );
+	nrd::DestroyInstance( *instance );
+}
+#endif
+
 template <void ( *RULE )( idTestGpu & )>
 void OnWarp() {
 	if ( const std::unique_ptr<idTestGpu> gpu = CreateWarp( 16 << 20 ) ) {
@@ -11371,6 +11421,9 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_RenderGraphDepth", OnWarp<RenderGraphDepth> },
 	{ "Gpu_RenderGraph", OnGpu<RenderGraph> },
 	{ "Hdr_Settings", Test_HdrSettings },
+#if defined( USE_NRD )
+	{ "Nrd_Library", Test_NrdLibrary },
+#endif
 	{ "Warp_HdrScene", OnWarp<HdrScene> },
 	{ "Warp_GBuffer", OnWarp<GBuffer> },
 	{ "Warp_LightTarget", OnWarp<LightTargetAllSamples> },

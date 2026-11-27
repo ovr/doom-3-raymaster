@@ -1,3 +1,12 @@
 [submodule "third_party/zlib"]
 	path = third_party/zlib
 	url = https://github.com/madler/zlib.git
+[submodule "third_party/NRD"]
+	path = third_party/NRD
+	url = https://github.com/NVIDIA-RTX/NRD.git
+[submodule "third_party/MathLib"]
+	path = third_party/MathLib
+	url = https://github.com/NVIDIA-RTX/MathLib.git
+[submodule "third_party/ShaderMake"]
+	path = third_party/ShaderMake
+	url = https://github.com/NVIDIA-RTX/ShaderMake.git

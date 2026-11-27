@@ -24,7 +24,7 @@ http://store.steampowered.com/app/208200/
 Compiling on Windows:
 ---------------------
 
-The build uses CMake (3.21 or newer) and Microsoft Visual Studio 2022
+The build uses CMake (3.30 or newer) and Microsoft Visual Studio 2022
 (the free Build Tools are enough) with the Windows 10 (or newer) SDK.
 Only 64-bit (x64) builds are supported. The legacy DirectX SDK is not
 needed: audio uses XAudio2 2.9, so the game requires Windows 10 or newer.
@@ -43,6 +43,8 @@ For Ninja, run from an "x64 Native Tools Command Prompt for VS 2022":
 	cmake --build --preset ninja-release
 
 Options: -DD3BFG_WARNINGS_AS_ERRORS=ON enables /WX for the engine code.
+-DD3BFG_NRD=OFF builds without NVIDIA NRD, the denoiser of the ray traced
+passes (on when third_party/NRD is checked out; see EXCLUDED CODE below).
 
 
 The editor:
@@ -166,6 +168,22 @@ freely, subject to the following restrictions:
 2. Altered source versions must be plainly marked as such, and must not be
  misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
+
+NVIDIA Real-Time Denoisers (NRD), optional
+---------------------------------------------------------------------------
+third_party/NRD/* (git submodule, NRD 4.18.0)
+third_party/MathLib/* and third_party/ShaderMake/* (git submodules, MIT)
+
+NRD is Copyright (c) NVIDIA CORPORATION and is under the NVIDIA RTX SDKs
+License (third_party/NRD/LICENSE.txt), which is not compatible with the GNU
+GPL: it allows NRD only as object code inside an application, passed on under
+terms at least as protective as NVIDIA's own. A Doom3BFG.exe built with NRD
+(the default when the submodule is checked out) can therefore not be
+distributed as GPL software. Configure with -DD3BFG_NRD=OFF for a build
+without it. base/shaders/include/nrd/ holds copies of NRD's NRD.hlsli and
+NRDConfig.hlsli, made by the configure. MathLib and ShaderMake (the shader
+build tool) are Copyright (c) NVIDIA CORPORATION under the MIT license
+(their LICENSE.txt).
 
 Base64 implementation
 ---------------------------------------------------------------------------
