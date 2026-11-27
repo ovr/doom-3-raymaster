@@ -61,8 +61,9 @@ public:
 	[[nodiscard]] static bool		Available();	// built with NRD
 
 	// The glossy reflections of rect (the viewport, inside the scene) through REBLUR_SPECULAR of view's eye: rays is
-	// rt reflect's texture of rect, invalid when the frame traces nothing (then NRD's last output stands). Returns
-	// what rt composite reads; nullopt without a G-buffer, an output of the frame before, or a lost device.
+	// rt reflect's texture of rect (with settings.checkerboard only WHITE's glossy cells), invalid when the frame traces
+	// nothing (then NRD's last output stands). Returns what rt composite reads; nullopt without a G-buffer, an output
+	// of the frame before, or a lost device.
 	[[nodiscard]] std::optional<d3d12GraphResource_t>	Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene,
 										const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & rect, d3d12GraphResource_t rays );
 	struct indirectOutput_t {

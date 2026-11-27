@@ -8824,6 +8824,10 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 	if ( idD3D12Nrd::Available() ) {
 		// measured: a pixel 0.005 and a region's mean 0.004 dark (REBLUR's YCoCg in half floats)
 		checkSky( "8 frames through NRD", throughNrd, 8, 0.01f, 0.006f );
+		// half the glossy pixels trace a frame, the mirrors all
+		rtReflectionSettings_t checkered = throughNrd;
+		checkered.checkerboard = true;
+		checkSky( "8 frames through NRD's checkerboard", checkered, 8, 0.01f, 0.006f );
 	}
 	changed = single;
 	changed.history = true;

@@ -13,6 +13,9 @@
 
 	Three pairs of numbers per glossy pixel and frame (include/rtNoise.hlsli, each with its own step): the facet,
 	the light, the point of its disk. MULTISAMPLED reads sample 0.
+
+	CHECKERBOARD (flags bit 0, under NRD): a thread per two pixels of a row. The one of NRD's checkerboard this frame
+	(REBLUR's WHITE: x + its row from the top + the frame even) sends its ray, the other only if it is a mirror.
 */
 
 #include "../include/gbuffer.hlsli"
@@ -47,21 +50,17 @@ cbuffer ReflectParms : register( b0 ) {
 	uint2 size;					// texels
 	uint noiseSrv;
 	uint noiseIndex;
-	uint unused0;
-	uint unused1;
+	uint flags;					// bit 0: the checkerboard
+	uint phase;					// the checkerboard's: a row from the bottom traces x of its parity plus this one's
 };
 
 // The widest cone a glossy ray reads its hit's textures with: a rough lobe averages them anyway.
 static const float GLOSS_SPREAD = 0.1;
 
-[numthreads( 8, 8, 1 )]
-void CSMain( uint3 id : SV_DispatchThreadID ) {
-	if ( any( id.xy >= size ) ) {
-		return;
-	}
-	RWTexture2D<float4> output = ResourceDescriptorHeap[outputUav];
+// The ray of the pixel at texel; a glossy one only with glossyHere, nothing reflected without it.
+float4 Reflect( uint2 texel, bool glossyHere ) {
 	RT_SCENE_TEXTURE( float4 ) materialMap = ResourceDescriptorHeap[materialSrv];
-	const int2 pixel = first + int2( id.xy );
+	const int2 pixel = first + int2( texel );
 	const float4 material = RT_SCENE_LOAD( materialMap, pixel );
 	RtView eye;
 	eye.clipToWorld = clipToWorld;
@@ -72,7 +71,7 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 	const float roughness = material.a;
 
 	float4 reflected = float4( 0.0, 0.0, 0.0, RT_REFLECT_NONE );
-	if ( depth < 1.0 && RtReflectWeight( roughness, limits.yz ) > 0.0 && any( material.rgb > 0.0 ) ) {
+	if ( depth < 1.0 && RtReflectWeight( roughness, limits.yz ) > 0.0 && any( material.rgb > 0.0 ) && ( glossyHere || roughness < limits.w ) ) {
 		RT_SCENE_TEXTURE( float2 ) normalMap = ResourceDescriptorHeap[normalSrv];
 		const float3 position = RtPositionAt( eye, pixel, depth );
 		const float3 normal = DecodeOctahedral( RT_SCENE_LOAD( normalMap, pixel ) );
@@ -90,7 +89,7 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 			const float3 up = cross( normal, right );
 			const float3 toEye = normalize( float3( -dot( view, right ), -dot( view, up ), max( -dot( view, normal ), 0.05 ) ) );
 			const float alpha = roughness * roughness;
-			const float3 local = RtGgxVisibleNormal( toEye, alpha, RtNoise( noiseSrv, id.xy + uint2( 19, 41 ), noiseIndex ) );
+			const float3 local = RtGgxVisibleNormal( toEye, alpha, RtNoise( noiseSrv, texel + uint2( 19, 41 ), noiseIndex ) );
 			facet = normalize( right * local.x + up * local.y + normal * local.z );
 			spread = max( origin.w, min( alpha, GLOSS_SPREAD ) );
 		}
@@ -128,11 +127,34 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 			radiance = RtShade( heap, lighting, hit, ray, eyeDistance, origin.w );
 		} else if ( hit.hit ) {
 			// the pixel's cone has come to the surface, then widens as the lobe
-			const float pick = RtNoise( noiseSrv, id.xy + uint2( 59, 7 ), noiseIndex, 1 ).x;
-			const float2 spot = RtDisk( RtNoise( noiseSrv, id.xy + uint2( 23, 61 ), noiseIndex, 2 ) );
+			const float pick = RtNoise( noiseSrv, texel + uint2( 59, 7 ), noiseIndex, 1 ).x;
+			const float2 spot = RtDisk( RtNoise( noiseSrv, texel + uint2( 23, 61 ), noiseIndex, 2 ) );
 			radiance = RtShadeSampled( heap, lighting, hit, ray, eyeDistance * origin.w / spread, spread, pick, spot, 1.0, true );
 		}
 		reflected = float4( max( radiance, 0.0 ), mirror ? RT_REFLECT_MIRROR : min( hit.t, RT_REFLECT_FAR ) );
 	}
-	output[id.xy] = reflected;
+	return reflected;
+}
+
+[numthreads( 8, 8, 1 )]
+void CSMain( uint3 id : SV_DispatchThreadID ) {
+	RWTexture2D<float4> output = ResourceDescriptorHeap[outputUav];
+	const bool checkerboard = ( flags & 1u ) != 0;
+	if ( !checkerboard ) {
+		if ( all( id.xy < size ) ) {
+			output[id.xy] = Reflect( id.xy, true );
+		}
+		return;
+	}
+	if ( id.y >= size.y ) {
+		return;
+	}
+	const uint traced = ( phase + id.y ) & 1u;
+	[loop]
+	for ( uint k = 0; k < 2; k++ ) {
+		const uint2 texel = uint2( id.x * 2 + ( traced ^ k ), id.y );
+		if ( texel.x < size.x ) {
+			output[texel] = Reflect( texel, k == 0 );
+		}
+	}
 }

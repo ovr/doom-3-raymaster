@@ -205,6 +205,7 @@ idCVar r_rtReference( "r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a st
 idCVar r_rtLightSize( "r_rtLightSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the emitter of every light for the ray traced shadows (its light_size, by default 2 % of the light's reach within 2 .. 10 units); 0 = point lights", 0.0f, 16.0f );
 idCVar r_rtReflections( "r_rtReflections", "1", CVAR_RENDERER | CVAR_BOOL, "ray traced reflections of the main view on the surfaces whose specular may reflect" );
 idCVar r_rtReflectionGlossy( "r_rtReflectionGlossy", "1", CVAR_RENDERER | CVAR_BOOL, "a rough surface reflects as wide as its roughness says, filtered by NRD; 0 = every surface that reflects is a mirror" );
+idCVar r_rtReflectionCheckerboard( "r_rtReflectionCheckerboard", "1", CVAR_RENDERER | CVAR_BOOL, "with r_rtDenoiser 1 a glossy pixel sends its ray every second frame, in NRD's checkerboard, which fills in the others; a mirror every frame" );
 idCVar r_rtReflectionMirror( "r_rtReflectionMirror", "0.08", CVAR_RENDERER | CVAR_FLOAT, "pixels of less than this G-buffer roughness are mirrors: one ray, every light with a hard shadow, no filter", 0.0f, 1.0f );
 idCVar r_rtReflectionScale( "r_rtReflectionScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced reflections", 0.0f, 4.0f );
 idCVar r_rtReflectionDistance( "r_rtReflectionDistance", "2048", CVAR_RENDERER | CVAR_FLOAT, "the longest reflection ray, in world units", 16.0f, 65536.0f );
@@ -262,6 +263,7 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	reflection.history = r_rtHistory.GetBool() || reflection.reference;
 	reflection.denoiser = reflection.reference ? rtDenoiser_t::NONE : denoiser;
 	reflection.validation = r_rtNrdValidation.GetInteger() == 1 && reflection.denoiser == rtDenoiser_t::NRD;
+	reflection.checkerboard = r_rtReflectionCheckerboard.GetBool() && reflection.denoiser == rtDenoiser_t::NRD;
 
 	// without GPU skinning no MD5 is in the GPU scene: none would cast a shadow
 	rtShadowSettings_t & shadow = settings.shadow;

@@ -111,7 +111,8 @@ struct nrdReflectPackParms_t {
 	uint32							viewZSrv;
 	uint32							normalRoughnessSrv;
 	uint32							outputUav;
-	uint32							unused[2];
+	uint32							flags;			// bit 0: the checkerboard
+	uint32							frameIndex;
 };
 static_assert( sizeof( nrdReflectPackParms_t ) == 48 );
 
@@ -281,6 +282,7 @@ struct idD3D12Nrd::denoiser_t {
 	uint32							height = 0;
 	uint32							stride = 1;				// pixels a side per texel
 	bool							validation = false;		// OUT_VALIDATION is there and NRD writes it
+	bool							checkerboard = false;	// REBLUR_SPECULAR's input: WHITE cells packed to the left
 	std::vector<texture_t>			permanent;
 	std::vector<texture_t>			transient;
 	std::array<texture_t, static_cast<size_t>( nrd::ResourceType::MAX_NUM )>	io;	// the signal's own, by type
@@ -807,6 +809,7 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 	// a glossy pixel (material 1 of the guides) takes no mirror and no pixel that reflects nothing
 	if ( denoiser.signal == signal_t::REFLECTION ) {
 		reblur.minMaterialForSpecular = 0.0f;
+		reblur.checkerboardMode = denoiser.checkerboard ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
 	}
 	const void * denoiserSettings = ( denoiser.signal == signal_t::SHADOW ) ? static_cast<const void *>( &sigma ) : &reblur;
 	if ( nrd::SetDenoiserSettings( *denoiser.instance, IDENTIFIER, denoiserSettings ) != nrd::Result::SUCCESS ) {
@@ -954,18 +957,24 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 		packBase.hitDistParams[2] = hitDistance.C;
 		packBase.size[0] = width;
 		packBase.size[1] = height;
+		packBase.flags = settings.checkerboard ? 1u : 0u;
+		packBase.frameIndex = view.sequence;
+		const uint32 threadsX = settings.checkerboard ? ( width + 1 ) / 2 : width;
 		graph.AddPass( "nrd reflect pack", d3d12GraphPass_t::COMPUTE, { { rays, d3d12GraphAccess_t::SRV }, { viewZ, d3d12GraphAccess_t::SRV },
 			{ normalRoughness, d3d12GraphAccess_t::SRV }, { input, d3d12GraphAccess_t::UAV, 0 } },
-			[pack, packBase, rays, viewZ, normalRoughness, input]( idD3D12GraphContext & context ) {
+			[pack, packBase, rays, viewZ, normalRoughness, input, threadsX]( idD3D12GraphContext & context ) {
 				nrdReflectPackParms_t parms = packBase;
 				parms.raysSrv = context.Srv( rays );
 				parms.viewZSrv = context.Srv( viewZ );
 				parms.normalRoughnessSrv = context.Srv( normalRoughness );
 				parms.outputUav = context.Uav( input );
 				const d3d12UploadSpan_t span = context.Parms( parms );
-				context.Dispatch( *pack, &span, parms.size[0], parms.size[1] );
+				context.Dispatch( *pack, &span, threadsX, parms.size[1] );
 			} );
-		const bool restart = !view.store || !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
+		// a history of the other mode's cells starts again
+		const bool restart = !view.store || !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1
+			|| denoiser->checkerboard != settings.checkerboard;
+		denoiser->checkerboard = settings.checkerboard;
 		if ( !AddDispatches( graph, *denoiser, *eyeGuides, view, restart, {}, imported ) ) {
 			return std::nullopt;
 		}

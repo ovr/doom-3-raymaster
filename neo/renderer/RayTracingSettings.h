@@ -75,6 +75,7 @@ struct rtReflectionSettings_t {
 	bool				glossy = true;		// r_rtReflectionGlossy; false: every pixel that reflects is a mirror
 	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
 	bool				reference = false;	// r_rtReference: the glossy pixels' plain mean while the eye stands still
+	bool				checkerboard = false;	// r_rtReflectionCheckerboard: under NRD half the glossy pixels trace a frame
 	int					maxLights = 8;		// a mirror's hit: lights per hit, the first that reach it
 	float				scale = 1.0f;
 	float				distance = 2048.0f;	// the longest ray
