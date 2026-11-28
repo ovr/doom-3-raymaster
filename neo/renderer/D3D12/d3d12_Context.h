@@ -56,7 +56,8 @@
 	idD3D12Queue::Waited(), never the fence, so two runs record the same commands.
 
 	  point                          waits for                     why
-	  Present                        the fence of the frame        the vertex cache remaps the set the frame read (R3, R8)
+	  Present                        the frame before's fence      the vertex cache remaps the set it read (R3, R8);
+	                                 (the frame's: in flight 1)    r_d3d12FramesInFlight, three sets
 	  ReadOutputPixels               a signal after the copy       the CPU reads the readback buffer
 	  a full ring                    the fence of its oldest chunk  that room is taken again
 	  Resize, Shutdown               a signal after the last Present  ResizeBuffers and releasing a back buffer need an idle queue
@@ -204,6 +205,7 @@ private:
 
 	d3d12FrameStats_t				frame;
 	d3d12FrameStats_t				lastFrame;
+	uint64							shownFence = 0;		// the last Present's frame: the next Present waits for it
 	bool							hdrScene = false;	// between BeginHdrScene and its resolve or end
 	float							preExposure = 1.0f;
 };

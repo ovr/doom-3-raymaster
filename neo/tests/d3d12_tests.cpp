@@ -2832,6 +2832,22 @@ void Timestamps( idTestGpu & gpu ) {
 	timers.Free();
 	Check( !timers.Ready( SET, 0 ) && timers.WrittenThisFrame() == 0, "Free forgets the r_pix slots" );
 	Check( timers.FrameMicroseconds() == frameMicroseconds, "the frame timer stays" );
+
+	// two frames in flight, as Present waits: the frame before the last one is timed, over more frames than timers;
+	// two lists a frame, so that it lasts a microsecond
+	std::array<uint64, 5> fences = {};
+	int timed = 0;
+	for ( size_t f = 0; f < fences.size(); f++ ) {
+		timers.BeginFrame( gpu.List() );
+		gpu.SubmitChunk();
+		timers.EndFrame( gpu.List() );
+		fences[f] = gpu.SubmitChunk();
+		if ( f > 0 ) {
+			gpu.WaitFor( fences[f - 1] );
+			timed += ( timers.FrameMicroseconds() > 0 ) ? 1 : 0;
+		}
+	}
+	Check( timed == static_cast<int>( fences.size() - 1 ), va( "the waited frame is timed while the next is in flight: %d of %zu", timed, fences.size() - 1 ) );
 	gpu.WaitIdle();
 	CheckNoLayerErrors( gpu );
 }
@@ -10823,6 +10839,29 @@ void Exposure( idTestGpu & gpu, UINT samples ) {
 	}
 	Check( !plain.empty() && worst <= 1, va( "%u sample(s): the tonemap shows radiance times the exposure within %d of 255", samples, worst ) );
 
+	// frames in flight: Poll reads the newest resolve waited for, tagged with its preExposure, never an older one after it
+	const auto resolveFrame = [&]( float framePreExposure ) {
+		fill();
+		hdr.Resolve( graph, fixture.scene, settings, whole, framePreExposure, reset, nullptr );
+		return gpu.SubmitChunk();
+	};
+	const auto polled = [&]() {
+		hdr.Poll();
+		return hdr.LastExposure() ? hdr.LastExposure()->exposure.preExposure : 0.0f;
+	};
+	const uint64 firstFrame = resolveFrame( 1.0f );
+	const uint64 secondFrame = resolveFrame( 3.0f );
+	gpu.WaitFor( firstFrame );
+	const float firstRead = polled();
+	gpu.WaitFor( secondFrame );
+	const float secondRead = polled();
+	resolveFrame( 4.0f );
+	gpu.WaitFor( resolveFrame( 5.0f ) );
+	const float newestRead = polled();
+	const float againRead = polled();
+	Check( firstRead == 1.0f && secondRead == 3.0f && newestRead == 5.0f && againRead == 5.0f, va( "the readback ring gives %g %g %g %g, want 1 3 5 5",
+		firstRead, secondRead, newestRead, againRead ) );
+
 	settings.lowPercent = 0.25f;
 	settings.highPercent = 0.75f;
 	read = run( settings, whole, reset );
@@ -11476,6 +11515,7 @@ constexpr testCase_t TESTS[] = {
 
 }	// namespace
 
+// d3d12Tests [filter...]: the tests whose names contain any filter, in table order; none or "all" runs every test.
 int main( int argc, char ** argv ) {
 	std::vector<std::string_view> filters;
 	for ( int a = 1; a < argc; a++ ) {
@@ -11514,4 +11554,3 @@ int main( int argc, char ** argv ) {
 	printf( "\n%d tests, %d checks, %d failed checks, %d failed tests\n", numRun, numChecks, numFailures, numFailedTests );
 	return ( numFailedTests == 0 ) ? 0 : 1;
 }
-// d3d12Tests [filter...]: the tests whose names contain any filter, in table order; none or "all" runs every test.

@@ -21,8 +21,16 @@ idCVar r_d3d12PipelineLibrary( "r_d3d12PipelineLibrary", "1", CVAR_RENDERER | CV
 idCVar r_d3d12FrameBuffers( "r_d3d12FrameBuffers", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_INIT,
 	"where Direct3D 12 keeps the vertex cache's per-frame buffers: 0 = UPLOAD heaps the GPU reads in place, 1 = DEFAULT heaps "
 	"with a copy per frame, 2 = GPU_UPLOAD heaps (video memory the CPU writes; needs Resizable BAR)", 0, 2 );
+// at most VERTCACHE_NUM_FRAMES - 1: the vertex cache maps the set the frame before the one in flight read
+idCVar r_d3d12FramesInFlight( "r_d3d12FramesInFlight", "2", CVAR_RENDERER | CVAR_INTEGER,
+	"frames the GPU may draw while the CPU records the next one: 1 = Present waits for the frame it shows, 2 = for the "
+	"frame before it, so the GPU never waits for the CPU between frames (a frame more between input and screen)", 1, 2 );
 
 namespace {
+
+[[nodiscard]] UINT FramesInFlight() {
+	return static_cast<UINT>( idMath::ClampInt( 1, VERTCACHE_NUM_FRAMES - 1, r_d3d12FramesInFlight.GetInteger() ) );
+}
 
 constexpr uint64 CONSTANTS_RING_SIZE = 16 << 20;
 constexpr uint32 SHADER_VISIBLE_SRVS = 1 << 17;	// every texture view and scene surface at once; ~4 MB of descriptors
@@ -172,7 +180,7 @@ idD3D12Context::~idD3D12Context() {
 
 // The sample count holds until Shutdown, as the contract says: resizes keep it.
 std::expected<void, idStr> idD3D12Context::CreateOutput( HWND window, int width, int height, UINT samples ) {
-	auto created = idD3D12SwapChain::Create( device, queue, rtvPool, window, width, height );
+	auto created = idD3D12SwapChain::Create( device, queue, rtvPool, window, width, height, FramesInFlight() );
 	if ( !created ) {
 		return std::unexpected( created.error() );
 	}
@@ -270,14 +278,16 @@ void idD3D12Context::BlitToBackBuffer( idD3D12SwapChain::backBuffer_t & back ) {
 	recorder.Invalidate();
 }
 
-// Blocks until the GPU has finished the frame: the next frame maps the vertex cache set this one read.
+// Blocks until the GPU has finished the frame before this one (r_d3d12FramesInFlight 2) or this one (1): the next
+// frame maps the vertex cache set that one read.
 presentResult_t idD3D12Context::Present( presentMode_t mode ) {
 	if ( device.IsLost() || !swapChain ) {
 		return presentResult_t::DEVICE_LOST;
 	}
 	// a frame nobody sees stays in the scene target: no blit, and the swap chain keeps its buffer
 	if ( mode == presentMode_t::NONE ) {
-		WaitFor( SubmitChunk() );
+		shownFence = SubmitChunk();
+		WaitFor( shownFence );
 		EndFrameStats();
 		return device.IsLost() ? presentResult_t::DEVICE_LOST : presentResult_t::OK;
 	}
@@ -286,8 +296,11 @@ presentResult_t idD3D12Context::Present( presentMode_t mode ) {
 	barriers.Transition( *back.resource.Get(), back.state, D3D12_RESOURCE_STATE_PRESENT );
 	const uint64 fence = SubmitChunk();
 
+	const UINT inFlight = FramesInFlight();
+	swapChain->SetLatency( inFlight );
 	const presentResult_t result = swapChain->Present( mode );
-	WaitFor( fence );
+	WaitFor( ( inFlight > 1 ) ? shownFence : fence );
+	shownFence = fence;
 	swapChain->WaitForLatency();
 	EndFrameStats();
 	return device.IsLost() ? presentResult_t::DEVICE_LOST : result;
@@ -352,8 +365,8 @@ void idD3D12Context::CopyOutputToTexture( textureHandle_t texture, int x, int y,
 	copies.Color( texture, x, y, width, height, hdrScene );
 }
 
-// preExposure: the manual exposure, or the auto exposure of the last resolve read back (Present waits for its
-// frame, so that is the last frame's); a finite one, else the manual exposure.
+// preExposure: the manual exposure, or the auto exposure of the last resolve read back (Present waits for the
+// frame before the last one, or the last one with one frame in flight); a finite one, else the manual exposure.
 void idD3D12Context::BeginHdrScene( const postProcessSettings_t & settings ) {
 	if ( device.IsLost() ) {
 		return;

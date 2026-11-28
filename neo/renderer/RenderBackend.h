@@ -107,8 +107,9 @@ If you have questions concerning this license or the applicable additional terms
 		needs the exact dirty range.
 	R7	drawCall_t and its parms are read during the call only. reuseParms is the promise of shared
 		code that the program and the parm values are those of the previous DrawIndexed.
-	R8	Present blocks. ReadOutputPixels is legal after EndFrame and before Present and reads the
-		frame just drawn.
+	R8	Present blocks until the GPU has finished the frame before the one it shows, which may stay in
+		flight (the vertex cache keeps three sets). ReadOutputPixels is legal after EndFrame and before
+		Present and reads the frame just drawn.
 	R9	One device per run: a mode switch or vid_restart calls ResizeOutput, and the device and its
 		sample count stay until Shutdown.
 	R10	A pipeline backend opens its pass at the first draw or clear after BeginFrame or after a
@@ -268,10 +269,11 @@ public:
 	virtual void			BeginFrame() = 0;
 	// Closes the frame, hands every command to the GPU without waiting, stops the GPU timer.
 	virtual void			EndFrame() = 0;
-	// Shows the finished frame and blocks: on return no unfinished draw reads a FRAME buffer mapped next.
+	// Shows the frame and blocks until the GPU has finished the one before it: on return no unfinished draw reads
+	// the FRAME buffer set mapped next (that frame's; R8).
 	// presentMode_t::NONE does all of it but the showing: the screen keeps the frame before.
 	virtual presentResult_t	Present( presentMode_t mode ) = 0;
-	// GPU time of the frame closed before the last Present; blocks until known; 0 without caps.gpuTimer.
+	// GPU time of the newest frame the GPU has finished, one or two frames old; never blocks; 0 without caps.gpuTimer.
 	virtual uint64			GetFrameGpuMicroseconds() = 0;
 	// Reads the finished frame: after EndFrame, before Present. RGB8, tightly packed, bottom row first.
 	virtual void			ReadOutputPixels( int x, int y, int width, int height, byte * rgb ) = 0;

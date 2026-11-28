@@ -73,7 +73,7 @@ void idD3D12GpuTimers::BeginFrame( ID3D12GraphicsCommandList4 & list ) {
 	if ( !heap ) {
 		return;
 	}
-	list.EndQuery( heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, FRAME_BEGIN );
+	list.EndQuery( heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameTimer * 2 );
 	frameBegun = true;
 }
 
@@ -95,10 +95,11 @@ void idD3D12GpuTimers::EndFrame( ID3D12GraphicsCommandList4 & list ) {
 	}
 	const uint64 fence = queue.LastSignaled() + 1;
 	if ( frameBegun ) {
-		list.EndQuery( heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, FRAME_END );
-		Resolve( list, FRAME_BEGIN, 2 );
+		list.EndQuery( heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frameTimer * 2 + 1 );
+		Resolve( list, frameTimer * 2, 2 );
 		frameBegun = false;
-		frameFence = fence;
+		frameFences[frameTimer] = fence;
+		frameTimer = ( frameTimer + 1 ) % FRAME_TIMERS;
 	}
 	for ( int s = 0; s < TIMESTAMP_SETS; s++ ) {
 		set_t & set = sets[s];
@@ -153,15 +154,22 @@ void idD3D12GpuTimers::Read( int set, std::span<uint64> nanoseconds ) const {
 	}
 }
 
+// A timer's fence is its last resolve's, so a timer read is never being written.
 uint64 idD3D12GpuTimers::FrameMicroseconds() {
-	if ( frameFence == 0 || frameFence > queue.Waited() ) {
+	UINT newest = FRAME_TIMERS;
+	for ( UINT f = 0; f < FRAME_TIMERS; f++ ) {
+		if ( frameFences[f] != 0 && frameFences[f] <= queue.Waited() && ( newest == FRAME_TIMERS || frameFences[f] > frameFences[newest] ) ) {
+			newest = f;
+		}
+	}
+	if ( newest == FRAME_TIMERS ) {
 		return 0;
 	}
-	if ( frameReadFence != frameFence ) {
+	if ( frameReadFence != frameFences[newest] ) {
 		std::array<uint64, 2> ticks = {};
-		const bool read = CopyTicks( FRAME_BEGIN, ticks ) && ticks[1] > ticks[0];
+		const bool read = CopyTicks( newest * 2, ticks ) && ticks[1] > ticks[0];
 		frameMicroseconds = read ? ( ticks[1] - ticks[0] ) * MICROSECONDS_PER_SECOND / frequency : 0;
-		frameReadFence = frameFence;
+		frameReadFence = frameFences[newest];
 	}
 	return frameMicroseconds;
 }

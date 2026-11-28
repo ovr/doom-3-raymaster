@@ -80,7 +80,8 @@ private:
 	UINT							samples = 1;
 };
 
-// Flip-model swap chain on the engine's window: 3 buffers, frame latency 1, tearing only at interval 0, no Alt+Enter.
+// Flip-model swap chain on the engine's window: 3 buffers, the frames in flight as its latency, tearing only at interval
+// 0, no Alt+Enter.
 class idD3D12SwapChain {
 public:
 	static constexpr UINT			BUFFERS = 3;
@@ -93,9 +94,10 @@ public:
 	};
 
 	[[nodiscard]] static std::expected<idD3D12SwapChain, idStr>	Create( const idD3D12Device & owner, idD3D12Queue & queue,
-										idD3D12DescriptorPool & rtvs, HWND window, int clientWidth, int clientHeight );
+										idD3D12DescriptorPool & rtvs, HWND window, int clientWidth, int clientHeight, UINT latencyFrames );
 	[[nodiscard]] presentResult_t	Present( presentMode_t mode );		// OCCLUDED → OK; removed, reset, hung → DEVICE_LOST
 	void							WaitForLatency();					// the waitable object, at most 1 s
+	void							SetLatency( UINT frames );			// SetMaximumFrameLatency when it changes
 	void							Resize( int newWidth, int newHeight );	// GPU idle; ResizeBuffers with the creation flags
 	[[nodiscard]] backBuffer_t &	Current();
 	[[nodiscard]] int				Width() const { return width; }
@@ -111,6 +113,7 @@ private:
 	std::array<backBuffer_t, BUFFERS>	buffers;
 	idD3D12Event					latency;
 	UINT							flags = 0;		// the same in CreateSwapChainForHwnd and ResizeBuffers
+	UINT							maxLatency = 1;
 	int								width = 0;
 	int								height = 0;
 };
