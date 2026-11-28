@@ -42,7 +42,7 @@ private:
 	std::vector<idComPtr<ID3D12DescriptorHeap>>	heaps;
 	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE>	starts;		// of each heap
 	std::vector<uint32>				freeSlots;					// a min-heap
-	std::vector<std::pair<uint32, uint32>>	freeRanges;			// first and count, never mixed with freeSlots
+	std::vector<std::pair<uint32, uint32>>	freeRanges;			// first and count, sorted and merged; never mixed with freeSlots
 	uint32							next = 0;
 	uint32							visibleSize = 0;
 	idComPtr<ID3D12DescriptorHeap>	visible;

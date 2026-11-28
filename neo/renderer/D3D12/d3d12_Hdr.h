@@ -22,9 +22,10 @@
 	The tonemap writes encoded sRGB through the output's UNORM view, so SRGB_OUTPUT does not change it.
 
 	The histogram and EyeAdaptation outlive the frame: the adaptation empties the histogram for the next one, and
-	EyeAdaptation keeps the adapted EV100 (include/exposure.hlsli). The CPU reads its copy once the frame's fence
-	was waited for (Present waits for it), so preExposure is the exposure of the last read-back resolve; after a
-	reset, until a resolve is read back, the manual exposure.
+	EyeAdaptation keeps the adapted EV100 (include/exposure.hlsli). Each resolve copies it into a slot of a ring the
+	CPU reads once its fence was waited for: preExposure is the exposure of the newest resolve read back, the frame
+	before the last one's with two frames in flight (Present waits for that one); after a reset, until a resolve is
+	read back, the manual exposure.
 
 	The gamma composite: Encode turns a view's rectangle of the scene into its sRGB encoding after the lights
 	and back after the fog, each through a copy and a raster pass (per sample under MSAA).
@@ -118,8 +119,9 @@ public:
 	// The next resolve's adaptation jumps to its target (a level load, a new output size). The readbacks are
 	// dropped: the gamma-phase blends depend on preExposure, so the frames until the next one are drawn with
 	// the manual exposure, as after Init, and give the same target whatever ran before.
-	void							ResetExposure() { exposureReset = true; lastExposure.reset(); readbackFence = 0; }
-	// Reads the last resolve's EyeAdaptation once the submitter has waited for its fence.
+	void							ResetExposure() { exposureReset = true; lastExposure.reset(); readbacks = {}; }
+	// Reads the EyeAdaptation of the newest resolve whose fence the submitter has waited for; an older one is never
+	// read after it.
 	void							Poll();
 	[[nodiscard]] const std::optional<d3d12ExposureReadback_t> &	LastExposure() const { return lastExposure; }
 	// The HDR scene inside viewport to its sRGB encoding (toGamma) or back; executes the graph.
@@ -168,9 +170,16 @@ private:
 	d3d12ResourceState_t			eyeState;
 	d3d12Descriptor_t				eyeSrv;
 	d3d12Descriptor_t				eyeUav;
-	idComPtr<ID3D12Resource>		eyeReadback;		// READBACK, EYE_BYTES
-	uint64							readbackFence = 0;	// of the last copy into it; 0: nothing to read
-	float							readbackPreExposure = 1.0f;
+	// copies in flight: a resolve per view, of the frame recorded and two the GPU draws
+	static constexpr uint32			EYE_READBACKS = 6;
+	struct eyeReadback_t {
+		uint64						fence = 0;			// of the copy into the slot; 0: nothing to read
+		uint64						order = 0;			// resolves before it
+		float						preExposure = 1.0f;
+	};
+	idComPtr<ID3D12Resource>		eyeReadback;		// READBACK, EYE_READBACKS slots of EYE_BYTES
+	std::array<eyeReadback_t, EYE_READBACKS>	readbacks;
+	uint64							resolves = 0;
 	std::optional<d3d12ExposureReadback_t>	lastExposure;
 	bool							exposureReset = true;
 };

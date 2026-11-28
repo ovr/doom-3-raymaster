@@ -171,7 +171,9 @@ std::expected<idComPtr<IDXGIAdapter1>, idStr> FindAdapter( const idD3D12Library 
 	return std::unexpected( idStr( va( "%s; %s.", REQUIREMENT, rejected.IsEmpty() ? "there is no GPU" : rejected.c_str() ) ) );
 }
 
-// Before the device exists: the layer, GPU-based validation and DRED are process settings read at creation.
+// Before the device exists: the layer, GPU-based validation and DRED are process settings read at creation, so
+// each creation sets GBV and DRED both ways: a device of the tests does not inherit the GBV an earlier one asked
+// for (after Warp_DeviceLoss's level 3 the WARP ray query tests lost their device). The layer cannot be turned off.
 int EnableDebugLayers( const idD3D12Library & library, int debugLevel ) {
 	if ( debugLevel <= 0 ) {
 		return 0;
@@ -183,18 +185,15 @@ int EnableDebugLayers( const idD3D12Library & library, int debugLevel ) {
 		return 0;
 	}
 	debug->EnableDebugLayer();
-	if ( debugLevel >= 2 ) {
-		idComPtr<ID3D12Debug1> debug1;
-		if ( SUCCEEDED( debug.As( &debug1 ) ) ) {
-			debug1->SetEnableGPUBasedValidation( TRUE );
-		}
+	idComPtr<ID3D12Debug1> debug1;
+	if ( SUCCEEDED( debug.As( &debug1 ) ) ) {
+		debug1->SetEnableGPUBasedValidation( ( debugLevel >= 2 ) ? TRUE : FALSE );
 	}
-	if ( debugLevel >= 3 ) {
-		idComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
-		if ( SUCCEEDED( library.getDebugInterface( IID_PPV_ARGS( &dred ) ) ) ) {
-			dred->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-			dred->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-		}
+	idComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
+	if ( SUCCEEDED( library.getDebugInterface( IID_PPV_ARGS( &dred ) ) ) ) {
+		const D3D12_DRED_ENABLEMENT enablement = ( debugLevel >= 3 ) ? D3D12_DRED_ENABLEMENT_FORCED_ON : D3D12_DRED_ENABLEMENT_SYSTEM_CONTROLLED;
+		dred->SetAutoBreadcrumbsEnablement( enablement );
+		dred->SetPageFaultEnablement( enablement );
 	}
 	return debugLevel;
 }

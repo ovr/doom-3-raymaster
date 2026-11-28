@@ -204,6 +204,8 @@ public:
 	// groups: a debug group per pass (r_pix 2), nullptr for none.
 	void							Execute( idD3D12DebugGroups * groups = nullptr );
 	[[nodiscard]] const stats_t &	LastStats() const { return lastStats; }
+	// r_pix 4: every kept pass is timed, with the barriers before it; nullptr for none.
+	void							SetPassTimer( idD3D12PassTimer * timer ) { passTimer = timer; }
 
 private:
 	friend class idD3D12GraphContext;
@@ -241,6 +243,7 @@ private:
 	idD3D12UploadRing &				constants;
 	const idD3D12ComputeRootSignature &	computeRoot;
 	idD3D12GraphContext				context;
+	idD3D12PassTimer *				passTimer = nullptr;
 	std::vector<resource_t>			resources;
 	std::vector<pass_t>				passes;
 	std::vector<d3d12GraphUse_t>	uses;

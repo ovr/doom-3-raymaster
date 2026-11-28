@@ -751,6 +751,15 @@ void Test_WarpDescriptorSlots() {
 	const d3d12Descriptor_t slot = pool.Allocate();
 	Check( slot.index == 0 && pool.Used() == 1 && pool.ShaderVisibleHeap() != nullptr && pool.ShaderVisibleHeap()->GetDesc().NumDescriptors == 8,
 		"the pool's shader-visible heap" );
+	idD3D12DescriptorPool tables( gpu->device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16 );
+	const d3d12Descriptor_t a = tables.AllocateRange( 2 );
+	const d3d12Descriptor_t b = tables.AllocateRange( 3 );
+	const d3d12Descriptor_t c = tables.AllocateRange( 2 );
+	tables.FreeRange( a, 2 );
+	tables.FreeRange( c, 2 );
+	tables.FreeRange( b, 3 );
+	Check( a.index == 0 && b.index == 2 && c.index == 5 && tables.AllocateRange( 7 ).index == 0,
+		"a freed range merges with the free ones on both sides" );
 	CheckNoLayerErrors( *gpu );
 }
 
@@ -2823,6 +2832,65 @@ void Timestamps( idTestGpu & gpu ) {
 	timers.Free();
 	Check( !timers.Ready( SET, 0 ) && timers.WrittenThisFrame() == 0, "Free forgets the r_pix slots" );
 	Check( timers.FrameMicroseconds() == frameMicroseconds, "the frame timer stays" );
+
+	// two frames in flight, as Present waits: the frame before the last one is timed, over more frames than timers;
+	// two lists a frame, so that it lasts a microsecond
+	std::array<uint64, 5> fences = {};
+	int timed = 0;
+	for ( size_t f = 0; f < fences.size(); f++ ) {
+		timers.BeginFrame( gpu.List() );
+		gpu.SubmitChunk();
+		timers.EndFrame( gpu.List() );
+		fences[f] = gpu.SubmitChunk();
+		if ( f > 0 ) {
+			gpu.WaitFor( fences[f - 1] );
+			timed += ( timers.FrameMicroseconds() > 0 ) ? 1 : 0;
+		}
+	}
+	Check( timed == static_cast<int>( fences.size() - 1 ), va( "the waited frame is timed while the next is in flight: %d of %zu", timed, fences.size() - 1 ) );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
+// r_pix 4: two named passes and one inside another, over two lists. A frame is read only once its list is
+// waited for; the frame after it, while its slots are free, is timed again; off forgets the period.
+void PassTimes( idTestGpu & gpu ) {
+	idD3D12PassTimer timer( gpu.device, gpu.queue );
+	timer.Enable( true );
+	if ( !Check( timer.Enabled(), "a direct queue has pass timestamps" ) ) {
+		return;
+	}
+	timer.BeginFrame( 0 );
+	timer.Begin( gpu.List(), "nrd SIGMA: Blur" );
+	timer.Begin( gpu.List(), "inner" );
+	timer.End( gpu.List() );
+	timer.End( gpu.List() );
+	gpu.SubmitChunk();
+	timer.Begin( gpu.List(), "rt reflect" );
+	timer.End( gpu.List() );
+	timer.Begin( gpu.List(), "nrd SIGMA: Blur" );
+	timer.End( gpu.List() );
+	timer.EndFrame( gpu.List() );
+	const uint64 fence = gpu.SubmitChunk();
+	gpu.FinishUnwaited();
+	timer.BeginFrame( 1 );
+	Check( timer.PeriodFrames() == 0, "a frame not waited for is not read" );
+	timer.EndFrame( gpu.List() );
+	gpu.WaitFor( fence );
+	timer.BeginFrame( 2 );
+	const std::vector<idD3D12PassTimer::passTime_t> times = timer.PeriodTimes();
+	Check( timer.PeriodFrames() == 1 && times.size() == 2, "one frame of two names: the inner pass is part of the outer one" );
+	const auto find = [&times]( const char * name ) {
+		return std::ranges::find_if( times, [name]( const idD3D12PassTimer::passTime_t & t ) { return idStr::Cmp( t.name, name ) == 0; } );
+	};
+	const auto blur = find( "nrd SIGMA: Blur" );
+	const auto reflect = find( "rt reflect" );
+	Check( blur != times.end() && reflect != times.end() && blur->count == 2.0 && reflect->count == 1.0, "the instances per frame" );
+	Check( blur != times.end() && blur->gpuMilliseconds >= 0.0 && blur->maxMilliseconds >= blur->gpuMilliseconds, "a frame's sum is its max" );
+	timer.EndFrame( gpu.List() );
+	timer.Enable( false );
+	timer.Enable( true );
+	Check( timer.PeriodFrames() == 0 && timer.PeriodTimes().empty(), "off forgets the period" );
 	gpu.WaitIdle();
 	CheckNoLayerErrors( gpu );
 }
@@ -6884,6 +6952,55 @@ void RtTlas( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+// idD3D12BlasArena: ranges side by side, a freed one taken again only after the wait for the list open at its Free,
+// free neighbours merged, a buffer of its own past CHUNK, an empty buffer but the first released and its slot reused.
+void RtBlasArena( idTestGpu & gpu ) {
+	constexpr uint64 CHUNK = idD3D12BlasArena::CHUNK;
+	idD3D12BlasArena arena( gpu.device, gpu, gpu.graveyard, L"test blas arena" );
+	const auto range = []( const std::optional<idD3D12BlasArena::range_t> & made, uint32 chunk, uint64 offset, uint64 bytes ) {
+		return made && made->chunk == chunk && made->offset == offset && made->bytes == bytes;
+	};
+	const std::optional<idD3D12BlasArena::range_t> first = arena.Allocate( 1000 );
+	const std::optional<idD3D12BlasArena::range_t> second = arena.Allocate( 300 );
+	Check( range( first, 0, 0, 1024 ) && range( second, 0, 1024, 512 ) && arena.NumBuffers() == 1, "two ranges of one buffer, 256-aligned" );
+	if ( !first || !second ) {
+		return;
+	}
+	arena.Free( *first );
+	arena.Retire();
+	Check( range( arena.Allocate( 1000 ), 0, 1536, 1024 ), "a freed range waits for its list" );
+	gpu.WaitIdle();
+	arena.Retire();
+	Check( range( arena.Allocate( 1000 ), 0, 0, 1024 ), "and is taken again after the wait" );
+
+	const std::optional<idD3D12BlasArena::range_t> whole = arena.Allocate( CHUNK );
+	Check( range( whole, 1, 0, CHUNK ) && arena.NumBuffers() == 2, "a range the first buffer cannot hold: a second one" );
+	const std::optional<idD3D12BlasArena::range_t> large = arena.Allocate( CHUNK + 1 );
+	Check( range( large, 2, 0, CHUNK + 256 ) && arena.NumBuffers() == 3, "one larger than CHUNK: a buffer of its own" );
+	if ( !whole || !large ) {
+		return;
+	}
+	arena.Free( *whole );
+	gpu.WaitIdle();
+	arena.Retire();
+	Check( arena.NumBuffers() == 2, va( "an empty buffer is released: %d", arena.NumBuffers() ) );
+	Check( range( arena.Allocate( 4096 ), 0, 2560, 4096 ), "the first buffer's free space before a new one" );
+	Check( range( arena.Allocate( CHUNK ), 1, 0, CHUNK ) && arena.NumBuffers() == 3, "a new buffer takes the released slot" );
+
+	// every range of the first buffer back: merged into one, it holds CHUNK again
+	for ( const idD3D12BlasArena::range_t & back : { *second, idD3D12BlasArena::range_t{ 0, 1536, 1024 }, idD3D12BlasArena::range_t{ 0, 0, 1024 },
+			idD3D12BlasArena::range_t{ 0, 2560, 4096 } } ) {
+		arena.Free( back );
+	}
+	gpu.WaitIdle();
+	arena.Retire();
+	Check( range( arena.Allocate( CHUNK ), 0, 0, CHUNK ), "freed neighbours merge" );
+	arena.Drop();
+	Check( arena.NumBuffers() == 0, "dropped" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
 // The static BLAS over frames: compacted once a wait has made their sizes readable and never before, dropped with
 // their static generation, evicted after unusedBuilds builds without an instance; the hits stay those of RayQuery.
 void RtBlasCache( idTestGpu & gpu ) {
@@ -6905,6 +7022,7 @@ void RtBlasCache( idTestGpu & gpu ) {
 	};
 
 	Check( apply( true, 1, true ) && stats.built == 3 && scene.rt.NumUncompacted() == 3, va( "the first build: %s", RtStats( stats ).c_str() ) );
+	Check( scene.rt.NumBlasBuffers() == 1, va( "three BLAS in one buffer, not %d", scene.rt.NumBlasBuffers() ) );
 	const uint64 builtBytes = stats.blasBytes;
 	Check( apply( false, 1, true ) && stats.compacted == 0 && scene.rt.NumUncompacted() == 3,
 		va( "no size is read before the wait: %s", RtStats( stats ).c_str() ) );
@@ -6915,6 +7033,7 @@ void RtBlasCache( idTestGpu & gpu ) {
 	Check( apply( false, 1, true ) && stats.built == 0 && scene.rt.NumUncompacted() == 0
 		&& ( warp ? stats.blasBytes == builtBytes : ( stats.compacted >= 1 && stats.blasBytes < builtBytes ) ),
 		va( "compacted after the wait: %s; %llu bytes built", RtStats( stats ).c_str(), builtBytes ) );
+	Check( scene.rt.NumBlasBuffers() == ( warp ? 1 : 2 ), va( "the built and the compacted arena: %d buffers", scene.rt.NumBlasBuffers() ) );
 	scene.Trace();
 	scene.rays.CheckResults( "compacted" );
 	Check( apply( false, 1, true ) && stats.compacted == 0 && stats.built == 0, va( "nothing to do: %s", RtStats( stats ).c_str() ) );
@@ -8087,7 +8206,7 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 	single.history = false;
 	single.distance = 1e7f;
 	single.maxRadiance = 0.0f;
-	for ( const int stride : { 1, 2, 4 } ) {
+	for ( const int stride : { 1, 2, 3, 4 } ) {
 		single.stride = stride;
 		const auto checkFlat = [&]( const char * what, const rtIndirectSettings_t & settings, float part ) {
 			const std::vector<idVec4> texels = run( settings, 0, base );
@@ -8145,7 +8264,7 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 	throughNrd.history = true;
 	throughNrd.denoiser = rtDenoiser_t::NRD;
 	if ( idD3D12Nrd::Available() ) {
-		for ( const int stride : { 1, 2, 4 } ) {
+		for ( const int stride : { 1, 2, 3, 4 } ) {
 			throughNrd.stride = stride;
 			const std::vector<idVec4> texels = runFrames( throughNrd, 8, base );
 			const idStr label = va( "the sky, 8 frames through NRD, a texel %d pixels", stride );
@@ -8159,6 +8278,13 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 			}
 		}
 		throughNrd.stride = 2;
+		rtIndirectSettings_t bare = throughNrd;
+		bare.reblur = { false, false };
+		const std::vector<idVec4> texels = runFrames( bare, 8, base );
+		for ( const region_t & region : flat ) {
+			report( "the sky, 8 frames through NRD without its stabilization and pre-pass", region,
+				compare( texels, region, 0.25f, [&]( int column, int ) { return skyAt( column, 1.0f, false, base ); } ), 0.006f, 0.005f );
+		}
 	}
 
 	// ---- the room ----
@@ -8296,6 +8422,8 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 				"reference's (%g off allowed), before the wall %g times beside or behind it (%g at least)", samples, label, sum, sumError, ratio, contrast ) );
 		};
 		// a first frame is NRD's spatial passes alone: 0.99 of the sum, as bright beside the wall as before it
+		// right after the sky at the same stride: a cut keeps nothing of it (NRD's RESTART left 4.3 times the light)
+		runFrames( throughNrd, 8, base );
 		checkRoom( "the room, a first frame through NRD", runFrames( whiteNrd, 1, dark ), 0.03, 0.0 );
 		// 0.94 of the sum and 1.5 times
 		std::vector<idVec4> texels = runFrames( whiteNrd, 32, dark );
@@ -8605,13 +8733,14 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		bool					store = true;
 		float					shift = 0.0f;		// of the eye along x
 		float					before = 0.0f;		// its shift the frame before
+		int						width = SIZE;		// of the viewport, a part of the scene from its left
 	};
 	uint32 epoch = 0;
 	const auto run = [&]( const rtReflectionSettings_t & settings, const shot_t & shot ) {
 		// the floor was where the eye was not: GL's motion, this frame's pixel less the one before's
 		prepare( shot.color, shot.bands, shot.rows, shot.before - shot.shift );
 		rtPasses.Reflections( scene.rays.graph, target, history, scene.rt, scene.gpuScene, settings,
-			viewOf( shot.shift, shot.before, epoch, shot.sequence, shot.store ), { 0, 0, SIZE, SIZE }, PRE_EXPOSURE, nullptr );
+			viewOf( shot.shift, shot.before, epoch, shot.sequence, shot.store ), { 0, 0, shot.width, SIZE }, PRE_EXPOSURE, nullptr );
 		std::vector<idVec4> texels = ReadFloatSurface( gpu, target.Color( true ) );
 		// the read waited for the GPU: what the frame took of the ring is free again
 		fixture.constants.CloseChunk( gpu.WaitedFence() );
@@ -8772,6 +8901,21 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 	if ( idD3D12Nrd::Available() ) {
 		// measured: a pixel 0.005 and a region's mean 0.004 dark (REBLUR's YCoCg in half floats)
 		checkSky( "8 frames through NRD", throughNrd, 8, 0.01f, 0.006f );
+		// half the glossy pixels trace a frame, the mirrors all
+		rtReflectionSettings_t checkered = throughNrd;
+		checkered.checkerboard = true;
+		checkSky( "8 frames through NRD's checkerboard", checkered, 8, 0.01f, 0.006f );
+		rtReflectionSettings_t bare = throughNrd;
+		bare.reblur = { false, false };
+		checkSky( "8 frames through NRD without its stabilization and pre-pass", bare, 8, 0.01f, 0.006f );
+		// a resolution scale: the viewport a part of the scene that changes, which makes NRD's textures again no more
+		const uint32 made = nrd.Made();
+		shot_t part = skyShot;
+		part.width = SIZE - 8;
+		runFrames( throughNrd, part, 4 );
+		Check( nrd.Made() == made, va( "%u sample(s): NRD keeps its textures for a part of the scene (%u made, %u before)", samples, nrd.Made(),
+			made ) );
+		checkSky( "8 frames through NRD after a part of the scene", throughNrd, 8, 0.01f, 0.006f );
 	}
 	changed = single;
 	changed.history = true;
@@ -10214,6 +10358,9 @@ void RtHistory( idTestGpu & gpu, UINT samples ) {
 		Check( sameBytes( sigma16, again16 ) && sameBytes( again16, heldSigma ) && sameBytes( stored17, after17 ), va( "%u sample(s): through NRD another "
 			"epoch gives the same bytes %s, a held frame %s, a screenshot leaves the history %s", samples, sameBytes( sigma16, again16 ) ? "yes" : "no",
 			sameBytes( again16, heldSigma ) ? "yes" : "no", sameBytes( stored17, after17 ) ? "yes" : "no" ) );
+		// a level load keeps the instances (Restart): their first frames are those of new ones
+		nrd.Restart();
+		Check( sameBytes( sigma16, run( sigma, 0, 15 ) ), va( "%u sample(s): after a level load NRD gives the bytes of new instances", samples ) );
 		bed.penumbraScale = 0.0f;
 		bed.fixture.recorder.EndPass();
 		gpu.WaitIdle();
@@ -10754,6 +10901,29 @@ void Exposure( idTestGpu & gpu, UINT samples ) {
 		}
 	}
 	Check( !plain.empty() && worst <= 1, va( "%u sample(s): the tonemap shows radiance times the exposure within %d of 255", samples, worst ) );
+
+	// frames in flight: Poll reads the newest resolve waited for, tagged with its preExposure, never an older one after it
+	const auto resolveFrame = [&]( float framePreExposure ) {
+		fill();
+		hdr.Resolve( graph, fixture.scene, settings, whole, framePreExposure, reset, nullptr );
+		return gpu.SubmitChunk();
+	};
+	const auto polled = [&]() {
+		hdr.Poll();
+		return hdr.LastExposure() ? hdr.LastExposure()->exposure.preExposure : 0.0f;
+	};
+	const uint64 firstFrame = resolveFrame( 1.0f );
+	const uint64 secondFrame = resolveFrame( 3.0f );
+	gpu.WaitFor( firstFrame );
+	const float firstRead = polled();
+	gpu.WaitFor( secondFrame );
+	const float secondRead = polled();
+	resolveFrame( 4.0f );
+	gpu.WaitFor( resolveFrame( 5.0f ) );
+	const float newestRead = polled();
+	const float againRead = polled();
+	Check( firstRead == 1.0f && secondRead == 3.0f && newestRead == 5.0f && againRead == 5.0f, va( "the readback ring gives %g %g %g %g, want 1 3 5 5",
+		firstRead, secondRead, newestRead, againRead ) );
 
 	settings.lowPercent = 0.25f;
 	settings.highPercent = 0.75f;
@@ -11311,6 +11481,8 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_DebugGroups", Test_WarpDebugGroups },
 	{ "Warp_Timestamps", OnWarp<Timestamps> },
 	{ "Gpu_Timestamps", OnGpu<Timestamps> },
+	{ "Warp_PassTimes", OnWarp<PassTimes> },
+	{ "Gpu_PassTimes", OnGpu<PassTimes> },
 	{ "Warp_RasterGlRows", OnWarp<RasterGlRows> },
 	{ "Gpu_RasterGlRows", OnGpu<RasterGlRows> },
 	{ "Warp_RasterCull", OnWarp<RasterCull> },
@@ -11372,6 +11544,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_GpuScene", OnWarp<GpuScene> },
 	{ "Warp_RtTlas", OnWarp<RtTlas> },
 	{ "Gpu_RtTlas", OnGpu<RtTlas> },
+	{ "Warp_RtBlasArena", OnWarp<RtBlasArena> },
 	{ "Warp_RtBlasCache", OnWarp<RtBlasCache> },
 	{ "Gpu_RtBlasCache", OnGpu<RtBlasCache> },
 	{ "Warp_RtSkin", OnWarp<RtSkin> },
@@ -11406,8 +11579,17 @@ constexpr testCase_t TESTS[] = {
 
 }	// namespace
 
+// d3d12Tests [filter...]: the tests whose names contain any filter, in table order; none or "all" runs every test.
 int main( int argc, char ** argv ) {
-	const char * filter = ( argc > 1 && idStr::Icmp( argv[1], "all" ) != 0 ) ? argv[1] : nullptr;
+	std::vector<std::string_view> filters;
+	for ( int a = 1; a < argc; a++ ) {
+		if ( idStr::Icmp( argv[a], "all" ) != 0 ) {
+			filters.emplace_back( argv[a] );
+		}
+	}
+	const auto selected = [&]( std::string_view name ) {
+		return filters.empty() || std::ranges::any_of( filters, [&]( std::string_view filter ) { return name.find( filter ) != std::string_view::npos; } );
+	};
 	if ( getenv( "D3D12_TESTS_VERBOSE" ) != nullptr ) {
 		maxFailuresPerTest = 1 << 30;
 	}
@@ -11418,7 +11600,7 @@ int main( int argc, char ** argv ) {
 	int numRun = 0;
 	int numFailedTests = 0;
 	for ( const testCase_t & test : TESTS ) {
-		if ( filter != nullptr && strstr( test.name, filter ) == nullptr ) {
+		if ( !selected( test.name ) ) {
 			continue;
 		}
 		numFailuresInTest = 0;

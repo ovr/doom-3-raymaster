@@ -548,6 +548,10 @@ void idD3D12RenderGraph::Execute( idD3D12DebugGroups * groups ) {
 		for ( const d3d12GraphUse_t & use : Uses( pass ) ) {
 			Transition( use );
 		}
+		const bool timed = passTimer != nullptr && passTimer->Enabled();
+		if ( timed ) {
+			passTimer->Begin( submitter.List(), pass.name );
+		}
 		if ( groups != nullptr ) {
 			groups->Push( submitter.List(), pass.name );
 		}
@@ -557,6 +561,9 @@ void idD3D12RenderGraph::Execute( idD3D12DebugGroups * groups ) {
 		context.pass = -1;
 		if ( groups != nullptr ) {
 			groups->Pop( &submitter.List() );
+		}
+		if ( timed ) {
+			passTimer->End( submitter.List() );
 		}
 		for ( resource_t & made : resources ) {
 			if ( made.last == static_cast<int>( p ) ) {

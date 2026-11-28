@@ -420,7 +420,7 @@ void idD3D12HdrPipeline::CreateDefaults() {
 		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
 	eyeAdaptation = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, d3d12Exposure::EYE_BYTES, D3D12_RESOURCE_STATE_COMMON, L"doom3 eye adaptation",
 		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
-	eyeReadback = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_READBACK, d3d12Exposure::EYE_BYTES, D3D12_RESOURCE_STATE_COPY_DEST,
+	eyeReadback = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_READBACK, EYE_READBACKS * d3d12Exposure::EYE_BYTES, D3D12_RESOURCE_STATE_COPY_DEST,
 		L"doom3 eye adaptation readback" );
 	if ( histogram && eyeAdaptation && eyeReadback ) {
 		histogramState.decays = true;
@@ -607,8 +607,10 @@ void idD3D12HdrPipeline::Resolve( idD3D12RenderGraph & graph, idD3D12SceneTarget
 			const d3d12UploadSpan_t span = context.Parms( adaptParms );
 			context.Dispatch( exposureAdapt, &span, 1 );
 		} );
-	graph.AddPass( "EyeAdaptation readback", d3d12GraphPass_t::COPY, { { eye, d3d12GraphAccess_t::COPY_SOURCE } }, [this, eye]( idD3D12GraphContext & context ) {
-		context.List().CopyBufferRegion( eyeReadback.Get(), 0, &context.Resource( eye ), 0, d3d12Exposure::EYE_BYTES );
+	const uint32 slot = static_cast<uint32>( resolves % EYE_READBACKS );
+	graph.AddPass( "EyeAdaptation readback", d3d12GraphPass_t::COPY, { { eye, d3d12GraphAccess_t::COPY_SOURCE } }, [this, eye, slot](
+		idD3D12GraphContext & context ) {
+		context.List().CopyBufferRegion( eyeReadback.Get(), slot * d3d12Exposure::EYE_BYTES, &context.Resource( eye ), 0, d3d12Exposure::EYE_BYTES );
 	}, true );
 
 	const uint32 bloomLevels = ( bloomDownsample && bloomBlur ) ? d3d12Bloom::Levels( settings, rect.width, rect.height ) : 0;
@@ -649,8 +651,7 @@ void idD3D12HdrPipeline::Resolve( idD3D12RenderGraph & graph, idD3D12SceneTarget
 	} );
 	graph.Execute( groups );
 	// after Execute: a submit inside it closed the copy's list with an older fence, so this one is late, never early
-	readbackFence = submitter.PendingFence();
-	readbackPreExposure = preExposure;
+	readbacks[slot] = { submitter.PendingFence(), resolves++, preExposure };
 }
 
 d3d12GraphResource_t idD3D12HdrPipeline::AddBloom( idD3D12RenderGraph & graph, const postProcessSettings_t & settings, d3d12GraphResource_t input,
@@ -813,22 +814,40 @@ std::pair<d3d12GraphResource_t, d3d12GraphResource_t> idD3D12HdrPipeline::AddLoc
 	return { blurredGrid, blurred };
 }
 
+// A slot's fence is its last copy's, so a slot read is never being written.
 void idD3D12HdrPipeline::Poll() {
-	if ( readbackFence == 0 || submitter.WaitedFence() < readbackFence || device.IsLost() ) {
+	if ( device.IsLost() ) {
 		return;
 	}
-	readbackFence = 0;
-	const D3D12_RANGE read = { 0, d3d12Exposure::EYE_BYTES };
+	const eyeReadback_t * newest = nullptr;
+	for ( const eyeReadback_t & readback : readbacks ) {
+		if ( readback.fence != 0 && readback.fence <= submitter.WaitedFence() && ( newest == nullptr || readback.order > newest->order ) ) {
+			newest = &readback;
+		}
+	}
+	if ( newest == nullptr ) {
+		return;
+	}
+	const uint32 slot = static_cast<uint32>( newest - readbacks.data() );
+	const eyeReadback_t taken = *newest;
+	for ( eyeReadback_t & readback : readbacks ) {
+		if ( readback.fence != 0 && readback.order <= taken.order ) {
+			readback.fence = 0;
+		}
+	}
+	const SIZE_T offset = static_cast<SIZE_T>( slot ) * d3d12Exposure::EYE_BYTES;
+	const D3D12_RANGE read = { offset, offset + d3d12Exposure::EYE_BYTES };
 	void * mapped = nullptr;
 	if ( !device.Check( eyeReadback->Map( 0, &read, &mapped ), "Map (eye adaptation readback)" ) ) {
 		return;
 	}
+	const byte * eye = static_cast<const byte *>( mapped ) + offset;
 	float values[4];
 	d3d12ExposureReadback_t result;
-	memcpy( values, mapped, sizeof( values ) );
-	memcpy( result.histogram.data(), static_cast<const byte *>( mapped ) + d3d12Exposure::HISTOGRAM_OFFSET, sizeof( result.histogram ) );
+	memcpy( values, eye, sizeof( values ) );
+	memcpy( result.histogram.data(), eye + d3d12Exposure::HISTOGRAM_OFFSET, sizeof( result.histogram ) );
 	const D3D12_RANGE written = { 0, 0 };
 	eyeReadback->Unmap( 0, &written );
-	result.exposure = { values[0], values[1], values[2], values[3], readbackPreExposure };
+	result.exposure = { values[0], values[1], values[2], values[3], taken.preExposure };
 	lastExposure = result;
 }

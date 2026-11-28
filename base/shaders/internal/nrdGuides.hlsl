@@ -15,6 +15,8 @@
 	                                    roughness 1, material 0
 	  IN_MV                RGBA16F      2.5D motion: xy to the frame before in NRD's uv, z its clip w then minus now,
 	                                    for a still world (0 for the weapon, which moves with the eye)
+	  specular IN_VIEWZ    R32F         flags bit 1: REBLUR_SPECULAR's, IN_VIEWZ where the pixel is glossy, else the
+	                                    sky's, so NRD skips the tiles that hold no glossy pixel
 
 	MULTISAMPLED reads sample 0.
 */
@@ -43,9 +45,9 @@ cbuffer GuidesParms : register( b0 ) {
 	uint normalRoughnessUav;
 	uint motionUav;
 	uint stride;				// pixels a side per texel
-	uint flags;					// bit 0: the plane, not the bumped normal
-	uint unused0;
-	uint unused1;
+	uint flags;					// bit 0: the plane, not the bumped normal; bit 1: write the specular view z
+	uint specViewZUav;
+	uint unused;
 };
 
 [numthreads( 8, 8, 1 )]
@@ -68,6 +70,10 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 	const float depth = RtDepthAt( eye, pixel );
 	if ( !GBufferDrawn( drawn ) || depth >= 1.0 ) {
 		viewZOut[id.xy] = limits.w;
+		if ( ( flags & 2u ) != 0 ) {
+			RWTexture2D<float> specViewZOut = ResourceDescriptorHeap[specViewZUav];
+			specViewZOut[id.xy] = limits.w;
+		}
 		normalRoughnessOut[id.xy] = NRD_FrontEnd_PackNormalAndRoughness( float3( 0.0, 0.0, 1.0 ), 1.0, 0.0 );
 		motionOut[id.xy] = float4( 0.0, 0.0, 0.0, 0.0 );
 		return;
@@ -91,6 +97,10 @@ void CSMain( uint3 id : SV_DispatchThreadID ) {
 	const float2 motion = RT_SCENE_LOAD( motionMap, pixel );
 
 	viewZOut[id.xy] = w;
+	if ( ( flags & 2u ) != 0 ) {
+		RWTexture2D<float> specViewZOut = ResourceDescriptorHeap[specViewZUav];
+		specViewZOut[id.xy] = glossy ? w : limits.w;
+	}
 	normalRoughnessOut[id.xy] = NRD_FrontEnd_PackNormalAndRoughness( normal, roughness, glossy ? 1.0 : 0.0 );
 	motionOut[id.xy] = float4( -motion.x / viewport.z, motion.y / viewport.w, weapon ? 0.0 : prevW - w, 0.0 );
 }

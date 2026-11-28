@@ -1848,7 +1848,7 @@ static bool RB_DrawTracedLights( const bool useLightDepthBounds ) {
 	renderLog.CloseMainBlock();
 	renderBackend->EndTracedLights();
 
-	renderLog.OpenMainBlock( MRB_RAY_TRACING );
+	renderLog.OpenMainBlock( MRB_RT_SHADOWS );
 	renderBackend->ResolveTracedShadows( shadow, RB_RayTracingView( *backEnd.viewDef ), viewport );
 	renderLog.CloseMainBlock();
 	return true;
@@ -2748,16 +2748,18 @@ void RB_DrawViewInternal( const viewDef_t * viewDef, const int stereoEye, bool d
 	// blend in gamma
 	const rayTracingSettings_t & rayTracing = viewDef->rayTracing;
 	if ( backEnd.gbufferView && viewDef->gpuScene != nullptr && ( rayTracing.reflection.enabled || rayTracing.indirect.enabled ) ) {
-		renderLog.OpenMainBlock( MRB_RAY_TRACING );
 		const idScreenRect & v = viewDef->viewport;
 		const renderRect_t viewport = { v.x1, v.y1, v.GetWidth(), v.GetHeight() };
 		if ( rayTracing.reflection.enabled ) {
+			renderLog.OpenMainBlock( MRB_RT_REFLECTIONS );
 			renderBackend->DrawRayTracedReflections( rayTracing.reflection, RB_RayTracingView( *viewDef ), viewport );
+			renderLog.CloseMainBlock();
 		}
 		if ( rayTracing.indirect.enabled ) {
+			renderLog.OpenMainBlock( MRB_RT_INDIRECT );
 			renderBackend->DrawRayTracedIndirect( rayTracing.indirect, RB_RayTracingView( *viewDef ), viewport );
+			renderLog.CloseMainBlock();
 		}
-		renderLog.CloseMainBlock();
 	}
 
 	// in HDR the lights add in linear, what follows blends in gamma as in the retail frame
@@ -3133,7 +3135,7 @@ void RB_DrawView( const void *data, const int stereoEye, bool hdrMainView ) {
 		// drawn before the resolve
 		const bool inScene = ( rtDebug == rtDebug_t::REFLECTION || rtDebug == rtDebug_t::SHADOWS || rtDebug == rtDebug_t::INDIRECT );
 		if ( rtDebug != rtDebug_t::NONE && !inScene && backEnd.viewDef->gpuScene != nullptr ) {
-			renderLog.OpenMainBlock( MRB_RAY_TRACING );
+			renderLog.OpenMainBlock( MRB_RT_DEBUG );
 			renderBackend->DrawRayTracingDebug( rtDebug, RB_RayTracingView( *backEnd.viewDef ), { v.x1, v.y1, v.GetWidth(), v.GetHeight() } );
 			renderLog.CloseMainBlock();
 		}

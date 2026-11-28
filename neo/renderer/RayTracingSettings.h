@@ -61,6 +61,12 @@ struct rtView_t {
 	bool				held = false;			// nothing of the frame could be traced: what the history holds of it stands
 };
 
+// REBLUR's optional passes, for the glossy reflections and the indirect light (SIGMA keeps its own stabilization).
+struct rtReblurSettings_t {
+	bool				stabilize = true;	// r_rtNrdStabilize: the temporal stabilization after the blurs
+	bool				prepass = true;		// r_rtNrdPrepass: the blur before the accumulation (the checkerboard keeps the pass)
+};
+
 // r_rtReflection*: a ray per pixel of the main view whose G-buffer may reflect, added to the HDR scene after the
 // lights (R20). A pixel smoother than mirrorRoughness is a mirror: one ray about its normal, the hit lit by the
 // first lights that reach it, the same every frame. A rougher one sends a ray of its GGX lobe, lit by one light,
@@ -75,6 +81,8 @@ struct rtReflectionSettings_t {
 	bool				glossy = true;		// r_rtReflectionGlossy; false: every pixel that reflects is a mirror
 	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
 	bool				reference = false;	// r_rtReference: the glossy pixels' plain mean while the eye stands still
+	bool				checkerboard = false;	// r_rtReflectionCheckerboard: under NRD half the glossy pixels trace a frame
+	rtReblurSettings_t	reblur;
 	int					maxLights = 8;		// a mirror's hit: lights per hit, the first that reach it
 	float				scale = 1.0f;
 	float				distance = 2048.0f;	// the longest ray
@@ -93,11 +101,12 @@ struct rtIndirectSettings_t {
 	bool				alone = false;		// rtDebug_t::INDIRECT
 	bool				history = true;		// r_rtHistory; false: every frame alone, with the same noise
 	bool				reference = false;	// r_rtReference: a plain mean while the eye stands still, unfiltered
-	int					stride = 2;			// pixels a side per texel, from r_rtIndirectResolution
+	int					stride = 2;			// pixels a side per texel: R_IndirectStride of the view's height
 	float				scale = 1.0f;		// r_rtIndirectScale
 	float				emissiveScale = 1.0f;	// r_rtEmissiveScale: what a hit emits, times this
 	float				distance = 1024.0f;	// the longest ray
 	float				maxRadiance = 8.0f;	// r_rtIndirectClamp: the most a ray brings, times the exposure; 0 any
+	rtReblurSettings_t	reblur;
 };
 
 // id's stand-ins for bounced light: an ambient light, and a point light that casts no shadow. A projected light

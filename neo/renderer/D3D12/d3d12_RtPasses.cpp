@@ -62,7 +62,8 @@ struct rtReflectParms_t {
 	uint32							size[2];		// texels
 	uint32							noiseSrv;
 	uint32							noiseIndex;
-	uint32							unused[2];
+	uint32							flags;			// bit 0: the checkerboard
+	uint32							phase;			// the checkerboard's, for rows from the bottom
 };
 static_assert( sizeof( rtReflectParms_t ) == 208 );
 
@@ -441,6 +442,7 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 	const bool glossy = settings.glossy;
 	const bool reference = glossy && settings.reference;
 	const bool useNrd = glossy && !reference && settings.denoiser == rtDenoiser_t::NRD && nrd != nullptr && Whole( rect, viewport );
+	const bool checkerboard = useNrd && settings.checkerboard;
 	const d3d12ComputePipeline_t * tracePipeline = ComputePipeline( reflect[multisampled ? 1 : 0],
 		multisampled ? "internal_rtReflect_msaa" : "internal_rtReflect", L"doom3 rt reflect" );
 	ID3D12PipelineState * pso = CompositePipeline( samples, !settings.alone );
@@ -514,8 +516,12 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 		base.noiseSrv = textures.SampledView( noise, textureKind_t::TEX_2D ).index;
 		// without a history every frame draws the same rays
 		base.noiseIndex = settings.history ? view.sequence : 0;
+		// NRD's WHITE cells: x + the row from the top + its frame index (the sequence) even
+		base.flags = checkerboard ? 1u : 0u;
+		base.phase = ( height - 1 + view.sequence ) & 1u;
+		const uint32 threadsX = checkerboard ? ( width + 1 ) / 2 : width;
 		graph.AddPass( "rt reflect", d3d12GraphPass_t::COMPUTE, uses, [tracePipeline, base, depthUse, normalUse, materialUse, ray, imports,
-			lights]( idD3D12GraphContext & context ) {
+			lights, threadsX]( idD3D12GraphContext & context ) {
 			rtReflectParms_t parms = base;
 			parms.tlasSrv = context.Srv( imports.tlas );
 			parms.recordsSrv = context.Srv( imports.records );
@@ -527,7 +533,7 @@ void idD3D12RtPasses::Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarge
 			parms.materialSrv = context.Srv( materialUse );
 			parms.outputUav = context.Uav( ray );
 			const d3d12UploadSpan_t span = context.Parms( parms );
-			context.Dispatch( *tracePipeline, &span, parms.size[0], parms.size[1] );
+			context.Dispatch( *tracePipeline, &span, threadsX, parms.size[1] );
 		} );
 	}
 

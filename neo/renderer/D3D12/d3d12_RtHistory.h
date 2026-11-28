@@ -9,7 +9,7 @@
 
 	  shadow           the viewport's: rt shadow ratio's, what the shadows leave of the lights, a the unshadowed
 	                   luminance
-	  indirect amount  the indirect light's grid (R19), a texel per r_rtIndirectResolution's stride pixels:
+	  indirect amount  the indirect light's grid (R19), a texel per R_IndirectStride pixels:
 	                   include/rtBounce.hlsli's luminance and where it comes from
 	  indirect aux     its chroma, how far the ray went, 1
 	  reflection       the viewport's: what the rays met (R20), a how far they went

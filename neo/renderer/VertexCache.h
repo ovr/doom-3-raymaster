@@ -34,7 +34,9 @@ const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
 // at about 70 of them, and that error ends the process.
 const int VERTCACHE_JOINT_MEMORY_PER_FRAME = 8 * 1024 * 1024;
 
-const int VERTCACHE_NUM_FRAMES = 2;
+// the set the front end writes, the one the back end records and the one the GPU may still draw: Present
+// waits only for the frame before the one it shows (r_d3d12FramesInFlight 2)
+const int VERTCACHE_NUM_FRAMES = 3;
 
 // there are a lot more static indexes than vertexes, because interactions are just new
 // index lists that reference existing vertexes

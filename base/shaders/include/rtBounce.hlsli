@@ -9,8 +9,8 @@
 
 	  amount  RGBA16F  a the mean luminance (Y of YCoCg) of what the rays brought, rgb the mean of that times each
 	                   ray's direction
-	  aux     RGBA16F  r, g the mean Co and Cg, b the mean of the luminance squared (a filter's pass: the variance of
-	                   the mean), a the frames in the means; 0: the texel holds nothing
+	  aux     RGBA16F  r, g the mean Co and Cg, b the pass's own (rt indirect: how far the ray went), a 1 where the
+	                   texel holds light, 0 where it holds nothing
 
 	The rays leave by the cosine about the plane the depth holds, so the mean luminance times the albedo is what a
 	surface along the plane sends on, and the bumps of a wall share one signal. A pixel takes it by its own normal

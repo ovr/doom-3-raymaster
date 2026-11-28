@@ -205,6 +205,9 @@ idCVar r_rtReference( "r_rtReference", "0", CVAR_RENDERER | CVAR_BOOL, "for a st
 idCVar r_rtLightSize( "r_rtLightSize", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the emitter of every light for the ray traced shadows (its light_size, by default 2 % of the light's reach within 2 .. 10 units); 0 = point lights", 0.0f, 16.0f );
 idCVar r_rtReflections( "r_rtReflections", "1", CVAR_RENDERER | CVAR_BOOL, "ray traced reflections of the main view on the surfaces whose specular may reflect" );
 idCVar r_rtReflectionGlossy( "r_rtReflectionGlossy", "1", CVAR_RENDERER | CVAR_BOOL, "a rough surface reflects as wide as its roughness says, filtered by NRD; 0 = every surface that reflects is a mirror" );
+idCVar r_rtNrdStabilize( "r_rtNrdStabilize", "1", CVAR_RENDERER | CVAR_BOOL, "with r_rtDenoiser 1 REBLUR stabilizes the glossy reflections and the indirect light over the frames after its blurs; 0 skips that pass (faster, more flicker)" );
+idCVar r_rtNrdPrepass( "r_rtNrdPrepass", "1", CVAR_RENDERER | CVAR_BOOL, "with r_rtDenoiser 1 REBLUR blurs the glossy reflections and the indirect light before it accumulates them; 0 does not (faster, noisier)" );
+idCVar r_rtReflectionCheckerboard( "r_rtReflectionCheckerboard", "1", CVAR_RENDERER | CVAR_BOOL, "with r_rtDenoiser 1 a glossy pixel sends its ray every second frame, in NRD's checkerboard, which fills in the others; a mirror every frame" );
 idCVar r_rtReflectionMirror( "r_rtReflectionMirror", "0.08", CVAR_RENDERER | CVAR_FLOAT, "pixels of less than this G-buffer roughness are mirrors: one ray, every light with a hard shadow, no filter", 0.0f, 1.0f );
 idCVar r_rtReflectionScale( "r_rtReflectionScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced reflections", 0.0f, 4.0f );
 idCVar r_rtReflectionDistance( "r_rtReflectionDistance", "2048", CVAR_RENDERER | CVAR_FLOAT, "the longest reflection ray, in world units", 16.0f, 65536.0f );
@@ -215,9 +218,19 @@ idCVar r_rtIndirect( "r_rtIndirect", "1", CVAR_RENDERER | CVAR_BOOL, "one bounce
 idCVar r_rtIndirectScale( "r_rtIndirectScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the ray traced indirect light", 0.0f, 8.0f );
 idCVar r_rtEmissiveScale( "r_rtEmissiveScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales what a surface emits into the ray traced indirect light", 0.0f, 64.0f );
 idCVar r_rtIndirectDistance( "r_rtIndirectDistance", "1024", CVAR_RENDERER | CVAR_FLOAT, "the longest ray of the indirect light, in world units", 16.0f, 65536.0f );
-idCVar r_rtIndirectResolution( "r_rtIndirectResolution", "0.5", CVAR_RENDERER | CVAR_FLOAT, "rays of the indirect light per pixel along a side: 1, 0.5, 0.33 or 0.25", 0.25f, 1.0f );
+idCVar r_rtIndirectResolution( "r_rtIndirectResolution", "0", CVAR_RENDERER | CVAR_FLOAT, "rays of the indirect light per pixel along a side: 1, 0.5, 0.33 or 0.25; "
+	"0 = by the view's height, about as many rays on the screen as 0.5 at 1080p: 0.5 below 1350 rows, 0.33 below 1890, 0.25 above", 0.0f, 1.0f );
 idCVar r_rtIndirectClamp( "r_rtIndirectClamp", "8", CVAR_RENDERER | CVAR_FLOAT, "the most a ray of the indirect light brings, as the exposed scene's value (1 is about white); 0 = no limit", 0.0f, 1024.0f );
 idCVar r_rtFillLightScale( "r_rtFillLightScale", "1", CVAR_RENDERER | CVAR_FLOAT, "scales the lights that stand in for bounced light (ambient lights, point lights without shadows) in the main view while r_rtIndirect is on", 0.0f, 1.0f );
+
+// The indirect light's grid grows with the view: its light is smooth, and the rays and NRD's grid cost per texel.
+int R_IndirectStride( const int viewHeight ) {
+	const float resolution = r_rtIndirectResolution.GetFloat();
+	if ( resolution > 0.0f ) {
+		return idMath::ClampInt( 1, 4, idMath::Ftoi( 1.0f / Max( resolution, 0.25f ) + 0.5f ) );
+	}
+	return idMath::ClampInt( 2, 4, idMath::Ftoi( static_cast<float>( viewHeight ) / 540.0f + 0.5f ) );
+}
 
 rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & postProcess ) {
 	rayTracingSettings_t settings;
@@ -252,6 +265,9 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	reflection.history = r_rtHistory.GetBool() || reflection.reference;
 	reflection.denoiser = reflection.reference ? rtDenoiser_t::NONE : denoiser;
 	reflection.validation = r_rtNrdValidation.GetInteger() == 1 && reflection.denoiser == rtDenoiser_t::NRD;
+	reflection.checkerboard = r_rtReflectionCheckerboard.GetBool() && reflection.denoiser == rtDenoiser_t::NRD;
+	const rtReblurSettings_t reblur = { r_rtNrdStabilize.GetBool(), r_rtNrdPrepass.GetBool() };
+	reflection.reblur = reblur;
 
 	// without GPU skinning no MD5 is in the GPU scene: none would cast a shadow
 	rtShadowSettings_t & shadow = settings.shadow;
@@ -268,13 +284,13 @@ rayTracingSettings_t R_DefaultRayTracingSettings( const postProcessSettings_t & 
 	indirect.enabled = tracing && ( indirect.alone || ( r_rtIndirect.GetBool() && !reflection.alone && !shadow.show ) );
 	indirect.reference = r_rtReference.GetBool();
 	indirect.history = r_rtHistory.GetBool() || indirect.reference;
-	indirect.stride = idMath::ClampInt( 1, 4, idMath::Ftoi( 1.0f / Max( r_rtIndirectResolution.GetFloat(), 0.25f ) + 0.5f ) );
 	indirect.scale = r_rtIndirectScale.GetFloat();
 	indirect.emissiveScale = r_rtEmissiveScale.GetFloat();
 	indirect.distance = r_rtIndirectDistance.GetFloat();
 	indirect.maxRadiance = r_rtIndirectClamp.GetFloat();
 	indirect.denoiser = indirect.reference ? rtDenoiser_t::NONE : denoiser;
 	indirect.validation = r_rtNrdValidation.GetInteger() == 2 && indirect.denoiser == rtDenoiser_t::NRD;
+	indirect.reblur = reblur;
 	settings.fillLightScale = ( indirect.enabled && !indirect.alone ) ? r_rtFillLightScale.GetFloat() : 1.0f;
 
 	settings.gbuffer = available && ( settings.gbufferDebug != gbufferDebug_t::NONE || reflection.enabled || shadow.Penumbrae() || indirect.enabled );

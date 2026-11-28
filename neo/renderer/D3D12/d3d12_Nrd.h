@@ -12,15 +12,21 @@
 	                     two samplers static, a table of t0.. and u0.. in space0. NRD's DXIL binds registers, ours
 	                     does not: these are the only root signatures besides the backend's two.
 	  descriptor tables  a range of the shader-visible heap per pipeline and texture set, copied once from the
-	                     textures' views and kept while the textures live: no slot is written again.
-	  denoiser           per signal and eye, an NRD instance with its pools, inputs and outputs at the signal's
-	                     size (the viewport's; the indirect light's grid), committed and imported into the graphs:
-	                     REBLUR_SPECULAR, REBLUR_DIFFUSE_SH, SIGMA_SHADOW_TRANSLUCENCY;
-	                     RESTART for a new epoch, a skipped frame or r_rtHistory 0, CLEAR_AND_RESTART for new
-	                     textures. A screenshot (rtView_t::store false) has instances of its own that start anew
-	                     and go with the frame.
+	                     textures' views and kept while the textures live (guides made again take their eye's
+	                     along): no slot is written again.
+	  denoiser           per signal and eye, an NRD instance with its pools, inputs and outputs at the scene's size
+	                     (a texel per pixel; per stride pixels in the indirect light's grid), committed and imported
+	                     into the graphs: REBLUR_SPECULAR, REBLUR_DIFFUSE_SH, SIGMA_SHADOW_TRANSLUCENCY. NRD runs on
+	                     the viewport's part of them (rectSize): a resolution scale that moves makes nothing again;
+	                     CLEAR_AND_RESTART for a new epoch, a skipped frame, r_rtHistory 0, new textures and after
+	                     a level load, which keeps them (RESTART keeps NRD's textures, which a first frame reads). A
+	                     screenshot (rtView_t::store false)
+	                     has instances of its own that start anew each time; they stay while screenshots come
+	                     (com_aviDemo takes one a frame) and go SCREENSHOT_IDLE stored frames after the last.
 	  guides             per eye and set (the pixels; the grid), NRD's IN_VIEWZ, IN_NORMAL_ROUGHNESS and IN_MV
-	                     (internal/nrdGuides.hlsl), written once per frame for the signals that share them.
+	                     (internal/nrdGuides.hlsl), written once per frame for the signals that share them. The
+	                     pixels' also hold REBLUR_SPECULAR's IN_VIEWZ, the sky's where a pixel is not glossy: NRD
+	                     skips the tiles without a glossy pixel.
 
 	NRD's textures hold rows from the top, as the D3D clip space of the matrices it is given: GL's projection
 	with its z made 0 .. 1, GL's model view (NRD takes it as the right-handed one it is). View z is the clip w,
@@ -57,8 +63,9 @@ public:
 	[[nodiscard]] static bool		Available();	// built with NRD
 
 	// The glossy reflections of rect (the viewport, inside the scene) through REBLUR_SPECULAR of view's eye: rays is
-	// rt reflect's texture of rect, invalid when the frame traces nothing (then NRD's last output stands). Returns
-	// what rt composite reads; nullopt without a G-buffer, an output of the frame before, or a lost device.
+	// rt reflect's texture of rect (with settings.checkerboard only WHITE's glossy cells), invalid when the frame traces
+	// nothing (then NRD's last output stands). Returns what rt composite reads; nullopt without a G-buffer, an output
+	// of the frame before, or a lost device.
 	[[nodiscard]] std::optional<d3d12GraphResource_t>	Reflections( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene,
 										const rtReflectionSettings_t & settings, const rtView_t & view, const renderRect_t & rect, d3d12GraphResource_t rays );
 	struct indirectOutput_t {
@@ -81,8 +88,12 @@ public:
 	// output, once, executed. Nothing when there is none of that size.
 	void							DrawValidation( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, const renderRect_t & viewport,
 										idD3D12DebugGroups * groups );
-	void							Drop();		// every instance and texture through the graveyard: Resize, EndLevelLoad, Shutdown
+	void							Drop();		// every instance and texture through the graveyard: Resize, Shutdown
+	// EndLevelLoad: every history starts again as with new textures (CLEAR_AND_RESTART), the instances and their
+	// textures stay at their size; making them again cost the first frame of a map 25-65 ms.
+	void							Restart();
 	[[nodiscard]] uint64			Bytes() const { return bytes; }
+	[[nodiscard]] uint32			Made() const { return creations; }	// instances and guide sets made since Init
 
 private:
 	enum class signal_t : uint8 { REFLECTION, INDIRECT, SHADOW, COUNT };
@@ -90,6 +101,8 @@ private:
 	static constexpr size_t			PIXELS = 0;	// guide sets: a texel per pixel, the bumped normal
 	static constexpr size_t			GRID = 1;	// the indirect light's grid, the plane
 	static constexpr size_t			GUIDE_SETS = 2;
+	[[nodiscard]] static constexpr size_t GuideCount( size_t set ) { return ( set == PIXELS ) ? 4 : 3; }
+	static constexpr uint32			SCREENSHOT_IDLE = 60;	// stored frames a screenshot's instances outlive it
 
 	struct texture_t {
 		idComPtr<ID3D12Resource>	resource;
@@ -99,8 +112,8 @@ private:
 		uint64						bytes = 0;
 	};
 	struct guides_t {
-		std::array<texture_t, 3>	textures;	// IN_VIEWZ, IN_NORMAL_ROUGHNESS, IN_MV
-		uint32						width = 0;
+		std::array<texture_t, 4>	textures;	// IN_VIEWZ, IN_NORMAL_ROUGHNESS, IN_MV; the pixels' also REBLUR_SPECULAR's IN_VIEWZ
+		uint32						width = 0;			// the textures', written over the viewport's part
 		uint32						height = 0;
 		uint32						stride = 1;			// pixels a side per texel
 		uint32						epoch = 0;
@@ -125,6 +138,8 @@ private:
 	};
 
 	[[nodiscard]] denoiser_t *		Denoiser( signal_t signal, int eye, uint32 width, uint32 height, uint32 stride, bool validation );
+	// The textures' size for rect of scene: the scene's, in texels of stride pixels.
+	[[nodiscard]] static std::array<uint32, 2>	TextureSize( const idD3D12SceneTarget & scene, const renderRect_t & rect, uint32 stride );
 	[[nodiscard]] guides_t *		Guides( int eye, size_t set, uint32 width, uint32 height, uint32 stride );
 	// Imports guides into the graph and adds nrd guides over rect unless they hold view's frame with limits already.
 	// limits: the roughness that reflects nothing, the fade below it, the mirror's (R20's glossy pixels are material
@@ -132,11 +147,15 @@ private:
 	[[nodiscard]] bool				WriteGuides( idD3D12RenderGraph & graph, idD3D12SceneTarget & scene, guides_t & guides, size_t set,
 										const rtView_t & view, const renderRect_t & rect, const std::optional<std::array<float, 3>> & limits,
 										std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported );
-	// The denoiser's dispatches of the frame, a graph pass each, after SetCommonSettings for view.
+	// The denoiser's dispatches of the frame over rectWidth x rectHeight texels of its textures, a graph pass each, after
+	// SetCommonSettings for view.
 	[[nodiscard]] bool				AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoiser, guides_t & guides, const rtView_t & view,
-										bool restart, const texelMap_t & map, std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported );
-	// A screenshot's instances live until the next frame that is none: its graph has been executed then.
+										bool restart, uint32 rectWidth, uint32 rectHeight, const texelMap_t & map,
+										std::unordered_map<const texture_t *, d3d12GraphResource_t> & imported );
+	// view's instances, a stored frame's eye or a screenshot's 2; counts the stored frames since the last screenshot.
+	[[nodiscard]] int				Eye( const rtView_t & view );
 	void							BuryScreenshot();
+	void							BuryTables( denoiser_t & denoiser );
 	[[nodiscard]] bool				CreateTexture( texture_t & texture, DXGI_FORMAT format, uint32 width, uint32 height, const wchar_t * name );
 	void							BuryTexture( texture_t & texture );
 	void							BuryDenoiser( denoiser_t & denoiser );
@@ -166,6 +185,10 @@ private:
 	d3d12ComputePipeline_t			shadowUnpack;
 	std::array<idComPtr<ID3D12PipelineState>, 4>	validation;	// by log2 of the output's samples
 	uint64							bytes = 0;
+	uint32							creations = 0;
 	int								validationEye = -1;		// whose signal left a validation view to draw
 	signal_t						validationSignal = signal_t::REFLECTION;
+	uint32							screenshotIdle = SCREENSHOT_IDLE;	// stored frames since the last screenshot
+	uint32							idleEpoch = 0;			// the last stored frame counted, of eye 0
+	uint32							idleSequence = 0;
 };

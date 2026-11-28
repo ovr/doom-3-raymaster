@@ -5,7 +5,6 @@
 #include "../../idlib/precompiled.h"
 
 #include <bit>
-#include <unordered_map>
 
 #include "../tr_local.h"
 #include "d3d12_RayTracing.h"
@@ -61,6 +60,106 @@ constexpr uint64 AS_ALIGN = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNME
 
 }	// namespace
 
+idD3D12BlasArena::idD3D12BlasArena( const idD3D12Device & owner, idD3D12Submitter & submit, idD3D12Graveyard & graves, const wchar_t * label ) :
+	device( owner ),
+	submitter( submit ),
+	graveyard( graves ),
+	name( label ) {
+}
+
+std::optional<idD3D12BlasArena::range_t> idD3D12BlasArena::Allocate( uint64 bytes ) {
+	bytes = Align( Max( bytes, 1ull ) );
+	for ( size_t c = 0; c < chunks.size(); c++ ) {
+		std::map<uint64, uint64> & holes = chunks[c].holes;
+		for ( auto it = holes.begin(); it != holes.end(); ++it ) {
+			if ( it->second < bytes ) {
+				continue;
+			}
+			const range_t range = { static_cast<uint32>( c ), it->first, bytes };
+			const uint64 rest = it->second - bytes;
+			holes.erase( it );
+			if ( rest > 0 ) {
+				holes.emplace( range.offset + bytes, rest );
+			}
+			return range;
+		}
+	}
+	const uint64 chunkBytes = Max( CHUNK, Align( bytes, D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT ) );
+	idComPtr<ID3D12Resource> made = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, chunkBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+		name, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
+	if ( !made ) {
+		return std::nullopt;
+	}
+	// the first released slot: the ranges of the others keep their chunk index
+	const auto empty = std::ranges::find_if( chunks, []( const chunk_t & chunk ) { return !chunk.resource; } );
+	const uint32 index = static_cast<uint32>( std::distance( chunks.begin(), empty ) );
+	chunk_t & chunk = ( empty != chunks.end() ) ? *empty : chunks.emplace_back();
+	chunk.resource = std::move( made );
+	chunk.state = {};
+	chunk.state.current = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+	chunk.bytes = chunkBytes;
+	if ( chunkBytes > bytes ) {
+		chunk.holes.emplace( bytes, chunkBytes - bytes );
+	}
+	return range_t{ index, 0, bytes };
+}
+
+void idD3D12BlasArena::Free( const range_t & range ) {
+	if ( range.bytes > 0 && range.chunk < chunks.size() ) {
+		freed.push_back( { submitter.PendingFence(), range } );
+	}
+}
+
+void idD3D12BlasArena::Retire() {
+	const uint64 waited = submitter.WaitedFence();
+	size_t kept = 0;
+	for ( const freed_t & entry : freed ) {
+		if ( entry.fence > waited ) {
+			freed[kept++] = entry;
+		} else {
+			Merge( entry.range );
+		}
+	}
+	freed.resize( kept );
+	// a buffer that holds nothing goes, but the first: a camera cut's uncompacted builds stay resident no longer
+	for ( size_t c = 1; c < chunks.size(); c++ ) {
+		chunk_t & chunk = chunks[c];
+		if ( chunk.resource && chunk.holes.size() == 1 && chunk.holes.begin()->second == chunk.bytes ) {
+			graveyard.Bury( std::move( chunk.resource ) );
+			chunk.holes.clear();
+			chunk.bytes = 0;
+		}
+	}
+}
+
+void idD3D12BlasArena::Merge( const range_t & range ) {
+	std::map<uint64, uint64> & holes = chunks[range.chunk].holes;
+	uint64 offset = range.offset;
+	uint64 bytes = range.bytes;
+	const auto next = holes.lower_bound( offset );
+	if ( next != holes.begin() ) {
+		const auto before = std::prev( next );
+		if ( before->first + before->second == offset ) {
+			offset = before->first;
+			bytes += before->second;
+			holes.erase( before );
+		}
+	}
+	if ( next != holes.end() && offset + bytes == next->first ) {
+		bytes += next->second;
+		holes.erase( next );
+	}
+	holes.emplace( offset, bytes );
+}
+
+void idD3D12BlasArena::Drop() {
+	for ( chunk_t & chunk : chunks ) {
+		graveyard.Bury( std::move( chunk.resource ) );
+	}
+	chunks.clear();
+	freed.clear();
+}
+
 idD3D12RayTracing::idD3D12RayTracing( const idD3D12Device & owner, idD3D12Submitter & submit, idD3D12Graveyard & graves,
 	idD3D12DescriptorPool & srvs, idD3D12Barriers & barrierBatch, idD3D12Uploader & copies, idD3D12BufferStore & bufferStore, uint64 unused,
 	uint64 budget ) :
@@ -72,7 +171,9 @@ idD3D12RayTracing::idD3D12RayTracing( const idD3D12Device & owner, idD3D12Submit
 	uploader( copies ),
 	buffers( bufferStore ),
 	unusedBuilds( unused ),
-	scratchBudget( budget ) {
+	scratchBudget( budget ),
+	builtArena( owner, submit, graves, L"doom3 rt blas" ),
+	compactedArena( owner, submit, graves, L"doom3 rt blas compacted" ) {
 	scratchState.decays = true;
 	skinnedState.decays = true;
 	tableState.decays = true;
@@ -136,9 +237,8 @@ d3d12Descriptor_t idD3D12RayTracing::BufferSrv( bufferHandle_t handle ) {
 }
 
 void idD3D12RayTracing::DropCache() {
-	for ( auto & [key, entry] : cache ) {
-		graveyard.Bury( std::move( entry.data ) );
-	}
+	builtArena.Drop();
+	compactedArena.Drop();
 	cache.clear();
 	pending.clear();
 }
@@ -183,18 +283,14 @@ void idD3D12RayTracing::Compact() {
 		if ( entry.compacted || entry.compactedBytes == 0 ) {
 			continue;
 		}
-		const uint64 bytes = Align( entry.compactedBytes );
-		idComPtr<ID3D12Resource> made = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, bytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-			L"doom3 rt blas", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
-		if ( !made ) {
+		const std::optional<idD3D12BlasArena::range_t> range = compactedArena.Allocate( entry.compactedBytes );
+		if ( !range ) {
 			return;
 		}
-		compaction_t & compaction = compactions.emplace_back();
-		compaction.entry = &entry;
-		compaction.source = std::move( entry.data );
-		compaction.sourceState.current = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
-		entry.data = std::move( made );
-		entry.bytes = bytes;
+		compactions.push_back( { &entry, entry.range } );
+		entry.arena = &compactedArena;
+		entry.range = *range;
+		entry.bytes = range->bytes;
 		entry.compacted = true;
 		entry.compactedBytes = 0;
 	}
@@ -203,7 +299,7 @@ void idD3D12RayTracing::Compact() {
 void idD3D12RayTracing::Evict() {
 	for ( auto it = cache.begin(); it != cache.end(); ) {
 		if ( builds - it->second.lastUsed > unusedBuilds ) {
-			graveyard.Bury( std::move( it->second.data ) );
+			it->second.arena->Free( it->second.range );
 			it = cache.erase( it );
 		} else {
 			++it;
@@ -278,9 +374,6 @@ bool idD3D12RayTracing::PlaceBuffers( uint64 skinnedBytes, uint64 skinnedBlasByt
 
 // A build that stops after the cache changed: its new entries hold no structure and the compactions none yet.
 void idD3D12RayTracing::Abandon() {
-	for ( compaction_t & compaction : compactions ) {
-		graveyard.Bury( std::move( compaction.source ) );
-	}
 	compactions.clear();
 	asking.clear();
 	DropCache();
@@ -324,6 +417,8 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 	instanceDescs.clear();
 	instances.clear();
 	scratchBytes = 0;
+	builtArena.Retire();
+	compactedArena.Retire();
 	ReadCompactedSizes();
 	Evict();		// before anything of this build points at an entry
 	Compact();
@@ -421,7 +516,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 				continue;
 			}
 			found->second.lastUsed = builds;
-			placed[i] = { std::addressof( found->second.data ), 0 };
+			placed[i] = { std::addressof( found->second.arena->Buffer( found->second.range.chunk ) ), found->second.range.offset };
 			continue;
 		}
 		if ( !all && staticScratch >= scratchBudget ) {
@@ -439,22 +534,23 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		inputs.pGeometryDescs = &geometryDescs[firstDesc];
 		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
 		device.Get().GetRaytracingAccelerationStructurePrebuildInfo( &inputs, &info );
-		entry.bytes = Align( info.ResultDataMaxSizeInBytes );
-		entry.data = D3D12_CreateBuffer( device, D3D12_HEAP_TYPE_DEFAULT, entry.bytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-			L"doom3 rt blas", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS );
-		if ( !entry.data ) {
+		const std::optional<idD3D12BlasArena::range_t> range = builtArena.Allocate( info.ResultDataMaxSizeInBytes );
+		if ( !range ) {
 			geometryDescs.resize( firstDesc );
 			wait( instance.blasKey );
 			continue;
 		}
-		entry.state.current = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+		entry.arena = &builtArena;
+		entry.range = *range;
+		entry.bytes = range->bytes;
 		entry.lastUsed = builds;
 		entry.builtAt = builds;
 		blas_t & made = cache.emplace( instance.blasKey, std::move( entry ) ).first->second;
 		build_t & build = blasBuilds.emplace_back();
 		build.inputs = inputs;
 		build.firstDesc = firstDesc;
-		build.target = made.data.Get();
+		build.target = builtArena.Buffer( made.range.chunk ).Get();
+		build.targetOffset = made.range.offset;
 		const uint64 scratchNeed = Align( Max<uint64>( info.ScratchDataSizeInBytes, 1 ) );
 		if ( batchScratch > 0 && batchScratch + scratchNeed > scratchBudget ) {
 			batch++;
@@ -466,7 +562,7 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 		batchRegion = Max( batchRegion, batchScratch );
 		staticScratch += scratchNeed;
 		built.push_back( &made );
-		placed[i] = { std::addressof( made.data ), 0 };
+		placed[i] = { std::addressof( builtArena.Buffer( made.range.chunk ) ), made.range.offset };
 		stats.built++;
 	}
 	AskSizes();
@@ -537,8 +633,8 @@ bool idD3D12RayTracing::Build( idD3D12RenderGraph & graph, const idD3D12GpuScene
 
 	AddPasses( graph );
 	graph.Execute( groups );
-	for ( compaction_t & compaction : compactions ) {
-		graveyard.Bury( std::move( compaction.source ) );
+	for ( const compaction_t & compaction : compactions ) {
+		builtArena.Free( compaction.source );
 	}
 	if ( !asking.empty() ) {
 		pendingFence = submitter.PendingFence();
@@ -569,14 +665,19 @@ void idD3D12RayTracing::AddPasses( idD3D12RenderGraph & graph ) {
 	const d3d12GraphResource_t skinnedBlasUse = graph.Import( "rt skinned blas", { skinnedBlas.Get(), &skinnedBlasState, {}, {}, {}, 0, 0 } );
 	const d3d12GraphResource_t tlasUse = graph.Import( "rt tlas", { tlas.Get(), &tlasState, tlasSrv, {}, {}, 0, 0 } );
 	const d3d12GraphResource_t sizesUse = graph.Import( "rt blas sizes", { sizes.Get(), &sizesState, {}, {}, {}, 0, 0 } );
-	// one import per structure, so that the graph sees every hazard on it
-	std::unordered_map<const blas_t *, d3d12GraphResource_t> imports;
-	const auto Use = [&graph, &imports]( blas_t & entry ) {
-		auto [it, inserted] = imports.try_emplace( &entry );
+	// one import per buffer of the arenas, named once in a pass
+	std::map<std::pair<const idD3D12BlasArena *, uint32>, d3d12GraphResource_t> imports;
+	const auto Use = [&graph, &imports]( idD3D12BlasArena & arena, uint32 chunk ) {
+		auto [it, inserted] = imports.try_emplace( std::make_pair( &arena, chunk ) );
 		if ( inserted ) {
-			it->second = graph.Import( "rt blas", { entry.data.Get(), &entry.state, {}, {}, {}, 0, 0 } );
+			it->second = graph.Import( "rt blas", { arena.Buffer( chunk ).Get(), &arena.State( chunk ), {}, {}, {}, 0, 0 } );
 		}
 		return it->second;
+	};
+	const auto Add = []( std::vector<d3d12GraphUse_t> & uses, d3d12GraphResource_t resource, access what ) {
+		if ( std::ranges::none_of( uses, [&]( const d3d12GraphUse_t & use ) { return use.resource == resource && use.access == what; } ) ) {
+			uses.push_back( { resource, what } );
+		}
 	};
 
 	if ( !skins.empty() ) {
@@ -590,9 +691,9 @@ void idD3D12RayTracing::AddPasses( idD3D12RenderGraph & graph ) {
 	std::vector<d3d12GraphUse_t> tlasUses = { { tlasUse, access::AS_WRITE }, { scratchUse, access::UAV } };
 	if ( !blasBuilds.empty() ) {
 		std::vector<d3d12GraphUse_t> uses = { { scratchUse, access::UAV } };
-		for ( blas_t * entry : built ) {
-			uses.push_back( { Use( *entry ), access::AS_WRITE } );
-			tlasUses.push_back( { Use( *entry ), access::AS_READ } );
+		for ( const blas_t * entry : built ) {
+			Add( uses, Use( *entry->arena, entry->range.chunk ), access::AS_WRITE );
+			Add( tlasUses, Use( *entry->arena, entry->range.chunk ), access::AS_READ );
 		}
 		if ( !skins.empty() ) {
 			uses.push_back( { skinnedUse, access::SRV } );
@@ -619,19 +720,17 @@ void idD3D12RayTracing::AddPasses( idD3D12RenderGraph & graph ) {
 
 	if ( !compactions.empty() ) {
 		std::vector<d3d12GraphUse_t> uses;
-		std::vector<std::pair<d3d12GraphResource_t, d3d12GraphResource_t>> pairs;
-		for ( compaction_t & compaction : compactions ) {
-			const d3d12GraphResource_t source = graph.Import( "rt blas uncompacted", { compaction.source.Get(), &compaction.sourceState, {}, {}, {}, 0, 0 } );
-			const d3d12GraphResource_t target = Use( *compaction.entry );
-			uses.push_back( { source, access::AS_READ } );
-			uses.push_back( { target, access::AS_WRITE } );
-			tlasUses.push_back( { target, access::AS_READ } );
-			pairs.emplace_back( source, target );
+		std::vector<std::pair<D3D12_GPU_VIRTUAL_ADDRESS, D3D12_GPU_VIRTUAL_ADDRESS>> pairs;
+		for ( const compaction_t & compaction : compactions ) {
+			const d3d12GraphResource_t target = Use( compactedArena, compaction.entry->range.chunk );
+			Add( uses, Use( builtArena, compaction.source.chunk ), access::AS_READ );
+			Add( uses, target, access::AS_WRITE );
+			Add( tlasUses, target, access::AS_READ );
+			pairs.emplace_back( builtArena.Address( compaction.source ), compactedArena.Address( compaction.entry->range ) );
 		}
 		graph.AddPass( "rt blas compact", pass::AS_BUILD, uses, [pairs]( idD3D12GraphContext & context ) {
 			for ( const auto & [source, target] : pairs ) {
-				context.List().CopyRaytracingAccelerationStructure( context.Address( target ), context.Address( source ),
-					D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT );
+				context.List().CopyRaytracingAccelerationStructure( target, source, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT );
 			}
 		} );
 	}
@@ -651,14 +750,14 @@ void idD3D12RayTracing::AddPasses( idD3D12RenderGraph & graph ) {
 
 	if ( !asking.empty() ) {
 		std::vector<d3d12GraphUse_t> uses = { { sizesUse, access::UAV } };
-		for ( blas_t * entry : asking ) {
-			uses.push_back( { Use( *entry ), access::AS_READ } );
+		for ( const blas_t * entry : asking ) {
+			Add( uses, Use( *entry->arena, entry->range.chunk ), access::AS_READ );
 		}
 		graph.AddPass( "rt blas sizes", pass::AS_BUILD, uses, [this, sizesUse]( idD3D12GraphContext & context ) {
 			std::vector<D3D12_GPU_VIRTUAL_ADDRESS> sources;
 			sources.reserve( asking.size() );
 			for ( const blas_t * entry : asking ) {
-				sources.push_back( entry->data->GetGPUVirtualAddress() );
+				sources.push_back( entry->arena->Address( entry->range ) );
 			}
 			const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC desc = { context.Address( sizesUse ),
 				D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE };

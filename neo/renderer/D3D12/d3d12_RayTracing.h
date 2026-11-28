@@ -16,7 +16,8 @@
 	  rt blas readback COPY       those sizes into a READBACK buffer
 
 	A static BLAS is one per blasKey (a crate drawn 50 times is one), checked against its geometries; it is kept
-	while instances use it and unusedBuilds builds after, and dropped with its static generation. After a full
+	while instances use it and unusedBuilds builds after, and dropped with its static generation. It lies in a range
+	of idD3D12BlasArena's buffers, built in one arena and compacted into the other. After a full
 	update a build makes every one the scene lacks, so that frame traces all its casters; after a delta new ones up
 	to scratchBudget of scratch, and the instances of the rest wait. What a full update could not make (a buffer, a
 	key another model holds) the stats count as lacking until it is built or gone. New ones are built in batches of that budget:
@@ -26,7 +27,9 @@
 	hold until the next build.
 */
 
+#include <deque>
 #include <map>
+#include <optional>
 #include <set>
 #include <span>
 
@@ -47,12 +50,63 @@ struct d3d12RtInstance_t {
 };
 static_assert( sizeof( d3d12RtInstance_t ) == 16 );
 
+// Ranges of a few large buffers for the static BLAS: a committed buffer each cost the main thread 0.35-0.5 ms to
+// make, 11-26 ms on a camera cut into a new area and as much again for its compactions the frame after. A freed
+// range is taken again once the list of its last use has been waited for (WaitedFence), so two runs place alike.
+class idD3D12BlasArena {
+public:
+	static constexpr uint64			CHUNK = 32ull << 20;	// a structure larger than that has a buffer of its own
+	struct range_t {
+		uint32						chunk = 0;
+		uint64						offset = 0;
+		uint64						bytes = 0;
+	};
+									idD3D12BlasArena( const idD3D12Device & device, idD3D12Submitter & submitter, idD3D12Graveyard & graveyard,
+										const wchar_t * name );
+									idD3D12BlasArena( const idD3D12BlasArena & ) = delete;
+	idD3D12BlasArena &				operator=( const idD3D12BlasArena & ) = delete;
+
+	// The first free range that holds bytes, else a new buffer; nullopt when none could be made.
+	[[nodiscard]] std::optional<range_t>	Allocate( uint64 bytes );
+	void							Free( const range_t & range );	// free once the list open now has been waited for
+	void							Retire();						// the frees whose list has been waited for
+	void							Drop();							// every buffer through the graveyard
+	[[nodiscard]] const idComPtr<ID3D12Resource> &	Buffer( uint32 chunk ) const { return chunks[chunk].resource; }
+	[[nodiscard]] d3d12ResourceState_t &	State( uint32 chunk ) { return chunks[chunk].state; }
+	[[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS	Address( const range_t & range ) const {
+		return chunks[range.chunk].resource->GetGPUVirtualAddress() + range.offset;
+	}
+	[[nodiscard]] int				NumBuffers() const {
+		return static_cast<int>( std::ranges::count_if( chunks, []( const chunk_t & chunk ) { return chunk.resource != nullptr; } ) );
+	}
+
+private:
+	struct chunk_t {
+		idComPtr<ID3D12Resource>	resource;
+		d3d12ResourceState_t		state;		// RAYTRACING_ACCELERATION_STRUCTURE for good
+		uint64						bytes = 0;	// 0: released, the slot taken by the next new buffer
+		std::map<uint64, uint64>	holes;		// offset to bytes, neighbours merged
+	};
+	struct freed_t {
+		uint64						fence;
+		range_t						range;
+	};
+	void							Merge( const range_t & range );
+
+	const idD3D12Device &			device;
+	idD3D12Submitter &				submitter;
+	idD3D12Graveyard &				graveyard;
+	const wchar_t *					name;
+	std::deque<chunk_t>				chunks;		// a deque: a placed instance holds the address of a buffer's pointer
+	std::vector<freed_t>			freed;		// fence order
+};
+
 class idD3D12RayTracing {
 public:
 	static constexpr uint64			UNUSED_BUILDS = 600;
 	static constexpr uint64			SCRATCH_BUDGET = 32ull << 20;	// of a batch of new static BLAS, and of a delta's build
 	static constexpr int			MAX_SIZES = 4096;				// compacted sizes in flight
-	static constexpr int			MAX_COMPACTIONS = 256;			// per build: each makes a buffer
+	static constexpr int			MAX_COMPACTIONS = 256;			// copies per build
 
 									idD3D12RayTracing( const idD3D12Device & device, idD3D12Submitter & submitter, idD3D12Graveyard & graveyard,
 										idD3D12DescriptorPool & srvPool, idD3D12Barriers & barriers, idD3D12Uploader & uploader,
@@ -82,6 +136,7 @@ public:
 	[[nodiscard]] d3d12ResourceState_t &	SkinnedVerticesState() { return skinnedState; }
 	[[nodiscard]] std::span<const d3d12RtInstance_t>	Instances() const { return instances; }
 	[[nodiscard]] int				NumBlas() const { return static_cast<int>( cache.size() ); }
+	[[nodiscard]] int				NumBlasBuffers() const { return builtArena.NumBuffers() + compactedArena.NumBuffers(); }
 	[[nodiscard]] int				NumUncompacted() const {	// static BLAS not yet at their compacted size
 		return static_cast<int>( std::ranges::count_if( cache, []( const auto & entry ) { return !entry.second.compacted; } ) );
 	}
@@ -98,8 +153,8 @@ private:
 	};
 	struct blas_t {
 		std::vector<blasGeometry_t>	geometries;
-		idComPtr<ID3D12Resource>	data;
-		d3d12ResourceState_t		state;			// RAYTRACING_ACCELERATION_STRUCTURE for good
+		idD3D12BlasArena *			arena = nullptr;
+		idD3D12BlasArena::range_t	range;
 		uint64						bytes = 0;
 		uint64						lastUsed = 0;	// the build counter
 		uint64						builtAt = 0;	// the build that made it: a size read back must be of this one
@@ -127,8 +182,7 @@ private:
 	};
 	struct compaction_t {
 		blas_t *					entry;
-		idComPtr<ID3D12Resource>	source;
-		d3d12ResourceState_t		sourceState;
+		idD3D12BlasArena::range_t	source;		// in builtArena, freed after the copy
 	};
 	// Where an instance's BLAS lies once the frame's buffers are placed.
 	struct placed_t {
@@ -159,6 +213,8 @@ private:
 	const uint64					unusedBuilds;
 	const uint64					scratchBudget;
 	d3d12ComputePipeline_t			skinPipeline;
+	idD3D12BlasArena				builtArena;		// the static BLAS as built
+	idD3D12BlasArena				compactedArena;	// at their compacted sizes
 
 	std::map<uint64, blas_t>		cache;			// by blasKey: ordered, so two runs walk it alike
 	int								generation = -1;

@@ -253,7 +253,7 @@ idD3D12SceneTarget::surface_t & idD3D12SceneTarget::Resolved( idD3D12Barriers & 
 // The engine owns full screen (a borderless window, win_window.cpp) and Alt+Enter (the wndproc), so
 // DXGI is told to leave the window alone and SetFullscreenState is never called.
 std::expected<idD3D12SwapChain, idStr> idD3D12SwapChain::Create( const idD3D12Device & owner, idD3D12Queue & queue,
-	idD3D12DescriptorPool & rtvs, HWND window, int clientWidth, int clientHeight ) {
+	idD3D12DescriptorPool & rtvs, HWND window, int clientWidth, int clientHeight, UINT latencyFrames ) {
 	idD3D12SwapChain created;
 	created.device = &owner;
 	created.rtvPool = &rtvs;
@@ -285,7 +285,8 @@ std::expected<idD3D12SwapChain, idStr> idD3D12SwapChain::Create( const idD3D12De
 		return std::unexpected( idStr( va( "IDXGISwapChain3 is missing: %s", D3D12_ErrorText( hr ).c_str() ) ) );
 	}
 	owner.Factory().MakeWindowAssociation( window, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES );
-	created.swapChain->SetMaximumFrameLatency( 1 );
+	created.maxLatency = Max( latencyFrames, 1u );
+	created.swapChain->SetMaximumFrameLatency( created.maxLatency );
 	created.latency.reset( created.swapChain->GetFrameLatencyWaitableObject() );
 	for ( backBuffer_t & buffer : created.buffers ) {
 		buffer.rtv = rtvs.Allocate();
@@ -319,6 +320,12 @@ presentResult_t idD3D12SwapChain::Present( presentMode_t mode ) {
 void idD3D12SwapChain::WaitForLatency() {
 	if ( latency ) {
 		WaitForSingleObjectEx( latency.get(), 1000, TRUE );
+	}
+}
+
+void idD3D12SwapChain::SetLatency( UINT frames ) {
+	if ( frames != maxLatency && SUCCEEDED( swapChain->SetMaximumFrameLatency( frames ) ) ) {
+		maxLatency = frames;
 	}
 }
 

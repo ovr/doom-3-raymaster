@@ -96,9 +96,24 @@ d3d12Descriptor_t idD3D12DescriptorPool::AllocateRange( uint32 count ) {
 	return { first };
 }
 
+// Sorted, with neighbours merged: tables of every size come back as one range.
 void idD3D12DescriptorPool::FreeRange( d3d12Descriptor_t first, uint32 count ) {
-	assert( first.IsValid() && first.index + count <= next );
-	freeRanges.emplace_back( first.index, count );
+	assert( first.IsValid() && count > 0 && first.index + count <= next );
+	auto it = std::ranges::lower_bound( freeRanges, first.index, {}, &std::pair<uint32, uint32>::first );
+	assert( it == freeRanges.end() || first.index + count <= it->first );
+	if ( it != freeRanges.end() && first.index + count == it->first ) {
+		it->first = first.index;
+		it->second += count;
+	} else {
+		it = freeRanges.insert( it, { first.index, count } );
+	}
+	if ( it != freeRanges.begin() ) {
+		const auto before = std::prev( it );
+		if ( before->first + before->second == it->first ) {
+			before->second += it->second;
+			freeRanges.erase( it );
+		}
+	}
 }
 
 void idD3D12DescriptorPool::Copy( d3d12Descriptor_t destination, d3d12Descriptor_t source ) {
