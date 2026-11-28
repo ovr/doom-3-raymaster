@@ -89,6 +89,8 @@ if(D3BFG_NRD)
 		endif()
 	endforeach()
 	message(STATUS "NRD: denoiser on (third_party/NRD)")
+	# REBLUR's own cheaper path (no Catmull-Rom history, fewer blur samples): its DXIL is built in, so a build option
+	option(D3BFG_NRD_PERFORMANCE_MODE "Build NRD with REBLUR_PERFORMANCE_MODE: faster REBLUR, a softer and less stable image" OFF)
 else()
 	message(STATUS "NRD: off")
 endif()
