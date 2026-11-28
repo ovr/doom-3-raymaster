@@ -8371,6 +8371,8 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 		const std::vector<idVec4> again = runFrames( whiteNrd, 32, dark );
 		Check( sameBytes( texels, again ), va( "%u sample(s), NRD: the same frames of another epoch give the same bytes", samples ) );
 		// a screenshot's instance starts anew and leaves the eye's as it is
+		// right after the sky at the same stride: a cut keeps nothing of it (NRD's RESTART left 4.3 times the light)
+		runFrames( throughNrd, 8, base );
 		const std::vector<idVec4> shot = run( whiteNrd, 32, dark, false );
 		const std::vector<idVec4> nextStored = run( whiteNrd, 32, dark );
 		runFrames( whiteNrd, 32, dark );

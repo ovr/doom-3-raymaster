@@ -18,8 +18,9 @@
 	                     (a texel per pixel; per stride pixels in the indirect light's grid), committed and imported
 	                     into the graphs: REBLUR_SPECULAR, REBLUR_DIFFUSE_SH, SIGMA_SHADOW_TRANSLUCENCY. NRD runs on
 	                     the viewport's part of them (rectSize): a resolution scale that moves makes nothing again;
-	                     RESTART for a new epoch, a skipped frame or r_rtHistory 0, CLEAR_AND_RESTART for new
-	                     textures and after a level load, which keeps them. A screenshot (rtView_t::store false)
+	                     CLEAR_AND_RESTART for a new epoch, a skipped frame, r_rtHistory 0, new textures and after
+	                     a level load, which keeps them (RESTART keeps NRD's textures, which a first frame reads). A
+	                     screenshot (rtView_t::store false)
 	                     has instances of its own that start anew each time; they stay while screenshots come
 	                     (com_aviDemo takes one a frame) and go SCREENSHOT_IDLE stored frames after the last.
 	  guides             per eye and set (the pixels; the grid), NRD's IN_VIEWZ, IN_NORMAL_ROUGHNESS and IN_MV

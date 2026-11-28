@@ -802,8 +802,9 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 	settings.timeDeltaBetweenFrames = frameMs;
 	settings.denoisingRange = DENOISING_RANGE;
 	settings.frameIndex = view.sequence;
-	settings.accumulationMode = denoiser.fresh ? nrd::AccumulationMode::CLEAR_AND_RESTART
-		: ( restart ? nrd::AccumulationMode::RESTART : nrd::AccumulationMode::CONTINUE );
+	// RESTART leaves NRD's textures as they were, and a first frame read them: after a cut it showed the light of the
+	// view before (4.3 times the room's after the sky in Warp_RtIndirect)
+	settings.accumulationMode = ( denoiser.fresh || restart ) ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
 	settings.enableValidation = denoiser.validation;
 	if ( nrd::SetCommonSettings( *denoiser.instance, settings ) != nrd::Result::SUCCESS ) {
 		return false;
