@@ -8227,6 +8227,13 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 			}
 		}
 		throughNrd.stride = 2;
+		rtIndirectSettings_t bare = throughNrd;
+		bare.reblur = { false, false };
+		const std::vector<idVec4> texels = runFrames( bare, 8, base );
+		for ( const region_t & region : flat ) {
+			report( "the sky, 8 frames through NRD without its stabilization and pre-pass", region,
+				compare( texels, region, 0.25f, [&]( int column, int ) { return skyAt( column, 1.0f, false, base ); } ), 0.006f, 0.005f );
+		}
 	}
 
 	// ---- the room ----
@@ -8364,6 +8371,8 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 				"reference's (%g off allowed), before the wall %g times beside or behind it (%g at least)", samples, label, sum, sumError, ratio, contrast ) );
 		};
 		// a first frame is NRD's spatial passes alone: 0.99 of the sum, as bright beside the wall as before it
+		// right after the sky at the same stride: a cut keeps nothing of it (NRD's RESTART left 4.3 times the light)
+		runFrames( throughNrd, 8, base );
 		checkRoom( "the room, a first frame through NRD", runFrames( whiteNrd, 1, dark ), 0.03, 0.0 );
 		// 0.94 of the sum and 1.5 times
 		std::vector<idVec4> texels = runFrames( whiteNrd, 32, dark );
@@ -8371,8 +8380,6 @@ void RtIndirect( idTestGpu & gpu, UINT samples ) {
 		const std::vector<idVec4> again = runFrames( whiteNrd, 32, dark );
 		Check( sameBytes( texels, again ), va( "%u sample(s), NRD: the same frames of another epoch give the same bytes", samples ) );
 		// a screenshot's instance starts anew and leaves the eye's as it is
-		// right after the sky at the same stride: a cut keeps nothing of it (NRD's RESTART left 4.3 times the light)
-		runFrames( throughNrd, 8, base );
 		const std::vector<idVec4> shot = run( whiteNrd, 32, dark, false );
 		const std::vector<idVec4> nextStored = run( whiteNrd, 32, dark );
 		runFrames( whiteNrd, 32, dark );
@@ -8847,6 +8854,9 @@ void RtGlossy( idTestGpu & gpu, UINT samples ) {
 		rtReflectionSettings_t checkered = throughNrd;
 		checkered.checkerboard = true;
 		checkSky( "8 frames through NRD's checkerboard", checkered, 8, 0.01f, 0.006f );
+		rtReflectionSettings_t bare = throughNrd;
+		bare.reblur = { false, false };
+		checkSky( "8 frames through NRD without its stabilization and pre-pass", bare, 8, 0.01f, 0.006f );
 		// a resolution scale: the viewport a part of the scene that changes, which makes NRD's textures again no more
 		const uint32 made = nrd.Made();
 		shot_t part = skyShot;

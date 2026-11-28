@@ -285,6 +285,7 @@ struct idD3D12Nrd::denoiser_t {
 	uint32							stride = 1;				// pixels a side per texel
 	bool							validation = false;		// OUT_VALIDATION is there and NRD writes it
 	bool							checkerboard = false;	// REBLUR_SPECULAR's input: WHITE cells packed to the left
+	rtReblurSettings_t				reblur;					// REBLUR's optional passes this frame
 	std::vector<texture_t>			permanent;
 	std::vector<texture_t>			transient;
 	std::array<texture_t, static_cast<size_t>( nrd::ResourceType::MAX_NUM )>	io;	// the signal's own, by type
@@ -821,6 +822,13 @@ bool idD3D12Nrd::AddDispatches( idD3D12RenderGraph & graph, denoiser_t & denoise
 	reblur.maxFastAccumulatedFrameNum = Max( reblur.maxAccumulatedFrameNum / 5, 1u );
 	reblur.maxStabilizedFrameNum = reblur.maxAccumulatedFrameNum;
 	reblur.historyFixFrameNum = Min( reblur.historyFixFrameNum, reblur.maxFastAccumulatedFrameNum - 1 );
+	if ( !denoiser.reblur.stabilize ) {
+		reblur.maxStabilizedFrameNum = 0;
+	}
+	if ( !denoiser.reblur.prepass ) {
+		reblur.diffusePrepassBlurRadius = 0.0f;
+		reblur.specularPrepassBlurRadius = 0.0f;
+	}
 	// a glossy pixel (material 1 of the guides) takes no mirror and no pixel that reflects nothing
 	if ( denoiser.signal == signal_t::REFLECTION ) {
 		reblur.minMaterialForSpecular = 0.0f;
@@ -991,6 +999,7 @@ std::optional<d3d12GraphResource_t> idD3D12Nrd::Reflections( idD3D12RenderGraph 
 		const bool restart = !view.store || !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1
 			|| denoiser->checkerboard != settings.checkerboard;
 		denoiser->checkerboard = settings.checkerboard;
+		denoiser->reblur = settings.reblur;
 		if ( !AddDispatches( graph, *denoiser, *eyeGuides, view, restart, width, height, {}, imported ) ) {
 			return std::nullopt;
 		}
@@ -1089,6 +1098,7 @@ std::optional<idD3D12Nrd::indirectOutput_t> idD3D12Nrd::Indirect( idD3D12RenderG
 		map.offset[0] = ( 0.5f - 0.5f * s ) / viewWidth;
 		map.offset[1] = ( viewHeight - s * static_cast<float>( height ) + 0.5f * s - 0.5f ) / viewHeight;
 		const bool restart = !view.store || !settings.history || !denoiser->ran || denoiser->epoch != view.epoch || view.sequence != denoiser->sequence + 1;
+		denoiser->reblur = settings.reblur;
 		if ( !AddDispatches( graph, *denoiser, *grid, view, restart, width, height, map, imported ) ) {
 			return std::nullopt;
 		}
