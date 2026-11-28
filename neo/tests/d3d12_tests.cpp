@@ -11477,7 +11477,15 @@ constexpr testCase_t TESTS[] = {
 }	// namespace
 
 int main( int argc, char ** argv ) {
-	const char * filter = ( argc > 1 && idStr::Icmp( argv[1], "all" ) != 0 ) ? argv[1] : nullptr;
+	std::vector<std::string_view> filters;
+	for ( int a = 1; a < argc; a++ ) {
+		if ( idStr::Icmp( argv[a], "all" ) != 0 ) {
+			filters.emplace_back( argv[a] );
+		}
+	}
+	const auto selected = [&]( std::string_view name ) {
+		return filters.empty() || std::ranges::any_of( filters, [&]( std::string_view filter ) { return name.find( filter ) != std::string_view::npos; } );
+	};
 	if ( getenv( "D3D12_TESTS_VERBOSE" ) != nullptr ) {
 		maxFailuresPerTest = 1 << 30;
 	}
@@ -11488,7 +11496,7 @@ int main( int argc, char ** argv ) {
 	int numRun = 0;
 	int numFailedTests = 0;
 	for ( const testCase_t & test : TESTS ) {
-		if ( filter != nullptr && strstr( test.name, filter ) == nullptr ) {
+		if ( !selected( test.name ) ) {
 			continue;
 		}
 		numFailuresInTest = 0;
@@ -11506,3 +11514,4 @@ int main( int argc, char ** argv ) {
 	printf( "\n%d tests, %d checks, %d failed checks, %d failed tests\n", numRun, numChecks, numFailures, numFailedTests );
 	return ( numFailedTests == 0 ) ? 0 : 1;
 }
+// d3d12Tests [filter...]: the tests whose names contain any filter, in table order; none or "all" runs every test.
