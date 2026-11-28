@@ -6952,6 +6952,55 @@ void RtTlas( idTestGpu & gpu ) {
 	CheckNoLayerErrors( gpu );
 }
 
+// idD3D12BlasArena: ranges side by side, a freed one taken again only after the wait for the list open at its Free,
+// free neighbours merged, a buffer of its own past CHUNK, an empty buffer but the first released and its slot reused.
+void RtBlasArena( idTestGpu & gpu ) {
+	constexpr uint64 CHUNK = idD3D12BlasArena::CHUNK;
+	idD3D12BlasArena arena( gpu.device, gpu, gpu.graveyard, L"test blas arena" );
+	const auto range = []( const std::optional<idD3D12BlasArena::range_t> & made, uint32 chunk, uint64 offset, uint64 bytes ) {
+		return made && made->chunk == chunk && made->offset == offset && made->bytes == bytes;
+	};
+	const std::optional<idD3D12BlasArena::range_t> first = arena.Allocate( 1000 );
+	const std::optional<idD3D12BlasArena::range_t> second = arena.Allocate( 300 );
+	Check( range( first, 0, 0, 1024 ) && range( second, 0, 1024, 512 ) && arena.NumBuffers() == 1, "two ranges of one buffer, 256-aligned" );
+	if ( !first || !second ) {
+		return;
+	}
+	arena.Free( *first );
+	arena.Retire();
+	Check( range( arena.Allocate( 1000 ), 0, 1536, 1024 ), "a freed range waits for its list" );
+	gpu.WaitIdle();
+	arena.Retire();
+	Check( range( arena.Allocate( 1000 ), 0, 0, 1024 ), "and is taken again after the wait" );
+
+	const std::optional<idD3D12BlasArena::range_t> whole = arena.Allocate( CHUNK );
+	Check( range( whole, 1, 0, CHUNK ) && arena.NumBuffers() == 2, "a range the first buffer cannot hold: a second one" );
+	const std::optional<idD3D12BlasArena::range_t> large = arena.Allocate( CHUNK + 1 );
+	Check( range( large, 2, 0, CHUNK + 256 ) && arena.NumBuffers() == 3, "one larger than CHUNK: a buffer of its own" );
+	if ( !whole || !large ) {
+		return;
+	}
+	arena.Free( *whole );
+	gpu.WaitIdle();
+	arena.Retire();
+	Check( arena.NumBuffers() == 2, va( "an empty buffer is released: %d", arena.NumBuffers() ) );
+	Check( range( arena.Allocate( 4096 ), 0, 2560, 4096 ), "the first buffer's free space before a new one" );
+	Check( range( arena.Allocate( CHUNK ), 1, 0, CHUNK ) && arena.NumBuffers() == 3, "a new buffer takes the released slot" );
+
+	// every range of the first buffer back: merged into one, it holds CHUNK again
+	for ( const idD3D12BlasArena::range_t & back : { *second, idD3D12BlasArena::range_t{ 0, 1536, 1024 }, idD3D12BlasArena::range_t{ 0, 0, 1024 },
+			idD3D12BlasArena::range_t{ 0, 2560, 4096 } } ) {
+		arena.Free( back );
+	}
+	gpu.WaitIdle();
+	arena.Retire();
+	Check( range( arena.Allocate( CHUNK ), 0, 0, CHUNK ), "freed neighbours merge" );
+	arena.Drop();
+	Check( arena.NumBuffers() == 0, "dropped" );
+	gpu.WaitIdle();
+	CheckNoLayerErrors( gpu );
+}
+
 // The static BLAS over frames: compacted once a wait has made their sizes readable and never before, dropped with
 // their static generation, evicted after unusedBuilds builds without an instance; the hits stay those of RayQuery.
 void RtBlasCache( idTestGpu & gpu ) {
@@ -6973,6 +7022,7 @@ void RtBlasCache( idTestGpu & gpu ) {
 	};
 
 	Check( apply( true, 1, true ) && stats.built == 3 && scene.rt.NumUncompacted() == 3, va( "the first build: %s", RtStats( stats ).c_str() ) );
+	Check( scene.rt.NumBlasBuffers() == 1, va( "three BLAS in one buffer, not %d", scene.rt.NumBlasBuffers() ) );
 	const uint64 builtBytes = stats.blasBytes;
 	Check( apply( false, 1, true ) && stats.compacted == 0 && scene.rt.NumUncompacted() == 3,
 		va( "no size is read before the wait: %s", RtStats( stats ).c_str() ) );
@@ -6983,6 +7033,7 @@ void RtBlasCache( idTestGpu & gpu ) {
 	Check( apply( false, 1, true ) && stats.built == 0 && scene.rt.NumUncompacted() == 0
 		&& ( warp ? stats.blasBytes == builtBytes : ( stats.compacted >= 1 && stats.blasBytes < builtBytes ) ),
 		va( "compacted after the wait: %s; %llu bytes built", RtStats( stats ).c_str(), builtBytes ) );
+	Check( scene.rt.NumBlasBuffers() == ( warp ? 1 : 2 ), va( "the built and the compacted arena: %d buffers", scene.rt.NumBlasBuffers() ) );
 	scene.Trace();
 	scene.rays.CheckResults( "compacted" );
 	Check( apply( false, 1, true ) && stats.compacted == 0 && stats.built == 0, va( "nothing to do: %s", RtStats( stats ).c_str() ) );
@@ -11493,6 +11544,7 @@ constexpr testCase_t TESTS[] = {
 	{ "Warp_GpuScene", OnWarp<GpuScene> },
 	{ "Warp_RtTlas", OnWarp<RtTlas> },
 	{ "Gpu_RtTlas", OnGpu<RtTlas> },
+	{ "Warp_RtBlasArena", OnWarp<RtBlasArena> },
 	{ "Warp_RtBlasCache", OnWarp<RtBlasCache> },
 	{ "Gpu_RtBlasCache", OnGpu<RtBlasCache> },
 	{ "Warp_RtSkin", OnWarp<RtSkin> },
